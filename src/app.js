@@ -9,9 +9,10 @@ app.use(cors());
 
 app.use(express.json());
 
-
 app.use('/api', inviteRoutes);
 
 app.use('/api/admin', adminRoutes);
+
+app.use('/api/reports', require('./routes/report.routes'));
 
 module.exports = app;
