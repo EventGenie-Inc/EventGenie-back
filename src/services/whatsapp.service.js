@@ -22,7 +22,7 @@ const sendWhatsApp = async (phone, token, action = 'invite') => {
       from: process.env.TWILIO_WHATSAPP_FROM,
       to: `whatsapp:${phone}`,
       mediaUrl: [
-        'https://your-domain.com/invite-image.png'
+        'https://eventgenie-75f90.web.app/invite.png'
       ]
     });
 
