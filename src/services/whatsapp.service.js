@@ -1,22 +1,33 @@
 const twilio = require('twilio');
 
-const sendWhatsApp = async (phone, token) => {
+const sendWhatsApp = async (phone, token, action = 'invite') => {
   try {
     const client = twilio(
       process.env.TWILIO_ACCOUNT_SID,
       process.env.TWILIO_AUTH_TOKEN
     );
 
-    const link = `${process.env.BASE_URL}/rsvp?token=${token}`;
+    const baseUrl = process.env.BASE_URL;
 
-    const message = `You're invited 🎉\nPlease RSVP here:\n${link}`;
+    let link = `https://eventgenie-75f90.web.app/rsvp?token=${token}`;
+    let message = `You're invited 🎉\nPlease RSVP here:\n${link}`;
+
+    if (action === 'editing') {
+      link = `https://eventgenie-75f90.web.app/rsvp/edit-rsvp?token=${token}`;
+      message = `Update your RSVP ✏️\nPlease edit your response here:\n${link}`;
+    }
 
     const response = await client.messages.create({
       body: message,
       from: process.env.TWILIO_WHATSAPP_FROM,
-      to: `whatsapp:${phone}`
+      to: `whatsapp:${phone}`,
+      mediaUrl: [
+        'https://your-domain.com/invite-image.png'
+      ]
     });
+
   } catch (error) {
+    console.error('WhatsApp error:', error.message);
     throw error;
   }
 };
