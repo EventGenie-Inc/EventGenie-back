@@ -179,7 +179,7 @@ exports.sendEditInvite = async (req, res) => {
 
     const link = `${process.env.BASE_URL}/edit-rsvp?token=${editToken}`;
 
-    await sendWhatsApp(invite.phoneNumber, link);
+    await sendWhatsApp(invite.phoneNumber, editToken, 'editing');
 
     res.json({ message: 'Edit link sent successfully' });
 
