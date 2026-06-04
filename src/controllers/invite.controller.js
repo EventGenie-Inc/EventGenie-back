@@ -1,20 +1,26 @@
 const Invite = require('../models/invite.model');
 const { generateToken } = require('../services/token.service');
-const { sendSMS } = require('../services/whatsapp.service'); // same file, new export name
+const { sendSMS } = require('../services/whatsapp.service');
+
+const VALID_DAYS = ['day1', 'day2', 'both'];
 
 // ── Single invite ─────────────────────────────────────────────────────────────
 exports.generateInvite = async (req, res) => {
   try {
-    const { phoneNumber } = req.body;
+    const { phoneNumber, invitedFor } = req.body;
 
     if (!phoneNumber) {
       return res.status(400).json({ message: 'phoneNumber is required' });
     }
 
-    const token  = generateToken();
-    const invite = await Invite.create({ token, phoneNumber });
+    if (!invitedFor || !VALID_DAYS.includes(invitedFor)) {
+      return res.status(400).json({ message: 'invitedFor is required — must be day1, day2, or both' });
+    }
 
-    await sendSMS(phoneNumber, token);
+    const token  = generateToken();
+    const invite = await Invite.create({ token, phoneNumber, invitedFor });
+
+    await sendSMS(phoneNumber, token, 'invite', invitedFor);
 
     res.json({ message: 'Invite created and sent', invite });
 
@@ -27,30 +33,33 @@ exports.generateInvite = async (req, res) => {
 // ── Bulk invites ──────────────────────────────────────────────────────────────
 exports.generateInvites = async (req, res) => {
   try {
-    const { phoneNumbers } = req.body;
+    const { phoneNumbers, invitedFor } = req.body;
 
     if (!phoneNumbers || !phoneNumbers.length) {
       return res.status(400).json({ message: 'phoneNumbers array is required' });
     }
 
+    if (!invitedFor || !VALID_DAYS.includes(invitedFor)) {
+      return res.status(400).json({ message: 'invitedFor is required — must be day1, day2, or both' });
+    }
+
     const invitesData = phoneNumbers.map((phone) => ({
       token: generateToken(),
       phoneNumber: phone,
+      invitedFor,
     }));
 
     const invites = await Invite.insertMany(invitesData);
 
-    // Send all SMS in parallel
     const results = await Promise.allSettled(
-      invites.map((invite) => sendSMS(invite.phoneNumber, invite.token))
+      invites.map((invite) => sendSMS(invite.phoneNumber, invite.token, 'invite', invite.invitedFor))
     );
 
-    // Count successes and failures so the response is informative
     const succeeded = results.filter((r) => r.status === 'fulfilled').length;
     const failed    = results.filter((r) => r.status === 'rejected').length;
 
     res.json({
-      message:   `${invites.length} invites created — ${succeeded} sent, ${failed} failed`,
+      message: `${invites.length} invites created — ${succeeded} sent, ${failed} failed`,
       invites,
     });
 
@@ -67,14 +76,14 @@ exports.validateToken = async (req, res) => {
 
     const invite = await Invite.findOne({ token });
 
-    if (!invite)      return res.json({ status: 'invalid' });
-    if (invite.used)  return res.json({ status: 'used' });
+    if (!invite)     return res.json({ status: 'invalid' });
+    if (invite.used) return res.json({ status: 'used' });
 
     if (invite.expiresAt && invite.expiresAt < new Date()) {
       return res.json({ status: 'expired' });
     }
 
-    res.json({ status: 'valid' });
+    res.json({ status: 'valid', invitedFor: invite.invitedFor });
 
   } catch (err) {
     console.error('ERROR validating token:', err);
@@ -86,6 +95,10 @@ exports.validateToken = async (req, res) => {
 exports.submitRSVP = async (req, res) => {
   try {
     const { token, firstName, surname, attendance } = req.body;
+
+    if (attendance && !VALID_DAYS.includes(attendance)) {
+      return res.status(400).json({ message: 'attendance must be day1, day2, or both' });
+    }
 
     const invite = await Invite.findOneAndUpdate(
       { token, used: false },
@@ -121,7 +134,7 @@ exports.getInvites = async (req, res) => {
     const filter     = status ? { status } : {};
 
     const invites = await Invite.find(filter).select(
-      'firstName surname attendance status'
+      'firstName surname attendance invitedFor status'
     );
 
     res.json(invites);
@@ -143,7 +156,7 @@ exports.getByStatus = async (req, res) => {
     }
 
     const invites = await Invite.find({ status }).select(
-      'firstName surname attendance status'
+      'firstName surname attendance invitedFor status'
     );
 
     res.json(invites);
@@ -169,7 +182,7 @@ exports.sendEditInvite = async (req, res) => {
     const editToken = crypto.randomBytes(8).toString('hex');
 
     invite.editToken          = editToken;
-    invite.editTokenExpiresAt = new Date(Date.now() + 1000 * 60 * 60); // 1 hour
+    invite.editTokenExpiresAt = new Date(Date.now() + 1000 * 60 * 60);
 
     await invite.save();
 
@@ -207,6 +220,10 @@ exports.validateEditToken = async (req, res) => {
 exports.updateRSVP = async (req, res) => {
   try {
     const { token, attendance } = req.body;
+
+    if (attendance && !VALID_DAYS.includes(attendance)) {
+      return res.status(400).json({ message: 'attendance must be day1, day2, or both' });
+    }
 
     const invite = await Invite.findOne({ editToken: token });
 
