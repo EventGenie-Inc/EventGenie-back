@@ -5,10 +5,16 @@ const inviteSchema = new mongoose.Schema(
     token: { type: String, required: true, unique: true },
     phoneNumber: String,
 
+    invitedFor: {
+      type: String,
+      enum: ['day1', 'day2', 'both'],
+      required: true,
+    },
+
     status: {
       type: String,
       enum: ['pending', 'accepted', 'declined'],
-      default: 'pending'
+      default: 'pending',
     },
 
     used: { type: Boolean, default: false },
@@ -20,12 +26,13 @@ const inviteSchema = new mongoose.Schema(
 
     attendance: {
       type: String,
-      enum: ['day1', 'day2', 'both']
+      enum: ['day1', 'day2', 'both'],
     },
 
     editToken: String,
-    editTokenExpiresAt: Date
+    editTokenExpiresAt: Date,
   },
   { timestamps: true }
 );
+
 module.exports = mongoose.model('Invite', inviteSchema);
