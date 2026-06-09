@@ -133,9 +133,9 @@ exports.getInvites = async (req, res) => {
     const { status } = req.query;
     const filter     = status ? { status } : {};
 
-    const invites = await Invite.find(filter).select(
-      'firstName surname attendance invitedFor status'
-    );
+const invites = await Invite.find(filter).select(
+  'firstName surname attendance invitedFor status phoneNumber'
+);
 
     res.json(invites);
 
@@ -245,6 +245,25 @@ exports.updateRSVP = async (req, res) => {
 
   } catch (err) {
     console.error('ERROR updating RSVP:', err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── Delete invite ─────────────────────────────────────────────────────────────
+exports.deleteInvite = async (req, res) => {
+  try {
+    const { inviteId } = req.params;
+
+    const invite = await Invite.findByIdAndDelete(inviteId);
+
+    if (!invite) {
+      return res.status(404).json({ message: 'Invite not found' });
+    }
+
+    res.json({ message: 'Invite deleted successfully' });
+
+  } catch (err) {
+    console.error('ERROR deleting invite:', err);
     res.status(500).json({ message: err.message });
   }
 };

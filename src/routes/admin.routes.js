@@ -11,5 +11,5 @@ router.get('/invites', adminAuth, controller.getInvites);
 router.get('/invites/status/:status', adminAuth, controller.getByStatus);
 
 router.post('/invites/:inviteId/send-edit', adminAuth, controller.sendEditInvite);
-
+router.delete('/invites/:inviteId', adminAuth, controller.deleteInvite);
 module.exports = router;
