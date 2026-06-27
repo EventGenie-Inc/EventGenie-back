@@ -1,0 +1,46 @@
+import { Router, type Response, type NextFunction } from 'express';
+import { userService } from './user.service.js';
+import { authenticate } from '../../shared/middleware/auth.middleware.js';
+import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
+import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
+
+const router = Router();
+
+router.use(authenticate, requireTenantAdmin);
+
+router.get('/', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const users = await userService.getAll(req.user.role, req.user.tenantId);
+    res.status(200).json({ status: 'ok', data: users });
+  } catch (err) { next(err); }
+});
+
+router.get('/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const user = await userService.getById(req.params.id!);
+    res.status(200).json({ status: 'ok', data: user });
+  } catch (err) { next(err); }
+});
+
+router.post('/', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const user = await userService.create(req.body);
+    res.status(201).json({ status: 'ok', data: user });
+  } catch (err) { next(err); }
+});
+
+router.put('/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const user = await userService.update(req.params.id!, req.body);
+    res.status(200).json({ status: 'ok', data: user });
+  } catch (err) { next(err); }
+});
+
+router.delete('/:id', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await userService.archive(req.params.id!);
+    res.status(200).json({ status: 'ok', message: 'User archived' });
+  } catch (err) { next(err); }
+});
+
+export default router;

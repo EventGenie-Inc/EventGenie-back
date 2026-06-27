@@ -1,0 +1,438 @@
+// ============================================================
+//  EventGenie — Prisma Schema
+//  Database: PostgreSQL via Neon
+//  ORM: Prisma
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────
+//  ENUMS
+// ─────────────────────────────────────────
+
+enum SubscriptionTier {
+  SPARK
+  CELEBRATE
+  ELEVATE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum PlatformRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  EVENT_ADMIN
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  COMPLETED
+  CANCELLED
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum DeliveryMethod {
+  EMAIL
+  SMS
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+enum VendorCategory {
+  CATERING
+  DECOR
+  FURNITURE
+  PHOTOGRAPHY
+  ENTERTAINMENT
+  FLORISTRY
+  OTHER
+}
+
+enum VendorRole {
+  VENDOR_OWNER
+  VENDOR_STAFF
+}
+
+// ─────────────────────────────────────────
+//  TENANT
+//  Root of every organiser's workspace.
+// ─────────────────────────────────────────
+
+model Tenant {
+  id                 String             @id @default(cuid())
+  name               String
+  slug               String             @unique
+  email              String             @unique
+  subscriptionTier   SubscriptionTier   @default(SPARK)
+  subscriptionStatus SubscriptionStatus @default(ACTIVE)
+  isArchived         Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  // Relations
+  users        User[]
+  events       Event[]
+  vendorSpaces VendorSpace[]
+}
+
+// ─────────────────────────────────────────
+//  USER
+//  Platform-level authenticated users only.
+//  Guests and Vendors have separate identity
+//  entities — they are NOT in this table.
+// ─────────────────────────────────────────
+
+model User {
+  id          String       @id @default(cuid())
+  tenantId    String?
+  firebaseUid String       @unique
+  email       String       @unique
+  username    String
+  role        PlatformRole
+  isActive    Boolean      @default(true)
+  isArchived  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relations
+  tenant         Tenant?      @relation(fields: [tenantId], references: [id])
+  eventsCreated  Event[]
+  memoryItems    MemoryItem[] @relation("MemoryItemUploadedByUser")
+}
+
+// ─────────────────────────────────────────
+//  EVENT
+//  Core organiser entity. Scoped to a Tenant.
+// ─────────────────────────────────────────
+
+model Event {
+  id              String      @id @default(cuid())
+  tenantId        String
+  createdByUserId String
+  name            String
+  description     String?
+  location        String
+  address         String?
+  latitude        Decimal?    @db.Decimal(10, 7)
+  longitude       Decimal?    @db.Decimal(10, 7)
+  coverImageUrl   String?
+  status          EventStatus @default(DRAFT)
+  isArchived      Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  createdBy       String
+  updatedBy       String
+
+  // Relations
+  tenant        Tenant     @relation(fields: [tenantId], references: [id])
+  createdByUser User       @relation(fields: [createdByUserId], references: [id])
+  eventDays     EventDay[]
+  invites       Invite[]
+  memoryHub     MemoryHub?
+}
+
+// ─────────────────────────────────────────
+//  EVENT DAY
+//  Each event has one or more days.
+//  Replaces the invitedFor / attendance enums.
+// ─────────────────────────────────────────
+
+model EventDay {
+  id         String    @id @default(cuid())
+  eventId    String
+  label      String
+  date       DateTime  @db.Date
+  startTime  DateTime?
+  endTime    DateTime?
+  isArchived Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  // Relations
+  event          Event            @relation(fields: [eventId], references: [id])
+  inviteEventDay InviteEventDay[]
+  attendances    Attendance[]
+}
+
+// ─────────────────────────────────────────
+//  GUEST
+//  Not a platform user.
+//  Created by the system when an invite is
+//  generated. No createdBy/updatedBy.
+// ─────────────────────────────────────────
+
+model Guest {
+  id          String   @id @default(cuid())
+  firstName   String
+  surname     String
+  email       String?
+  phoneNumber String?
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  invites     Invite[]
+  memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
+}
+
+// ─────────────────────────────────────────
+//  INVITE
+//  One invite per guest per event.
+//  Full token lifecycle from Mongo model,
+//  now properly relational.
+// ─────────────────────────────────────────
+
+model Invite {
+  id                 String         @id @default(cuid())
+  eventId            String
+  guestId            String
+  token              String         @unique
+  status             InviteStatus   @default(PENDING)
+  used               Boolean        @default(false)
+  usedAt             DateTime?
+  expiresAt          DateTime?
+  editToken          String?        @unique
+  editTokenExpiresAt DateTime?
+  deliveryMethod     DeliveryMethod
+  deliveredAt        DateTime?
+  isArchived         Boolean        @default(false)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  // Relations
+  event          Event            @relation(fields: [eventId], references: [id])
+  guest          Guest            @relation(fields: [guestId], references: [id])
+  inviteEventDay InviteEventDay[]
+  attendances    Attendance[]
+}
+
+// ─────────────────────────────────────────
+//  INVITE EVENT DAY  (junction)
+//  Which days a guest is INVITED for.
+// ─────────────────────────────────────────
+
+model InviteEventDay {
+  id         String   @id @default(cuid())
+  inviteId   String
+  eventDayId String
+  createdAt  DateTime @default(now())
+
+  // Relations
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  ATTENDANCE  (junction / fact)
+//  Which days a guest CONFIRMED attendance.
+//  System-written on RSVP submission.
+// ─────────────────────────────────────────
+
+model Attendance {
+  id          String   @id @default(cuid())
+  inviteId    String
+  eventDayId  String
+  confirmedAt DateTime @default(now())
+
+  // Relations
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  MEMORY HUB
+//  One hub per event.
+// ─────────────────────────────────────────
+
+model MemoryHub {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  title       String?
+  description String?
+  isPublic    Boolean  @default(false)
+  shareToken  String?  @unique
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  // Relations
+  event       Event        @relation(fields: [eventId], references: [id])
+  memoryItems MemoryItem[]
+}
+
+// ─────────────────────────────────────────
+//  MEMORY ITEM
+//  Individual media uploads within a hub.
+//  Either a Guest OR a User uploads —
+//  never both on the same record.
+// ─────────────────────────────────────────
+
+model MemoryItem {
+  id                 String     @id @default(cuid())
+  memoryHubId        String
+  uploadedByGuestId  String?
+  uploadedByUserId   String?
+  mediaUrl           String
+  mediaType          MediaType
+  caption            String?
+  isApproved         Boolean    @default(false)
+  isArchived         Boolean    @default(false)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  // Relations
+  memoryHub       MemoryHub  @relation(fields: [memoryHubId], references: [id])
+  uploadedByGuest Guest?     @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
+  uploadedByUser  User?      @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SPACE
+//  The vendor's organisation profile.
+//  Latitude/longitude required for proximity
+//  search — core to the marketplace feature.
+// ─────────────────────────────────────────
+
+model VendorSpace {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  name       String
+  description String?
+  email      String
+  phoneNumber String?
+  website    String?
+  address    String?
+  latitude   Decimal  @db.Decimal(10, 7)
+  longitude  Decimal  @db.Decimal(10, 7)
+  isVerified Boolean  @default(false)
+  isActive   Boolean  @default(true)
+  isArchived Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  // Relations
+  tenant         Tenant?         @relation(fields: [tenantId], references: [id])
+  vendorUsers    VendorUser[]
+  vendorServices VendorService[]
+}
+
+// ─────────────────────────────────────────
+//  VENDOR USER
+//  People who manage a VendorSpace.
+//  Separate from platform Users.
+// ─────────────────────────────────────────
+
+model VendorUser {
+  id            String     @id @default(cuid())
+  vendorSpaceId String
+  firebaseUid   String     @unique
+  email         String     @unique
+  name          String
+  role          VendorRole @default(VENDOR_OWNER)
+  isArchived    Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Relations
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SERVICE
+//  A category of service offered by a vendor.
+// ─────────────────────────────────────────
+
+model VendorService {
+  id             String         @id @default(cuid())
+  vendorSpaceId  String
+  name           String
+  category       VendorCategory
+  description    String?
+  operatingDays  String?
+  operatingHours String?
+  isArchived     Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  createdBy      String
+  updatedBy      String
+
+  // Relations
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+  products    Product[]
+}
+
+// ─────────────────────────────────────────
+//  PRODUCT
+//  Individual items offered under a service.
+// ─────────────────────────────────────────
+
+model Product {
+  id              String   @id @default(cuid())
+  vendorServiceId String
+  name            String
+  description     String?
+  price           Decimal? @db.Decimal(10, 2)
+  currency        String   @default("ZAR")
+  imageUrls       String[]
+  isAvailable     Boolean  @default(true)
+  isArchived      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdBy       String
+  updatedBy       String
+
+  // Relations
+  vendorService VendorService @relation(fields: [vendorServiceId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  SUBSCRIPTION TIER CONFIG
+//  Reference table — defines what each tier
+//  allows. Managed by SuperAdmin only.
+// ─────────────────────────────────────────
+
+model SubscriptionTierConfig {
+  tier                SubscriptionTier @id
+  maxEvents           Int?
+  maxGuestsPerEvent   Int?
+  maxSmsPerMonth      Int?
+  emailEnabled        Boolean          @default(true)
+  smsEnabled          Boolean          @default(false)
+  vendorMarketplace   Boolean          @default(false)
+  memoryHubEnabled    Boolean          @default(false)
+  dragDropBuilder     Boolean          @default(false)
+}
