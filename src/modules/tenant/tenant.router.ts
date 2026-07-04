@@ -17,7 +17,7 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = await tenantService.getById(req.params.id!);
+    const tenant = await tenantService.getById(req.params['id'] as string);
     res.status(200).json({ status: 'ok', data: tenant });
   } catch (err) { next(err); }
 });
@@ -31,14 +31,14 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = await tenantService.update(req.params.id!, req.body);
+    const tenant = await tenantService.update(req.params['id'] as string, req.body);
     res.status(200).json({ status: 'ok', data: tenant });
   } catch (err) { next(err); }
 });
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await tenantService.archive(req.params.id!);
+    await tenantService.archive(req.params['id'] as string);
     res.status(200).json({ status: 'ok', message: 'Tenant archived' });
   } catch (err) { next(err); }
 });

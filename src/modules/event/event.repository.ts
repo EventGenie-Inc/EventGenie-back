@@ -28,12 +28,13 @@ export const eventRepository = {
         tenantId,
         createdByUserId: userId,
         name: data.name,
-        description: data.description,
+        // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
+        description: data.description ?? null,
         location: data.location,
-        address: data.address,
-        latitude: data.latitude,
-        longitude: data.longitude,
-        coverImageUrl: data.coverImageUrl,
+        address: data.address ?? null,
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
+        coverImageUrl: data.coverImageUrl ?? null,
         status: 'DRAFT',
         isArchived: false,
         createdBy: userId,
@@ -44,7 +45,18 @@ export const eventRepository = {
   update: (id: string, userId: string, data: UpdateEventDto) =>
     prisma.event.update({
       where: { id },
-      data: { ...data, updatedBy: userId, updatedAt: new Date() },
+      data: {
+        // Only include fields that are explicitly provided
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.description !== undefined && { description: data.description ?? null }),
+        ...(data.location !== undefined && { location: data.location }),
+        ...(data.address !== undefined && { address: data.address ?? null }),
+        ...(data.latitude !== undefined && { latitude: data.latitude ?? null }),
+        ...(data.longitude !== undefined && { longitude: data.longitude ?? null }),
+        ...(data.coverImageUrl !== undefined && { coverImageUrl: data.coverImageUrl ?? null }),
+        ...(data.status !== undefined && { status: data.status }),
+        updatedBy: userId,
+      },
     }),
 
   archive: (id: string, userId: string) =>

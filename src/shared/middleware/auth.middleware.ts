@@ -1,7 +1,9 @@
+import jwt from 'jsonwebtoken';
 import { getAuth } from 'firebase-admin/auth';
 import { type Request, type Response, type NextFunction } from 'express';
 import { firebaseAdmin } from '../firebase/firebase.admin.js';
-import { prisma} from '../prisma/prisma.client.js'
+import { prisma } from '../prisma/prisma.client.js';
+import { type SessionTokenPayload } from '../../modules/auth/auth.types.js';
 
 // ─────────────────────────────────────────
 //  Extend Express Request to carry the
@@ -26,15 +28,20 @@ declare global {
 // ─────────────────────────────────────────
 //  AUTH MIDDLEWARE
 //
-//  Layer 1 — applied to ALL protected routes.
+//  Two-layer verification on every
+//  protected route:
 //
-//  Flow:
-//  1. Extract Bearer token from Authorization header
-//  2. Verify token with Firebase Admin SDK
-//  3. Look up the user in Postgres by firebaseUid
-//  4. Attach user to req.user for downstream use
-//  5. Reject if token is missing, invalid, or user
-//     does not exist in the platform database
+//  Layer 1 — Firebase ID token
+//    Proves the user is authenticated
+//    with Firebase (identity provider).
+//
+//  Layer 2 — Session JWT
+//    Proves the user completed 2FA
+//    (OTP verification) in this session.
+//    Sent via X-Session-Token header.
+//
+//  Both must be valid. Either failing
+//  results in a 401.
 // ─────────────────────────────────────────
 export const authenticate = async (
   req: Request,
@@ -42,6 +49,8 @@ export const authenticate = async (
   next: NextFunction
 ): Promise<void> => {
   try {
+
+    // ── Layer 1: Firebase ID Token ────────
     const authHeader = req.headers.authorization;
 
     if (!authHeader?.startsWith('Bearer ')) {
@@ -52,20 +61,68 @@ export const authenticate = async (
       return;
     }
 
-    const token = authHeader.split(' ')[1];
+    const firebaseToken = authHeader.split(' ')[1];
 
-    if (!token) {
+    if (!firebaseToken) {
       res.status(401).json({
         status: 'error',
-        message: 'No token provided',
+        message: 'No Firebase token provided',
       });
       return;
     }
 
-    // Verify with Firebase Admin SDK
-    const decoded = await getAuth(firebaseAdmin).verifyIdToken(token);
+    // Verify Firebase token
+    const decoded = await getAuth(firebaseAdmin).verifyIdToken(firebaseToken);
 
-    // Look up user in Postgres
+    // ── Layer 2: Session JWT ──────────────
+    const sessionToken = req.headers['x-session-token'] as string | undefined;
+
+    if (!sessionToken) {
+      res.status(401).json({
+        status: 'error',
+        message: 'Missing X-Session-Token header. Please complete 2FA verification.',
+      });
+      return;
+    }
+
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) throw new Error('JWT_SECRET is not defined in .env');
+
+    let sessionPayload: SessionTokenPayload;
+    try {
+      sessionPayload = jwt.verify(sessionToken, jwtSecret) as SessionTokenPayload;
+    } catch (jwtError) {
+      const err = jwtError as Error;
+
+      // Distinguish between expired and invalid
+      if (err.name === 'TokenExpiredError') {
+        res.status(401).json({
+          status: 'error',
+          message: 'Session has expired. Please refresh your session.',
+          code: 'SESSION_EXPIRED',
+        });
+        return;
+      }
+
+      res.status(401).json({
+        status: 'error',
+        message: 'Invalid session token. Please log in again.',
+        code: 'SESSION_INVALID',
+      });
+      return;
+    }
+
+    // Ensure Firebase UID matches the session payload —
+    // prevents token substitution attacks
+    if (sessionPayload.firebaseUid !== decoded.uid) {
+      res.status(401).json({
+        status: 'error',
+        message: 'Token mismatch. Please log in again.',
+      });
+      return;
+    }
+
+    // ── Postgres User Lookup ──────────────
     const user = await prisma.user.findUnique({
       where: { firebaseUid: decoded.uid },
       select: {
@@ -95,7 +152,7 @@ export const authenticate = async (
       return;
     }
 
-    // Attach to request for downstream use
+    // ── Attach to Request ─────────────────
     req.user = {
       id: user.id,
       firebaseUid: user.firebaseUid,
@@ -108,7 +165,6 @@ export const authenticate = async (
   } catch (error) {
     const err = error as Error;
 
-    // Firebase throws specific error codes we can handle gracefully
     if (
       err.message.includes('auth/id-token-expired') ||
       err.message.includes('auth/argument-error') ||
@@ -116,7 +172,7 @@ export const authenticate = async (
     ) {
       res.status(401).json({
         status: 'error',
-        message: 'Token is invalid or has expired',
+        message: 'Firebase token is invalid or has expired',
       });
       return;
     }

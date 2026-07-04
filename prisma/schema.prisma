@@ -74,7 +74,6 @@ enum VendorRole {
 
 // ─────────────────────────────────────────
 //  TENANT
-//  Root of every organiser's workspace.
 // ─────────────────────────────────────────
 
 model Tenant {
@@ -88,7 +87,6 @@ model Tenant {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  // Relations
   users        User[]
   events       Event[]
   vendorSpaces VendorSpace[]
@@ -96,9 +94,6 @@ model Tenant {
 
 // ─────────────────────────────────────────
 //  USER
-//  Platform-level authenticated users only.
-//  Guests and Vendors have separate identity
-//  entities — they are NOT in this table.
 // ─────────────────────────────────────────
 
 model User {
@@ -113,15 +108,33 @@ model User {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
-  // Relations
-  tenant         Tenant?      @relation(fields: [tenantId], references: [id])
-  eventsCreated  Event[]
-  memoryItems    MemoryItem[] @relation("MemoryItemUploadedByUser")
+  tenant        Tenant?      @relation(fields: [tenantId], references: [id])
+  eventsCreated Event[]
+  memoryItems   MemoryItem[] @relation("MemoryItemUploadedByUser")
+  otpRecords    OtpRecord[]
+}
+
+// ─────────────────────────────────────────
+//  OTP RECORD
+//  Stores 2FA OTP codes for platform users.
+//  One active OTP per user at a time.
+//  Expired and used records are retained
+//  for audit purposes.
+// ─────────────────────────────────────────
+
+model OtpRecord {
+  id        String    @id @default(cuid())
+  userId    String
+  otp       String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 // ─────────────────────────────────────────
 //  EVENT
-//  Core organiser entity. Scoped to a Tenant.
 // ─────────────────────────────────────────
 
 model Event {
@@ -142,7 +155,6 @@ model Event {
   createdBy       String
   updatedBy       String
 
-  // Relations
   tenant        Tenant     @relation(fields: [tenantId], references: [id])
   createdByUser User       @relation(fields: [createdByUserId], references: [id])
   eventDays     EventDay[]
@@ -152,8 +164,6 @@ model Event {
 
 // ─────────────────────────────────────────
 //  EVENT DAY
-//  Each event has one or more days.
-//  Replaces the invitedFor / attendance enums.
 // ─────────────────────────────────────────
 
 model EventDay {
@@ -169,7 +179,6 @@ model EventDay {
   createdBy  String
   updatedBy  String
 
-  // Relations
   event          Event            @relation(fields: [eventId], references: [id])
   inviteEventDay InviteEventDay[]
   attendances    Attendance[]
@@ -177,9 +186,6 @@ model EventDay {
 
 // ─────────────────────────────────────────
 //  GUEST
-//  Not a platform user.
-//  Created by the system when an invite is
-//  generated. No createdBy/updatedBy.
 // ─────────────────────────────────────────
 
 model Guest {
@@ -192,16 +198,12 @@ model Guest {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  // Relations
   invites     Invite[]
   memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
 }
 
 // ─────────────────────────────────────────
 //  INVITE
-//  One invite per guest per event.
-//  Full token lifecycle from Mongo model,
-//  now properly relational.
 // ─────────────────────────────────────────
 
 model Invite {
@@ -223,7 +225,6 @@ model Invite {
   createdBy          String
   updatedBy          String
 
-  // Relations
   event          Event            @relation(fields: [eventId], references: [id])
   guest          Guest            @relation(fields: [guestId], references: [id])
   inviteEventDay InviteEventDay[]
@@ -231,8 +232,7 @@ model Invite {
 }
 
 // ─────────────────────────────────────────
-//  INVITE EVENT DAY  (junction)
-//  Which days a guest is INVITED for.
+//  INVITE EVENT DAY
 // ─────────────────────────────────────────
 
 model InviteEventDay {
@@ -241,7 +241,6 @@ model InviteEventDay {
   eventDayId String
   createdAt  DateTime @default(now())
 
-  // Relations
   invite   Invite   @relation(fields: [inviteId], references: [id])
   eventDay EventDay @relation(fields: [eventDayId], references: [id])
 
@@ -249,9 +248,7 @@ model InviteEventDay {
 }
 
 // ─────────────────────────────────────────
-//  ATTENDANCE  (junction / fact)
-//  Which days a guest CONFIRMED attendance.
-//  System-written on RSVP submission.
+//  ATTENDANCE
 // ─────────────────────────────────────────
 
 model Attendance {
@@ -260,7 +257,6 @@ model Attendance {
   eventDayId  String
   confirmedAt DateTime @default(now())
 
-  // Relations
   invite   Invite   @relation(fields: [inviteId], references: [id])
   eventDay EventDay @relation(fields: [eventDayId], references: [id])
 
@@ -269,7 +265,6 @@ model Attendance {
 
 // ─────────────────────────────────────────
 //  MEMORY HUB
-//  One hub per event.
 // ─────────────────────────────────────────
 
 model MemoryHub {
@@ -285,66 +280,57 @@ model MemoryHub {
   createdBy   String
   updatedBy   String
 
-  // Relations
   event       Event        @relation(fields: [eventId], references: [id])
   memoryItems MemoryItem[]
 }
 
 // ─────────────────────────────────────────
 //  MEMORY ITEM
-//  Individual media uploads within a hub.
-//  Either a Guest OR a User uploads —
-//  never both on the same record.
 // ─────────────────────────────────────────
 
 model MemoryItem {
-  id                 String     @id @default(cuid())
-  memoryHubId        String
-  uploadedByGuestId  String?
-  uploadedByUserId   String?
-  mediaUrl           String
-  mediaType          MediaType
-  caption            String?
-  isApproved         Boolean    @default(false)
-  isArchived         Boolean    @default(false)
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
-  createdBy          String
-  updatedBy          String
+  id                String    @id @default(cuid())
+  memoryHubId       String
+  uploadedByGuestId String?
+  uploadedByUserId  String?
+  mediaUrl          String
+  mediaType         MediaType
+  caption           String?
+  isApproved        Boolean   @default(false)
+  isArchived        Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  createdBy         String
+  updatedBy         String
 
-  // Relations
-  memoryHub       MemoryHub  @relation(fields: [memoryHubId], references: [id])
-  uploadedByGuest Guest?     @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
-  uploadedByUser  User?      @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+  memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
+  uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
+  uploadedByUser  User?     @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
 }
 
 // ─────────────────────────────────────────
 //  VENDOR SPACE
-//  The vendor's organisation profile.
-//  Latitude/longitude required for proximity
-//  search — core to the marketplace feature.
 // ─────────────────────────────────────────
 
 model VendorSpace {
-  id         String   @id @default(cuid())
-  tenantId   String?
-  name       String
+  id          String   @id @default(cuid())
+  tenantId    String?
+  name        String
   description String?
-  email      String
+  email       String
   phoneNumber String?
-  website    String?
-  address    String?
-  latitude   Decimal  @db.Decimal(10, 7)
-  longitude  Decimal  @db.Decimal(10, 7)
-  isVerified Boolean  @default(false)
-  isActive   Boolean  @default(true)
-  isArchived Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  createdBy  String
-  updatedBy  String
+  website     String?
+  address     String?
+  latitude    Decimal  @db.Decimal(10, 7)
+  longitude   Decimal  @db.Decimal(10, 7)
+  isVerified  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
 
-  // Relations
   tenant         Tenant?         @relation(fields: [tenantId], references: [id])
   vendorUsers    VendorUser[]
   vendorServices VendorService[]
@@ -352,8 +338,6 @@ model VendorSpace {
 
 // ─────────────────────────────────────────
 //  VENDOR USER
-//  People who manage a VendorSpace.
-//  Separate from platform Users.
 // ─────────────────────────────────────────
 
 model VendorUser {
@@ -367,13 +351,11 @@ model VendorUser {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
-  // Relations
   vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
 }
 
 // ─────────────────────────────────────────
 //  VENDOR SERVICE
-//  A category of service offered by a vendor.
 // ─────────────────────────────────────────
 
 model VendorService {
@@ -390,14 +372,12 @@ model VendorService {
   createdBy      String
   updatedBy      String
 
-  // Relations
   vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
   products    Product[]
 }
 
 // ─────────────────────────────────────────
 //  PRODUCT
-//  Individual items offered under a service.
 // ─────────────────────────────────────────
 
 model Product {
@@ -415,14 +395,11 @@ model Product {
   createdBy       String
   updatedBy       String
 
-  // Relations
   vendorService VendorService @relation(fields: [vendorServiceId], references: [id])
 }
 
 // ─────────────────────────────────────────
 //  SUBSCRIPTION TIER CONFIG
-//  Reference table — defines what each tier
-//  allows. Managed by SuperAdmin only.
 // ─────────────────────────────────────────
 
 model SubscriptionTierConfig {

@@ -1,13 +1,35 @@
 import express, { type Application, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 
+// ─────────────────────────────────────────
+//  ROUTERS
+// ─────────────────────────────────────────
+import tenantRouter from './modules/tenant/tenant.router.js';
+import userRouter from './modules/user/user.router.js';
+import eventRouter from './modules/event/event.router.js';
+import eventDayRouter from './modules/event-day/event-day.router.js';
+import guestRouter from './modules/guest/guest.router.js';
+import inviteRouter from './modules/invite/invite.router.js';
+import attendanceRouter from './modules/attendance/attendance.router.js';
+import authRouter from './modules/auth/auth.router.js';
+import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
+import vendorRouter from './modules/vendor/vendor.router.js';
+import subscriptionTierConfigRouter from './modules/subscription-tier-config/subscription-tier-config.router.js';
+
+
+// ─────────────────────────────────────────
+//  Remaining routers registered as built:
+//  import authRouter from './modules/auth/auth.router.js';
+//  import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
+//  import vendorRouter from './modules/vendor/vendor.router.js';
+// ─────────────────────────────────────────
+
 const app: Application = express();
 
 // ─────────────────────────────────────────
 //  CORS
 //  Open for now. When frontend URL is known,
-//  replace with:
-//  origin: process.env.FRONTEND_URL
+//  replace with: origin: process.env.FRONTEND_URL
 // ─────────────────────────────────────────
 app.use(cors());
 
@@ -19,8 +41,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─────────────────────────────────────────
 //  HEALTH CHECK
-//  Simple endpoint to confirm the server
-//  is running and reachable.
 // ─────────────────────────────────────────
 app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({
@@ -32,19 +52,51 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // ─────────────────────────────────────────
 //  ROUTES
-//  Modules are registered here as they
-//  are built. Each module mounts on its
-//  own base path.
 //
-//  Example (uncomment as you build):
-//  import authRouter from './modules/auth/auth.router.js';
-//  app.use('/api/auth', authRouter);
+//  Nested routers (event-day, invite) are
+//  mounted under their parent event route
+//  so that :eventId is available via
+//  mergeParams in the child router.
+//
+//  Route structure:
+//  /api/tenants
+//  /api/users
+//  /api/events
+//  /api/events/:eventId/days
+//  /api/events/:eventId/invites
+//  /api/guests
+//  /api/attendance
 // ─────────────────────────────────────────
+app.use('/api/tenants', tenantRouter);
+app.use('/api/users', userRouter);
+app.use('/api/guests', guestRouter);
+app.use('/api/attendance', attendanceRouter);
+
+// Event router with nested children
+app.use('/api/events', eventRouter);
+app.use('/api/events/:eventId/days', eventDayRouter);
+app.use('/api/events/:eventId/invites', inviteRouter);
 
 // ─────────────────────────────────────────
+//  AUTH ROUTES
+// ─────────────────────────────────────────
+app.use('/api/auth', authRouter);
+
+// ─────────────────────────────────────────
+//  MEMORY HUB ROUTES
+// ─────────────────────────────────────────
+app.use('/api/events/:eventId/memory-hub', memoryHubRouter);
+
+// ─────────────────────────────────────────
+//  VENDOR ROUTES
+// ─────────────────────────────────────────
+app.use('/api/vendors', vendorRouter);
+//  ────────────────────────────────────────
+//  SUBSCRIPTION TIER CONFIG ROUTES
+//  ────────────────────────────────────────
+app.use('/api/subscription-tiers', subscriptionTierConfigRouter);
+// ─────────────────────────────────────────
 //  404 HANDLER
-//  Catches any request that did not match
-//  a registered route.
 // ─────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
@@ -55,8 +107,7 @@ app.use((_req: Request, res: Response) => {
 
 // ─────────────────────────────────────────
 //  GLOBAL ERROR HANDLER
-//  Catches any error passed via next(error)
-//  from routes or middleware.
+//  Shows full error in dev, hides in prod.
 // ─────────────────────────────────────────
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error(`[ERROR] ${err.message}`);

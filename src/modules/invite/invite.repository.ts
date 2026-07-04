@@ -3,6 +3,7 @@ import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
 import crypto from 'crypto';
 
 export const inviteRepository = {
+
   findAll: (eventId: string) =>
     prisma.invite.findMany({
       where: { eventId, isArchived: false },
@@ -36,6 +37,7 @@ export const inviteRepository = {
           status: 'PENDING',
           used: false,
           deliveryMethod: data.deliveryMethod,
+          // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
           isArchived: false,
           createdBy: userId,
@@ -43,7 +45,6 @@ export const inviteRepository = {
         },
       });
 
-      // Create InviteEventDay junction records
       await tx.inviteEventDay.createMany({
         data: data.invitedDayIds.map((eventDayId) => ({
           inviteId: invite.id,
@@ -58,8 +59,12 @@ export const inviteRepository = {
     prisma.invite.update({
       where: { id },
       data: {
-        ...data,
-        expiresAt: data.expiresAt ? new Date(data.expiresAt) : undefined,
+        ...(data.status !== undefined && { status: data.status }),
+        ...(data.deliveryMethod !== undefined && { deliveryMethod: data.deliveryMethod }),
+        // For nullable DateTime: explicitly set null or the Date value
+        ...(data.expiresAt !== undefined && {
+          expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+        }),
         updatedBy: userId,
       },
     }),
