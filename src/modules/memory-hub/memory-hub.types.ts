@@ -1,12 +1,14 @@
 export interface CreateMemoryHubDto {
   title?: string;
   description?: string;
+  opensAt?: string;
 }
 
 export interface UpdateMemoryHubDto {
   title?: string;
   description?: string;
   isPublic?: boolean;
+  opensAt?: string;
 }
 
 export interface CreateMemoryItemDto {

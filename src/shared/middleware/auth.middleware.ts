@@ -20,6 +20,7 @@ declare global {
         email: string;
         role: string;
         tenantId: string | null;
+        vendorSpaceId: string | null;
       };
     }
   }
@@ -131,6 +132,7 @@ export const authenticate = async (
         email: true,
         role: true,
         tenantId: true,
+        vendorSpaceId: true,
         isActive: true,
         isArchived: true,
       },
@@ -159,16 +161,19 @@ export const authenticate = async (
       email: user.email,
       role: user.role,
       tenantId: user.tenantId,
+      vendorSpaceId: user.vendorSpaceId,
     };
 
     next();
   } catch (error) {
-    const err = error as Error;
+    // Firebase Admin errors carry the reason in `.code` (e.g. 'auth/id-token-expired'),
+    // not in `.message` — the human-readable message never contains these strings.
+    const err = error as { code?: string; message: string };
 
     if (
-      err.message.includes('auth/id-token-expired') ||
-      err.message.includes('auth/argument-error') ||
-      err.message.includes('auth/id-token-revoked')
+      err.code === 'auth/id-token-expired' ||
+      err.code === 'auth/argument-error' ||
+      err.code === 'auth/id-token-revoked'
     ) {
       res.status(401).json({
         status: 'error',

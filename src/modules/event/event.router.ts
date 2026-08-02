@@ -1,13 +1,12 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { eventService } from './event.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
-import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireEventAdmin, requireEventAdminOrVendor } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
-router.use(authenticate, requireEventAdmin);
 
-router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const events = await eventService.getAll(auth.user.role, auth.user.tenantId);
@@ -15,14 +14,14 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
-router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const event = await eventService.getById(req.params['id'] as string);
     res.status(200).json({ status: 'ok', data: event });
   } catch (err) { next(err); }
 });
 
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const tenantId = auth.user.tenantId;
@@ -35,7 +34,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
-router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const event = await eventService.update(req.params['id'] as string, auth.user.id, req.body);
@@ -43,7 +42,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
-router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     await eventService.archive(req.params['id'] as string, auth.user.id);

@@ -33,6 +33,23 @@ export const memoryHubService = {
     return memoryHubRepository.generateShareToken(id, userId);
   },
 
+  // Public, unauthenticated view by share token — returns flags rather
+  // than throwing on "not public"/"not open yet", since the caller is a
+  // guest's browser rendering a page, not an admin flow.
+  viewByShareToken: async (shareToken: string) => {
+    const hub = await memoryHubRepository.findByShareToken(shareToken);
+    if (!hub) throw new Error('Memory hub not found');
+
+    const isOpen = !hub.opensAt || hub.opensAt <= new Date();
+
+    return {
+      memoryHub: hub,
+      isPublic: hub.isPublic,
+      isOpen,
+      memoryItems: hub.isPublic && isOpen ? hub.memoryItems : [],
+    };
+  },
+
   archive: async (id: string, userId: string) => {
     await memoryHubService.getById(id);
     return memoryHubRepository.archive(id, userId);

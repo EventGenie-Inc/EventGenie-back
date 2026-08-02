@@ -1,9 +1,8 @@
 import { vendorRepository } from './vendor.repository.js';
+import { userRepository } from '../user/user.repository.js';
 import {
   type CreateVendorSpaceDto,
   type UpdateVendorSpaceDto,
-  type CreateVendorUserDto,
-  type UpdateVendorUserDto,
   type CreateVendorServiceDto,
   type UpdateVendorServiceDto,
   type CreateProductDto,
@@ -42,28 +41,18 @@ export const vendorService = {
     return vendorRepository.archiveSpace(id, userId);
   },
 
-  // ── Vendor User ───────────────────────────
+  // ── Vendor User Assignment ────────────────
 
-  getAllUsers: (vendorSpaceId: string) =>
-    vendorRepository.findAllUsers(vendorSpaceId),
+  assignVendorUser: async (vendorSpaceId: string, userId: string) => {
+    await vendorService.getSpaceById(vendorSpaceId);
 
-  getUserById: async (id: string) => {
-    const user = await vendorRepository.findUserById(id);
-    if (!user) throw new Error('Vendor user not found');
-    return user;
-  },
+    const user = await userRepository.findById(userId);
+    if (!user) throw new Error('User not found');
+    if (user.role !== 'EVENT_VENDOR') {
+      throw new Error('User must have EVENT_VENDOR role to be assigned to a vendor space');
+    }
 
-  createUser: (vendorSpaceId: string, data: CreateVendorUserDto) =>
-    vendorRepository.createUser(vendorSpaceId, data),
-
-  updateUser: async (id: string, data: UpdateVendorUserDto) => {
-    await vendorService.getUserById(id);
-    return vendorRepository.updateUser(id, data);
-  },
-
-  archiveUser: async (id: string) => {
-    await vendorService.getUserById(id);
-    return vendorRepository.archiveUser(id);
+    return vendorRepository.assignVendorUser(vendorSpaceId, userId);
   },
 
   // ── Vendor Service ────────────────────────

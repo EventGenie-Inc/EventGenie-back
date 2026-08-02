@@ -65,3 +65,56 @@ export const requireEventAdmin = requireRole(
   PlatformRole.TENANT_ADMIN,
   PlatformRole.EVENT_ADMIN
 );
+
+// Platform owner, tenant admin, or a vendor managing their own space
+export const requireVendor = requireRole(
+  PlatformRole.SUPER_ADMIN,
+  PlatformRole.TENANT_ADMIN,
+  PlatformRole.EVENT_VENDOR
+);
+
+// Event admins plus vendors (read-only marketplace/event visibility surface)
+export const requireEventAdminOrVendor = requireRole(
+  PlatformRole.SUPER_ADMIN,
+  PlatformRole.TENANT_ADMIN,
+  PlatformRole.EVENT_ADMIN,
+  PlatformRole.EVENT_VENDOR
+);
+
+// ─────────────────────────────────────────
+//  Ownership-aware guard for vendor self-service.
+//  SUPER_ADMIN / TENANT_ADMIN always pass.
+//  EVENT_VENDOR passes only if their own
+//  vendorSpaceId matches the route param.
+//
+//  Usage:
+//  router.put('/:id', authenticate, requireVendorSpaceOwner('id'), controller)
+// ─────────────────────────────────────────
+export const requireVendorSpaceOwner = (paramName: string) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        status: 'error',
+        message: 'Not authenticated',
+      });
+      return;
+    }
+
+    const userRole = req.user.role as PlatformRole;
+
+    if (userRole === PlatformRole.SUPER_ADMIN || userRole === PlatformRole.TENANT_ADMIN) {
+      next();
+      return;
+    }
+
+    if (userRole === PlatformRole.EVENT_VENDOR && req.user.vendorSpaceId === req.params[paramName]) {
+      next();
+      return;
+    }
+
+    res.status(403).json({
+      status: 'error',
+      message: 'You do not have permission to access this resource',
+    });
+  };
+};

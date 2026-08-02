@@ -2,8 +2,6 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import {
   type CreateVendorSpaceDto,
   type UpdateVendorSpaceDto,
-  type CreateVendorUserDto,
-  type UpdateVendorUserDto,
   type CreateVendorServiceDto,
   type UpdateVendorServiceDto,
   type CreateProductDto,
@@ -20,7 +18,10 @@ export const vendorRepository = {
         isArchived: false,
         ...(tenantId ? { tenantId } : {}),
       },
-      include: { vendorServices: { where: { isArchived: false } } },
+      include: {
+        users: { where: { role: 'EVENT_VENDOR', isArchived: false } },
+        vendorServices: { where: { isArchived: false } },
+      },
       orderBy: { createdAt: 'desc' },
     }),
 
@@ -28,7 +29,7 @@ export const vendorRepository = {
     prisma.vendorSpace.findFirst({
       where: { id, isArchived: false },
       include: {
-        vendorUsers: { where: { isArchived: false } },
+        users: { where: { role: 'EVENT_VENDOR', isArchived: false } },
         vendorServices: {
           where: { isArchived: false },
           include: { products: { where: { isArchived: false } } },
@@ -98,42 +99,16 @@ export const vendorRepository = {
       data: { isArchived: true, updatedBy: userId },
     }),
 
-  // ── Vendor User ───────────────────────────
+  // ── Vendor User Assignment ────────────────
+  // A vendor "user" is now just a platform User with role EVENT_VENDOR,
+  // linked via User.vendorSpaceId. This is a deliberate exception writing
+  // across model boundaries within this repository file, since
+  // User.vendorSpaceId is effectively owned jointly by both modules.
 
-  findAllUsers: (vendorSpaceId: string) =>
-    prisma.vendorUser.findMany({
-      where: { vendorSpaceId, isArchived: false },
-      orderBy: { createdAt: 'desc' },
-    }),
-
-  findUserById: (id: string) =>
-    prisma.vendorUser.findFirst({ where: { id, isArchived: false } }),
-
-  createUser: (vendorSpaceId: string, data: CreateVendorUserDto) =>
-    prisma.vendorUser.create({
-      data: {
-        vendorSpaceId,
-        firebaseUid: data.firebaseUid,
-        email: data.email,
-        name: data.name,
-        role: data.role ?? 'VENDOR_OWNER',
-        isArchived: false,
-      },
-    }),
-
-  updateUser: (id: string, data: UpdateVendorUserDto) =>
-    prisma.vendorUser.update({
-      where: { id },
-      data: {
-        ...(data.name !== undefined && { name: data.name }),
-        ...(data.role !== undefined && { role: data.role }),
-      },
-    }),
-
-  archiveUser: (id: string) =>
-    prisma.vendorUser.update({
-      where: { id },
-      data: { isArchived: true },
+  assignVendorUser: (vendorSpaceId: string, userId: string) =>
+    prisma.user.update({
+      where: { id: userId },
+      data: { vendorSpaceId },
     }),
 
   // ── Vendor Service ────────────────────────

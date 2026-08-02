@@ -28,6 +28,18 @@ export const memoryHubRepository = {
       },
     }),
 
+  findByShareToken: (shareToken: string) =>
+    prisma.memoryHub.findFirst({
+      where: { shareToken, isArchived: false },
+      include: {
+        event: true,
+        memoryItems: {
+          where: { isArchived: false, isApproved: true },
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    }),
+
   create: (eventId: string, userId: string, data: CreateMemoryHubDto) =>
     prisma.memoryHub.create({
       data: {
@@ -36,6 +48,7 @@ export const memoryHubRepository = {
         description: data.description ?? null,
         isPublic: false,
         shareToken: null,
+        opensAt: data.opensAt ? new Date(data.opensAt) : null,
         isArchived: false,
         createdBy: userId,
         updatedBy: userId,
@@ -49,6 +62,7 @@ export const memoryHubRepository = {
         ...(data.title !== undefined && { title: data.title ?? null }),
         ...(data.description !== undefined && { description: data.description ?? null }),
         ...(data.isPublic !== undefined && { isPublic: data.isPublic }),
+        ...(data.opensAt !== undefined && { opensAt: data.opensAt ? new Date(data.opensAt) : null }),
         updatedBy: userId,
       },
     }),

@@ -17,6 +17,9 @@ export const userService = {
   },
 
   create: async (data: CreateUserDto) => {
+    if (data.role === 'EVENT_VENDOR' && !data.vendorSpaceId) {
+      throw new Error('vendorSpaceId is required when creating an EVENT_VENDOR user');
+    }
     const existing = await userRepository.findByEmail(data.email);
     if (existing) throw new Error('A user with this email already exists');
     return userRepository.create(data);

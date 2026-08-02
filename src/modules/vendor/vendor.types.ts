@@ -1,4 +1,4 @@
-import { type VendorCategory, type VendorRole } from '@prisma/client';
+import { type VendorCategory } from '@prisma/client';
 
 // ── Vendor Space ──────────────────────────
 
@@ -25,20 +25,6 @@ export interface UpdateVendorSpaceDto {
   longitude?: number;
   isVerified?: boolean;
   isActive?: boolean;
-}
-
-// ── Vendor User ───────────────────────────
-
-export interface CreateVendorUserDto {
-  firebaseUid: string;
-  email: string;
-  name: string;
-  role?: VendorRole;
-}
-
-export interface UpdateVendorUserDto {
-  name?: string;
-  role?: VendorRole;
 }
 
 // ── Vendor Service ────────────────────────

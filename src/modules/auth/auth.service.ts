@@ -3,6 +3,7 @@ import { Resend } from 'resend';
 import { getAuth } from 'firebase-admin/auth';
 import { firebaseAdmin } from '../../shared/firebase/firebase.admin.js';
 import { authRepository } from './auth.repository.js';
+import { HttpError } from '../../shared/errors/http-error.js';
 import {
   type RegisterDto,
   type VerifyOtpDto,
@@ -18,14 +19,13 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const generateOtp = (): string =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+const SESSION_TOKEN_TTL = '15m';
+
 const generateSessionToken = (payload: SessionTokenPayload): string => {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error('JWT_SECRET is not defined in .env');
 
-  // jsonwebtoken accepts expiresIn as a separate argument via algorithm
-  // Simplest resolution: use the synchronous callback overload workaround
-  const signed = jwt.sign(payload as unknown as object, secret as string);
-  return signed;
+  return jwt.sign(payload, secret, { expiresIn: SESSION_TOKEN_TTL });
 };
 
 const verifyFirebaseToken = async (token: string) =>
@@ -152,7 +152,7 @@ export const authService = {
 
     return {
       sessionToken,
-      expiresIn: '15m',
+      expiresIn: SESSION_TOKEN_TTL,
       user: {
         id: user.id,
         email: user.email,
@@ -167,22 +167,42 @@ export const authService = {
     const secret = process.env.JWT_SECRET;
     if (!secret) throw new Error('JWT_SECRET is not defined in .env');
 
-    const decoded = await verifyFirebaseToken(firebaseToken);
+    let decoded;
+    try {
+      decoded = await verifyFirebaseToken(firebaseToken);
+    } catch (error) {
+      // Firebase Admin errors carry the reason in `.code` (e.g. 'auth/id-token-expired'),
+      // not in `.message` — the human-readable message never contains these strings.
+      const err = error as { code?: string; message: string };
+      if (
+        err.code === 'auth/id-token-expired' ||
+        err.code === 'auth/argument-error' ||
+        err.code === 'auth/id-token-revoked'
+      ) {
+        throw new HttpError(401, 'Firebase token is invalid or has expired');
+      }
+      throw error;
+    }
 
     let payload: SessionTokenPayload;
     try {
       payload = jwt.verify(currentSessionToken, secret) as SessionTokenPayload;
-    } catch {
-      throw new Error('Session token is invalid. Please log in again.');
+    } catch (jwtError) {
+      const err = jwtError as Error;
+      if (err.name === 'TokenExpiredError') {
+        throw new HttpError(401, 'Session has expired. Please refresh your session.', 'SESSION_EXPIRED');
+      }
+      throw new HttpError(401, 'Invalid session token. Please log in again.', 'SESSION_INVALID');
     }
 
     if (payload.firebaseUid !== decoded.uid) {
-      throw new Error('Token mismatch. Please log in again.');
+      throw new HttpError(401, 'Token mismatch. Please log in again.');
     }
 
     const user = await authRepository.findUserByFirebaseUid(decoded.uid);
-    if (!user || !user.isActive || user.isArchived) {
-      throw new Error('Account is inactive or archived.');
+    if (!user) throw new HttpError(401, 'User not found in platform');
+    if (!user.isActive || user.isArchived) {
+      throw new HttpError(403, 'Account is inactive or has been archived');
     }
 
     const newPayload: SessionTokenPayload = {
@@ -195,6 +215,6 @@ export const authService = {
 
     const sessionToken = generateSessionToken(newPayload);
 
-    return { sessionToken, expiresIn: '15m' };
+    return { sessionToken, expiresIn: SESSION_TOKEN_TTL };
   },
 };

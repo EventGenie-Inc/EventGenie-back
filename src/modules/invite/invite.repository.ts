@@ -24,7 +24,17 @@ export const inviteRepository = {
   findByToken: (token: string) =>
     prisma.invite.findUnique({
       where: { token },
-      include: { guest: true, inviteEventDay: { include: { eventDay: true } } },
+      include: {
+        guest: true,
+        inviteEventDay: { include: { eventDay: true } },
+        event: {
+          include: {
+            eventDays: { where: { isArchived: false } },
+            rsvpFields: { where: { isArchived: false }, orderBy: { order: 'asc' } },
+            tickets: { where: { isArchived: false, isAvailable: true } },
+          },
+        },
+      },
     }),
 
   create: (eventId: string, userId: string, data: CreateInviteDto) =>

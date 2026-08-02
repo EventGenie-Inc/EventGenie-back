@@ -130,22 +130,6 @@ export interface UpdateVendorSpaceDto {
 }
 
 // ================================================================
-//  VENDOR USER
-// ================================================================
-
-export interface CreateVendorUserDto {
-  vendorSpaceId: string;
-  firebaseUid: string;
-  email: string;
-  name: string;
-  role?: 'VENDOR_OWNER' | 'VENDOR_STAFF';
-}
-export interface UpdateVendorUserDto {
-  name?: string;
-  role?: 'VENDOR_OWNER' | 'VENDOR_STAFF';
-}
-
-// ================================================================
 //  VENDOR SERVICE
 // ================================================================
 

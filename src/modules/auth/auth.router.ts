@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { authService } from './auth.service.js';
 import { type RegisterDto, type VerifyOtpDto } from './auth.types.js';
+import { HttpError } from '../../shared/errors/http-error.js';
 
 const router = Router();
 
@@ -16,10 +17,10 @@ const router = Router();
 const extractBearerToken = (req: Request): string => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    throw new Error('Missing or malformed Authorization header');
+    throw new HttpError(401, 'Missing or malformed Authorization header');
   }
   const token = authHeader.split(' ')[1];
-  if (!token) throw new Error('No token provided');
+  if (!token) throw new HttpError(401, 'No token provided');
   return token;
 };
 
@@ -94,11 +95,7 @@ router.post('/refresh-session', async (req: Request, res: Response, next: NextFu
     const currentSessionToken = req.headers['x-session-token'] as string;
 
     if (!currentSessionToken) {
-      res.status(400).json({
-        status: 'error',
-        message: 'X-Session-Token header is required',
-      });
-      return;
+      throw new HttpError(401, 'X-Session-Token header is required');
     }
 
     const result = await authService.refreshSession(firebaseToken, currentSessionToken);

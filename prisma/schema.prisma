@@ -32,6 +32,7 @@ enum PlatformRole {
   SUPER_ADMIN
   TENANT_ADMIN
   EVENT_ADMIN
+  EVENT_VENDOR
 }
 
 enum EventStatus {
@@ -39,6 +40,26 @@ enum EventStatus {
   PUBLISHED
   COMPLETED
   CANCELLED
+}
+
+enum EventVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum EventTicketing {
+  FREE
+  PAID
+}
+
+enum RsvpFieldType {
+  TEXT
+  NUMBER
+  EMAIL
+  PHONE
+  DROPDOWN
+  CHECKBOX
+  DATE
 }
 
 enum InviteStatus {
@@ -67,11 +88,6 @@ enum VendorCategory {
   OTHER
 }
 
-enum VendorRole {
-  VENDOR_OWNER
-  VENDOR_STAFF
-}
-
 // ─────────────────────────────────────────
 //  TENANT
 // ─────────────────────────────────────────
@@ -97,21 +113,23 @@ model Tenant {
 // ─────────────────────────────────────────
 
 model User {
-  id          String       @id @default(cuid())
-  tenantId    String?
-  firebaseUid String       @unique
-  email       String       @unique
-  username    String
-  role        PlatformRole
-  isActive    Boolean      @default(true)
-  isArchived  Boolean      @default(false)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id            String       @id @default(cuid())
+  tenantId      String?
+  vendorSpaceId String?
+  firebaseUid   String       @unique
+  email         String       @unique
+  username      String
+  role          PlatformRole
+  isActive      Boolean      @default(true)
+  isArchived    Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  tenant        Tenant?      @relation(fields: [tenantId], references: [id])
-  eventsCreated Event[]
-  memoryItems   MemoryItem[] @relation("MemoryItemUploadedByUser")
-  otpRecords    OtpRecord[]
+  tenant             Tenant?      @relation(fields: [tenantId], references: [id])
+  managedVendorSpace VendorSpace? @relation(fields: [vendorSpaceId], references: [id])
+  eventsCreated      Event[]
+  memoryItems        MemoryItem[] @relation("MemoryItemUploadedByUser")
+  otpRecords         OtpRecord[]
 }
 
 // ─────────────────────────────────────────
@@ -138,28 +156,35 @@ model OtpRecord {
 // ─────────────────────────────────────────
 
 model Event {
-  id              String      @id @default(cuid())
-  tenantId        String
-  createdByUserId String
-  name            String
-  description     String?
-  location        String
-  address         String?
-  latitude        Decimal?    @db.Decimal(10, 7)
-  longitude       Decimal?    @db.Decimal(10, 7)
-  coverImageUrl   String?
-  status          EventStatus @default(DRAFT)
-  isArchived      Boolean     @default(false)
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-  createdBy       String
-  updatedBy       String
+  id                 String          @id @default(cuid())
+  tenantId           String
+  createdByUserId    String
+  name               String
+  description        String?
+  location           String
+  address            String?
+  latitude           Decimal?        @db.Decimal(10, 7)
+  longitude          Decimal?        @db.Decimal(10, 7)
+  coverImageUrl      String?
+  status             EventStatus     @default(DRAFT)
+  visibility         EventVisibility @default(PRIVATE)
+  ticketing          EventTicketing  @default(FREE)
+  invitationTemplate String?
+  invitationConfig   String?
+  isArchived         Boolean         @default(false)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  createdBy          String
+  updatedBy          String
 
-  tenant        Tenant     @relation(fields: [tenantId], references: [id])
-  createdByUser User       @relation(fields: [createdByUserId], references: [id])
+  tenant        Tenant        @relation(fields: [tenantId], references: [id])
+  createdByUser User          @relation(fields: [createdByUserId], references: [id])
   eventDays     EventDay[]
   invites       Invite[]
   memoryHub     MemoryHub?
+  rsvpFields    RsvpField[]
+  program       EventProgram?
+  tickets       Ticket[]
 }
 
 // ─────────────────────────────────────────
@@ -225,10 +250,12 @@ model Invite {
   createdBy          String
   updatedBy          String
 
-  event          Event            @relation(fields: [eventId], references: [id])
-  guest          Guest            @relation(fields: [guestId], references: [id])
-  inviteEventDay InviteEventDay[]
-  attendances    Attendance[]
+  event           Event            @relation(fields: [eventId], references: [id])
+  guest           Guest            @relation(fields: [guestId], references: [id])
+  inviteEventDay  InviteEventDay[]
+  attendances     Attendance[]
+  rsvpResponses   RsvpResponse[]
+  ticketPurchases TicketPurchase[]
 }
 
 // ─────────────────────────────────────────
@@ -268,15 +295,16 @@ model Attendance {
 // ─────────────────────────────────────────
 
 model MemoryHub {
-  id          String   @id @default(cuid())
-  eventId     String   @unique
+  id          String    @id @default(cuid())
+  eventId     String    @unique
   title       String?
   description String?
-  isPublic    Boolean  @default(false)
-  shareToken  String?  @unique
-  isArchived  Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isPublic    Boolean   @default(false)
+  shareToken  String?   @unique
+  opensAt     DateTime?
+  isArchived  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   createdBy   String
   updatedBy   String
 
@@ -332,26 +360,8 @@ model VendorSpace {
   updatedBy   String
 
   tenant         Tenant?         @relation(fields: [tenantId], references: [id])
-  vendorUsers    VendorUser[]
+  users          User[]
   vendorServices VendorService[]
-}
-
-// ─────────────────────────────────────────
-//  VENDOR USER
-// ─────────────────────────────────────────
-
-model VendorUser {
-  id            String     @id @default(cuid())
-  vendorSpaceId String
-  firebaseUid   String     @unique
-  email         String     @unique
-  name          String
-  role          VendorRole @default(VENDOR_OWNER)
-  isArchived    Boolean    @default(false)
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-
-  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
 }
 
 // ─────────────────────────────────────────
@@ -396,6 +406,127 @@ model Product {
   updatedBy       String
 
   vendorService VendorService @relation(fields: [vendorServiceId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  RSVP FIELD
+// ─────────────────────────────────────────
+
+model RsvpField {
+  id         String        @id @default(cuid())
+  eventId    String
+  label      String
+  fieldType  RsvpFieldType
+  isRequired Boolean       @default(false)
+  options    String?
+  order      Int
+  isArchived Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  event     Event          @relation(fields: [eventId], references: [id])
+  responses RsvpResponse[]
+}
+
+// ─────────────────────────────────────────
+//  RSVP RESPONSE
+// ─────────────────────────────────────────
+
+model RsvpResponse {
+  id          String   @id @default(cuid())
+  inviteId    String
+  rsvpFieldId String
+  value       String
+  createdAt   DateTime @default(now())
+
+  invite    Invite    @relation(fields: [inviteId], references: [id])
+  rsvpField RsvpField @relation(fields: [rsvpFieldId], references: [id])
+
+  @@unique([inviteId, rsvpFieldId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT PROGRAM
+// ─────────────────────────────────────────
+
+model EventProgram {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  title       String?
+  isPublished Boolean  @default(false)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  event        Event         @relation(fields: [eventId], references: [id])
+  programItems ProgramItem[]
+}
+
+// ─────────────────────────────────────────
+//  PROGRAM ITEM
+// ─────────────────────────────────────────
+
+model ProgramItem {
+  id           String   @id @default(cuid())
+  programId    String
+  title        String
+  description  String?
+  startTime    DateTime
+  durationMins Int?
+  order        Int
+  isArchived   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  createdBy    String
+  updatedBy    String
+
+  program EventProgram @relation(fields: [programId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  TICKET
+// ─────────────────────────────────────────
+
+model Ticket {
+  id            String   @id @default(cuid())
+  eventId       String
+  name          String
+  description   String?
+  price         Decimal  @db.Decimal(10, 2)
+  currency      String   @default("ZAR")
+  totalQuantity Int?
+  soldCount     Int      @default(0)
+  isAvailable   Boolean  @default(true)
+  isArchived    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String
+  updatedBy     String
+
+  event     Event            @relation(fields: [eventId], references: [id])
+  purchases TicketPurchase[]
+}
+
+// ─────────────────────────────────────────
+//  TICKET PURCHASE
+// ─────────────────────────────────────────
+
+model TicketPurchase {
+  id          String   @id @default(cuid())
+  ticketId    String
+  inviteId    String
+  quantity    Int      @default(1)
+  totalPaid   Decimal  @db.Decimal(10, 2)
+  currency    String   @default("ZAR")
+  paymentRef  String?
+  purchasedAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
 }
 
 // ─────────────────────────────────────────
