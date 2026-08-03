@@ -50,6 +50,11 @@ export const authService = {
       throw new Error('This tenant slug is already taken. Please choose another.');
     }
 
+    const existingEmail = await authRepository.findUserByEmail(decoded.email ?? '');
+    if (existingEmail) {
+      throw new Error('An account with this email already exists. Please log in.');
+    }
+
     const { user, tenant } = await authRepository.registerTenantAndAdmin(
       decoded.uid,
       decoded.email ?? '',
