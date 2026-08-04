@@ -1,0 +1,106 @@
+import prisma from '../../shared/prisma/prisma.client.js';
+import { type Prisma } from '@prisma/client';
+import { type CreateTicketDto, type UpdateTicketDto } from './ticket.types.js';
+type Db = Prisma.TransactionClient | typeof prisma;
+export declare const ticketRepository: {
+    findAll: (eventId: string, opts?: {
+        availableOnly?: boolean;
+    }) => Prisma.PrismaPromise<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        currency: string;
+        totalQuantity: number | null;
+        soldCount: number;
+        isAvailable: boolean;
+    }[]>;
+    findById: (id: string) => Prisma.Prisma__TicketClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        currency: string;
+        totalQuantity: number | null;
+        soldCount: number;
+        isAvailable: boolean;
+    } | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    create: (eventId: string, userId: string, data: CreateTicketDto) => Prisma.Prisma__TicketClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        currency: string;
+        totalQuantity: number | null;
+        soldCount: number;
+        isAvailable: boolean;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    update: (id: string, userId: string, data: UpdateTicketDto) => Prisma.Prisma__TicketClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        currency: string;
+        totalQuantity: number | null;
+        soldCount: number;
+        isAvailable: boolean;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    archive: (id: string, userId: string) => Prisma.Prisma__TicketClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        currency: string;
+        totalQuantity: number | null;
+        soldCount: number;
+        isAvailable: boolean;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    incrementSoldCount: (id: string, quantity: number, db?: Db) => Prisma.Prisma__TicketClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        currency: string;
+        totalQuantity: number | null;
+        soldCount: number;
+        isAvailable: boolean;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+};
+export {};
+//# sourceMappingURL=ticket.repository.d.ts.map

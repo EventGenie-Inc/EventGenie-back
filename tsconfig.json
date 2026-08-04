@@ -34,6 +34,6 @@
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*", "prisma/seed.ts"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }
