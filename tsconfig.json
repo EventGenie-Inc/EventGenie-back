@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    // ── File Layout ────────────────────────────
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    // ── Module System ──────────────────────────
+    // NodeNext aligns with "type": "module" in
+    // package.json. Enables native ESM in Node.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+
+    // ── Node Types ─────────────────────────────
+    "lib": ["es2022"],
+    "types": ["node"],
+
+    // ── Output ─────────────────────────────────
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+
+    // ── Module Behaviour ───────────────────────
+    // Required for Prisma and Firebase imports
+    // to resolve correctly under NodeNext.
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+
+    // ── Strict Type Checking ───────────────────
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*", "prisma/seed.ts"],
+  "exclude": ["node_modules", "dist"]
+}
