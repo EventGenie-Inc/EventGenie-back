@@ -1,0 +1,546 @@
+// ============================================================
+//  EventGenie — Prisma Schema
+//  Database: PostgreSQL via Neon
+//  ORM: Prisma
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────
+//  ENUMS
+// ─────────────────────────────────────────
+
+enum SubscriptionTier {
+  SPARK
+  CELEBRATE
+  ELEVATE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum PlatformRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  EVENT_ADMIN
+  EVENT_VENDOR
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  COMPLETED
+  CANCELLED
+}
+
+enum EventVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum EventTicketing {
+  FREE
+  PAID
+}
+
+enum RsvpFieldType {
+  TEXT
+  NUMBER
+  EMAIL
+  PHONE
+  DROPDOWN
+  CHECKBOX
+  DATE
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum DeliveryMethod {
+  EMAIL
+  SMS
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+enum VendorCategory {
+  CATERING
+  DECOR
+  FURNITURE
+  PHOTOGRAPHY
+  ENTERTAINMENT
+  FLORISTRY
+  OTHER
+}
+
+// ─────────────────────────────────────────
+//  TENANT
+// ─────────────────────────────────────────
+
+model Tenant {
+  id                 String             @id @default(cuid())
+  name               String
+  slug               String             @unique
+  email              String             @unique
+  subscriptionTier   SubscriptionTier   @default(SPARK)
+  subscriptionStatus SubscriptionStatus @default(ACTIVE)
+  isArchived         Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  users        User[]
+  events       Event[]
+  vendorSpaces VendorSpace[]
+}
+
+// ─────────────────────────────────────────
+//  USER
+// ─────────────────────────────────────────
+
+model User {
+  id            String       @id @default(cuid())
+  tenantId      String?
+  vendorSpaceId String?
+  firebaseUid   String       @unique
+  email         String       @unique
+  username      String
+  role          PlatformRole
+  isActive      Boolean      @default(true)
+  isArchived    Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  tenant             Tenant?      @relation(fields: [tenantId], references: [id])
+  managedVendorSpace VendorSpace? @relation(fields: [vendorSpaceId], references: [id])
+  eventsCreated      Event[]
+  memoryItems        MemoryItem[] @relation("MemoryItemUploadedByUser")
+  otpRecords         OtpRecord[]
+}
+
+// ─────────────────────────────────────────
+//  OTP RECORD
+//  Stores 2FA OTP codes for platform users.
+//  One active OTP per user at a time.
+//  Expired and used records are retained
+//  for audit purposes.
+// ─────────────────────────────────────────
+
+model OtpRecord {
+  id        String    @id @default(cuid())
+  userId    String
+  otp       String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  EVENT
+// ─────────────────────────────────────────
+
+model Event {
+  id                 String          @id @default(cuid())
+  tenantId           String
+  createdByUserId    String
+  name               String
+  description        String?
+  location           String
+  address            String?
+  latitude           Decimal?        @db.Decimal(10, 7)
+  longitude          Decimal?        @db.Decimal(10, 7)
+  coverImageUrl      String?
+  status             EventStatus     @default(DRAFT)
+  visibility         EventVisibility @default(PRIVATE)
+  ticketing          EventTicketing  @default(FREE)
+  invitationTemplate String?
+  invitationConfig   String?
+  isArchived         Boolean         @default(false)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id])
+  createdByUser User          @relation(fields: [createdByUserId], references: [id])
+  eventDays     EventDay[]
+  invites       Invite[]
+  memoryHub     MemoryHub?
+  rsvpFields    RsvpField[]
+  program       EventProgram?
+  tickets       Ticket[]
+}
+
+// ─────────────────────────────────────────
+//  EVENT DAY
+// ─────────────────────────────────────────
+
+model EventDay {
+  id         String    @id @default(cuid())
+  eventId    String
+  label      String
+  date       DateTime  @db.Date
+  startTime  DateTime?
+  endTime    DateTime?
+  isArchived Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  event          Event            @relation(fields: [eventId], references: [id])
+  inviteEventDay InviteEventDay[]
+  attendances    Attendance[]
+}
+
+// ─────────────────────────────────────────
+//  GUEST
+// ─────────────────────────────────────────
+
+model Guest {
+  id          String   @id @default(cuid())
+  firstName   String
+  surname     String
+  email       String?
+  phoneNumber String?
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invites     Invite[]
+  memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
+}
+
+// ─────────────────────────────────────────
+//  INVITE
+// ─────────────────────────────────────────
+
+model Invite {
+  id                 String         @id @default(cuid())
+  eventId            String
+  guestId            String
+  token              String         @unique
+  status             InviteStatus   @default(PENDING)
+  used               Boolean        @default(false)
+  usedAt             DateTime?
+  expiresAt          DateTime?
+  editToken          String?        @unique
+  editTokenExpiresAt DateTime?
+  deliveryMethod     DeliveryMethod
+  deliveredAt        DateTime?
+  isArchived         Boolean        @default(false)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  event           Event            @relation(fields: [eventId], references: [id])
+  guest           Guest            @relation(fields: [guestId], references: [id])
+  inviteEventDay  InviteEventDay[]
+  attendances     Attendance[]
+  rsvpResponses   RsvpResponse[]
+  ticketPurchases TicketPurchase[]
+}
+
+// ─────────────────────────────────────────
+//  INVITE EVENT DAY
+// ─────────────────────────────────────────
+
+model InviteEventDay {
+  id         String   @id @default(cuid())
+  inviteId   String
+  eventDayId String
+  createdAt  DateTime @default(now())
+
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  ATTENDANCE
+// ─────────────────────────────────────────
+
+model Attendance {
+  id          String   @id @default(cuid())
+  inviteId    String
+  eventDayId  String
+  confirmedAt DateTime @default(now())
+
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  MEMORY HUB
+// ─────────────────────────────────────────
+
+model MemoryHub {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+  title       String?
+  description String?
+  isPublic    Boolean   @default(false)
+  shareToken  String?   @unique
+  opensAt     DateTime?
+  isArchived  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  event       Event        @relation(fields: [eventId], references: [id])
+  memoryItems MemoryItem[]
+}
+
+// ─────────────────────────────────────────
+//  MEMORY ITEM
+// ─────────────────────────────────────────
+
+model MemoryItem {
+  id                String    @id @default(cuid())
+  memoryHubId       String
+  uploadedByGuestId String?
+  uploadedByUserId  String?
+  mediaUrl          String
+  mediaType         MediaType
+  caption           String?
+  isApproved        Boolean   @default(false)
+  isArchived        Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  createdBy         String
+  updatedBy         String
+
+  memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
+  uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
+  uploadedByUser  User?     @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SPACE
+// ─────────────────────────────────────────
+
+model VendorSpace {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  name        String
+  description String?
+  email       String
+  phoneNumber String?
+  website     String?
+  address     String?
+  latitude    Decimal  @db.Decimal(10, 7)
+  longitude   Decimal  @db.Decimal(10, 7)
+  isVerified  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  tenant         Tenant?         @relation(fields: [tenantId], references: [id])
+  users          User[]
+  vendorServices VendorService[]
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SERVICE
+// ─────────────────────────────────────────
+
+model VendorService {
+  id             String         @id @default(cuid())
+  vendorSpaceId  String
+  name           String
+  category       VendorCategory
+  description    String?
+  operatingDays  String?
+  operatingHours String?
+  isArchived     Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  createdBy      String
+  updatedBy      String
+
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+  products    Product[]
+}
+
+// ─────────────────────────────────────────
+//  PRODUCT
+// ─────────────────────────────────────────
+
+model Product {
+  id              String   @id @default(cuid())
+  vendorServiceId String
+  name            String
+  description     String?
+  price           Decimal? @db.Decimal(10, 2)
+  currency        String   @default("ZAR")
+  imageUrls       String[]
+  isAvailable     Boolean  @default(true)
+  isArchived      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdBy       String
+  updatedBy       String
+
+  vendorService VendorService @relation(fields: [vendorServiceId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  RSVP FIELD
+// ─────────────────────────────────────────
+
+model RsvpField {
+  id         String        @id @default(cuid())
+  eventId    String
+  label      String
+  fieldType  RsvpFieldType
+  isRequired Boolean       @default(false)
+  options    String?
+  order      Int
+  isArchived Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  event     Event          @relation(fields: [eventId], references: [id])
+  responses RsvpResponse[]
+}
+
+// ─────────────────────────────────────────
+//  RSVP RESPONSE
+// ─────────────────────────────────────────
+
+model RsvpResponse {
+  id          String   @id @default(cuid())
+  inviteId    String
+  rsvpFieldId String
+  value       String
+  createdAt   DateTime @default(now())
+
+  invite    Invite    @relation(fields: [inviteId], references: [id])
+  rsvpField RsvpField @relation(fields: [rsvpFieldId], references: [id])
+
+  @@unique([inviteId, rsvpFieldId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT PROGRAM
+// ─────────────────────────────────────────
+
+model EventProgram {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  title       String?
+  isPublished Boolean  @default(false)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  event        Event         @relation(fields: [eventId], references: [id])
+  programItems ProgramItem[]
+}
+
+// ─────────────────────────────────────────
+//  PROGRAM ITEM
+// ─────────────────────────────────────────
+
+model ProgramItem {
+  id           String   @id @default(cuid())
+  programId    String
+  title        String
+  description  String?
+  startTime    DateTime
+  durationMins Int?
+  order        Int
+  isArchived   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  createdBy    String
+  updatedBy    String
+
+  program EventProgram @relation(fields: [programId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  TICKET
+// ─────────────────────────────────────────
+
+model Ticket {
+  id            String   @id @default(cuid())
+  eventId       String
+  name          String
+  description   String?
+  price         Decimal  @db.Decimal(10, 2)
+  currency      String   @default("ZAR")
+  totalQuantity Int?
+  soldCount     Int      @default(0)
+  isAvailable   Boolean  @default(true)
+  isArchived    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String
+  updatedBy     String
+
+  event     Event            @relation(fields: [eventId], references: [id])
+  purchases TicketPurchase[]
+}
+
+// ─────────────────────────────────────────
+//  TICKET PURCHASE
+// ─────────────────────────────────────────
+
+model TicketPurchase {
+  id          String   @id @default(cuid())
+  ticketId    String
+  inviteId    String
+  quantity    Int      @default(1)
+  totalPaid   Decimal  @db.Decimal(10, 2)
+  currency    String   @default("ZAR")
+  paymentRef  String?
+  purchasedAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  SUBSCRIPTION TIER CONFIG
+// ─────────────────────────────────────────
+
+model SubscriptionTierConfig {
+  tier                SubscriptionTier @id
+  maxEvents           Int?
+  maxGuestsPerEvent   Int?
+  maxSmsPerMonth      Int?
+  emailEnabled        Boolean          @default(true)
+  smsEnabled          Boolean          @default(false)
+  vendorMarketplace   Boolean          @default(false)
+  memoryHubEnabled    Boolean          @default(false)
+  dragDropBuilder     Boolean          @default(false)
+}

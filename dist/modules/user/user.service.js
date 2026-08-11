@@ -1,0 +1,35 @@
+import { userRepository } from './user.repository.js';
+import {} from './user.types.js';
+import {} from '@prisma/client';
+export const userService = {
+    getAll: (requestingRole, tenantId) => {
+        // SUPER_ADMIN sees all users, others see only their tenant
+        if (requestingRole === 'SUPER_ADMIN')
+            return userRepository.findAll();
+        return userRepository.findAll(tenantId ?? undefined);
+    },
+    getById: async (id) => {
+        const user = await userRepository.findById(id);
+        if (!user)
+            throw new Error('User not found');
+        return user;
+    },
+    create: async (data) => {
+        if (data.role === 'EVENT_VENDOR' && !data.vendorSpaceId) {
+            throw new Error('vendorSpaceId is required when creating an EVENT_VENDOR user');
+        }
+        const existing = await userRepository.findByEmail(data.email);
+        if (existing)
+            throw new Error('A user with this email already exists');
+        return userRepository.create(data);
+    },
+    update: async (id, data) => {
+        await userService.getById(id);
+        return userRepository.update(id, data);
+    },
+    archive: async (id) => {
+        await userService.getById(id);
+        return userRepository.archive(id);
+    },
+};
+//# sourceMappingURL=user.service.js.map
