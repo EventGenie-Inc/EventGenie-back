@@ -1,6 +1,10 @@
 import { userRepository } from './user.repository.js';
 import { type CreateUserDto, type UpdateUserDto } from './user.types.js';
 import { type PlatformRole } from '@prisma/client';
+import {
+  suspendFirebaseAccount,
+  reactivateFirebaseAccount,
+} from '../../shared/firebase/firebase-account-status.util.js';
 
 export const userService = {
 
@@ -31,7 +35,16 @@ export const userService = {
   },
 
   archive: async (id: string) => {
-    await userService.getById(id);
-    return userRepository.archive(id);
+    const user = await userService.getById(id);
+    const archived = await userRepository.archive(id);
+    await suspendFirebaseAccount(user.firebaseUid);
+    return archived;
+  },
+
+  reactivate: async (id: string) => {
+    const user = await userService.getById(id);
+    const reactivated = await userRepository.reactivate(id);
+    await reactivateFirebaseAccount(user.firebaseUid);
+    return reactivated;
   },
 };

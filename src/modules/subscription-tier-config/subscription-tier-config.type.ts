@@ -21,4 +21,5 @@ export interface UpdateSubscriptionTierConfigDto {
   vendorMarketplace?: boolean;
   memoryHubEnabled?: boolean;
   dragDropBuilder?: boolean;
+  isAvailable?: boolean;
 }

@@ -104,5 +104,18 @@ export declare const userRepository: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    reactivate: (id: string) => import("@prisma/client").Prisma.Prisma__UserClient<{
+        id: string;
+        email: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string | null;
+        vendorSpaceId: string | null;
+        firebaseUid: string;
+        username: string;
+        role: import("@prisma/client").$Enums.PlatformRole;
+        isActive: boolean;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
 };
 //# sourceMappingURL=user.repository.d.ts.map

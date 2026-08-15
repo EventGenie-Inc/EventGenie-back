@@ -1,5 +1,4 @@
 import prisma from '../../shared/prisma/prisma.client.js';
-import { type CreateTenantDto, type UpdateTenantDto } from './tenant.types.js';
 
 export const tenantRepository = {
 
@@ -19,27 +18,20 @@ export const tenantRepository = {
       where: { slug, isArchived: false },
     }),
 
-  create: (data: CreateTenantDto) =>
-    prisma.tenant.create({
-      data: {
-        name: data.name,
-        slug: data.slug,
-        email: data.email,
-        subscriptionTier: data.subscriptionTier ?? 'SPARK',
-        subscriptionStatus: 'ACTIVE',
-        isArchived: false,
-      },
-    }),
-
-  update: (id: string, data: UpdateTenantDto) =>
+  suspend: (id: string) =>
     prisma.tenant.update({
       where: { id },
-      data: { ...data, updatedAt: new Date() },
+      data: { subscriptionStatus: 'SUSPENDED' },
     }),
 
-  archive: (id: string) =>
+  reactivate: (id: string) =>
     prisma.tenant.update({
       where: { id },
-      data: { isArchived: true },
+      data: { subscriptionStatus: 'ACTIVE' },
+    }),
+
+  findAllUsersByTenant: (tenantId: string) =>
+    prisma.user.findMany({
+      where: { tenantId, isArchived: false },
     }),
 };

@@ -22,4 +22,9 @@ export const subscriptionTierConfigService = {
     await subscriptionTierConfigService.getByTier(tier);
     return subscriptionTierConfigRepository.update(tier, data);
   },
+
+  setAvailability: async (tier: SubscriptionTier, isAvailable: boolean) => {
+    await subscriptionTierConfigService.getByTier(tier);
+    return subscriptionTierConfigRepository.setAvailability(tier, isAvailable);
+  },
 };

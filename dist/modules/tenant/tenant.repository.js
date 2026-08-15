@@ -1,5 +1,4 @@
 import prisma from '../../shared/prisma/prisma.client.js';
-import {} from './tenant.types.js';
 export const tenantRepository = {
     findAll: () => prisma.tenant.findMany({
         where: { isArchived: false },
@@ -11,23 +10,16 @@ export const tenantRepository = {
     findBySlug: (slug) => prisma.tenant.findFirst({
         where: { slug, isArchived: false },
     }),
-    create: (data) => prisma.tenant.create({
-        data: {
-            name: data.name,
-            slug: data.slug,
-            email: data.email,
-            subscriptionTier: data.subscriptionTier ?? 'SPARK',
-            subscriptionStatus: 'ACTIVE',
-            isArchived: false,
-        },
-    }),
-    update: (id, data) => prisma.tenant.update({
+    suspend: (id) => prisma.tenant.update({
         where: { id },
-        data: { ...data, updatedAt: new Date() },
+        data: { subscriptionStatus: 'SUSPENDED' },
     }),
-    archive: (id) => prisma.tenant.update({
+    reactivate: (id) => prisma.tenant.update({
         where: { id },
-        data: { isArchived: true },
+        data: { subscriptionStatus: 'ACTIVE' },
+    }),
+    findAllUsersByTenant: (tenantId) => prisma.user.findMany({
+        where: { tenantId, isArchived: false },
     }),
 };
 //# sourceMappingURL=tenant.repository.js.map

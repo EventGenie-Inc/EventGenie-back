@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { userService } from './user.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
-import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireTenantAdmin, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import {} from '../../shared/types/common.types.js';
 const router = Router();
 router.use(authenticate, requireTenantAdmin);
@@ -46,6 +46,26 @@ router.delete('/:id', async (req, res, next) => {
     try {
         await userService.archive(req.params['id']);
         res.status(200).json({ status: 'ok', message: 'User archived' });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Super Admin only — individual user suspend/reactivate,
+// stacked on top of the router-level requireTenantAdmin
+router.post('/:id/suspend', requireSuperAdmin, async (req, res, next) => {
+    try {
+        const user = await userService.archive(req.params['id']);
+        res.status(200).json({ status: 'ok', data: user });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+router.post('/:id/reactivate', requireSuperAdmin, async (req, res, next) => {
+    try {
+        const user = await userService.reactivate(req.params['id']);
+        res.status(200).json({ status: 'ok', data: user });
     }
     catch (err) {
         next(err);
