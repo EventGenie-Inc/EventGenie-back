@@ -3,6 +3,7 @@ import { Resend } from 'resend';
 import { getAuth } from 'firebase-admin/auth';
 import { firebaseAdmin } from '../../shared/firebase/firebase.admin.js';
 import { authRepository } from './auth.repository.js';
+import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {} from './auth.types.js';
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -35,6 +36,14 @@ export const authService = {
         const existingEmail = await authRepository.findUserByEmail(decoded.email ?? '');
         if (existingEmail) {
             throw new Error('An account with this email already exists. Please log in.');
+        }
+        // Registration always creates tenants on SPARK — Celebrate/Elevate
+        // are upgrades made later, not chosen at signup. A missing config
+        // row is a defensive no-op, not a lockout: don't let it accidentally
+        // block all new signups.
+        const sparkConfig = await subscriptionTierConfigRepository.findByTier('SPARK');
+        if (sparkConfig && !sparkConfig.isAvailable) {
+            throw new Error('New registrations are temporarily unavailable. Please try again later.');
         }
         const { user, tenant } = await authRepository.registerTenantAndAdmin(decoded.uid, decoded.email ?? '', data);
         return {

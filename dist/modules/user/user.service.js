@@ -1,6 +1,7 @@
 import { userRepository } from './user.repository.js';
 import {} from './user.types.js';
 import {} from '@prisma/client';
+import { suspendFirebaseAccount, reactivateFirebaseAccount, } from '../../shared/firebase/firebase-account-status.util.js';
 export const userService = {
     getAll: (requestingRole, tenantId) => {
         // SUPER_ADMIN sees all users, others see only their tenant
@@ -28,8 +29,16 @@ export const userService = {
         return userRepository.update(id, data);
     },
     archive: async (id) => {
-        await userService.getById(id);
-        return userRepository.archive(id);
+        const user = await userService.getById(id);
+        const archived = await userRepository.archive(id);
+        await suspendFirebaseAccount(user.firebaseUid);
+        return archived;
+    },
+    reactivate: async (id) => {
+        const user = await userService.getById(id);
+        const reactivated = await userRepository.reactivate(id);
+        await reactivateFirebaseAccount(user.firebaseUid);
+        return reactivated;
     },
 };
 //# sourceMappingURL=user.service.js.map

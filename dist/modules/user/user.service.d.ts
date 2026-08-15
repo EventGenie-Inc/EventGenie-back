@@ -66,5 +66,18 @@ export declare const userService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
+    reactivate: (id: string) => Promise<{
+        id: string;
+        email: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string | null;
+        vendorSpaceId: string | null;
+        firebaseUid: string;
+        username: string;
+        role: import("@prisma/client").$Enums.PlatformRole;
+        isActive: boolean;
+    }>;
 };
 //# sourceMappingURL=user.service.d.ts.map

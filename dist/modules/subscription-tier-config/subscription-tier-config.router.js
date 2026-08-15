@@ -53,5 +53,19 @@ router.put('/:tier', async (req, res, next) => {
         next(err);
     }
 });
+// PUT /api/subscription-tiers/:tier/availability
+// Hides/shows a tier for NEW registrations only —
+// existing tenants on that tier are unaffected
+router.put('/:tier/availability', async (req, res, next) => {
+    try {
+        const tier = req.params['tier'];
+        const { isAvailable } = req.body;
+        const config = await subscriptionTierConfigService.setAvailability(tier, isAvailable);
+        res.status(200).json({ status: 'ok', data: config });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 export default router;
 //# sourceMappingURL=subscription-tier-config.router.js.map

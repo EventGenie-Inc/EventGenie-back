@@ -41,6 +41,13 @@ export const subscriptionTierConfigRepository = {
         ...(data.vendorMarketplace !== undefined && { vendorMarketplace: data.vendorMarketplace }),
         ...(data.memoryHubEnabled !== undefined && { memoryHubEnabled: data.memoryHubEnabled }),
         ...(data.dragDropBuilder !== undefined && { dragDropBuilder: data.dragDropBuilder }),
+        ...(data.isAvailable !== undefined && { isAvailable: data.isAvailable }),
       },
+    }),
+
+  setAvailability: (tier: SubscriptionTier, isAvailable: boolean) =>
+    prisma.subscriptionTierConfig.update({
+      where: { tier },
+      data: { isAvailable },
     }),
 };

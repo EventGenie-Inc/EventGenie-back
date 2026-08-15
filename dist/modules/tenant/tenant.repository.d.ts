@@ -1,4 +1,3 @@
-import { type CreateTenantDto, type UpdateTenantDto } from './tenant.types.js';
 export declare const tenantRepository: {
     findAll: () => import("@prisma/client").Prisma.PrismaPromise<{
         name: string;
@@ -33,7 +32,7 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    create: (data: CreateTenantDto) => import("@prisma/client").Prisma.Prisma__TenantClient<{
+    suspend: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
         id: string;
         slug: string;
@@ -44,7 +43,7 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    update: (id: string, data: UpdateTenantDto) => import("@prisma/client").Prisma.Prisma__TenantClient<{
+    reactivate: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
         id: string;
         slug: string;
@@ -55,16 +54,18 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    archive: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
-        name: string;
+    findAllUsersByTenant: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<{
         id: string;
-        slug: string;
         email: string;
-        subscriptionTier: import("@prisma/client").$Enums.SubscriptionTier;
-        subscriptionStatus: import("@prisma/client").$Enums.SubscriptionStatus;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
-    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+        tenantId: string | null;
+        vendorSpaceId: string | null;
+        firebaseUid: string;
+        username: string;
+        role: import("@prisma/client").$Enums.PlatformRole;
+        isActive: boolean;
+    }[]>;
 };
 //# sourceMappingURL=tenant.repository.d.ts.map

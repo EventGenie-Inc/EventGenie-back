@@ -41,8 +41,10 @@ export const authenticate = async (req, res, next) => {
             });
             return;
         }
-        // Verify Firebase token
-        const decoded = await getAuth(firebaseAdmin).verifyIdToken(firebaseToken);
+        // Verify Firebase token — checkRevoked (2nd arg) rejects tokens
+        // immediately after revokeRefreshTokens() rather than letting
+        // them remain valid until natural expiry.
+        const decoded = await getAuth(firebaseAdmin).verifyIdToken(firebaseToken, true);
         // ── Layer 2: Session JWT ──────────────
         const sessionToken = req.headers['x-session-token'];
         if (!sessionToken) {

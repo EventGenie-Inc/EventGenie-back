@@ -1,5 +1,9 @@
+import prisma from '../../shared/prisma/prisma.client.js';
 import { tenantRepository } from './tenant.repository.js';
-import { type CreateTenantDto, type UpdateTenantDto } from './tenant.types.js';
+import {
+  suspendFirebaseAccount,
+  reactivateFirebaseAccount,
+} from '../../shared/firebase/firebase-account-status.util.js';
 
 export const tenantService = {
 
@@ -11,19 +15,71 @@ export const tenantService = {
     return tenant;
   },
 
-  create: async (data: CreateTenantDto) => {
-    const existing = await tenantRepository.findBySlug(data.slug);
-    if (existing) throw new Error('A tenant with this slug already exists');
-    return tenantRepository.create(data);
+  getUsers: async (id: string) => {
+    await tenantService.getById(id);
+    return tenantRepository.findAllUsersByTenant(id);
   },
 
-  update: async (id: string, data: UpdateTenantDto) => {
+  // Locks out the entire tenant and cascades to archiving every
+  // User under it. Reversible via reactivate — Super Admin never
+  // deletes data.
+  suspend: async (id: string, superAdminUserId: string) => {
     await tenantService.getById(id);
-    return tenantRepository.update(id, data);
+
+    const users = await tenantRepository.findAllUsersByTenant(id);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.tenant.update({
+        where: { id },
+        data: { subscriptionStatus: 'SUSPENDED' },
+      });
+
+      for (const user of users) {
+        await tx.user.update({
+          where: { id: user.id },
+          data: { isArchived: true, isActive: false },
+        });
+      }
+    });
+
+    for (const user of users) {
+      await suspendFirebaseAccount(user.firebaseUid);
+    }
+
+    return tenantRepository.findById(id);
   },
 
-  archive: async (id: string) => {
+  reactivate: async (id: string, superAdminUserId: string) => {
     await tenantService.getById(id);
-    return tenantRepository.archive(id);
+
+    // Per the agreed v1 approach, this uniformly reactivates all
+    // users under the tenant, including any that may have been
+    // individually suspended before the tenant-wide suspension.
+    // A future version could track suspension origin (individual
+    // vs cascade) to preserve individual suspensions through a
+    // tenant reactivation — out of scope for v1.
+    const users = await prisma.user.findMany({
+      where: { tenantId: id, isArchived: true },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.tenant.update({
+        where: { id },
+        data: { subscriptionStatus: 'ACTIVE' },
+      });
+
+      for (const user of users) {
+        await tx.user.update({
+          where: { id: user.id },
+          data: { isArchived: false, isActive: true },
+        });
+      }
+    });
+
+    for (const user of users) {
+      await reactivateFirebaseAccount(user.firebaseUid);
+    }
+
+    return tenantRepository.findById(id);
   },
 };
