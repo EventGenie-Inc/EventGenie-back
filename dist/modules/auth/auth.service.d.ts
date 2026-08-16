@@ -17,6 +17,7 @@ export declare const authService: {
     }>;
     requestOtp: (firebaseToken: string) => Promise<{
         message: string;
+        otpExpiresAt: string;
     }>;
     verifyOtp: (firebaseToken: string, data: VerifyOtpDto) => Promise<{
         sessionToken: string;
@@ -32,6 +33,9 @@ export declare const authService: {
     refreshSession: (firebaseToken: string, currentSessionToken: string) => Promise<{
         sessionToken: string;
         expiresIn: string;
+    }>;
+    forgotPassword: (email: string) => Promise<{
+        message: string;
     }>;
 };
 //# sourceMappingURL=auth.service.d.ts.map
