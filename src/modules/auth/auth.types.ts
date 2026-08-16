@@ -8,6 +8,10 @@ export interface VerifyOtpDto {
   otp: string;
 }
 
+export interface ForgotPasswordDto {
+  email: string;
+}
+
 export interface AuthUserResponse {
   user: {
     id: string;

@@ -31,6 +31,21 @@ import rsvpRouter from './modules/rsvp/rsvp.router.js';
 // ─────────────────────────────────────────
 const app = express();
 // ─────────────────────────────────────────
+//  TRUST PROXY
+//  Render terminates TLS and proxies every
+//  request through one hop before it reaches
+//  this app, so Express doesn't see the real
+//  client IP by default. `1` trusts exactly
+//  that one hop when resolving X-Forwarded-For
+//  into req.ip — must be set before any
+//  middleware that reads req.ip (rate limiters
+//  included). `true` is deliberately avoided:
+//  it trusts the entire X-Forwarded-For chain,
+//  which a client could pad with spoofed
+//  entries.
+// ─────────────────────────────────────────
+app.set('trust proxy', 1);
+// ─────────────────────────────────────────
 //  CORS
 //  Env-driven allowlist. Requests with no
 //  Origin header (Postman, curl, server-to-
