@@ -32,10 +32,26 @@ import rsvpRouter from './modules/rsvp/rsvp.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  CORS
-//  Open for now. When frontend URL is known,
-//  replace with: origin: process.env.FRONTEND_URL
+//  Env-driven allowlist. Requests with no
+//  Origin header (Postman, curl, server-to-
+//  server) are always allowed through — only
+//  browser cross-origin requests carry Origin.
 // ─────────────────────────────────────────
-app.use(cors());
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        }
+        else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: false,
+}));
 // ─────────────────────────────────────────
 //  BODY PARSERS
 // ─────────────────────────────────────────
