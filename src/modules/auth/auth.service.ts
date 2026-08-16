@@ -43,17 +43,17 @@ export const authService = {
 
     const existingUser = await authRepository.findUserByFirebaseUid(decoded.uid);
     if (existingUser) {
-      throw new Error('An account already exists for this user. Please log in.');
+      throw new HttpError(409, 'An account already exists for this user. Please log in.');
     }
 
     const existingTenant = await authRepository.findTenantBySlug(data.tenantSlug);
     if (existingTenant) {
-      throw new Error('This tenant slug is already taken. Please choose another.');
+      throw new HttpError(409, 'This tenant slug is already taken. Please choose another.');
     }
 
     const existingEmail = await authRepository.findUserByEmail(decoded.email ?? '');
     if (existingEmail) {
-      throw new Error('An account with this email already exists. Please log in.');
+      throw new HttpError(409, 'An account with this email already exists. Please log in.');
     }
 
     // Registration always creates tenants on SPARK — Celebrate/Elevate
@@ -62,7 +62,7 @@ export const authService = {
     // block all new signups.
     const sparkConfig = await subscriptionTierConfigRepository.findByTier('SPARK');
     if (sparkConfig && !sparkConfig.isAvailable) {
-      throw new Error('New registrations are temporarily unavailable. Please try again later.');
+      throw new HttpError(503, 'New registrations are temporarily unavailable. Please try again later.');
     }
 
     const { user, tenant } = await authRepository.registerTenantAndAdmin(
@@ -92,10 +92,10 @@ export const authService = {
     const decoded = await verifyFirebaseToken(firebaseToken);
 
     const user = await authRepository.findUserByFirebaseUid(decoded.uid);
-    if (!user) throw new Error('User not found. Please register first.');
+    if (!user) throw new HttpError(404, 'User not found. Please register first.');
 
     if (!user.isActive || user.isArchived) {
-      throw new Error('Account is inactive or archived.');
+      throw new HttpError(403, 'Account is inactive or archived.');
     }
 
     await authRepository.invalidatePreviousOtps(user.id);
@@ -142,15 +142,15 @@ export const authService = {
     const decoded = await verifyFirebaseToken(firebaseToken);
 
     const user = await authRepository.findUserByFirebaseUid(decoded.uid);
-    if (!user) throw new Error('User not found.');
+    if (!user) throw new HttpError(404, 'User not found.');
 
     if (!user.isActive || user.isArchived) {
-      throw new Error('Account is inactive or archived.');
+      throw new HttpError(403, 'Account is inactive or archived.');
     }
 
     const otpRecord = await authRepository.findValidOtp(user.id, data.otp);
     if (!otpRecord) {
-      throw new Error('Invalid or expired verification code.');
+      throw new HttpError(400, 'Invalid or expired verification code.');
     }
 
     await authRepository.markOtpAsUsed(otpRecord.id);
