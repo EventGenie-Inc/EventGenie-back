@@ -2,6 +2,8 @@ import { type CreateSubscriptionTierConfigDto, type UpdateSubscriptionTierConfig
 import { type SubscriptionTier } from '@prisma/client';
 export declare const subscriptionTierConfigService: {
     getAll: () => import("@prisma/client").Prisma.PrismaPromise<{
+        updatedAt: Date;
+        isAvailable: boolean;
         tier: import("@prisma/client").$Enums.SubscriptionTier;
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
@@ -13,6 +15,8 @@ export declare const subscriptionTierConfigService: {
         dragDropBuilder: boolean;
     }[]>;
     getByTier: (tier: SubscriptionTier) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
         tier: import("@prisma/client").$Enums.SubscriptionTier;
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
@@ -24,6 +28,8 @@ export declare const subscriptionTierConfigService: {
         dragDropBuilder: boolean;
     }>;
     create: (data: CreateSubscriptionTierConfigDto) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
         tier: import("@prisma/client").$Enums.SubscriptionTier;
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
@@ -35,6 +41,21 @@ export declare const subscriptionTierConfigService: {
         dragDropBuilder: boolean;
     }>;
     update: (tier: SubscriptionTier, data: UpdateSubscriptionTierConfigDto) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
+        tier: import("@prisma/client").$Enums.SubscriptionTier;
+        maxEvents: number | null;
+        maxGuestsPerEvent: number | null;
+        maxSmsPerMonth: number | null;
+        emailEnabled: boolean;
+        smsEnabled: boolean;
+        vendorMarketplace: boolean;
+        memoryHubEnabled: boolean;
+        dragDropBuilder: boolean;
+    }>;
+    setAvailability: (tier: SubscriptionTier, isAvailable: boolean) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
         tier: import("@prisma/client").$Enums.SubscriptionTier;
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;

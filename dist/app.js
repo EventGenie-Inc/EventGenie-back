@@ -31,11 +31,42 @@ import rsvpRouter from './modules/rsvp/rsvp.router.js';
 // ─────────────────────────────────────────
 const app = express();
 // ─────────────────────────────────────────
-//  CORS
-//  Open for now. When frontend URL is known,
-//  replace with: origin: process.env.FRONTEND_URL
+//  TRUST PROXY
+//  Render terminates TLS and proxies every
+//  request through one hop before it reaches
+//  this app, so Express doesn't see the real
+//  client IP by default. `1` trusts exactly
+//  that one hop when resolving X-Forwarded-For
+//  into req.ip — must be set before any
+//  middleware that reads req.ip (rate limiters
+//  included). `true` is deliberately avoided:
+//  it trusts the entire X-Forwarded-For chain,
+//  which a client could pad with spoofed
+//  entries.
 // ─────────────────────────────────────────
-app.use(cors());
+app.set('trust proxy', 1);
+// ─────────────────────────────────────────
+//  CORS
+//  Env-driven allowlist. Requests with no
+//  Origin header (Postman, curl, server-to-
+//  server) are always allowed through — only
+//  browser cross-origin requests carry Origin.
+// ─────────────────────────────────────────
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        }
+        else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: false,
+}));
 // ─────────────────────────────────────────
 //  BODY PARSERS
 // ─────────────────────────────────────────

@@ -543,4 +543,6 @@ model SubscriptionTierConfig {
   vendorMarketplace   Boolean          @default(false)
   memoryHubEnabled    Boolean          @default(false)
   dragDropBuilder     Boolean          @default(false)
+  isAvailable         Boolean          @default(true)
+  updatedAt           DateTime         @updatedAt
 }

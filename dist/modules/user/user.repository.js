@@ -41,5 +41,9 @@ export const userRepository = {
         where: { id },
         data: { isArchived: true, isActive: false },
     }),
+    reactivate: (id) => prisma.user.update({
+        where: { id },
+        data: { isArchived: false, isActive: true },
+    }),
 };
 //# sourceMappingURL=user.repository.js.map

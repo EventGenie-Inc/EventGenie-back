@@ -1,2 +1,2 @@
-import {} from '@prisma/client';
+export {};
 //# sourceMappingURL=tenant.types.js.map

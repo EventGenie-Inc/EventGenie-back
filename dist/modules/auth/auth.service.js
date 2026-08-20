@@ -3,8 +3,15 @@ import { Resend } from 'resend';
 import { getAuth } from 'firebase-admin/auth';
 import { firebaseAdmin } from '../../shared/firebase/firebase.admin.js';
 import { authRepository } from './auth.repository.js';
+import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {} from './auth.types.js';
+// Never reveal whether an email exists in the system — every branch
+// of forgotPassword() (unknown email, suspended account, send failure)
+// returns this exact same shape.
+const FORGOT_PASSWORD_GENERIC_RESPONSE = {
+    message: 'If an account exists for this email, a password reset link has been sent.',
+};
 const resend = new Resend(process.env.RESEND_API_KEY);
 // ─────────────────────────────────────────
 //  Helpers
@@ -26,15 +33,23 @@ export const authService = {
         const decoded = await verifyFirebaseToken(firebaseToken);
         const existingUser = await authRepository.findUserByFirebaseUid(decoded.uid);
         if (existingUser) {
-            throw new Error('An account already exists for this user. Please log in.');
+            throw new HttpError(409, 'An account already exists for this user. Please log in.');
         }
         const existingTenant = await authRepository.findTenantBySlug(data.tenantSlug);
         if (existingTenant) {
-            throw new Error('This tenant slug is already taken. Please choose another.');
+            throw new HttpError(409, 'This tenant slug is already taken. Please choose another.');
         }
         const existingEmail = await authRepository.findUserByEmail(decoded.email ?? '');
         if (existingEmail) {
-            throw new Error('An account with this email already exists. Please log in.');
+            throw new HttpError(409, 'An account with this email already exists. Please log in.');
+        }
+        // Registration always creates tenants on SPARK — Celebrate/Elevate
+        // are upgrades made later, not chosen at signup. A missing config
+        // row is a defensive no-op, not a lockout: don't let it accidentally
+        // block all new signups.
+        const sparkConfig = await subscriptionTierConfigRepository.findByTier('SPARK');
+        if (sparkConfig && !sparkConfig.isAvailable) {
+            throw new HttpError(503, 'New registrations are temporarily unavailable. Please try again later.');
         }
         const { user, tenant } = await authRepository.registerTenantAndAdmin(decoded.uid, decoded.email ?? '', data);
         return {
@@ -57,13 +72,13 @@ export const authService = {
         const decoded = await verifyFirebaseToken(firebaseToken);
         const user = await authRepository.findUserByFirebaseUid(decoded.uid);
         if (!user)
-            throw new Error('User not found. Please register first.');
+            throw new HttpError(404, 'User not found. Please register first.');
         if (!user.isActive || user.isArchived) {
-            throw new Error('Account is inactive or archived.');
+            throw new HttpError(403, 'Account is inactive or archived.');
         }
         await authRepository.invalidatePreviousOtps(user.id);
         const otp = generateOtp();
-        await authRepository.createOtp(user.id, otp);
+        const otpRecord = await authRepository.createOtp(user.id, otp);
         const fromEmail = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
         await resend.emails.send({
             from: fromEmail,
@@ -94,19 +109,22 @@ export const authService = {
         </div>
       `,
         });
-        return { message: 'Verification code sent to your email.' };
+        return {
+            message: 'Verification code sent to your email.',
+            otpExpiresAt: otpRecord.expiresAt.toISOString(),
+        };
     },
     verifyOtp: async (firebaseToken, data) => {
         const decoded = await verifyFirebaseToken(firebaseToken);
         const user = await authRepository.findUserByFirebaseUid(decoded.uid);
         if (!user)
-            throw new Error('User not found.');
+            throw new HttpError(404, 'User not found.');
         if (!user.isActive || user.isArchived) {
-            throw new Error('Account is inactive or archived.');
+            throw new HttpError(403, 'Account is inactive or archived.');
         }
         const otpRecord = await authRepository.findValidOtp(user.id, data.otp);
         if (!otpRecord) {
-            throw new Error('Invalid or expired verification code.');
+            throw new HttpError(400, 'Invalid or expired verification code.');
         }
         await authRepository.markOtpAsUsed(otpRecord.id);
         const payload = {
@@ -177,6 +195,62 @@ export const authService = {
         };
         const sessionToken = generateSessionToken(newPayload);
         return { sessionToken, expiresIn: SESSION_TOKEN_TTL };
+    },
+    forgotPassword: async (email) => {
+        const firebaseUser = await getAuth(firebaseAdmin).getUserByEmail(email).catch(() => null);
+        if (!firebaseUser)
+            return FORGOT_PASSWORD_GENERIC_RESPONSE;
+        // A suspended account (isArchived / !isActive) must not be able to
+        // self-service a reset that lets it back in through a side door.
+        // A Firebase user with no matching Postgres row is treated the
+        // same way — either case returns the identical generic response.
+        const user = await authRepository.findUserByFirebaseUid(firebaseUser.uid);
+        if (!user || !user.isActive || user.isArchived)
+            return FORGOT_PASSWORD_GENERIC_RESPONSE;
+        try {
+            const actionCodeSettings = {
+                url: `${process.env.FRONTEND_BASE_URL}/reset-password`,
+                handleCodeInApp: true,
+            };
+            const resetLink = await getAuth(firebaseAdmin).generatePasswordResetLink(email, actionCodeSettings);
+            const fromEmail = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
+            await resend.emails.send({
+                from: fromEmail,
+                to: email,
+                subject: 'Reset your EventGenie password',
+                html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+            <h2 style="color: #1A1A2E;">Reset your EventGenie password</h2>
+            <p>Hello ${user.username},</p>
+            <p>We received a request to reset your password. Click the button below to choose a new one:</p>
+            <div style="text-align: center; margin: 24px 0;">
+              <a href="${resetLink}" style="
+                display: inline-block;
+                padding: 14px 32px;
+                background: #C6A43A;
+                color: #1A1A2E;
+                font-weight: bold;
+                text-decoration: none;
+                border-radius: 8px;
+              ">
+                Reset Password
+              </a>
+            </div>
+            <p style="color: #6B6B80; font-size: 14px;">
+              This link will expire shortly.<br/>
+              If you did not request this, please ignore this email — your password will remain unchanged.
+            </p>
+          </div>
+        `,
+            });
+        }
+        catch (error) {
+            // Never let a send failure leak account existence via a different
+            // response shape — log server-side and fall through to the same
+            // generic response as every other branch.
+            console.error('Failed to send password reset email:', error);
+        }
+        return FORGOT_PASSWORD_GENERIC_RESPONSE;
     },
 };
 //# sourceMappingURL=auth.service.js.map

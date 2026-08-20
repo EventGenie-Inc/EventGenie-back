@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { tenantService } from './tenant.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
+import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
 
@@ -22,24 +23,26 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id/users', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = await tenantService.create(req.body);
-    res.status(201).json({ status: 'ok', data: tenant });
+    const users = await tenantService.getUsers(req.params['id'] as string);
+    res.status(200).json({ status: 'ok', data: users });
   } catch (err) { next(err); }
 });
 
-router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/suspend', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = await tenantService.update(req.params['id'] as string, req.body);
+    const auth = req as AuthenticatedRequest;
+    const tenant = await tenantService.suspend(req.params['id'] as string, auth.user.id);
     res.status(200).json({ status: 'ok', data: tenant });
   } catch (err) { next(err); }
 });
 
-router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/reactivate', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await tenantService.archive(req.params['id'] as string);
-    res.status(200).json({ status: 'ok', message: 'Tenant archived' });
+    const auth = req as AuthenticatedRequest;
+    const tenant = await tenantService.reactivate(req.params['id'] as string, auth.user.id);
+    res.status(200).json({ status: 'ok', data: tenant });
   } catch (err) { next(err); }
 });
 
