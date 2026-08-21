@@ -8,6 +8,7 @@ import tenantRouter from './modules/tenant/tenant.router.js';
 import userRouter from './modules/user/user.router.js';
 import eventRouter from './modules/event/event.router.js';
 import eventDayRouter from './modules/event-day/event-day.router.js';
+import eventDraftRouter from './modules/event-draft/event-draft.router.js';
 import guestRouter from './modules/guest/guest.router.js';
 import inviteRouter from './modules/invite/invite.router.js';
 import attendanceRouter from './modules/attendance/attendance.router.js';
@@ -101,6 +102,7 @@ app.get('/health', (_req, res) => {
 //  /api/events/:eventId/program/:programId/items
 //  /api/events/:eventId/tickets
 //  /api/events/:eventId/memory-hub
+//  /api/event-drafts/current
 //  /api/invites/:inviteId/rsvp-responses
 //  /api/ticket-purchases
 //  /api/memory-hub (public view by shareToken)
@@ -121,6 +123,7 @@ app.use('/api/events/:eventId/rsvp-fields', rsvpFieldRouter);
 app.use('/api/events/:eventId/program', eventProgramRouter);
 app.use('/api/events/:eventId/program/:programId/items', programItemRouter);
 app.use('/api/events/:eventId/tickets', ticketRouter);
+app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
 // ─────────────────────────────────────────

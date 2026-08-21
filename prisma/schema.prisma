@@ -106,6 +106,7 @@ model Tenant {
   users        User[]
   events       Event[]
   vendorSpaces VendorSpace[]
+  eventDrafts  EventDraft[]
 }
 
 // ─────────────────────────────────────────
@@ -130,6 +131,7 @@ model User {
   eventsCreated      Event[]
   memoryItems        MemoryItem[] @relation("MemoryItemUploadedByUser")
   otpRecords         OtpRecord[]
+  eventDrafts        EventDraft[]
 }
 
 // ─────────────────────────────────────────
@@ -310,6 +312,29 @@ model MemoryHub {
 
   event       Event        @relation(fields: [eventId], references: [id])
   memoryItems MemoryItem[]
+}
+
+// ─────────────────────────────────────────
+//  EVENT DRAFT
+//  Autosave scratchpad for the event-creation
+//  wizard. One in-progress draft per tenant+user.
+//  Deleted outright once materialized or
+//  discarded — not a soft-deleted record.
+// ─────────────────────────────────────────
+
+model EventDraft {
+  id              String   @id @default(cuid())
+  tenantId        String
+  createdByUserId String
+  currentStep     Int      @default(1)
+  payload         Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant        Tenant @relation(fields: [tenantId], references: [id])
+  createdByUser User   @relation(fields: [createdByUserId], references: [id])
+
+  @@unique([tenantId, createdByUserId])
 }
 
 // ─────────────────────────────────────────

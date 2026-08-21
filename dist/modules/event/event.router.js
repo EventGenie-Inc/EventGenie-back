@@ -16,7 +16,8 @@ router.get('/', authenticate, requireEventAdminOrVendor, async (req, res, next) 
 });
 router.get('/:id', authenticate, requireEventAdminOrVendor, async (req, res, next) => {
     try {
-        const event = await eventService.getById(req.params['id']);
+        const auth = req;
+        const event = await eventService.getById(req.params['id'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: event });
     }
     catch (err) {
@@ -41,7 +42,7 @@ router.post('/', authenticate, requireEventAdmin, async (req, res, next) => {
 router.put('/:id', authenticate, requireEventAdmin, async (req, res, next) => {
     try {
         const auth = req;
-        const event = await eventService.update(req.params['id'], auth.user.id, req.body);
+        const event = await eventService.update(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId, req.body);
         res.status(200).json({ status: 'ok', data: event });
     }
     catch (err) {
@@ -51,7 +52,7 @@ router.put('/:id', authenticate, requireEventAdmin, async (req, res, next) => {
 router.delete('/:id', authenticate, requireEventAdmin, async (req, res, next) => {
     try {
         const auth = req;
-        await eventService.archive(req.params['id'], auth.user.id);
+        await eventService.archive(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', message: 'Event archived' });
     }
     catch (err) {
