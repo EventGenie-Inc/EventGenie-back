@@ -6,7 +6,21 @@ import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
 
-// All tenant routes are SUPER_ADMIN only
+// Self-service lookup of the caller's own tenant — must be registered before
+// the blanket SUPER_ADMIN guard below, since any authenticated user needs it.
+router.get('/me', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    if (!auth.user.tenantId) {
+      res.status(400).json({ status: 'error', message: 'User has no associated tenant' });
+      return;
+    }
+    const tenant = await tenantService.getById(auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: tenant });
+  } catch (err) { next(err); }
+});
+
+// All other tenant routes are SUPER_ADMIN only
 router.use(authenticate, requireSuperAdmin);
 
 router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
