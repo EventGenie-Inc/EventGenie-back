@@ -8,7 +8,7 @@ export interface UpdateMemoryHubDto {
   title?: string;
   description?: string;
   isPublic?: boolean;
-  opensAt?: string;
+  opensAt?: string | null;
 }
 
 export interface CreateMemoryItemDto {
