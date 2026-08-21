@@ -36,7 +36,7 @@ export declare const eventRepository: {
         createdBy: string;
         updatedBy: string;
     })[]>;
-    findById: (id: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
+    findById: (id: string, tenantId?: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -63,6 +63,62 @@ export declare const eventRepository: {
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
+        }[];
+        rsvpFields: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            label: string;
+            fieldType: import("@prisma/client").$Enums.RsvpFieldType;
+            isRequired: boolean;
+            options: string | null;
+            order: number;
+        }[];
+        program: ({
+            programItems: {
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                description: string | null;
+                createdBy: string;
+                updatedBy: string;
+                startTime: Date;
+                order: number;
+                title: string;
+                programId: string;
+                durationMins: number | null;
+            }[];
+        } & {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            title: string | null;
+            isPublished: boolean;
+        }) | null;
+        tickets: {
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            price: import("@prisma/client-runtime-utils").Decimal;
+            currency: string;
+            totalQuantity: number | null;
+            soldCount: number;
+            isAvailable: boolean;
         }[];
     } & {
         name: string;

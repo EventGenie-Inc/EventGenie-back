@@ -9,11 +9,22 @@ export const eventRepository = {
         include: { eventDays: { where: { isArchived: false } } },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id) => prisma.event.findFirst({
-        where: { id, isArchived: false },
+    findById: (id, tenantId) => prisma.event.findFirst({
+        where: {
+            id,
+            isArchived: false,
+            ...(tenantId ? { tenantId } : {}),
+        },
         include: {
             eventDays: { where: { isArchived: false } },
             memoryHub: true,
+            tickets: { where: { isArchived: false } },
+            rsvpFields: { where: { isArchived: false }, orderBy: { order: 'asc' } },
+            program: {
+                include: {
+                    programItems: { where: { isArchived: false }, orderBy: { order: 'asc' } },
+                },
+            },
         },
     }),
     create: (tenantId, userId, data) => prisma.event.create({

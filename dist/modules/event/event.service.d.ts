@@ -37,7 +37,7 @@ export declare const eventService: {
         createdBy: string;
         updatedBy: string;
     })[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -64,6 +64,62 @@ export declare const eventService: {
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
+        }[];
+        rsvpFields: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            label: string;
+            fieldType: import("@prisma/client").$Enums.RsvpFieldType;
+            isRequired: boolean;
+            options: string | null;
+            order: number;
+        }[];
+        program: ({
+            programItems: {
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                description: string | null;
+                createdBy: string;
+                updatedBy: string;
+                startTime: Date;
+                order: number;
+                title: string;
+                programId: string;
+                durationMins: number | null;
+            }[];
+        } & {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            title: string | null;
+            isPublished: boolean;
+        }) | null;
+        tickets: {
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            price: import("@prisma/client-runtime-utils").Decimal;
+            currency: string;
+            totalQuantity: number | null;
+            soldCount: number;
+            isAvailable: boolean;
         }[];
     } & {
         name: string;
@@ -109,7 +165,7 @@ export declare const eventService: {
         createdBy: string;
         updatedBy: string;
     }>;
-    update: (id: string, userId: string, data: UpdateEventDto) => Promise<{
+    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -131,7 +187,7 @@ export declare const eventService: {
         createdBy: string;
         updatedBy: string;
     }>;
-    archive: (id: string, userId: string) => Promise<{
+    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
