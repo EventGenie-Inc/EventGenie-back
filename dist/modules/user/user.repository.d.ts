@@ -1,6 +1,6 @@
 import { type CreateUserDto, type UpdateUserDto } from './user.types.js';
 export declare const userRepository: {
-    findAll: (tenantId?: string) => import("@prisma/client").Prisma.PrismaPromise<{
+    findAll: (tenantId?: string, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string;
         isArchived: boolean;
@@ -13,7 +13,7 @@ export declare const userRepository: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    findById: (id: string) => import("@prisma/client").Prisma.Prisma__UserClient<{
+    findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__UserClient<{
         id: string;
         email: string;
         isArchived: boolean;

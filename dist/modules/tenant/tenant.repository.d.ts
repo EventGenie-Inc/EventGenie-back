@@ -54,7 +54,7 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    findAllUsersByTenant: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<{
+    findAllUsersByTenant: (tenantId: string, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string;
         isArchived: boolean;

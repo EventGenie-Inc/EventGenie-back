@@ -1,15 +1,18 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import {} from './user.types.js';
 export const userRepository = {
-    findAll: (tenantId) => prisma.user.findMany({
+    findAll: (tenantId, includeArchived = false) => prisma.user.findMany({
         where: {
-            isArchived: false,
+            ...(includeArchived ? {} : { isArchived: false }),
             ...(tenantId ? { tenantId } : {}),
         },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id) => prisma.user.findFirst({
-        where: { id, isArchived: false },
+    findById: (id, includeArchived = false) => prisma.user.findFirst({
+        where: {
+            id,
+            ...(includeArchived ? {} : { isArchived: false }),
+        },
     }),
     findByFirebaseUid: (firebaseUid) => prisma.user.findUnique({
         where: { firebaseUid },

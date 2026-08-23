@@ -18,8 +18,11 @@ export const tenantRepository = {
         where: { id },
         data: { subscriptionStatus: 'ACTIVE' },
     }),
-    findAllUsersByTenant: (tenantId) => prisma.user.findMany({
-        where: { tenantId, isArchived: false },
+    findAllUsersByTenant: (tenantId, includeArchived = false) => prisma.user.findMany({
+        where: {
+            tenantId,
+            ...(includeArchived ? {} : { isArchived: false }),
+        },
     }),
 };
 //# sourceMappingURL=tenant.repository.js.map

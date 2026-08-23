@@ -30,8 +30,11 @@ export const tenantRepository = {
       data: { subscriptionStatus: 'ACTIVE' },
     }),
 
-  findAllUsersByTenant: (tenantId: string) =>
+  findAllUsersByTenant: (tenantId: string, includeArchived = false) =>
     prisma.user.findMany({
-      where: { tenantId, isArchived: false },
+      where: {
+        tenantId,
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
     }),
 };
