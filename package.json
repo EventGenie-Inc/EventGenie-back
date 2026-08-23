@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "postinstall": "prisma generate && npm run build",
+    "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"

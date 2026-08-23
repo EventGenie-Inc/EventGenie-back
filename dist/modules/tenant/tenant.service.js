@@ -11,7 +11,9 @@ export const tenantService = {
     },
     getUsers: async (id) => {
         await tenantService.getById(id);
-        return tenantRepository.findAllUsersByTenant(id);
+        // Super Admin oversight view — must include suspended users so they
+        // remain visible and reactivatable, not just active ones.
+        return tenantRepository.findAllUsersByTenant(id, true);
     },
     // Locks out the entire tenant and cascades to archiving every
     // User under it. Reversible via reactivate — Super Admin never

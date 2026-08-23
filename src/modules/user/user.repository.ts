@@ -3,18 +3,21 @@ import { type CreateUserDto, type UpdateUserDto } from './user.types.js';
 
 export const userRepository = {
 
-  findAll: (tenantId?: string) =>
+  findAll: (tenantId?: string, includeArchived = false) =>
     prisma.user.findMany({
       where: {
-        isArchived: false,
+        ...(includeArchived ? {} : { isArchived: false }),
         ...(tenantId ? { tenantId } : {}),
       },
       orderBy: { createdAt: 'desc' },
     }),
 
-  findById: (id: string) =>
+  findById: (id: string, includeArchived = false) =>
     prisma.user.findFirst({
-      where: { id, isArchived: false },
+      where: {
+        id,
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
     }),
 
   findByFirebaseUid: (firebaseUid: string) =>

@@ -14,7 +14,7 @@ export declare const userService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, includeArchived?: boolean) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
