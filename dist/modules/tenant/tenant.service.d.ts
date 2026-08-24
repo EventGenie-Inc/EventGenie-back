@@ -10,7 +10,7 @@ export declare const tenantService: {
         createdAt: Date;
         updatedAt: Date;
     }[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, includeArchived?: boolean) => Promise<{
         name: string;
         id: string;
         slug: string;

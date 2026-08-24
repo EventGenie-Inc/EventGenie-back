@@ -13,7 +13,7 @@ export declare const userRepository: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__UserClient<{
+    findById: (id: string, includeArchived?: boolean, tenantId?: string) => import("@prisma/client").Prisma.Prisma__UserClient<{
         id: string;
         email: string;
         isArchived: boolean;

@@ -27,6 +27,7 @@ export const eventRepository = {
             },
         },
     }),
+    countActive: (tenantId) => prisma.event.count({ where: { tenantId, isArchived: false } }),
     create: (tenantId, userId, data) => prisma.event.create({
         data: {
             tenantId,

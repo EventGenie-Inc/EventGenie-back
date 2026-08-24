@@ -10,7 +10,7 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     }[]>;
-    findById: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
+    findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
         id: string;
         slug: string;

@@ -4,6 +4,7 @@ import { eventRepository } from '../event/event.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {} from './event-draft.types.js';
 import {} from '@prisma/client';
+import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 export const eventDraftService = {
     getCurrentDraft: (tenantId, userId) => eventDraftRepository.findByTenantAndUser(tenantId, userId),
     saveDraft: (tenantId, userId, data) => eventDraftRepository.upsert(tenantId, userId, data),
@@ -29,6 +30,11 @@ export const eventDraftService = {
         const program = p.program;
         const programItems = Array.isArray(program?.items) ? program.items : [];
         const memoryHub = p.memoryHub;
+        await assertEventCreatable(tenantId, {
+            ...(p.visibility !== undefined && { visibility: p.visibility }),
+            ...(p.ticketing !== undefined && { ticketing: p.ticketing }),
+            hasCustomRsvpFields: customFields.length > 0,
+        });
         const result = await prisma.$transaction(async (tx) => {
             const event = await tx.event.create({
                 data: {

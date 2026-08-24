@@ -12,11 +12,12 @@ export const userRepository = {
       orderBy: { createdAt: 'desc' },
     }),
 
-  findById: (id: string, includeArchived = false) =>
+  findById: (id: string, includeArchived = false, tenantId?: string) =>
     prisma.user.findFirst({
       where: {
         id,
         ...(includeArchived ? {} : { isArchived: false }),
+        ...(tenantId ? { tenantId } : {}),
       },
     }),
 
