@@ -27,7 +27,8 @@ router.get('/:id', async (req, res, next) => {
 });
 router.post('/', async (req, res, next) => {
     try {
-        const user = await userService.create(req.body);
+        const auth = req;
+        const user = await userService.create(auth.user.role, auth.user.id, auth.user.tenantId, req.body);
         res.status(201).json({ status: 'ok', data: user });
     }
     catch (err) {
@@ -37,7 +38,7 @@ router.post('/', async (req, res, next) => {
 router.put('/:id', async (req, res, next) => {
     try {
         const auth = req;
-        const user = await userService.update(req.params['id'], auth.user.role, auth.user.tenantId, req.body);
+        const user = await userService.update(req.params['id'], auth.user.role, auth.user.tenantId, auth.user.id, req.body);
         res.status(200).json({ status: 'ok', data: user });
     }
     catch (err) {

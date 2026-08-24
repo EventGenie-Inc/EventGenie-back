@@ -25,7 +25,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await userService.create(req.body);
+    const auth = req as AuthenticatedRequest;
+    const user = await userService.create(auth.user.role, auth.user.id, auth.user.tenantId, req.body);
     res.status(201).json({ status: 'ok', data: user });
   } catch (err) { next(err); }
 });
@@ -33,7 +34,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const user = await userService.update(req.params['id'] as string, auth.user.role, auth.user.tenantId, req.body);
+    const user = await userService.update(req.params['id'] as string, auth.user.role, auth.user.tenantId, auth.user.id, req.body);
     res.status(200).json({ status: 'ok', data: user });
   } catch (err) { next(err); }
 });
