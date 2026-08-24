@@ -14,7 +14,7 @@ export declare const userService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    getById: (id: string, includeArchived?: boolean) => Promise<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
@@ -40,7 +40,7 @@ export declare const userService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    update: (id: string, data: UpdateUserDto) => Promise<{
+    update: (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateUserDto) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
@@ -53,7 +53,7 @@ export declare const userService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    archive: (id: string) => Promise<{
+    archive: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
@@ -66,7 +66,7 @@ export declare const userService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    reactivate: (id: string) => Promise<{
+    reactivate: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;

@@ -142,6 +142,7 @@ export declare const eventRepository: {
         createdBy: string;
         updatedBy: string;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    countActive: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
     create: (tenantId: string, userId: string, data: CreateEventDto) => import("@prisma/client").Prisma.Prisma__EventClient<{
         name: string;
         id: string;

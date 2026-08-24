@@ -9,8 +9,8 @@ export const tenantService = {
 
   getAll: () => tenantRepository.findAll(),
 
-  getById: async (id: string) => {
-    const tenant = await tenantRepository.findById(id);
+  getById: async (id: string, includeArchived = false) => {
+    const tenant = await tenantRepository.findById(id, includeArchived);
     if (!tenant) throw new Error('Tenant not found');
     return tenant;
   },
@@ -52,7 +52,12 @@ export const tenantService = {
   },
 
   reactivate: async (id: string, superAdminUserId: string) => {
-    await tenantService.getById(id);
+    // includeArchived: true — the whole point of reactivate is to find a
+    // tenant that is currently archived and un-archive it. Currently
+    // dormant in practice since nothing sets Tenant.isArchived = true yet
+    // (tenant suspension uses subscriptionStatus instead), but this must
+    // not be left broken for whenever an archive path is added.
+    await tenantService.getById(id, true);
 
     // Per the agreed v1 approach, this uniformly reactivates all
     // users under the tenant, including any that may have been
@@ -67,7 +72,10 @@ export const tenantService = {
     await prisma.$transaction(async (tx) => {
       await tx.tenant.update({
         where: { id },
-        data: { subscriptionStatus: 'ACTIVE' },
+        // isArchived is included alongside subscriptionStatus — without it,
+        // an archived tenant's lookup would find it (per the fix above) but
+        // this mutation would never actually un-archive it.
+        data: { subscriptionStatus: 'ACTIVE', isArchived: false },
       });
 
       for (const user of users) {

@@ -8,9 +8,12 @@ export const tenantRepository = {
       orderBy: { createdAt: 'desc' },
     }),
 
-  findById: (id: string) =>
+  findById: (id: string, includeArchived = false) =>
     prisma.tenant.findFirst({
-      where: { id, isArchived: false },
+      where: {
+        id,
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
     }),
 
   findBySlug: (slug: string) =>

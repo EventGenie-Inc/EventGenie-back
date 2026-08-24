@@ -26,14 +26,6 @@ import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 
-
-// ─────────────────────────────────────────
-//  Remaining routers registered as built:
-//  import authRouter from './modules/auth/auth.router.js';
-//  import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
-//  import vendorRouter from './modules/vendor/vendor.router.js';
-// ─────────────────────────────────────────
-
 const app: Application = express();
 
 // ─────────────────────────────────────────

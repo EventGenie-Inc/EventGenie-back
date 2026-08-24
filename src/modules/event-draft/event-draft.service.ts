@@ -4,6 +4,7 @@ import { eventRepository } from '../event/event.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
+import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 
 export const eventDraftService = {
 
@@ -37,6 +38,12 @@ export const eventDraftService = {
     const program = p.program as Record<string, unknown> | undefined;
     const programItems = Array.isArray(program?.items) ? (program.items as Array<Record<string, unknown>>) : [];
     const memoryHub = p.memoryHub as Record<string, unknown> | undefined;
+
+    await assertEventCreatable(tenantId, {
+      ...(p.visibility !== undefined && { visibility: p.visibility as EventVisibility }),
+      ...(p.ticketing !== undefined && { ticketing: p.ticketing as EventTicketing }),
+      hasCustomRsvpFields: customFields.length > 0,
+    });
 
     const result = await prisma.$transaction(async (tx) => {
       const event = await tx.event.create({

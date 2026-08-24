@@ -17,7 +17,8 @@ router.get('/', async (req, res, next) => {
 });
 router.get('/:id', async (req, res, next) => {
     try {
-        const user = await userService.getById(req.params['id']);
+        const auth = req;
+        const user = await userService.getById(req.params['id'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: user });
     }
     catch (err) {
@@ -35,7 +36,8 @@ router.post('/', async (req, res, next) => {
 });
 router.put('/:id', async (req, res, next) => {
     try {
-        const user = await userService.update(req.params['id'], req.body);
+        const auth = req;
+        const user = await userService.update(req.params['id'], auth.user.role, auth.user.tenantId, req.body);
         res.status(200).json({ status: 'ok', data: user });
     }
     catch (err) {
@@ -44,7 +46,8 @@ router.put('/:id', async (req, res, next) => {
 });
 router.delete('/:id', async (req, res, next) => {
     try {
-        await userService.archive(req.params['id']);
+        const auth = req;
+        await userService.archive(req.params['id'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', message: 'User archived' });
     }
     catch (err) {
@@ -55,7 +58,8 @@ router.delete('/:id', async (req, res, next) => {
 // stacked on top of the router-level requireTenantAdmin
 router.post('/:id/suspend', requireSuperAdmin, async (req, res, next) => {
     try {
-        const user = await userService.archive(req.params['id']);
+        const auth = req;
+        const user = await userService.archive(req.params['id'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: user });
     }
     catch (err) {
@@ -64,7 +68,8 @@ router.post('/:id/suspend', requireSuperAdmin, async (req, res, next) => {
 });
 router.post('/:id/reactivate', requireSuperAdmin, async (req, res, next) => {
     try {
-        const user = await userService.reactivate(req.params['id']);
+        const auth = req;
+        const user = await userService.reactivate(req.params['id'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: user });
     }
     catch (err) {

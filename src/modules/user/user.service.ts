@@ -1,6 +1,7 @@
 import { userRepository } from './user.repository.js';
 import { type CreateUserDto, type UpdateUserDto } from './user.types.js';
 import { type PlatformRole } from '@prisma/client';
+import { HttpError } from '../../shared/errors/http-error.js';
 import {
   suspendFirebaseAccount,
   reactivateFirebaseAccount,
@@ -16,9 +17,16 @@ export const userService = {
     return userRepository.findAll(tenantId ?? undefined);
   },
 
-  getById: async (id: string, includeArchived = false) => {
-    const user = await userRepository.findById(id, includeArchived);
-    if (!user) throw new Error('User not found');
+  // requestingRole/tenantId scope the lookup to the caller's own tenant;
+  // SUPER_ADMIN bypasses, matching the pattern already used by
+  // eventService.getById. Thrown as HttpError so cross-tenant access
+  // surfaces as 404, not a generic 500.
+  getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+    const user = requestingRole === 'SUPER_ADMIN'
+      ? await userRepository.findById(id, includeArchived)
+      : await userRepository.findById(id, includeArchived, tenantId ?? undefined);
+
+    if (!user) throw new HttpError(404, 'User not found');
     return user;
   },
 
@@ -31,22 +39,22 @@ export const userService = {
     return userRepository.create(data);
   },
 
-  update: async (id: string, data: UpdateUserDto) => {
-    await userService.getById(id);
+  update: async (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateUserDto) => {
+    await userService.getById(id, requestingRole, tenantId);
     return userRepository.update(id, data);
   },
 
-  archive: async (id: string) => {
-    const user = await userService.getById(id);
+  archive: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    const user = await userService.getById(id, requestingRole, tenantId);
     const archived = await userRepository.archive(id);
     await suspendFirebaseAccount(user.firebaseUid);
     return archived;
   },
 
-  reactivate: async (id: string) => {
+  reactivate: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
     // to find a user that is currently archived and un-archive them.
-    const user = await userService.getById(id, true);
+    const user = await userService.getById(id, requestingRole, tenantId, true);
     const reactivated = await userRepository.reactivate(id);
     await reactivateFirebaseAccount(user.firebaseUid);
     return reactivated;

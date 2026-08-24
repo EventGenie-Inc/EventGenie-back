@@ -17,7 +17,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await userService.getById(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const user = await userService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: user });
   } catch (err) { next(err); }
 });
@@ -31,14 +32,16 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await userService.update(req.params['id'] as string, req.body);
+    const auth = req as AuthenticatedRequest;
+    const user = await userService.update(req.params['id'] as string, auth.user.role, auth.user.tenantId, req.body);
     res.status(200).json({ status: 'ok', data: user });
   } catch (err) { next(err); }
 });
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await userService.archive(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    await userService.archive(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'User archived' });
   } catch (err) { next(err); }
 });
@@ -47,14 +50,16 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 // stacked on top of the router-level requireTenantAdmin
 router.post('/:id/suspend', requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await userService.archive(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const user = await userService.archive(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: user });
   } catch (err) { next(err); }
 });
 
 router.post('/:id/reactivate', requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await userService.reactivate(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const user = await userService.reactivate(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: user });
   } catch (err) { next(err); }
 });

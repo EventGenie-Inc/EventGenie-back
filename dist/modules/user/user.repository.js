@@ -8,10 +8,11 @@ export const userRepository = {
         },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id, includeArchived = false) => prisma.user.findFirst({
+    findById: (id, includeArchived = false, tenantId) => prisma.user.findFirst({
         where: {
             id,
             ...(includeArchived ? {} : { isArchived: false }),
+            ...(tenantId ? { tenantId } : {}),
         },
     }),
     findByFirebaseUid: (firebaseUid) => prisma.user.findUnique({
