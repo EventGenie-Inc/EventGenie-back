@@ -40,5 +40,19 @@ export const eventService = {
         await eventService.getById(id, requestingRole, tenantId);
         return eventRepository.archive(id, userId);
     },
+    // PUBLIC-only: the organiser copies this link, no per-guest token or
+    // guest record involved. NOTE: no guest self-registration flow exists
+    // yet anywhere in the codebase (confirmed — rsvp.router.ts is entirely
+    // token-driven via a pre-existing Invite), so this endpoint returns a
+    // URL contract only; nothing on the backend currently resolves it into
+    // a working RSVP for a stranger holding the link. That flow is out of
+    // scope here.
+    getShareLink: async (id, requestingRole, tenantId) => {
+        const event = await eventService.getById(id, requestingRole, tenantId);
+        if (event.visibility !== 'PUBLIC') {
+            throw new HttpError(400, 'Share links are only available for public events — private events use individual invites instead.');
+        }
+        return { url: `${process.env.FRONTEND_BASE_URL}/rsvp?eventId=${event.id}` };
+    },
 };
 //# sourceMappingURL=event.service.js.map
