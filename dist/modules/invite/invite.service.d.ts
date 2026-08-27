@@ -1,6 +1,7 @@
 import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
+import { type PlatformRole } from '@prisma/client';
 export declare const inviteService: {
-    getAll: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<({
+    getAll: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<({
         guest: {
             id: string;
             email: string | null;
@@ -8,8 +9,9 @@ export declare const inviteService: {
             createdAt: Date;
             updatedAt: Date;
             phoneNumber: string | null;
-            firstName: string;
-            surname: string;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
         };
         inviteEventDay: ({
             eventDay: {
@@ -50,7 +52,7 @@ export declare const inviteService: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     })[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         guest: {
             id: string;
             email: string | null;
@@ -58,8 +60,9 @@ export declare const inviteService: {
             createdAt: Date;
             updatedAt: Date;
             phoneNumber: string | null;
-            firstName: string;
-            surname: string;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
         };
         inviteEventDay: ({
             eventDay: {
@@ -120,7 +123,7 @@ export declare const inviteService: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     }>;
-    create: (eventId: string, userId: string, data: CreateInviteDto) => Promise<{
+    create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateInviteDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -139,7 +142,7 @@ export declare const inviteService: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     }>;
-    update: (id: string, userId: string, data: UpdateInviteDto) => Promise<{
+    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateInviteDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -158,7 +161,26 @@ export declare const inviteService: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     }>;
-    archive: (id: string, userId: string) => Promise<{
+    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.InviteStatus;
+        createdBy: string;
+        updatedBy: string;
+        expiresAt: Date | null;
+        usedAt: Date | null;
+        eventId: string;
+        guestId: string;
+        token: string;
+        used: boolean;
+        editToken: string | null;
+        editTokenExpiresAt: Date | null;
+        deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+        deliveredAt: Date | null;
+    }>;
+    reactivate: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;

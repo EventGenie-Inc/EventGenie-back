@@ -209,5 +209,8 @@ export declare const eventService: {
         createdBy: string;
         updatedBy: string;
     }>;
+    getShareLink: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        url: string;
+    }>;
 };
 //# sourceMappingURL=event.service.d.ts.map

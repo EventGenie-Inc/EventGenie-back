@@ -33,6 +33,21 @@ export const eventDraftService = {
     }
 
     const days = p.days as Array<Record<string, unknown>>;
+
+    // Duplicate day labels within this draft would make the import
+    // engine's Day-column matching ambiguous later — checked purely
+    // in-memory, before the transaction starts, since the event doesn't
+    // exist yet and there's nothing external to race against. Matches
+    // event-day-validation.util.ts's case-insensitive rule.
+    const seenLabels = new Set<string>();
+    for (const day of days) {
+      const label = String(day.label ?? '').trim().toLowerCase();
+      if (seenLabels.has(label)) {
+        throw new HttpError(409, `Duplicate day label '${day.label as string}' — day labels must be unique within an event`);
+      }
+      seenLabels.add(label);
+    }
+
     const tickets = Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : [];
     const customFields = Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : [];
     const program = p.program as Record<string, unknown> | undefined;

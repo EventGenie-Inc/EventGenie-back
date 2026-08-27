@@ -11,15 +11,34 @@ export const inviteRepository = {
       orderBy: { createdAt: 'desc' },
     }),
 
-  findById: (id: string) =>
+  findById: (id: string, includeArchived = false) =>
     prisma.invite.findFirst({
-      where: { id, isArchived: false },
+      where: { id, ...(includeArchived ? {} : { isArchived: false }) },
       include: {
         guest: true,
         inviteEventDay: { include: { eventDay: true } },
         attendances: { include: { eventDay: true } },
       },
     }),
+
+  // Doubles as the guest-ownership/eligibility check for the bulk-send
+  // flow — must filter BOTH isArchived flags explicitly (an invite can be
+  // archived independently of its guest and vice versa). Any requested
+  // guestId missing from the result is wrong-event, archived-guest, or
+  // archived-invite, and the caller rejects the whole batch on that basis.
+  findByGuestIds: (eventId: string, guestIds: string[]) =>
+    prisma.invite.findMany({
+      where: {
+        eventId,
+        guestId: { in: guestIds },
+        isArchived: false,
+        guest: { isArchived: false },
+      },
+      include: { guest: true },
+    }),
+
+  markDelivered: (id: string) =>
+    prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
 
   findByToken: (token: string) =>
     prisma.invite.findUnique({
@@ -83,5 +102,11 @@ export const inviteRepository = {
     prisma.invite.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
+    }),
+
+  reactivate: (id: string, userId: string) =>
+    prisma.invite.update({
+      where: { id },
+      data: { isArchived: false, updatedBy: userId },
     }),
 };

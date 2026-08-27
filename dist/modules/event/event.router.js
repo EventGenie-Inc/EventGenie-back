@@ -24,6 +24,16 @@ router.get('/:id', authenticate, requireEventAdminOrVendor, async (req, res, nex
         next(err);
     }
 });
+router.get('/:id/share-link', authenticate, requireEventAdmin, async (req, res, next) => {
+    try {
+        const auth = req;
+        const result = await eventService.getShareLink(req.params['id'], auth.user.role, auth.user.tenantId);
+        res.status(200).json({ status: 'ok', data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 router.post('/', authenticate, requireEventAdmin, async (req, res, next) => {
     try {
         const auth = req;

@@ -11,6 +11,7 @@ import eventRouter from './modules/event/event.router.js';
 import eventDayRouter from './modules/event-day/event-day.router.js';
 import eventDraftRouter from './modules/event-draft/event-draft.router.js';
 import guestRouter from './modules/guest/guest.router.js';
+import guestEventRouter from './modules/guest/guest-event.router.js';
 import inviteRouter from './modules/invite/invite.router.js';
 import attendanceRouter from './modules/attendance/attendance.router.js';
 import authRouter from './modules/auth/auth.router.js';
@@ -97,6 +98,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/users
 //  /api/events
 //  /api/events/:eventId/days
+//  /api/events/:eventId/guests
 //  /api/events/:eventId/invites
 //  /api/events/:eventId/rsvp-fields
 //  /api/events/:eventId/program
@@ -120,6 +122,7 @@ app.use('/api/attendance', attendanceRouter);
 // Event router with nested children
 app.use('/api/events', eventRouter);
 app.use('/api/events/:eventId/days', eventDayRouter);
+app.use('/api/events/:eventId/guests', guestEventRouter);
 app.use('/api/events/:eventId/invites', inviteRouter);
 app.use('/api/events/:eventId/rsvp-fields', rsvpFieldRouter);
 app.use('/api/events/:eventId/program', eventProgramRouter);

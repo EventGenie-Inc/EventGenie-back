@@ -18,8 +18,8 @@ export declare const ticketPurchaseService: {
         };
     } & {
         id: string;
-        currency: string;
         inviteId: string;
+        currency: string;
         ticketId: string;
         quantity: number;
         totalPaid: import("@prisma/client-runtime-utils").Decimal;
@@ -45,8 +45,8 @@ export declare const ticketPurchaseService: {
         };
     } & {
         id: string;
-        currency: string;
         inviteId: string;
+        currency: string;
         ticketId: string;
         quantity: number;
         totalPaid: import("@prisma/client-runtime-utils").Decimal;

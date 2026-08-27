@@ -3,6 +3,7 @@ import { type CreateEventDayDto, type UpdateEventDayDto } from './event-day.type
 import { eventService } from '../event/event.service.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { assertNoDuplicateDayLabel, isDayLabelUniqueViolation } from './event-day-validation.util.js';
 
 // EventDay has no tenantId of its own — ownership is transitive through
 // its parent Event. Rather than duplicating tenant-scoping logic here,
@@ -26,12 +27,30 @@ export const eventDayService = {
 
   create: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateEventDayDto) => {
     await eventService.getById(eventId, requestingRole, tenantId);
-    return eventDayRepository.create(eventId, userId, data);
+    await assertNoDuplicateDayLabel(eventId, data.label);
+    try {
+      return await eventDayRepository.create(eventId, userId, data);
+    } catch (err) {
+      if (isDayLabelUniqueViolation(err)) {
+        throw new HttpError(409, `This event already has a day labeled '${data.label}' — day labels must be unique per event`);
+      }
+      throw err;
+    }
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDayDto) => {
-    await eventDayService.getById(id, requestingRole, tenantId);
-    return eventDayRepository.update(id, userId, data);
+    const day = await eventDayService.getById(id, requestingRole, tenantId);
+    if (data.label !== undefined) {
+      await assertNoDuplicateDayLabel(day.eventId, data.label, id);
+    }
+    try {
+      return await eventDayRepository.update(id, userId, data);
+    } catch (err) {
+      if (isDayLabelUniqueViolation(err)) {
+        throw new HttpError(409, `This event already has a day labeled '${data.label ?? day.label}' — day labels must be unique per event`);
+      }
+      throw err;
+    }
   },
 
   archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {

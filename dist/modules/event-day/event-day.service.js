@@ -3,6 +3,7 @@ import {} from './event-day.types.js';
 import { eventService } from '../event/event.service.js';
 import {} from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { assertNoDuplicateDayLabel, isDayLabelUniqueViolation } from './event-day-validation.util.js';
 // EventDay has no tenantId of its own — ownership is transitive through
 // its parent Event. Rather than duplicating tenant-scoping logic here,
 // every method gates through eventService.getById(), which is already
@@ -24,11 +25,31 @@ export const eventDayService = {
     },
     create: async (eventId, userId, requestingRole, tenantId, data) => {
         await eventService.getById(eventId, requestingRole, tenantId);
-        return eventDayRepository.create(eventId, userId, data);
+        await assertNoDuplicateDayLabel(eventId, data.label);
+        try {
+            return await eventDayRepository.create(eventId, userId, data);
+        }
+        catch (err) {
+            if (isDayLabelUniqueViolation(err)) {
+                throw new HttpError(409, `This event already has a day labeled '${data.label}' — day labels must be unique per event`);
+            }
+            throw err;
+        }
     },
     update: async (id, userId, requestingRole, tenantId, data) => {
-        await eventDayService.getById(id, requestingRole, tenantId);
-        return eventDayRepository.update(id, userId, data);
+        const day = await eventDayService.getById(id, requestingRole, tenantId);
+        if (data.label !== undefined) {
+            await assertNoDuplicateDayLabel(day.eventId, data.label, id);
+        }
+        try {
+            return await eventDayRepository.update(id, userId, data);
+        }
+        catch (err) {
+            if (isDayLabelUniqueViolation(err)) {
+                throw new HttpError(409, `This event already has a day labeled '${data.label ?? day.label}' — day labels must be unique per event`);
+            }
+            throw err;
+        }
     },
     archive: async (id, userId, requestingRole, tenantId) => {
         await eventDayService.getById(id, requestingRole, tenantId);

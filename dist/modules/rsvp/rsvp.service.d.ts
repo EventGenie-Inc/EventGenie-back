@@ -75,8 +75,9 @@ export declare const rsvpService: {
                 createdAt: Date;
                 updatedAt: Date;
                 phoneNumber: string | null;
-                firstName: string;
-                surname: string;
+                eventId: string;
+                firstName: string | null;
+                surname: string | null;
             };
             inviteEventDay: ({
                 eventDay: {
@@ -155,8 +156,8 @@ export declare const rsvpService: {
         }[];
         ticketPurchase: {
             id: string;
-            currency: string;
             inviteId: string;
+            currency: string;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;

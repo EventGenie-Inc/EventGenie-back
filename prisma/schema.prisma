@@ -107,6 +107,7 @@ model Tenant {
   events       Event[]
   vendorSpaces VendorSpace[]
   eventDrafts  EventDraft[]
+  smsSendLogs  SmsSendLog[]
 }
 
 // ─────────────────────────────────────────
@@ -183,6 +184,7 @@ model Event {
   createdByUser User          @relation(fields: [createdByUserId], references: [id])
   eventDays     EventDay[]
   invites       Invite[]
+  guests        Guest[]
   memoryHub     MemoryHub?
   rsvpFields    RsvpField[]
   program       EventProgram?
@@ -191,6 +193,13 @@ model Event {
 
 // ─────────────────────────────────────────
 //  EVENT DAY
+//
+//  label is unique per event (case-sensitively, at the DB level — a
+//  race-condition backstop). The human-meaningful check is
+//  case-insensitive and lives in event-day-validation.util.ts, since two
+//  days labelled "Saturday" and "saturday" are the same ambiguity to
+//  someone typing a spreadsheet even though Postgres treats them as
+//  distinct strings.
 // ─────────────────────────────────────────
 
 model EventDay {
@@ -209,22 +218,36 @@ model EventDay {
   event          Event            @relation(fields: [eventId], references: [id])
   inviteEventDay InviteEventDay[]
   attendances    Attendance[]
+
+  @@unique([eventId, label])
 }
 
 // ─────────────────────────────────────────
 //  GUEST
+//
+//  firstName/surname are optional — a guest imported by phone/email alone
+//  has no name until they RSVP and provide one.
+//
+//  Prisma cannot express "at least one of email/phoneNumber" as a column
+//  constraint, so this rule — and its stricter companion, "exactly one of
+//  email/phoneNumber at creation/update time, never both, never neither" —
+//  is enforced in guest-validation.util.ts and called from every
+//  create/update path in guest.service.ts. The second contact field is
+//  meant to be filled in later, at RSVP time, not here.
 // ─────────────────────────────────────────
 
 model Guest {
   id          String   @id @default(cuid())
-  firstName   String
-  surname     String
+  eventId     String
+  firstName   String?
+  surname     String?
   email       String?
   phoneNumber String?
   isArchived  Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  event       Event        @relation(fields: [eventId], references: [id])
   invites     Invite[]
   memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
 }
@@ -258,6 +281,7 @@ model Invite {
   attendances     Attendance[]
   rsvpResponses   RsvpResponse[]
   ticketPurchases TicketPurchase[]
+  smsSendLogs     SmsSendLog[]
 }
 
 // ─────────────────────────────────────────
@@ -552,6 +576,31 @@ model TicketPurchase {
 
   ticket Ticket @relation(fields: [ticketId], references: [id])
   invite Invite @relation(fields: [inviteId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  SMS SEND LOG
+//
+//  One row per SUCCESSFUL SMS send only — written by the invite dispatch
+//  orchestrator after a real Twilio success, never on failure (a failed
+//  send costs nothing and must not consume quota). Deliberately no
+//  @@unique on inviteId: a resend that succeeds writes a second row
+//  against the same invite, since it costs a second real SMS. This is
+//  what lets maxSmsPerMonth be enforced by counting rows in the current
+//  calendar month rather than relying on Invite.deliveredAt, which would
+//  undercount a guest resent more than once in the same month.
+// ─────────────────────────────────────────
+
+model SmsSendLog {
+  id       String   @id @default(cuid())
+  tenantId String
+  inviteId String
+  sentAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
+
+  @@index([tenantId, sentAt])
 }
 
 // ─────────────────────────────────────────
