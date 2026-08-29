@@ -35,6 +35,14 @@ enum PlatformRole {
   EVENT_VENDOR
 }
 
+// NOTE — COMPLETED is never written to Event.status. It is derived at
+// read time (resolveEffectiveStatus in event-status.util.ts) once a
+// PUBLISHED event's last EventDay has passed, since a scheduled job to
+// flip it in the database isn't reliable on this project's hosting (no
+// paid cron, and in-process schedulers die when the free instance
+// sleeps). Querying Postgres directly will show PUBLISHED for a
+// finished event — that is expected, not a bug. CANCELLED, by
+// contrast, IS written: it reflects a human decision, not a date.
 enum EventStatus {
   DRAFT
   PUBLISHED

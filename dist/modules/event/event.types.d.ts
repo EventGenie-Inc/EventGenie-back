@@ -1,4 +1,4 @@
-import { type EventStatus, type EventVisibility, type EventTicketing } from '@prisma/client';
+import { type EventVisibility, type EventTicketing } from '@prisma/client';
 export interface CreateEventDto {
     name: string;
     description?: string;
@@ -20,7 +20,6 @@ export interface UpdateEventDto {
     latitude?: number;
     longitude?: number;
     coverImageUrl?: string;
-    status?: EventStatus;
     visibility?: EventVisibility;
     ticketing?: EventTicketing;
     invitationTemplate?: string;

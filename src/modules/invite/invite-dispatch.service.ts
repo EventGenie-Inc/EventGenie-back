@@ -13,6 +13,7 @@ import {
   buildInviteSmsBody,
 } from './invite-message.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { assertEventIsPublished } from '../event/event-status.util.js';
 
 // Bulk invite orchestrator — knows guests/invites/tiers and routes each
 // guest to whichever engine matches their contact. Kept separate from
@@ -110,6 +111,11 @@ export const inviteDispatchService = {
     tenantId: string | null
   ): Promise<SendInvitesResult> => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
+    // Status is checked first — before visibility, before guestIds is
+    // even validated, and well before the guest list is loaded or the
+    // SMS tier check runs. A draft event must fail fast on status, not
+    // after doing work or telling the organiser about their SMS quota.
+    assertEventIsPublished(event.status);
     assertEventAcceptsInvites(event.visibility);
 
     if (!guestIds?.length) {
@@ -169,6 +175,7 @@ export const inviteDispatchService = {
       eventId: string;
     };
     const event = await eventService.getById(invite.eventId, requestingRole, tenantId);
+    assertEventIsPublished(event.status);
     assertEventAcceptsInvites(event.visibility);
 
     // A resend still costs a real SMS — re-check the tier rules for a

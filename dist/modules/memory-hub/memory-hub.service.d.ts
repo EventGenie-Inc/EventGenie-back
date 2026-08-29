@@ -105,6 +105,20 @@ export declare const memoryHubService: {
     viewByShareToken: (shareToken: string) => Promise<{
         memoryHub: {
             event: {
+                eventDays: {
+                    id: string;
+                    isArchived: boolean;
+                    createdAt: Date;
+                    updatedAt: Date;
+                    createdBy: string;
+                    updatedBy: string;
+                    eventId: string;
+                    label: string;
+                    date: Date;
+                    startTime: Date | null;
+                    endTime: Date | null;
+                }[];
+            } & {
                 name: string;
                 id: string;
                 isArchived: boolean;
@@ -141,7 +155,6 @@ export declare const memoryHubService: {
                 caption: string | null;
                 isApproved: boolean;
             }[];
-        } & {
             id: string;
             isArchived: boolean;
             createdAt: Date;

@@ -66,6 +66,11 @@ app.use(cors({
     }
   },
   credentials: false,
+  // Without this, the browser can't read Content-Disposition on a
+  // cross-origin response — the guest-import template download falls
+  // back to a generic filename instead of the event-specific one the
+  // backend actually sets.
+  exposedHeaders: ['Content-Disposition'],
 }));
 
 // ─────────────────────────────────────────

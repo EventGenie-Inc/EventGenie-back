@@ -24,7 +24,12 @@ export const memoryHubRepository = {
     findByShareToken: (shareToken) => prisma.memoryHub.findFirst({
         where: { shareToken, isArchived: false },
         include: {
-            event: true,
+            // eventDays included so the nested event's status can be
+            // resolved to its effective value (Task 2b) before this goes
+            // out to a guest's browser — gating here still runs on
+            // opensAt only (Memory Hub access is deliberately independent
+            // of event status), this is presentation-only.
+            event: { include: { eventDays: { where: { isArchived: false } } } },
             memoryItems: {
                 where: { isArchived: false, isApproved: true },
                 orderBy: { createdAt: 'desc' },

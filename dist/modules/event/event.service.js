@@ -3,11 +3,16 @@ import {} from './event.types.js';
 import {} from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
 export const eventService = {
-    getAll: (requestingRole, tenantId) => {
-        if (requestingRole === 'SUPER_ADMIN')
-            return eventRepository.findAll();
-        return eventRepository.findAll(tenantId ?? undefined);
+    // Both list and detail flow through the SAME withEffectiveStatus
+    // presenter, so they can never disagree about a given event's
+    // status — there is no separate code path either could drift from.
+    getAll: async (requestingRole, tenantId) => {
+        const events = requestingRole === 'SUPER_ADMIN'
+            ? await eventRepository.findAll()
+            : await eventRepository.findAll(tenantId ?? undefined);
+        return events.map(withEffectiveStatus);
     },
     getById: async (id, requestingRole, tenantId) => {
         const event = requestingRole === 'SUPER_ADMIN'
@@ -15,7 +20,7 @@ export const eventService = {
             : await eventRepository.findById(id, tenantId ?? undefined);
         if (!event)
             throw new HttpError(404, 'Event not found');
-        return event;
+        return withEffectiveStatus(event);
     },
     create: async (tenantId, userId, data) => {
         await assertEventCreatable(tenantId, {
@@ -34,7 +39,12 @@ export const eventService = {
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
         });
-        return eventRepository.update(id, userId, data);
+        await eventRepository.update(id, userId, data);
+        // Re-fetched through getById (not the bare update() result) so this
+        // response goes through the same withEffectiveStatus presenter as
+        // every other read — PUT's response must agree with a subsequent
+        // GET, not show raw status while GET shows derived.
+        return eventService.getById(id, requestingRole, tenantId);
     },
     archive: async (id, userId, requestingRole, tenantId) => {
         await eventService.getById(id, requestingRole, tenantId);
@@ -49,10 +59,68 @@ export const eventService = {
     // scope here.
     getShareLink: async (id, requestingRole, tenantId) => {
         const event = await eventService.getById(id, requestingRole, tenantId);
+        assertEventIsPublished(event.status);
         if (event.visibility !== 'PUBLIC') {
             throw new HttpError(400, 'Share links are only available for public events — private events use individual invites instead.');
         }
         return { url: `${process.env.FRONTEND_BASE_URL}/rsvp?eventId=${event.id}` };
+    },
+    // ─────────────────────────────────────────
+    //  PUBLISH — DRAFT → PUBLISHED
+    //
+    //  The one and only way an event goes live. There is deliberately no
+    //  UNPUBLISH: once invites may have gone out, every already-sent
+    //  link (SMS especially) points at an event that must stay real.
+    //  Even gating an unpublish on "no invite delivered yet" leaves a
+    //  race — dispatch is sequential, so a batch could be mid-flight
+    //  when the check runs — for a reversal nothing in the product
+    //  actually asks for (an organiser who published too early can
+    //  simply fix details in place, or use cancel() below if the event
+    //  itself needs to stop). Cancel is the one-way-door escape hatch;
+    //  publish has none, by design.
+    // ─────────────────────────────────────────
+    publish: async (id, userId, requestingRole, tenantId) => {
+        const event = await eventService.getById(id, requestingRole, tenantId); // effective status
+        if (event.status !== 'DRAFT') {
+            const messages = {
+                PUBLISHED: 'This event has already been published.',
+                COMPLETED: 'This event has already taken place and can no longer be published.',
+                CANCELLED: 'This event has been cancelled and can no longer be published.',
+            };
+            throw new HttpError(409, messages[event.status] ?? `Only a draft event can be published (current status: ${event.status}).`);
+        }
+        const missing = [];
+        if (!event.name?.trim())
+            missing.push('a name');
+        if (!event.location?.trim())
+            missing.push('a location');
+        if (!event.eventDays.length)
+            missing.push('at least one event day');
+        if (missing.length) {
+            throw new HttpError(422, `This event isn't ready to publish yet — it's missing: ${missing.join(', ')}.`);
+        }
+        await eventRepository.updateStatus(id, userId, 'PUBLISHED');
+        return eventService.getById(id, requestingRole, tenantId);
+    },
+    // ─────────────────────────────────────────
+    //  CANCEL — DRAFT/PUBLISHED/(effectively-)COMPLETED → CANCELLED
+    //
+    //  Not reversible — there is no un-cancel. Guests may already have
+    //  been told, so recovering from a mistaken cancel is a support
+    //  matter, not a self-service one. Cancelling does not archive the
+    //  event or its guests and does not delete anything; it only blocks
+    //  outbound actions (Task 3) and marks the event. Guests are not
+    //  notified here — that needs the (unbuilt) Announcements feature —
+    //  and ticketed events don't trigger a refund here either — that
+    //  needs the (unbuilt) payment integration. Both are out of scope.
+    // ─────────────────────────────────────────
+    cancel: async (id, userId, requestingRole, tenantId) => {
+        const event = await eventService.getById(id, requestingRole, tenantId); // effective status
+        if (event.status === 'CANCELLED') {
+            throw new HttpError(409, 'This event has already been cancelled.');
+        }
+        await eventRepository.updateStatus(id, userId, 'CANCELLED');
+        return eventService.getById(id, requestingRole, tenantId);
     },
 };
 //# sourceMappingURL=event.service.js.map

@@ -1,3 +1,4 @@
+import { type EventStatus } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { inviteRepository } from '../invite/invite.repository.js';
 import { attendanceRepository } from '../attendance/attendance.repository.js';
@@ -5,6 +6,24 @@ import { rsvpResponseRepository } from '../rsvp-response/rsvp-response.repositor
 import { ticketRepository } from '../ticket/ticket.repository.js';
 import { ticketPurchaseRepository } from '../ticket-purchase/ticket-purchase.repository.js';
 import { type SubmitRsvpDto } from './rsvp.types.js';
+import { resolveEffectiveStatus, withEffectiveStatus } from '../event/event-status.util.js';
+
+// Guest-facing wording for the same three blocked statuses invites use
+// (COMPLETED/CANCELLED read fine to a guest as-is); DRAFT gets its own
+// text since "publish it before sending invitations" is organiser
+// language a guest should never see. In practice a guest can only ever
+// hold a token for an event that WAS published (invites can't be sent
+// to a draft event — Task 3), so this branch is defensive, not reachable.
+const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
+  DRAFT: 'This event is not yet open for RSVPs.',
+  COMPLETED: 'This event has already taken place.',
+  CANCELLED: 'This event has been cancelled.',
+};
+
+const assertEventAcceptsRsvp = (effectiveStatus: EventStatus): void => {
+  if (effectiveStatus === 'PUBLISHED') return;
+  throw new Error(RSVP_BLOCK_MESSAGES[effectiveStatus] ?? 'This event is not currently accepting RSVPs.');
+};
 
 // Guest RSVP submissions are the first writes in this codebase performed by
 // a non-platform actor. Invite.updatedBy is a plain String (not an FK to
@@ -22,7 +41,10 @@ export const rsvpService = {
     const isExpired = !!invite.expiresAt && invite.expiresAt < new Date();
 
     return {
-      invite,
+      // event.status reported as the EFFECTIVE status, consistent with
+      // every other read path — the guest's browser can check it to
+      // decide whether to render the RSVP form at all.
+      invite: { ...invite, event: withEffectiveStatus(invite.event) },
       isExpired,
       isUsed: invite.used,
     };
@@ -34,7 +56,7 @@ export const rsvpService = {
         where: { token: data.token },
         include: {
           inviteEventDay: true,
-          event: { include: { tickets: true } },
+          event: { include: { tickets: true, eventDays: { where: { isArchived: false } } } },
         },
       });
 
@@ -43,6 +65,7 @@ export const rsvpService = {
       if (invite.expiresAt && invite.expiresAt < new Date()) {
         throw new Error('This invite has expired');
       }
+      assertEventAcceptsRsvp(resolveEffectiveStatus(invite.event));
 
       const attendances = [];
       if (data.attending) {

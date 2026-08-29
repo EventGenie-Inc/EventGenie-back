@@ -1,3 +1,4 @@
+import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 export declare const eventRepository: {
     findAll: (tenantId?: string) => import("@prisma/client").Prisma.PrismaPromise<({
@@ -188,6 +189,28 @@ export declare const eventRepository: {
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     archive: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__EventClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        createdBy: string;
+        updatedBy: string;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    updateStatus: (id: string, userId: string, status: EventStatus) => import("@prisma/client").Prisma.Prisma__EventClient<{
         name: string;
         id: string;
         isArchived: boolean;
