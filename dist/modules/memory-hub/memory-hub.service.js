@@ -1,5 +1,6 @@
 import { memoryHubRepository } from './memory-hub.repository.js';
 import {} from './memory-hub.types.js';
+import { withEffectiveStatus } from '../event/event-status.util.js';
 export const memoryHubService = {
     // ── Memory Hub ────────────────────────────
     getByEventId: async (eventId) => {
@@ -35,9 +36,14 @@ export const memoryHubService = {
         const hub = await memoryHubRepository.findByShareToken(shareToken);
         if (!hub)
             throw new Error('Memory hub not found');
+        // Access is governed by opensAt alone (below) — deliberately NOT
+        // gated by the event's status. A completed event is precisely
+        // when memories should be available, so COMPLETED must never
+        // block this view. withEffectiveStatus below only makes the
+        // reported event.status accurate; it does not participate in isOpen.
         const isOpen = !hub.opensAt || hub.opensAt <= new Date();
         return {
-            memoryHub: hub,
+            memoryHub: { ...hub, event: withEffectiveStatus(hub.event) },
             isPublic: hub.isPublic,
             isOpen,
             memoryItems: hub.isPublic && isOpen ? hub.memoryItems : [],

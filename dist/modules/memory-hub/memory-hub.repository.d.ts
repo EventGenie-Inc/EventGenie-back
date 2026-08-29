@@ -62,6 +62,20 @@ export declare const memoryHubRepository: {
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findByShareToken: (shareToken: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<({
         event: {
+            eventDays: {
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                createdBy: string;
+                updatedBy: string;
+                eventId: string;
+                label: string;
+                date: Date;
+                startTime: Date | null;
+                endTime: Date | null;
+            }[];
+        } & {
             name: string;
             id: string;
             isArchived: boolean;

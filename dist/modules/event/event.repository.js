@@ -1,4 +1,5 @@
 import prisma from '../../shared/prisma/prisma.client.js';
+import {} from '@prisma/client';
 import {} from './event.types.js';
 export const eventRepository = {
     findAll: (tenantId) => prisma.event.findMany({
@@ -61,7 +62,6 @@ export const eventRepository = {
             ...(data.latitude !== undefined && { latitude: data.latitude ?? null }),
             ...(data.longitude !== undefined && { longitude: data.longitude ?? null }),
             ...(data.coverImageUrl !== undefined && { coverImageUrl: data.coverImageUrl ?? null }),
-            ...(data.status !== undefined && { status: data.status }),
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
             ...(data.invitationTemplate !== undefined && { invitationTemplate: data.invitationTemplate ?? null }),
@@ -72,6 +72,15 @@ export const eventRepository = {
     archive: (id, userId) => prisma.event.update({
         where: { id },
         data: { isArchived: true, updatedBy: userId },
+    }),
+    // The only writer of Event.status — publish() and cancel() in
+    // event.service.ts are the sole callers. Kept separate from the
+    // generic update() above (which no longer accepts a status field at
+    // all) so a status transition can never be smuggled through a plain
+    // PUT /api/events/:id alongside unrelated field edits.
+    updateStatus: (id, userId, status) => prisma.event.update({
+        where: { id },
+        data: { status, updatedBy: userId },
     }),
 };
 //# sourceMappingURL=event.repository.js.map

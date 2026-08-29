@@ -69,5 +69,25 @@ router.delete('/:id', authenticate, requireEventAdmin, async (req, res, next) =>
         next(err);
     }
 });
+router.post('/:id/publish', authenticate, requireEventAdmin, async (req, res, next) => {
+    try {
+        const auth = req;
+        const event = await eventService.publish(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId);
+        res.status(200).json({ status: 'ok', data: event });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+router.post('/:id/cancel', authenticate, requireEventAdmin, async (req, res, next) => {
+    try {
+        const auth = req;
+        const event = await eventService.cancel(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId);
+        res.status(200).json({ status: 'ok', data: event });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 export default router;
 //# sourceMappingURL=event.router.js.map

@@ -8,6 +8,7 @@ import { sendSms } from '../../shared/messaging/sms.engine.js';
 import { sendEmail } from '../../shared/messaging/email.engine.js';
 import { buildInviteRsvpLink, buildInviteEmailSubject, buildInviteEmailHtml, buildInviteSmsBody, } from './invite-message.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { assertEventIsPublished } from '../event/event-status.util.js';
 const guestDisplayName = (guest) => [guest.firstName, guest.surname].filter(Boolean).join(' ').trim() || 'Guest';
 const contactFor = (invite) => invite.deliveryMethod === 'EMAIL' ? (invite.guest.email ?? '') : (invite.guest.phoneNumber ?? '');
 // PUBLIC events don't use invites — they use the share link (Task 5) and
@@ -41,6 +42,11 @@ const dispatchOne = async (eventTenantId, eventName, location, dateLabel, invite
 export const inviteDispatchService = {
     sendBulk: async (eventId, guestIds, requestingRole, tenantId) => {
         const event = await eventService.getById(eventId, requestingRole, tenantId);
+        // Status is checked first — before visibility, before guestIds is
+        // even validated, and well before the guest list is loaded or the
+        // SMS tier check runs. A draft event must fail fast on status, not
+        // after doing work or telling the organiser about their SMS quota.
+        assertEventIsPublished(event.status);
         assertEventAcceptsInvites(event.visibility);
         if (!guestIds?.length) {
             throw new HttpError(400, 'guestIds is required');
@@ -85,6 +91,7 @@ export const inviteDispatchService = {
     resend: async (inviteId, requestingRole, tenantId) => {
         const invite = await inviteService.getById(inviteId, requestingRole, tenantId);
         const event = await eventService.getById(invite.eventId, requestingRole, tenantId);
+        assertEventIsPublished(event.status);
         assertEventAcceptsInvites(event.visibility);
         // A resend still costs a real SMS — re-check the tier rules for a
         // batch-of-one before dispatching.

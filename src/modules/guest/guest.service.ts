@@ -16,6 +16,21 @@ import {
 import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
 
+// PUBLIC events have no organiser-built guest list by design — guests
+// self-create on RSVP. The frontend never offers add/import for a
+// public event, but that's a UI choice, not a backend guarantee;
+// invite send/resend already enforce this (assertEventAcceptsInvites
+// in invite-dispatch.service.ts) and guest creation needs the same
+// backstop.
+const assertEventAcceptsOrganiserGuestList = (visibility: string): void => {
+  if (visibility !== 'PRIVATE') {
+    throw new HttpError(
+      400,
+      "Public events don't use an organiser-built guest list — guests add themselves when they RSVP."
+    );
+  }
+};
+
 export const guestService = {
   // Guest has no tenantId of its own — ownership is transitive through
   // its invites' parent events. Every method gates through
@@ -45,6 +60,7 @@ export const guestService = {
 
   create: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateGuestDto) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
+    assertEventAcceptsOrganiserGuestList(event.visibility);
 
     if (!data.eventDayIds?.length) {
       throw new HttpError(400, 'At least one eventDayId is required');
@@ -160,6 +176,7 @@ export const guestService = {
     file: { buffer: Buffer; originalname: string; mimetype: string }
   ) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
+    assertEventAcceptsOrganiserGuestList(event.visibility);
 
     const rows = await parseImportFile(file.buffer, file.originalname, file.mimetype);
     const eventDays = await eventDayRepository.findAll(eventId);

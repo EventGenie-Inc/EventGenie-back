@@ -99,7 +99,6 @@ export declare const rsvpService: {
                 inviteId: string;
                 eventDayId: string;
             })[];
-        } & {
             id: string;
             isArchived: boolean;
             createdAt: Date;
