@@ -92,4 +92,26 @@ export const addressAutosuggestLimiter = rateLimit({
         message: 'Too many address searches — please slow down and try again shortly.',
     },
 });
+// ─────────────────────────────────────────
+//  RATE LIMITER — UPLOAD SIGNATURE
+//
+//  Cheap to call, but every successful response is a grant to upload
+//  into this tenant's Cloudinary folder — unlike a search result, it's
+//  not just information, it's permission. Keyed by user id (route
+//  requires `authenticate`). 10 requests / 5 minutes comfortably covers
+//  real editing (trying a few different cover images before deciding)
+//  while making it impractical to mint a large number of upload grants
+//  in a short window.
+// ─────────────────────────────────────────
+export const uploadSignatureLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many upload requests. Please wait a few minutes and try again.',
+    },
+});
 //# sourceMappingURL=rate-limit.middleware.js.map

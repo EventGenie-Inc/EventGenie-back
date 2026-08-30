@@ -26,6 +26,7 @@ import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
+import uploadRouter from './modules/upload/upload.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -155,6 +156,10 @@ app.use('/api/rsvp', rsvpRouter);
 //  GEOCODING ROUTES (authenticated, not tenant-scoped)
 // ─────────────────────────────────────────
 app.use('/api/geocoding', geocodingRouter);
+// ─────────────────────────────────────────
+//  UPLOAD ROUTES (signed direct-to-Cloudinary uploads)
+// ─────────────────────────────────────────
+app.use('/api/uploads', uploadRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────
