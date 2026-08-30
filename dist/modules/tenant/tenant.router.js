@@ -49,6 +49,15 @@ router.get('/:id/users', async (req, res, next) => {
         next(err);
     }
 });
+router.get('/:id/events', async (req, res, next) => {
+    try {
+        const events = await tenantService.getEvents(req.params['id']);
+        res.status(200).json({ status: 'ok', data: events });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 router.post('/:id/suspend', async (req, res, next) => {
     try {
         const auth = req;

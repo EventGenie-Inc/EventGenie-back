@@ -4,7 +4,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 // of its calendar date. EventDay.date is a @db.Date column, which
 // Prisma round-trips as UTC midnight, so "end of day" is computed in
 // UTC to stay consistent with that value.
-const endOfDayUtc = (date) => {
+export const endOfDayUtc = (date) => {
     const end = new Date(date);
     end.setUTCHours(23, 59, 59, 999);
     return end;

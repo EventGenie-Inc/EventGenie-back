@@ -137,6 +137,8 @@ export declare const memoryHubService: {
                 ticketing: import("@prisma/client").$Enums.EventTicketing;
                 invitationTemplate: string | null;
                 invitationConfig: string | null;
+                rsvpDeadline: Date | null;
+                capacity: number | null;
                 createdBy: string;
                 updatedBy: string;
             };

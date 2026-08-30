@@ -2,18 +2,18 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import {} from '@prisma/client';
 import {} from './event.types.js';
 export const eventRepository = {
-    findAll: (tenantId) => prisma.event.findMany({
+    findAll: (tenantId, includeArchived = false) => prisma.event.findMany({
         where: {
-            isArchived: false,
+            ...(includeArchived ? {} : { isArchived: false }),
             ...(tenantId ? { tenantId } : {}),
         },
         include: { eventDays: { where: { isArchived: false } } },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id, tenantId) => prisma.event.findFirst({
+    findById: (id, includeArchived = false, tenantId) => prisma.event.findFirst({
         where: {
             id,
-            isArchived: false,
+            ...(includeArchived ? {} : { isArchived: false }),
             ...(tenantId ? { tenantId } : {}),
         },
         include: {
@@ -29,6 +29,11 @@ export const eventRepository = {
         },
     }),
     countActive: (tenantId) => prisma.event.count({ where: { tenantId, isArchived: false } }),
+    // Accepted invites ≈ accepted guests: createWithInvite/bulkCreateWithInvites
+    // (guest.repository.ts) create exactly one Invite per Guest, and
+    // rsvp.service.ts's submit() flips that SAME invite's status rather than
+    // creating a new one — so this never double-counts a guest who RSVP'd.
+    countAcceptedInvitesForEvent: (eventId) => prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED' } }),
     create: (tenantId, userId, data) => prisma.event.create({
         data: {
             tenantId,
@@ -46,6 +51,8 @@ export const eventRepository = {
             ticketing: data.ticketing ?? 'FREE',
             invitationTemplate: data.invitationTemplate ?? null,
             invitationConfig: data.invitationConfig ?? null,
+            rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null,
+            capacity: data.capacity ?? null,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,
@@ -66,12 +73,20 @@ export const eventRepository = {
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
             ...(data.invitationTemplate !== undefined && { invitationTemplate: data.invitationTemplate ?? null }),
             ...(data.invitationConfig !== undefined && { invitationConfig: data.invitationConfig ?? null }),
+            ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null }),
+            ...(data.capacity !== undefined && { capacity: data.capacity ?? null }),
             updatedBy: userId,
         },
     }),
     archive: (id, userId) => prisma.event.update({
         where: { id },
         data: { isArchived: true, updatedBy: userId },
+    }),
+    // SUPER_ADMIN support action — mirrors user.repository.ts/tenant.repository.ts's
+    // reactivate exactly.
+    reactivate: (id, userId) => prisma.event.update({
+        where: { id },
+        data: { isArchived: false, updatedBy: userId },
     }),
     // The only writer of Event.status — publish() and cancel() in
     // event.service.ts are the sole callers. Kept separate from the

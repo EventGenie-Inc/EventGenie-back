@@ -130,6 +130,8 @@ export declare const eventDraftService: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }) | null>;
