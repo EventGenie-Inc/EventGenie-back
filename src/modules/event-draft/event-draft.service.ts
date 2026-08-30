@@ -5,6 +5,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertValidCoordinates } from '../event/event-coordinates.util.js';
 
 export const eventDraftService = {
 
@@ -48,6 +49,13 @@ export const eventDraftService = {
       seenLabels.add(label);
     }
 
+    // Draft payload is opaque JSON — coerce before validating rather than
+    // trusting the frontend sent numbers. Same both-or-neither, plausible-
+    // range rule as the direct POST/PUT paths in event.service.ts.
+    const latitude = p.latitude !== undefined && p.latitude !== null ? Number(p.latitude) : undefined;
+    const longitude = p.longitude !== undefined && p.longitude !== null ? Number(p.longitude) : undefined;
+    assertValidCoordinates(latitude, longitude);
+
     const tickets = Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : [];
     const customFields = Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : [];
     const program = p.program as Record<string, unknown> | undefined;
@@ -69,8 +77,8 @@ export const eventDraftService = {
           description: (p.description as string) ?? null,
           location: p.location as string,
           address: (p.address as string) ?? null,
-          latitude: (p.latitude as number) ?? null,
-          longitude: (p.longitude as number) ?? null,
+          latitude: latitude ?? null,
+          longitude: longitude ?? null,
           coverImageUrl: (p.coverImageUrl as string) ?? null,
           status: 'DRAFT',
           visibility: (p.visibility as EventVisibility) ?? 'PRIVATE',
