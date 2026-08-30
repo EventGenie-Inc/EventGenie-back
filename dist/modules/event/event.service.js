@@ -5,6 +5,8 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
 import { assertValidCoordinates } from './event-coordinates.util.js';
+import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
+import { assertValidCapacity } from './event-capacity.util.js';
 export const eventService = {
     // Both list and detail flow through the SAME withEffectiveStatus
     // presenter, so they can never disagree about a given event's
@@ -15,16 +17,34 @@ export const eventService = {
             : await eventRepository.findAll(tenantId ?? undefined);
         return events.map(withEffectiveStatus);
     },
-    getById: async (id, requestingRole, tenantId) => {
+    // includeArchived is only ever true for the SUPER_ADMIN restore flow
+    // (reactivate below, and tenantService.getEvents) — every other call
+    // site relies on the default so an archived event stays a 404 for
+    // everyone else, cross-tenant-access included.
+    getById: async (id, requestingRole, tenantId, includeArchived = false) => {
         const event = requestingRole === 'SUPER_ADMIN'
-            ? await eventRepository.findById(id)
-            : await eventRepository.findById(id, tenantId ?? undefined);
+            ? await eventRepository.findById(id, includeArchived)
+            : await eventRepository.findById(id, includeArchived, tenantId ?? undefined);
         if (!event)
             throw new HttpError(404, 'Event not found');
         return withEffectiveStatus(event);
     },
+    // Detail-view read only — adds one extra count query on top of getById,
+    // so this is deliberately NOT what every internal ownership-gate call
+    // (guest/event-day/invite/attendance services all call plain getById)
+    // pays on every request; only the actual GET /:id route uses this.
+    getDetail: async (id, requestingRole, tenantId) => {
+        const event = await eventService.getById(id, requestingRole, tenantId);
+        const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
+        return { ...event, acceptedGuestCount };
+    },
     create: async (tenantId, userId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
+        assertValidCapacity(data.capacity);
+        // No event days exist yet on this path (direct POST never creates
+        // them — see event-day.router.ts), so there's nothing to compare the
+        // deadline against beyond "not in the past".
+        assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, [], { rejectPast: true });
         await assertEventCreatable(tenantId, {
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -33,11 +53,18 @@ export const eventService = {
     },
     update: async (id, userId, requestingRole, tenantId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
+        assertValidCapacity(data.capacity);
         // Tier rules are evaluated against the EVENT's owning tenant, not the
         // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
         // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
         // their own to fall back on.
         const event = await eventService.getById(id, requestingRole, tenantId);
+        if (data.rsvpDeadline !== undefined) {
+            // rejectPast: false — an organiser deliberately closing RSVPs early
+            // by setting the deadline to "now" on a live event is legitimate;
+            // only a past deadline at CREATION time is rejected (see create()).
+            assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
+        }
         await assertEventUpdatable(event.tenantId, {
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -52,6 +79,21 @@ export const eventService = {
     archive: async (id, userId, requestingRole, tenantId) => {
         await eventService.getById(id, requestingRole, tenantId);
         return eventRepository.archive(id, userId);
+    },
+    // ─────────────────────────────────────────
+    //  REACTIVATE — SUPER_ADMIN support action only (event.router.ts gates
+    //  this route with requireSuperAdmin). Restores an archived event with
+    //  no cascade to its EventDays/Guests/Invites — see the batch report
+    //  for why archiving an event doesn't cascade to them in the first
+    //  place, which is what makes "just flip isArchived back" sufficient
+    //  here.
+    // ─────────────────────────────────────────
+    reactivate: async (id, userId, requestingRole, tenantId) => {
+        // Must look up including archived — the whole point of reactivate is
+        // to find an event that is currently archived and un-archive it.
+        await eventService.getById(id, requestingRole, tenantId, true);
+        await eventRepository.reactivate(id, userId);
+        return eventService.getById(id, requestingRole, tenantId, true);
     },
     // PUBLIC-only: the organiser copies this link, no per-guest token or
     // guest record involved. NOTE: no guest self-registration flow exists

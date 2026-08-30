@@ -11,6 +11,8 @@ export interface CreateEventDto {
     ticketing?: EventTicketing;
     invitationTemplate?: string;
     invitationConfig?: string;
+    rsvpDeadline?: string;
+    capacity?: number;
 }
 export interface UpdateEventDto {
     name?: string;
@@ -24,5 +26,7 @@ export interface UpdateEventDto {
     ticketing?: EventTicketing;
     invitationTemplate?: string;
     invitationConfig?: string;
+    rsvpDeadline?: string | null;
+    capacity?: number | null;
 }
 //# sourceMappingURL=event.types.d.ts.map

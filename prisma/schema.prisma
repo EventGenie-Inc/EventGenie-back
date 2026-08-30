@@ -182,6 +182,15 @@ model Event {
   ticketing          EventTicketing  @default(FREE)
   invitationTemplate String?
   invitationConfig   String?
+  // Independent of Event.status — closes guest self-service RSVP only.
+  // Organiser guest management is unaffected. Never folded into
+  // resolveEffectiveStatus (event-status.util.ts).
+  rsvpDeadline       DateTime?
+  // The VENUE's physical capacity — informational, not a billing limit.
+  // Distinct from SubscriptionTierConfig.maxGuestsPerEvent; never conflate
+  // the two. Warns via acceptedGuestCount on the event detail response,
+  // never blocks guest creation/import.
+  capacity           Int?
   isArchived         Boolean         @default(false)
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt

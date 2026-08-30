@@ -6,6 +6,8 @@ import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { assertValidCoordinates } from '../event/event-coordinates.util.js';
+import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
+import { assertValidCapacity } from '../event/event-capacity.util.js';
 
 export const eventDraftService = {
 
@@ -56,6 +58,20 @@ export const eventDraftService = {
     const longitude = p.longitude !== undefined && p.longitude !== null ? Number(p.longitude) : undefined;
     assertValidCoordinates(latitude, longitude);
 
+    // Same both-or-neither/plausibility treatment extended to the two
+    // Batch A fields — the wizard is the primary event-creation path, so
+    // leaving these validated only on the direct POST would make the
+    // deadline/capacity feature unreachable from real event creation.
+    const capacity = p.capacity !== undefined && p.capacity !== null ? Number(p.capacity) : undefined;
+    assertValidCapacity(capacity);
+
+    const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? new Date(p.rsvpDeadline as string) : undefined;
+    const draftEventDays = days.map((day) => ({
+      date: new Date(day.date as string),
+      endTime: day.endTime ? new Date(day.endTime as string) : null,
+    }));
+    assertValidRsvpDeadline(rsvpDeadline ?? null, draftEventDays, { rejectPast: true });
+
     const tickets = Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : [];
     const customFields = Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : [];
     const program = p.program as Record<string, unknown> | undefined;
@@ -84,6 +100,8 @@ export const eventDraftService = {
           visibility: (p.visibility as EventVisibility) ?? 'PRIVATE',
           ticketing: (p.ticketing as EventTicketing) ?? 'FREE',
           invitationTemplate: (p.invitationTemplate as string) ?? null,
+          rsvpDeadline: rsvpDeadline ?? null,
+          capacity: capacity ?? null,
           isArchived: false,
           createdBy: userId,
           updatedBy: userId,

@@ -1,5 +1,7 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { tenantRepository } from './tenant.repository.js';
+import { eventRepository } from '../event/event.repository.js';
+import { withEffectiveStatus } from '../event/event-status.util.js';
 import {
   suspendFirebaseAccount,
   reactivateFirebaseAccount,
@@ -20,6 +22,19 @@ export const tenantService = {
     // Super Admin oversight view — must include suspended users so they
     // remain visible and reactivatable, not just active ones.
     return tenantRepository.findAllUsersByTenant(id, true);
+  },
+
+  // Super Admin oversight view — must include archived events so they
+  // remain visible and reactivatable, not just active ones (the same
+  // bug that shipped three times for user.reactivate/tenant.reactivate/
+  // invite.reactivate: archiving hid the record from the only list that
+  // could restore it). Routed through withEffectiveStatus like every
+  // other event list, so an archived-but-would-otherwise-be-COMPLETED
+  // event still reports correctly.
+  getEvents: async (id: string) => {
+    await tenantService.getById(id);
+    const events = await eventRepository.findAll(id, true);
+    return events.map(withEffectiveStatus);
   },
 
   // Locks out the entire tenant and cascades to archiving every

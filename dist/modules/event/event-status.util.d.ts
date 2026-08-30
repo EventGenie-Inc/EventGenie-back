@@ -7,6 +7,7 @@ export interface StatusDerivableEvent {
     status: EventStatus;
     eventDays: EventDayLike[];
 }
+export declare const endOfDayUtc: (date: Date) => Date;
 export declare const resolveEffectiveStatus: (event: StatusDerivableEvent) => EventStatus;
 export declare const withEffectiveStatus: <T extends StatusDerivableEvent>(event: T) => T;
 export declare const assertEventIsPublished: (effectiveStatus: EventStatus) => void;

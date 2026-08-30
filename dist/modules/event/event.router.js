@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { eventService } from './event.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
-import { requireEventAdmin, requireEventAdminOrVendor } from '../../shared/middleware/role.middleware.js';
+import { requireEventAdmin, requireEventAdminOrVendor, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import {} from '../../shared/types/common.types.js';
 const router = Router();
 router.get('/', authenticate, requireEventAdminOrVendor, async (req, res, next) => {
@@ -17,7 +17,7 @@ router.get('/', authenticate, requireEventAdminOrVendor, async (req, res, next) 
 router.get('/:id', authenticate, requireEventAdminOrVendor, async (req, res, next) => {
     try {
         const auth = req;
-        const event = await eventService.getById(req.params['id'], auth.user.role, auth.user.tenantId);
+        const event = await eventService.getDetail(req.params['id'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: event });
     }
     catch (err) {
@@ -83,6 +83,19 @@ router.post('/:id/cancel', authenticate, requireEventAdmin, async (req, res, nex
     try {
         const auth = req;
         const event = await eventService.cancel(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId);
+        res.status(200).json({ status: 'ok', data: event });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Support action — restoring an archived event is a Super Admin action,
+// not something a Tenant Admin does for themselves. Mirrors
+// /api/users/:id/reactivate and /api/tenants/:id/reactivate.
+router.post('/:id/reactivate', authenticate, requireSuperAdmin, async (req, res, next) => {
+    try {
+        const auth = req;
+        const event = await eventService.reactivate(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: event });
     }
     catch (err) {

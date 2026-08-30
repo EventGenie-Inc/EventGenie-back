@@ -65,6 +65,8 @@ export declare const rsvpService: {
                 ticketing: import("@prisma/client").$Enums.EventTicketing;
                 invitationTemplate: string | null;
                 invitationConfig: string | null;
+                rsvpDeadline: Date | null;
+                capacity: number | null;
                 createdBy: string;
                 updatedBy: string;
             };
@@ -119,6 +121,7 @@ export declare const rsvpService: {
         };
         isExpired: boolean;
         isUsed: boolean;
+        isRsvpDeadlinePassed: boolean;
     }>;
     submit: (data: SubmitRsvpDto) => Promise<{
         invite: {

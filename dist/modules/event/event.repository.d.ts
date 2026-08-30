@@ -1,7 +1,7 @@
 import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 export declare const eventRepository: {
-    findAll: (tenantId?: string) => import("@prisma/client").Prisma.PrismaPromise<({
+    findAll: (tenantId?: string, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<({
         eventDays: {
             id: string;
             isArchived: boolean;
@@ -34,10 +34,12 @@ export declare const eventRepository: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     })[]>;
-    findById: (id: string, tenantId?: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
+    findById: (id: string, includeArchived?: boolean, tenantId?: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -140,10 +142,13 @@ export declare const eventRepository: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     countActive: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
+    countAcceptedInvitesForEvent: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
     create: (tenantId: string, userId: string, data: CreateEventDto) => import("@prisma/client").Prisma.Prisma__EventClient<{
         name: string;
         id: string;
@@ -163,6 +168,8 @@ export declare const eventRepository: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -185,6 +192,8 @@ export declare const eventRepository: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -207,6 +216,32 @@ export declare const eventRepository: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        createdBy: string;
+        updatedBy: string;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    reactivate: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__EventClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -229,6 +264,8 @@ export declare const eventRepository: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
