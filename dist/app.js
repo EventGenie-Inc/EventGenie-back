@@ -25,6 +25,7 @@ import programItemRouter from './modules/program-item/program-item.router.js';
 import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
+import geocodingRouter from './modules/geocoding/geocoding.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -111,6 +112,7 @@ app.get('/health', (_req, res) => {
 //  /api/guests
 //  /api/attendance
 //  /api/vendors
+//  /api/geocoding (address search — HERE proxy)
 // ─────────────────────────────────────────
 app.use('/api/tenants', tenantRouter);
 app.use('/api/users', userRouter);
@@ -149,6 +151,10 @@ app.use('/api/subscription-tiers', subscriptionTierConfigRouter);
 //  RSVP ROUTES (public — no auth)
 // ─────────────────────────────────────────
 app.use('/api/rsvp', rsvpRouter);
+// ─────────────────────────────────────────
+//  GEOCODING ROUTES (authenticated, not tenant-scoped)
+// ─────────────────────────────────────────
+app.use('/api/geocoding', geocodingRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────

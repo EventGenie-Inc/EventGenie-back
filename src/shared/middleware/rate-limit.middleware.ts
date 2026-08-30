@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 // ─────────────────────────────────────────
 //  RATE LIMITERS — AUTH ENDPOINTS
@@ -69,5 +69,32 @@ export const verifyOtpLimiter = rateLimit({
   message: {
     status: 'error',
     message: 'Too many verification attempts. Please request a new code.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — GEOCODING AUTOSUGGEST
+//
+//  Fires per keystroke while an organiser types an address (debounced
+//  on the frontend, but that's not a guarantee this backend can rely
+//  on), and every call spends against HERE's monthly free-tier quota.
+//  Keyed by authenticated user id (route requires `authenticate`
+//  first), not IP — two organisers on the same office network shouldn't
+//  share a bucket. 20 requests/minute comfortably covers even an
+//  undebounced full address (typically 3-8 calls per address typed with
+//  debounce, more like 15-20 without it) while stopping a runaway
+//  script from burning quota at speed. Note: this only throttles a
+//  single actor — it doesn't cap aggregate usage across all tenants, so
+//  it's a script-abuse guard, not a hard ceiling on the monthly quota.
+// ─────────────────────────────────────────
+export const addressAutosuggestLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many address searches — please slow down and try again shortly.',
   },
 });

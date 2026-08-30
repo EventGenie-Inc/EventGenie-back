@@ -4,6 +4,7 @@ import { type PlatformRole, type EventStatus } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
+import { assertValidCoordinates } from './event-coordinates.util.js';
 
 export const eventService = {
 
@@ -27,6 +28,7 @@ export const eventService = {
   },
 
   create: async (tenantId: string, userId: string, data: CreateEventDto) => {
+    assertValidCoordinates(data.latitude, data.longitude);
     await assertEventCreatable(tenantId, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -35,6 +37,7 @@ export const eventService = {
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
+    assertValidCoordinates(data.latitude, data.longitude);
     // Tier rules are evaluated against the EVENT's owning tenant, not the
     // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
     // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
