@@ -7,6 +7,26 @@ import { withEffectiveStatus, assertEventIsPublished } from './event-status.util
 import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
+import { isCoverImageTooLarge, coverImageTooLargeMessage } from './event-cover-image.util.js';
+import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+// Shared by create() and update() — rejects an oversized cover upload
+// AND cleans up the now-orphaned asset that's already sitting in
+// Cloudinary (it finished uploading before this backend ever learned
+// its size — see event-cover-image.util.ts for why the check can only
+// happen here, after the fact). Best-effort: a failed delete just means
+// a harmless orphan, not a reason to also fail this request differently
+// than the size rejection already does.
+const assertCoverImageWithinSizeLimit = (data) => {
+    if (!isCoverImageTooLarge(data.coverImageBytes))
+        return;
+    if (data.coverImagePublicId) {
+        void destroyAsset(data.coverImagePublicId).then((result) => {
+            if (!result.ok)
+                console.error('[cloudinary cleanup] failed to delete oversized upload:', result.reason);
+        });
+    }
+    throw new HttpError(400, coverImageTooLargeMessage(data.coverImageBytes));
+};
 export const eventService = {
     // Both list and detail flow through the SAME withEffectiveStatus
     // presenter, so they can never disagree about a given event's
@@ -41,6 +61,7 @@ export const eventService = {
     create: async (tenantId, userId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
         assertValidCapacity(data.capacity);
+        assertCoverImageWithinSizeLimit(data);
         // No event days exist yet on this path (direct POST never creates
         // them — see event-day.router.ts), so there's nothing to compare the
         // deadline against beyond "not in the past".
@@ -54,6 +75,7 @@ export const eventService = {
     update: async (id, userId, requestingRole, tenantId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
         assertValidCapacity(data.capacity);
+        assertCoverImageWithinSizeLimit(data);
         // Tier rules are evaluated against the EVENT's owning tenant, not the
         // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
         // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
@@ -70,6 +92,21 @@ export const eventService = {
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
         });
         await eventRepository.update(id, userId, data);
+        // Cover REPLACED (including cleared to null) — delete the now-orphaned
+        // old asset. Fire-and-forget: never let a Cloudinary hiccup fail an
+        // otherwise-successful event update; a failed delete is just a
+        // harmless orphan (Batch B Task 3), not a broken event. Does NOT run
+        // on archive — archiving is reversible, and deleting the cover here
+        // would break restore (see the batch report).
+        if (data.coverImagePublicId !== undefined &&
+            event.coverImagePublicId &&
+            event.coverImagePublicId !== data.coverImagePublicId) {
+            const oldPublicId = event.coverImagePublicId;
+            void destroyAsset(oldPublicId).then((result) => {
+                if (!result.ok)
+                    console.error('[cloudinary cleanup] failed to delete replaced cover:', result.reason);
+            });
+        }
         // Re-fetched through getById (not the bare update() result) so this
         // response goes through the same withEffectiveStatus presenter as
         // every other read — PUT's response must agree with a subsequent

@@ -7,6 +7,8 @@ export interface CreateEventDto {
     latitude?: number;
     longitude?: number;
     coverImageUrl?: string;
+    coverImagePublicId?: string;
+    coverImageBytes?: number;
     visibility?: EventVisibility;
     ticketing?: EventTicketing;
     invitationTemplate?: string;
@@ -21,7 +23,9 @@ export interface UpdateEventDto {
     address?: string;
     latitude?: number;
     longitude?: number;
-    coverImageUrl?: string;
+    coverImageUrl?: string | null;
+    coverImagePublicId?: string | null;
+    coverImageBytes?: number;
     visibility?: EventVisibility;
     ticketing?: EventTicketing;
     invitationTemplate?: string;

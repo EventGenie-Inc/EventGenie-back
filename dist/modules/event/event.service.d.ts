@@ -29,6 +29,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -137,6 +138,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -245,6 +247,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -269,6 +272,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -377,6 +381,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -401,6 +406,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -509,6 +515,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -620,6 +627,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
@@ -728,6 +736,7 @@ export declare const eventService: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;

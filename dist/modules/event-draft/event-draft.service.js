@@ -8,6 +8,8 @@ import { assertEventCreatable } from '../subscription-tier-config/event-tier-enf
 import { assertValidCoordinates } from '../event/event-coordinates.util.js';
 import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
+import { isCoverImageTooLarge, coverImageTooLargeMessage } from '../event/event-cover-image.util.js';
+import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 export const eventDraftService = {
     getCurrentDraft: (tenantId, userId) => eventDraftRepository.findByTenantAndUser(tenantId, userId),
     saveDraft: (tenantId, userId, data) => eventDraftRepository.upsert(tenantId, userId, data),
@@ -59,6 +61,21 @@ export const eventDraftService = {
             endTime: day.endTime ? new Date(day.endTime) : null,
         }));
         assertValidRsvpDeadline(rsvpDeadline ?? null, draftEventDays, { rejectPast: true });
+        // Same size-limit + cleanup-of-the-already-uploaded-file treatment as
+        // the direct POST path (event.service.ts) — see event-cover-image.util.ts
+        // for why this can only be checked here, after Cloudinary has already
+        // reported the file's size back to the frontend.
+        const coverImagePublicId = typeof p.coverImagePublicId === 'string' ? p.coverImagePublicId : undefined;
+        const coverImageBytes = typeof p.coverImageBytes === 'number' ? p.coverImageBytes : undefined;
+        if (isCoverImageTooLarge(coverImageBytes)) {
+            if (coverImagePublicId) {
+                void destroyAsset(coverImagePublicId).then((result) => {
+                    if (!result.ok)
+                        console.error('[cloudinary cleanup] failed to delete oversized upload:', result.reason);
+                });
+            }
+            throw new HttpError(400, coverImageTooLargeMessage(coverImageBytes));
+        }
         const tickets = Array.isArray(p.tickets) ? p.tickets : [];
         const customFields = Array.isArray(p.customFields) ? p.customFields : [];
         const program = p.program;
@@ -81,6 +98,7 @@ export const eventDraftService = {
                     latitude: latitude ?? null,
                     longitude: longitude ?? null,
                     coverImageUrl: p.coverImageUrl ?? null,
+                    coverImagePublicId: coverImagePublicId ?? null,
                     status: 'DRAFT',
                     visibility: p.visibility ?? 'PRIVATE',
                     ticketing: p.ticketing ?? 'FREE',

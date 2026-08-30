@@ -177,6 +177,13 @@ model Event {
   latitude           Decimal?        @db.Decimal(10, 7)
   longitude          Decimal?        @db.Decimal(10, 7)
   coverImageUrl      String?
+  // Cloudinary's asset id for coverImageUrl, when the cover was uploaded
+  // through the signed-upload flow (src/modules/upload/) rather than
+  // pasted as an external link. Nullable independently of coverImageUrl —
+  // an externally-hosted URL has no Cloudinary asset to reference. Needed
+  // to delete the old asset on replace and for any future
+  // transform/thumbnail generation (see Batch B report).
+  coverImagePublicId String?
   status             EventStatus     @default(DRAFT)
   visibility         EventVisibility @default(PRIVATE)
   ticketing          EventTicketing  @default(FREE)
