@@ -61,7 +61,6 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;

@@ -8,6 +8,7 @@ export declare const subscriptionTierConfigRepository: {
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
         maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
         emailEnabled: boolean;
         smsEnabled: boolean;
         vendorMarketplace: boolean;
@@ -21,6 +22,7 @@ export declare const subscriptionTierConfigRepository: {
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
         maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
         emailEnabled: boolean;
         smsEnabled: boolean;
         vendorMarketplace: boolean;
@@ -34,6 +36,7 @@ export declare const subscriptionTierConfigRepository: {
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
         maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
         emailEnabled: boolean;
         smsEnabled: boolean;
         vendorMarketplace: boolean;
@@ -47,6 +50,7 @@ export declare const subscriptionTierConfigRepository: {
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
         maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
         emailEnabled: boolean;
         smsEnabled: boolean;
         vendorMarketplace: boolean;
@@ -60,6 +64,7 @@ export declare const subscriptionTierConfigRepository: {
         maxEvents: number | null;
         maxGuestsPerEvent: number | null;
         maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
         emailEnabled: boolean;
         smsEnabled: boolean;
         vendorMarketplace: boolean;

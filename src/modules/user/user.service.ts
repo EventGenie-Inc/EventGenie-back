@@ -82,9 +82,9 @@ export const userService = {
     // for the SUPER_ADMIN shape).
     const resolvedTenantId = requestingRole === 'SUPER_ADMIN' ? data.tenantId : (requesterTenantId ?? undefined);
 
-    if (data.role === 'EVENT_VENDOR' && !data.vendorSpaceId) {
-      throw new Error('vendorSpaceId is required when creating an EVENT_VENDOR user');
-    }
+    // EVENT_VENDOR users are no longer linked to a space at creation —
+    // vendor-space membership is many-to-many now (VendorSpaceUser) and
+    // is assigned separately afterward, via vendorService.assignVendorUser.
     const existing = await userRepository.findByEmail(data.email);
     if (existing) throw new Error('A user with this email already exists');
 
@@ -94,7 +94,6 @@ export const userService = {
       username: data.username,
       role: data.role,
       ...(resolvedTenantId !== undefined && { tenantId: resolvedTenantId }),
-      ...(data.vendorSpaceId !== undefined && { vendorSpaceId: data.vendorSpaceId }),
     });
   },
 

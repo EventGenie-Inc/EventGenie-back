@@ -123,24 +123,28 @@ model Tenant {
 // ─────────────────────────────────────────
 
 model User {
-  id            String       @id @default(cuid())
-  tenantId      String?
-  vendorSpaceId String?
-  firebaseUid   String       @unique
-  email         String       @unique
-  username      String
-  role          PlatformRole
-  isActive      Boolean      @default(true)
-  isArchived    Boolean      @default(false)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  id          String       @id @default(cuid())
+  tenantId    String?
+  firebaseUid String       @unique
+  email       String       @unique
+  username    String
+  role        PlatformRole
+  isActive    Boolean      @default(true)
+  isArchived  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-  tenant             Tenant?      @relation(fields: [tenantId], references: [id])
-  managedVendorSpace VendorSpace? @relation(fields: [vendorSpaceId], references: [id])
-  eventsCreated      Event[]
-  memoryItems        MemoryItem[] @relation("MemoryItemUploadedByUser")
-  otpRecords         OtpRecord[]
-  eventDrafts        EventDraft[]
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id])
+  // Many-to-many — replaces the old single vendorSpaceId FK (Vendor Space
+  // Follow-up batch). A person may legitimately manage more than one
+  // vendor business; the join table also allows several users on one
+  // space (a vendor business with multiple staff), which isn't
+  // artificially restricted — see vendor.service.ts.
+  vendorSpaceUsers VendorSpaceUser[]
+  eventsCreated    Event[]
+  memoryItems      MemoryItem[]      @relation("MemoryItemUploadedByUser")
+  otpRecords       OtpRecord[]
+  eventDrafts      EventDraft[]
 }
 
 // ─────────────────────────────────────────
@@ -432,9 +436,32 @@ model VendorSpace {
   createdBy   String
   updatedBy   String
 
-  tenant         Tenant?         @relation(fields: [tenantId], references: [id])
-  users          User[]
-  vendorServices VendorService[]
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id])
+  vendorSpaceUsers VendorSpaceUser[]
+  vendorServices   VendorService[]
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SPACE USER
+//
+//  Join table — replaces the old single User.vendorSpaceId FK. No
+//  isArchived/updatedAt/updatedBy: this is a plain membership fact (a
+//  user manages this space, or doesn't), same category as Attendance —
+//  one of STEERING's two documented hard-delete exceptions — not a
+//  soft-deletable business entity. "Unassign" hard-deletes the row.
+// ─────────────────────────────────────────
+
+model VendorSpaceUser {
+  id            String   @id @default(cuid())
+  vendorSpaceId String
+  userId        String
+  createdAt     DateTime @default(now())
+  createdBy     String
+
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@unique([vendorSpaceId, userId])
 }
 
 // ─────────────────────────────────────────
@@ -636,6 +663,12 @@ model SubscriptionTierConfig {
   maxEvents           Int?
   maxGuestsPerEvent   Int?
   maxSmsPerMonth      Int?
+  // Vendor Space Batch — number of active (non-archived) VendorSpaces a
+  // tenant may own. Independent of `vendorMarketplace` below: that's an
+  // all-or-nothing capability gate (can this tier use the marketplace at
+  // all), this is a numeric ceiling for tiers that can. null = unlimited,
+  // matching every other max* column's convention.
+  maxVendorSpaces     Int?
   emailEnabled        Boolean          @default(true)
   smsEnabled          Boolean          @default(false)
   vendorMarketplace   Boolean          @default(false)
