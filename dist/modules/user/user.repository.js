@@ -21,10 +21,6 @@ export const userRepository = {
     findByEmail: (email) => prisma.user.findFirst({
         where: { email, isArchived: false },
     }),
-    findByVendorSpace: (vendorSpaceId) => prisma.user.findMany({
-        where: { vendorSpaceId, isArchived: false },
-        orderBy: { createdAt: 'desc' },
-    }),
     create: (data) => prisma.user.create({
         data: {
             firebaseUid: data.firebaseUid,
@@ -32,7 +28,6 @@ export const userRepository = {
             username: data.username,
             role: data.role,
             tenantId: data.tenantId ?? null,
-            vendorSpaceId: data.vendorSpaceId ?? null,
             isActive: true,
             isArchived: false,
         },

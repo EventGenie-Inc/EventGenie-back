@@ -7,7 +7,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
@@ -20,7 +19,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
@@ -33,7 +31,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
@@ -46,25 +43,11 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    findByVendorSpace: (vendorSpaceId: string) => import("@prisma/client").Prisma.PrismaPromise<{
-        id: string;
-        email: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        tenantId: string | null;
-        vendorSpaceId: string | null;
-        firebaseUid: string;
-        username: string;
-        role: import("@prisma/client").$Enums.PlatformRole;
-        isActive: boolean;
-    }[]>;
     create: (data: CreateUserDto) => import("@prisma/client").Prisma.Prisma__UserClient<{
         id: string;
         email: string;
@@ -72,7 +55,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
@@ -85,7 +67,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
@@ -98,7 +79,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
@@ -111,7 +91,6 @@ export declare const userRepository: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;

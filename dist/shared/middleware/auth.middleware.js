@@ -97,7 +97,6 @@ export const authenticate = async (req, res, next) => {
                 email: true,
                 role: true,
                 tenantId: true,
-                vendorSpaceId: true,
                 isActive: true,
                 isArchived: true,
             },
@@ -123,7 +122,6 @@ export const authenticate = async (req, res, next) => {
             email: user.email,
             role: user.role,
             tenantId: user.tenantId,
-            vendorSpaceId: user.vendorSpaceId,
         };
         next();
     }

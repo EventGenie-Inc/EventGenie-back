@@ -31,12 +31,6 @@ export const userRepository = {
       where: { email, isArchived: false },
     }),
 
-  findByVendorSpace: (vendorSpaceId: string) =>
-    prisma.user.findMany({
-      where: { vendorSpaceId, isArchived: false },
-      orderBy: { createdAt: 'desc' },
-    }),
-
   create: (data: CreateUserDto) =>
     prisma.user.create({
       data: {
@@ -45,7 +39,6 @@ export const userRepository = {
         username: data.username,
         role: data.role,
         tenantId: data.tenantId ?? null,
-        vendorSpaceId: data.vendorSpaceId ?? null,
         isActive: true,
         isArchived: false,
       },

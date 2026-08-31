@@ -88,6 +88,10 @@ const TIER_CONFIGS = [
     maxEvents: 1,
     maxGuestsPerEvent: 50,
     maxSmsPerMonth: null,
+    // Unreachable in practice — vendorMarketplace:false below blocks SPARK
+    // from the marketplace entirely, before this count is ever checked.
+    // Set explicitly (0) rather than left null/unlimited, for clarity.
+    maxVendorSpaces: 0,
     emailEnabled: true,
     smsEnabled: false,
     vendorMarketplace: false,
@@ -100,6 +104,7 @@ const TIER_CONFIGS = [
     maxEvents: 5,
     maxGuestsPerEvent: 300,
     maxSmsPerMonth: 100,
+    maxVendorSpaces: 2,
     emailEnabled: true,
     smsEnabled: true,
     vendorMarketplace: true,
@@ -112,6 +117,7 @@ const TIER_CONFIGS = [
     maxEvents: null,
     maxGuestsPerEvent: null,
     maxSmsPerMonth: null,
+    maxVendorSpaces: null,
     emailEnabled: true,
     smsEnabled: true,
     vendorMarketplace: true,
