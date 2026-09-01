@@ -114,4 +114,51 @@ export const uploadSignatureLimiter = rateLimit({
         message: 'Too many upload requests. Please wait a few minutes and try again.',
     },
 });
+// ─────────────────────────────────────────
+//  RATE LIMITER — MEMORY HUB PUBLIC GALLERY
+//
+//  Fully unauthenticated, and the token is meant to be shared widely
+//  (family, group chats) — the most exposed endpoint on the platform.
+//  The token itself is unguessable (32 random bytes, same as an invite
+//  token), so this isn't really guarding against brute-forcing it; it's
+//  guarding against scripted scraping/hammering once a real link leaks
+//  somewhere unexpected. Keyed by IP (no authenticated user exists
+//  here). 60 requests / 5 minutes is generous enough that a household
+//  or venue Wi-Fi with several people browsing photos on one shared IP
+//  is never affected, while bounding a script that has the token and
+//  hits it in a tight loop.
+// ─────────────────────────────────────────
+export const memoryHubGalleryLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many requests. Please wait a few minutes and try again.',
+    },
+});
+// ─────────────────────────────────────────
+//  RATE LIMITER — MEMORY HUB GUEST UPLOAD SIGNATURE
+//
+//  Not explicitly requested by the batch prompt (only the public
+//  gallery view was) but added for the same reason uploadSignatureLimiter
+//  exists: every response is an upload grant, and this endpoint is
+//  reachable with nothing but a valid invite token — no session, no
+//  role check. Keyed by IP. 20 requests / 5 minutes comfortably covers
+//  a guest uploading several photos/videos in one sitting while
+//  bounding a script that has a leaked token and mints grants with it.
+// ─────────────────────────────────────────
+export const memoryHubGuestUploadLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many upload requests. Please wait a few minutes and try again.',
+    },
+});
 //# sourceMappingURL=rate-limit.middleware.js.map

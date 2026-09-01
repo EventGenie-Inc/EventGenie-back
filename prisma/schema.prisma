@@ -86,6 +86,16 @@ enum MediaType {
   VIDEO
 }
 
+// PENDING/APPROVED/REJECTED — replaces the old plain isApproved Boolean,
+// which couldn't distinguish "not yet reviewed" from "explicitly
+// rejected" (both would just be false). Curation (Memory Hub batch)
+// needs all three as genuinely distinct, listable states.
+enum MemoryItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum VendorCategory {
   CATERING
   DECOR
@@ -394,19 +404,29 @@ model EventDraft {
 // ─────────────────────────────────────────
 
 model MemoryItem {
-  id                String    @id @default(cuid())
-  memoryHubId       String
-  uploadedByGuestId String?
-  uploadedByUserId  String?
-  mediaUrl          String
-  mediaType         MediaType
-  caption           String?
-  isApproved        Boolean   @default(false)
-  isArchived        Boolean   @default(false)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  createdBy         String
-  updatedBy         String
+  id                 String           @id @default(cuid())
+  memoryHubId        String
+  uploadedByGuestId  String?
+  uploadedByUserId   String?
+  mediaUrl           String
+  // Cloudinary's asset id — required (unlike Event.coverImagePublicId,
+  // every MemoryItem comes through the signed-upload flow, never a
+  // pasted external URL) — needed to delete the asset on an explicit
+  // future purge; see the Memory Hub batch report on why reject does
+  // NOT delete it immediately.
+  cloudinaryPublicId String
+  mediaType          MediaType
+  // Reported directly by Cloudinary's own upload response, exactly like
+  // Event.coverImageUrl's sibling field. Storage quota is summed from
+  // these on demand (Memory Hub batch) — never a running counter.
+  bytes              Int
+  caption            String?
+  status             MemoryItemStatus @default(PENDING)
+  isArchived         Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  createdBy          String
+  updatedBy          String
 
   memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
   uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
@@ -669,6 +689,13 @@ model SubscriptionTierConfig {
   // all), this is a numeric ceiling for tiers that can. null = unlimited,
   // matching every other max* column's convention.
   maxVendorSpaces     Int?
+  // Memory Hub Batch — total bytes an event's Memory Hub may hold,
+  // summed on demand from its non-archived, non-rejected MemoryItems
+  // (never a running counter — see memory-hub-tier-enforcement.util.ts).
+  // Independent of memoryHubEnabled below (all-or-nothing capability
+  // gate); this is the numeric ceiling for tiers that have it. null =
+  // unlimited, same convention as every other max* column.
+  maxMemoryHubBytesPerEvent Int?
   emailEnabled        Boolean          @default(true)
   smsEnabled          Boolean          @default(false)
   vendorMarketplace   Boolean          @default(false)

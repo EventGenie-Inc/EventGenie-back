@@ -1,45 +1,53 @@
-import prisma from '../../shared/prisma/prisma.client.js';
-import { type CreateMemoryHubDto, type UpdateMemoryHubDto, type CreateMemoryItemDto, type UpdateMemoryItemDto } from './memory-hub.types.js';
 import crypto from 'crypto';
+import prisma from '../../shared/prisma/prisma.client.js';
+import { type MemoryItemStatus } from '@prisma/client';
+import { type CreateMemoryHubDto, type UpdateMemoryHubDto } from './memory-hub.types.js';
 
+// MemoryHub/MemoryItem have no tenantId of their own — ownership is
+// transitive through eventId -> Event.tenantId (MemoryHub) and two hops
+// further for MemoryItem. Unlike an earlier, unscoped version of this
+// file, these repository methods deliberately do NOT try to filter by
+// tenant themselves — that was the shape of the audit's worst finding
+// (make-public had no ownership check at all). Tenant scoping instead
+// happens in memory-hub.service.ts by gating every method through
+// eventService.getById() first, exactly like event-day/guest/invite
+// gate through it. See the batch report.
 export const memoryHubRepository = {
 
   // ── Memory Hub ────────────────────────────
 
-  findByEventId: (eventId: string) =>
+  findByEventId: (eventId: string, includeArchived = false) =>
     prisma.memoryHub.findFirst({
-      where: { eventId, isArchived: false },
+      where: { eventId, ...(includeArchived ? {} : { isArchived: false }) },
       include: {
-        memoryItems: {
-          where: { isArchived: false },
-          orderBy: { createdAt: 'desc' },
-        },
+        memoryItems: { where: { isArchived: false }, orderBy: { createdAt: 'desc' } },
       },
     }),
 
-  findById: (id: string) =>
+  findById: (id: string, includeArchived = false) =>
     prisma.memoryHub.findFirst({
-      where: { id, isArchived: false },
+      where: { id, ...(includeArchived ? {} : { isArchived: false }) },
       include: {
-        memoryItems: {
-          where: { isArchived: false },
-          orderBy: { createdAt: 'desc' },
-        },
+        memoryItems: { where: { isArchived: false }, orderBy: { createdAt: 'desc' } },
       },
     }),
 
+  // Public share view — approved, non-archived items only, with just
+  // enough uploader info to derive a display name (see
+  // memory-hub.service.ts's toPublicItem). Event included (with
+  // eventDays) so its effective status can be resolved before this goes
+  // out to a guest's browser.
   findByShareToken: (shareToken: string) =>
     prisma.memoryHub.findFirst({
       where: { shareToken, isArchived: false },
       include: {
-        // eventDays included so the nested event's status can be
-        // resolved to its effective value (Task 2b) before this goes
-        // out to a guest's browser — gating here still runs on
-        // opensAt only (Memory Hub access is deliberately independent
-        // of event status), this is presentation-only.
         event: { include: { eventDays: { where: { isArchived: false } } } },
         memoryItems: {
-          where: { isArchived: false, isApproved: true },
+          where: { isArchived: false, status: 'APPROVED' },
+          include: {
+            uploadedByGuest: { select: { firstName: true } },
+            uploadedByUser: { select: { username: true } },
+          },
           orderBy: { createdAt: 'desc' },
         },
       },
@@ -66,21 +74,31 @@ export const memoryHubRepository = {
       data: {
         ...(data.title !== undefined && { title: data.title ?? null }),
         ...(data.description !== undefined && { description: data.description ?? null }),
-        ...(data.isPublic !== undefined && { isPublic: data.isPublic }),
         ...(data.opensAt !== undefined && { opensAt: data.opensAt ? new Date(data.opensAt) : null }),
         updatedBy: userId,
       },
     }),
 
-  // Generate a public share token when hub is made public
+  // Generates (or regenerates, overwriting whatever was there) the
+  // public share token — 32 random bytes as hex, matching
+  // invite.repository.ts's token generation exactly (Task 4: "reuse
+  // whatever mechanism already generates invite tokens"). Regenerating
+  // invalidates the old link by construction: the column is
+  // overwritten, so the previous value simply stops matching anything.
   generateShareToken: (id: string, userId: string) =>
     prisma.memoryHub.update({
       where: { id },
       data: {
         isPublic: true,
-        shareToken: crypto.randomBytes(24).toString('hex'),
+        shareToken: crypto.randomBytes(32).toString('hex'),
         updatedBy: userId,
       },
+    }),
+
+  revokeShareToken: (id: string, userId: string) =>
+    prisma.memoryHub.update({
+      where: { id },
+      data: { isPublic: false, shareToken: null, updatedBy: userId },
     }),
 
   archive: (id: string, userId: string) =>
@@ -89,48 +107,107 @@ export const memoryHubRepository = {
       data: { isArchived: true, updatedBy: userId },
     }),
 
+  reactivate: (id: string, userId: string) =>
+    prisma.memoryHub.update({
+      where: { id },
+      data: { isArchived: false, updatedBy: userId },
+    }),
+
+  // ── Storage quota — summed on demand ──────
+  //
+  // PENDING + APPROVED count; REJECTED does not (Task 3 decision — see
+  // the batch report). Archived items never count either way. This is
+  // the ONLY source of truth for "how much storage is this event
+  // using" — no running counter exists anywhere to drift out of sync.
+  sumBytesForEvent: async (eventId: string): Promise<number> => {
+    const result = await prisma.memoryItem.aggregate({
+      where: {
+        isArchived: false,
+        status: { in: ['PENDING', 'APPROVED'] },
+        memoryHub: { eventId },
+      },
+      _sum: { bytes: true },
+    });
+    return result._sum.bytes ?? 0;
+  },
+
   // ── Memory Items ──────────────────────────
 
-  findAllItems: (memoryHubId: string) =>
+  findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived = false) =>
     prisma.memoryItem.findMany({
-      where: { memoryHubId, isArchived: false },
+      where: {
+        memoryHubId,
+        ...(includeArchived ? {} : { isArchived: false }),
+        ...(status ? { status } : {}),
+      },
       orderBy: { createdAt: 'desc' },
     }),
 
-  findItemById: (id: string) =>
+  findItemById: (id: string, includeArchived = false) =>
     prisma.memoryItem.findFirst({
-      where: { id, isArchived: false },
+      where: { id, ...(includeArchived ? {} : { isArchived: false }) },
     }),
 
-  createItem: (memoryHubId: string, userId: string, data: CreateMemoryItemDto) =>
+  createItem: (
+    memoryHubId: string,
+    actorId: string,
+    data: {
+      mediaUrl: string;
+      cloudinaryPublicId: string;
+      mediaType: 'IMAGE' | 'VIDEO';
+      bytes: number;
+      caption?: string;
+      status: MemoryItemStatus;
+      uploadedByUserId?: string;
+      uploadedByGuestId?: string;
+    }
+  ) =>
     prisma.memoryItem.create({
       data: {
         memoryHubId,
         mediaUrl: data.mediaUrl,
+        cloudinaryPublicId: data.cloudinaryPublicId,
         mediaType: data.mediaType,
+        bytes: data.bytes,
         caption: data.caption ?? null,
-        uploadedByGuestId: data.uploadedByGuestId ?? null,
+        status: data.status,
         uploadedByUserId: data.uploadedByUserId ?? null,
-        isApproved: false,
+        uploadedByGuestId: data.uploadedByGuestId ?? null,
         isArchived: false,
-        createdBy: userId,
+        createdBy: actorId,
+        updatedBy: actorId,
+      },
+    }),
+
+  updateItemCaption: (id: string, userId: string, caption: string | null | undefined) =>
+    prisma.memoryItem.update({
+      where: { id },
+      data: {
+        ...(caption !== undefined && { caption: caption ?? null }),
         updatedBy: userId,
       },
     }),
 
-  updateItem: (id: string, userId: string, data: UpdateMemoryItemDto) =>
+  // The only writer of MemoryItem.status — curateItem() in
+  // memory-hub.service.ts is the sole caller. Kept separate from
+  // updateItemCaption for the same reason Event.status has its own
+  // updateStatus: a curation decision must never be smuggled through a
+  // plain caption edit.
+  updateItemStatus: (id: string, userId: string, status: MemoryItemStatus) =>
     prisma.memoryItem.update({
       where: { id },
-      data: {
-        ...(data.caption !== undefined && { caption: data.caption ?? null }),
-        ...(data.isApproved !== undefined && { isApproved: data.isApproved }),
-        updatedBy: userId,
-      },
+      data: { status, updatedBy: userId },
     }),
 
   archiveItem: (id: string, userId: string) =>
     prisma.memoryItem.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
+    }),
+
+  reactivateItem: (id: string, userId: string) =>
+    prisma.memoryItem.update({
+      where: { id },
+      data: { isArchived: false, updatedBy: userId },
     }),
 };

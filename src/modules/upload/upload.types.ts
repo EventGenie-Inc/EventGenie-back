@@ -1,11 +1,12 @@
-// MEMORY_ITEM included from the start (Batch C reuses this endpoint)
-// but not implemented yet — requestSignature() rejects it explicitly
-// rather than silently applying EVENT_COVER's constraints to it.
 export type UploadPurpose = 'EVENT_COVER' | 'MEMORY_ITEM';
 
 export interface RequestUploadSignatureDto {
   purpose: UploadPurpose;
   eventId?: string;
+  // Required for MEMORY_ITEM (both image and video allowed there,
+  // unlike EVENT_COVER which is always an image) — picks the resource
+  // type, allowed formats, and size limit.
+  mediaType?: 'IMAGE' | 'VIDEO';
 }
 
 export interface UploadSignatureResponse {

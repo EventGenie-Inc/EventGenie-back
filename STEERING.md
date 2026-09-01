@@ -214,8 +214,12 @@ DRAFT ──publish──> PUBLISHED ──(last day passes)──> COMPLETED (d
 | CANCELLED | ✗ | ✗ | ✗ |
 
 Guest creation and import are allowed in `DRAFT` — organisers build
-their list before going live. Memory Hub access is governed solely by
-`opensAt` and is independent of event status.
+their list before going live. Guest-facing Memory Hub access (the
+public share-token gallery, and guest uploads) is governed by `opensAt`
+**and** the event not being `CANCELLED` — not independent of event
+status. Neither gate checks `Event.isArchived`. Organiser-side Memory
+Hub management (`memory-hub.service.ts`'s non-guest methods) checks
+neither `opensAt` nor cancellation — only tenant scoping and tier.
 
 ### Public vs private events
 
