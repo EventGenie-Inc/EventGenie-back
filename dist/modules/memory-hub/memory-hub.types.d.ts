@@ -6,18 +6,22 @@ export interface CreateMemoryHubDto {
 export interface UpdateMemoryHubDto {
     title?: string;
     description?: string;
-    isPublic?: boolean;
     opensAt?: string | null;
 }
 export interface CreateMemoryItemDto {
     mediaUrl: string;
+    cloudinaryPublicId: string;
     mediaType: 'IMAGE' | 'VIDEO';
+    bytes: number;
     caption?: string;
-    uploadedByGuestId?: string;
-    uploadedByUserId?: string;
+}
+export interface CreateGuestMemoryItemDto extends CreateMemoryItemDto {
+    token: string;
 }
 export interface UpdateMemoryItemDto {
     caption?: string;
-    isApproved?: boolean;
+}
+export interface CurateMemoryItemDto {
+    status: 'APPROVED' | 'REJECTED';
 }
 //# sourceMappingURL=memory-hub.types.d.ts.map

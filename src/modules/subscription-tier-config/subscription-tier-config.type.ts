@@ -6,6 +6,7 @@ export interface CreateSubscriptionTierConfigDto {
   maxGuestsPerEvent?: number;
   maxSmsPerMonth?: number;
   maxVendorSpaces?: number;
+  maxMemoryHubBytesPerEvent?: number;
   emailEnabled: boolean;
   smsEnabled: boolean;
   vendorMarketplace: boolean;
@@ -18,6 +19,7 @@ export interface UpdateSubscriptionTierConfigDto {
   maxGuestsPerEvent?: number;
   maxSmsPerMonth?: number;
   maxVendorSpaces?: number;
+  maxMemoryHubBytesPerEvent?: number;
   emailEnabled?: boolean;
   smsEnabled?: boolean;
   vendorMarketplace?: boolean;

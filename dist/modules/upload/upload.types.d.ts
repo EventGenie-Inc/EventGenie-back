@@ -2,6 +2,7 @@ export type UploadPurpose = 'EVENT_COVER' | 'MEMORY_ITEM';
 export interface RequestUploadSignatureDto {
     purpose: UploadPurpose;
     eventId?: string;
+    mediaType?: 'IMAGE' | 'VIDEO';
 }
 export interface UploadSignatureResponse {
     signature: string;

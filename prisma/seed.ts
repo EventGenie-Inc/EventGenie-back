@@ -92,6 +92,9 @@ const TIER_CONFIGS = [
     // from the marketplace entirely, before this count is ever checked.
     // Set explicitly (0) rather than left null/unlimited, for clarity.
     maxVendorSpaces: 0,
+    // Unreachable too — memoryHubEnabled:false below blocks SPARK from
+    // Memory Hub entirely, before this is ever checked.
+    maxMemoryHubBytesPerEvent: 0,
     emailEnabled: true,
     smsEnabled: false,
     vendorMarketplace: false,
@@ -105,6 +108,11 @@ const TIER_CONFIGS = [
     maxGuestsPerEvent: 300,
     maxSmsPerMonth: 100,
     maxVendorSpaces: 2,
+    // 500MB per event — generous for a real gallery of phone photos plus
+    // a handful of short video clips (see upload-constants.ts for the
+    // per-file reasoning), while keeping storage cost per event bounded
+    // on the mid tier. ELEVATE is unlimited below.
+    maxMemoryHubBytesPerEvent: 500 * 1024 * 1024,
     emailEnabled: true,
     smsEnabled: true,
     vendorMarketplace: true,
@@ -118,6 +126,7 @@ const TIER_CONFIGS = [
     maxGuestsPerEvent: null,
     maxSmsPerMonth: null,
     maxVendorSpaces: null,
+    maxMemoryHubBytesPerEvent: null,
     emailEnabled: true,
     smsEnabled: true,
     vendorMarketplace: true,

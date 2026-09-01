@@ -8,6 +8,7 @@ import { ticketPurchaseRepository } from '../ticket-purchase/ticket-purchase.rep
 import { type SubmitRsvpDto } from './rsvp.types.js';
 import { resolveEffectiveStatus, withEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
@@ -15,12 +16,6 @@ import { HttpError } from '../../shared/errors/http-error.js';
 // it. Never leak tenant names, internal ids, guest counts, or anything
 // about other guests; a guest's token only entitles them to know about
 // their own invite.
-
-// Same date format already used for guest-facing invite text
-// (invite-dispatch.service.ts's earliestDayLabel) — kept identical so a
-// guest sees one consistent date style across every message they get.
-const formatGuestDate = (date: Date): string =>
-  date.toLocaleDateString('en-ZA', { year: 'numeric', month: 'long', day: 'numeric' });
 
 // Guest-facing wording for the same three blocked statuses invites use
 // (COMPLETED/CANCELLED read fine to a guest as-is); DRAFT gets its own
@@ -66,6 +61,66 @@ const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null): void => {
 // User), so this sentinel documents the convention for guest-originated writes.
 const GUEST_ACTOR = 'guest-rsvp';
 
+const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+
+const isPositiveInteger = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value > 0;
+
+const isValidRsvpResponseShape = (value: unknown): value is { rsvpFieldId: string; value: string } =>
+  typeof value === 'object' &&
+  value !== null &&
+  isNonEmptyString((value as Record<string, unknown>)['rsvpFieldId']) &&
+  typeof (value as Record<string, unknown>)['value'] === 'string';
+
+// No domain concept of "party size" exists yet — an Invite is 1:1 with a
+// guest, and ticketing has no payment integration to derive a real limit
+// from. 10 is a generous cap for one guest buying on behalf of their
+// household while still bounding how much of a small venue's stock a
+// single submission can claim; it's a sanity ceiling independent of (and
+// in addition to) the per-ticket totalQuantity check further down.
+const MAX_TICKET_QUANTITY = 10;
+
+// A single guard for the whole payload, run once before the transaction
+// opens — every field below arrives straight from an unauthenticated
+// POST body, so a malformed shape anywhere must be rejected before any
+// database work begins, not discovered piecemeal at each field's point
+// of use (which is how `token` alone reaching tx.invite.findUnique as
+// `undefined` used to raise a raw Prisma validation error — a 500 that,
+// in development, dumps the Invite model schema to an anonymous caller;
+// same fix as memory-hub.service.ts's guest upload path). This checks
+// SHAPE only — whether an id actually belongs to THIS invite's event
+// (rsvpFieldId, ticketId, day ids) can only be checked once the invite
+// is loaded, same as the existing ticket/day-id re-validation below.
+const assertValidSubmission = (data: SubmitRsvpDto): void => {
+  if (!isNonEmptyString(data.token)) {
+    throw new HttpError(400, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+  }
+
+  if (data.attendingDayIds !== undefined && (!Array.isArray(data.attendingDayIds) || !data.attendingDayIds.every(isNonEmptyString))) {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+
+  if (data.rsvpResponses !== undefined && (!Array.isArray(data.rsvpResponses) || !data.rsvpResponses.every(isValidRsvpResponseShape))) {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+
+  if (data.ticketId !== undefined && !isNonEmptyString(data.ticketId)) {
+    throw new HttpError(400, "The selected ticket isn't valid. Please refresh the page and try again.");
+  }
+
+  // Bounded before any arithmetic touches it — an unvalidated ticketQuantity
+  // used to coerce in `soldCount + quantity`, silently defeating the
+  // totalQuantity check below (a stock-limit bypass), then reach Prisma as
+  // NaN/a string and raise the same class of schema-leaking error as token.
+  if (data.ticketQuantity !== undefined && (!isPositiveInteger(data.ticketQuantity) || data.ticketQuantity > MAX_TICKET_QUANTITY)) {
+    throw new HttpError(400, `Ticket quantity must be a whole number between 1 and ${MAX_TICKET_QUANTITY}.`);
+  }
+
+  if (data.paymentRef !== undefined && typeof data.paymentRef !== 'string') {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+};
+
 export const rsvpService = {
 
   // Public, unauthenticated read — returns flags rather than throwing on
@@ -95,13 +150,21 @@ export const rsvpService = {
     };
   },
 
-  submit: (data: SubmitRsvpDto) =>
-    prisma.$transaction(async (tx) => {
+  submit: (data: SubmitRsvpDto) => {
+    assertValidSubmission(data);
+
+    return prisma.$transaction(async (tx) => {
       const invite = await tx.invite.findUnique({
         where: { token: data.token },
         include: {
           inviteEventDay: true,
-          event: { include: { tickets: true, eventDays: { where: { isArchived: false } } } },
+          event: {
+            include: {
+              tickets: true,
+              eventDays: { where: { isArchived: false } },
+              rsvpFields: { where: { isArchived: false } },
+            },
+          },
         },
       });
 
@@ -145,8 +208,23 @@ export const rsvpService = {
       }
 
       const rsvpResponses = [];
-      for (const response of data.rsvpResponses ?? []) {
-        rsvpResponses.push(await rsvpResponseRepository.create(invite.id, response, tx));
+      const submittedResponses = data.rsvpResponses ?? [];
+      if (submittedResponses.length > 0) {
+        const validFieldIds = new Set(invite.event.rsvpFields.map((f) => f.id));
+
+        for (const response of submittedResponses) {
+          if (!validFieldIds.has(response.rsvpFieldId)) {
+            // 400 — same reasoning as the day-id check above: a well-shaped
+            // but non-existent/wrong-event rsvpFieldId is a malformed
+            // submission (stale page or tampered request), not something to
+            // let fall through to a foreign-key violation at write time.
+            throw new HttpError(400, "One of your answers isn't part of this invitation. Please refresh the page and try again.");
+          }
+        }
+
+        for (const response of submittedResponses) {
+          rsvpResponses.push(await rsvpResponseRepository.create(invite.id, response, tx));
+        }
       }
 
       let ticketPurchase = null;
@@ -196,5 +274,6 @@ export const rsvpService = {
       });
 
       return { invite: updatedInvite, attendances, rsvpResponses, ticketPurchase };
-    }),
+    });
+  },
 };

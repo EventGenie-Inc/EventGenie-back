@@ -34,30 +34,51 @@ export const eventRepository = {
     // rsvp.service.ts's submit() flips that SAME invite's status rather than
     // creating a new one — so this never double-counts a guest who RSVP'd.
     countAcceptedInvitesForEvent: (eventId) => prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED' } }),
-    create: (tenantId, userId, data) => prisma.event.create({
-        data: {
-            tenantId,
-            createdByUserId: userId,
-            name: data.name,
-            // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
-            description: data.description ?? null,
-            location: data.location,
-            address: data.address ?? null,
-            latitude: data.latitude ?? null,
-            longitude: data.longitude ?? null,
-            coverImageUrl: data.coverImageUrl ?? null,
-            coverImagePublicId: data.coverImagePublicId ?? null,
-            status: 'DRAFT',
-            visibility: data.visibility ?? 'PRIVATE',
-            ticketing: data.ticketing ?? 'FREE',
-            invitationTemplate: data.invitationTemplate ?? null,
-            invitationConfig: data.invitationConfig ?? null,
-            rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null,
-            capacity: data.capacity ?? null,
-            isArchived: false,
-            createdBy: userId,
-            updatedBy: userId,
-        },
+    // Wrapped in a transaction so the event never exists without a
+    // MemoryHub — the wizard's materialize path (event-draft.service.ts)
+    // already created one; this direct-POST path did not (Memory Hub
+    // batch found this gap: "an event without a hub would fail silently
+    // the moment someone tries to open it" — confirmed 0 live events were
+    // missing one only because none had come through this path yet).
+    create: (tenantId, userId, data) => prisma.$transaction(async (tx) => {
+        const event = await tx.event.create({
+            data: {
+                tenantId,
+                createdByUserId: userId,
+                name: data.name,
+                // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
+                description: data.description ?? null,
+                location: data.location,
+                address: data.address ?? null,
+                latitude: data.latitude ?? null,
+                longitude: data.longitude ?? null,
+                coverImageUrl: data.coverImageUrl ?? null,
+                coverImagePublicId: data.coverImagePublicId ?? null,
+                status: 'DRAFT',
+                visibility: data.visibility ?? 'PRIVATE',
+                ticketing: data.ticketing ?? 'FREE',
+                invitationTemplate: data.invitationTemplate ?? null,
+                invitationConfig: data.invitationConfig ?? null,
+                rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null,
+                capacity: data.capacity ?? null,
+                isArchived: false,
+                createdBy: userId,
+                updatedBy: userId,
+            },
+        });
+        await tx.memoryHub.create({
+            data: {
+                eventId: event.id,
+                title: null,
+                description: null,
+                isPublic: false,
+                opensAt: null,
+                isArchived: false,
+                createdBy: userId,
+                updatedBy: userId,
+            },
+        });
+        return event;
     }),
     update: (id, userId, data) => prisma.event.update({
         where: { id },

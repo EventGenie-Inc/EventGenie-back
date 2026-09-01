@@ -151,7 +151,7 @@ export declare const eventRepository: {
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     countActive: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
     countAcceptedInvitesForEvent: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
-    create: (tenantId: string, userId: string, data: CreateEventDto) => import("@prisma/client").Prisma.Prisma__EventClient<{
+    create: (tenantId: string, userId: string, data: CreateEventDto) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -175,7 +175,7 @@ export declare const eventRepository: {
         capacity: number | null;
         createdBy: string;
         updatedBy: string;
-    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    }>;
     update: (id: string, userId: string, data: UpdateEventDto) => import("@prisma/client").Prisma.Prisma__EventClient<{
         name: string;
         id: string;
