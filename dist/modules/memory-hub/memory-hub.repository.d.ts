@@ -228,7 +228,14 @@ export declare const memoryHubRepository: {
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     sumBytesForEvent: (eventId: string) => Promise<number>;
-    findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<{
+    findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<({
+        uploadedByGuest: {
+            firstName: string | null;
+        } | null;
+        uploadedByUser: {
+            username: string;
+        } | null;
+    } & {
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -244,8 +251,15 @@ export declare const memoryHubRepository: {
         cloudinaryPublicId: string;
         mediaType: import("@prisma/client").$Enums.MediaType;
         caption: string | null;
-    }[]>;
-    findItemById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__MemoryItemClient<{
+    })[]>;
+    findItemById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__MemoryItemClient<({
+        uploadedByGuest: {
+            firstName: string | null;
+        } | null;
+        uploadedByUser: {
+            username: string;
+        } | null;
+    } & {
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -261,7 +275,7 @@ export declare const memoryHubRepository: {
         cloudinaryPublicId: string;
         mediaType: import("@prisma/client").$Enums.MediaType;
         caption: string | null;
-    } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     createItem: (memoryHubId: string, actorId: string, data: {
         mediaUrl: string;
         cloudinaryPublicId: string;

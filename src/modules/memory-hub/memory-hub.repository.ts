@@ -133,6 +133,11 @@ export const memoryHubRepository = {
 
   // ── Memory Items ──────────────────────────
 
+  // Same uploader join as findByShareToken above — curation needs to
+  // know who uploaded something at least as well as an anonymous
+  // visitor of the finished gallery does. Guest gets firstName only,
+  // User gets username only — never email/phone; a display name is all
+  // curation needs (see memory-hub.service.ts's toCuratedItem).
   findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived = false) =>
     prisma.memoryItem.findMany({
       where: {
@@ -140,12 +145,20 @@ export const memoryHubRepository = {
         ...(includeArchived ? {} : { isArchived: false }),
         ...(status ? { status } : {}),
       },
+      include: {
+        uploadedByGuest: { select: { firstName: true } },
+        uploadedByUser: { select: { username: true } },
+      },
       orderBy: { createdAt: 'desc' },
     }),
 
   findItemById: (id: string, includeArchived = false) =>
     prisma.memoryItem.findFirst({
       where: { id, ...(includeArchived ? {} : { isArchived: false }) },
+      include: {
+        uploadedByGuest: { select: { firstName: true } },
+        uploadedByUser: { select: { username: true } },
+      },
     }),
 
   createItem: (

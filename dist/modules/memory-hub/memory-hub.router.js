@@ -20,10 +20,12 @@ const router = Router({ mergeParams: true });
 router.use(authenticate, requireEventAdmin);
 // ── Memory Hub ────────────────────────────
 // GET /api/events/:eventId/memory-hub
+// Detail view — includes usedBytes/limitBytes (see
+// memoryHubService.getDetailByEventId) alongside the hub itself.
 router.get('/', async (req, res, next) => {
     try {
         const auth = req;
-        const hub = await memoryHubService.getByEventId(req.params['eventId'], auth.user.role, auth.user.tenantId);
+        const hub = await memoryHubService.getDetailByEventId(req.params['eventId'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: hub });
     }
     catch (err) {
