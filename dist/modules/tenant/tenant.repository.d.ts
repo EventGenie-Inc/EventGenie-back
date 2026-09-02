@@ -10,7 +10,7 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     }[]>;
-    findById: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
+    findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
         id: string;
         slug: string;
@@ -54,14 +54,13 @@ export declare const tenantRepository: {
         createdAt: Date;
         updatedAt: Date;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    findAllUsersByTenant: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<{
+    findAllUsersByTenant: (tenantId: string, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;

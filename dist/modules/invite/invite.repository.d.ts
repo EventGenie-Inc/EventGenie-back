@@ -8,8 +8,9 @@ export declare const inviteRepository: {
             createdAt: Date;
             updatedAt: Date;
             phoneNumber: string | null;
-            firstName: string;
-            surname: string;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
         };
         inviteEventDay: ({
             eventDay: {
@@ -50,7 +51,7 @@ export declare const inviteRepository: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     })[]>;
-    findById: (id: string) => import("@prisma/client").Prisma.Prisma__InviteClient<({
+    findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__InviteClient<({
         guest: {
             id: string;
             email: string | null;
@@ -58,8 +59,9 @@ export declare const inviteRepository: {
             createdAt: Date;
             updatedAt: Date;
             phoneNumber: string | null;
-            firstName: string;
-            surname: string;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
         };
         inviteEventDay: ({
             eventDay: {
@@ -120,6 +122,56 @@ export declare const inviteRepository: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    findByGuestIds: (eventId: string, guestIds: string[]) => import("@prisma/client").Prisma.PrismaPromise<({
+        guest: {
+            id: string;
+            email: string | null;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            phoneNumber: string | null;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
+        };
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.InviteStatus;
+        createdBy: string;
+        updatedBy: string;
+        expiresAt: Date | null;
+        usedAt: Date | null;
+        eventId: string;
+        guestId: string;
+        token: string;
+        used: boolean;
+        editToken: string | null;
+        editTokenExpiresAt: Date | null;
+        deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+        deliveredAt: Date | null;
+    })[]>;
+    markDelivered: (id: string) => import("@prisma/client").Prisma.Prisma__InviteClient<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.InviteStatus;
+        createdBy: string;
+        updatedBy: string;
+        expiresAt: Date | null;
+        usedAt: Date | null;
+        eventId: string;
+        guestId: string;
+        token: string;
+        used: boolean;
+        editToken: string | null;
+        editTokenExpiresAt: Date | null;
+        deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+        deliveredAt: Date | null;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findByToken: (token: string) => import("@prisma/client").Prisma.Prisma__InviteClient<({
         event: {
             eventDays: {
@@ -179,11 +231,14 @@ export declare const inviteRepository: {
             latitude: import("@prisma/client-runtime-utils").Decimal | null;
             longitude: import("@prisma/client-runtime-utils").Decimal | null;
             coverImageUrl: string | null;
+            coverImagePublicId: string | null;
             status: import("@prisma/client").$Enums.EventStatus;
             visibility: import("@prisma/client").$Enums.EventVisibility;
             ticketing: import("@prisma/client").$Enums.EventTicketing;
             invitationTemplate: string | null;
             invitationConfig: string | null;
+            rsvpDeadline: Date | null;
+            capacity: number | null;
             createdBy: string;
             updatedBy: string;
         };
@@ -194,8 +249,9 @@ export declare const inviteRepository: {
             createdAt: Date;
             updatedAt: Date;
             phoneNumber: string | null;
-            firstName: string;
-            surname: string;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
         };
         inviteEventDay: ({
             eventDay: {
@@ -275,6 +331,25 @@ export declare const inviteRepository: {
         deliveredAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     archive: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__InviteClient<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.InviteStatus;
+        createdBy: string;
+        updatedBy: string;
+        expiresAt: Date | null;
+        usedAt: Date | null;
+        eventId: string;
+        guestId: string;
+        token: string;
+        used: boolean;
+        editToken: string | null;
+        editTokenExpiresAt: Date | null;
+        deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+        deliveredAt: Date | null;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    reactivate: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__InviteClient<{
         id: string;
         isArchived: boolean;
         createdAt: Date;

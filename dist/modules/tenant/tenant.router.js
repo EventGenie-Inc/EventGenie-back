@@ -4,7 +4,23 @@ import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import {} from '../../shared/types/common.types.js';
 const router = Router();
-// All tenant routes are SUPER_ADMIN only
+// Self-service lookup of the caller's own tenant — must be registered before
+// the blanket SUPER_ADMIN guard below, since any authenticated user needs it.
+router.get('/me', authenticate, async (req, res, next) => {
+    try {
+        const auth = req;
+        if (!auth.user.tenantId) {
+            res.status(400).json({ status: 'error', message: 'User has no associated tenant' });
+            return;
+        }
+        const tenant = await tenantService.getById(auth.user.tenantId);
+        res.status(200).json({ status: 'ok', data: tenant });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// All other tenant routes are SUPER_ADMIN only
 router.use(authenticate, requireSuperAdmin);
 router.get('/', async (_req, res, next) => {
     try {
@@ -28,6 +44,15 @@ router.get('/:id/users', async (req, res, next) => {
     try {
         const users = await tenantService.getUsers(req.params['id']);
         res.status(200).json({ status: 'ok', data: users });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+router.get('/:id/events', async (req, res, next) => {
+    try {
+        const events = await tenantService.getEvents(req.params['id']);
+        res.status(200).json({ status: 'ok', data: events });
     }
     catch (err) {
         next(err);

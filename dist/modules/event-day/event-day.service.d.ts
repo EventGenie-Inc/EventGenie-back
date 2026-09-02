@@ -1,6 +1,7 @@
 import { type CreateEventDayDto, type UpdateEventDayDto } from './event-day.types.js';
+import { type PlatformRole } from '@prisma/client';
 export declare const eventDayService: {
-    getAll: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<{
+    getAll: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -13,7 +14,7 @@ export declare const eventDayService: {
         startTime: Date | null;
         endTime: Date | null;
     }[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -26,20 +27,7 @@ export declare const eventDayService: {
         startTime: Date | null;
         endTime: Date | null;
     }>;
-    create: (eventId: string, userId: string, data: CreateEventDayDto) => import("@prisma/client").Prisma.Prisma__EventDayClient<{
-        id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        createdBy: string;
-        updatedBy: string;
-        eventId: string;
-        label: string;
-        date: Date;
-        startTime: Date | null;
-        endTime: Date | null;
-    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    update: (id: string, userId: string, data: UpdateEventDayDto) => Promise<{
+    create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateEventDayDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -52,7 +40,20 @@ export declare const eventDayService: {
         startTime: Date | null;
         endTime: Date | null;
     }>;
-    archive: (id: string, userId: string) => Promise<{
+    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDayDto) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        label: string;
+        date: Date;
+        startTime: Date | null;
+        endTime: Date | null;
+    }>;
+    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;

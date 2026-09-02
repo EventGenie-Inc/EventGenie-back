@@ -11,7 +11,7 @@ export const attendanceRepository = {
     }),
 
   findById: (id: string) =>
-    prisma.attendance.findFirst({ where: { id }, include: { eventDay: true } }),
+    prisma.attendance.findFirst({ where: { id }, include: { eventDay: true, invite: true } }),
 
   // Accepts an optional transaction client — called internally by the
   // RSVP-submit flow inside a prisma.$transaction.

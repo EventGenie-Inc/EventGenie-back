@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { eventService } from './event.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
-import { requireEventAdmin, requireEventAdminOrVendor } from '../../shared/middleware/role.middleware.js';
+import { requireEventAdmin, requireEventAdminOrVendor, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
@@ -16,8 +16,17 @@ router.get('/', authenticate, requireEventAdminOrVendor, async (req: Request, re
 
 router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const event = await eventService.getById(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const event = await eventService.getDetail(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: event });
+  } catch (err) { next(err); }
+});
+
+router.get('/:id/share-link', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const result = await eventService.getShareLink(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
 
@@ -37,7 +46,7 @@ router.post('/', authenticate, requireEventAdmin, async (req: Request, res: Resp
 router.put('/:id', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const event = await eventService.update(req.params['id'] as string, auth.user.id, req.body);
+    const event = await eventService.update(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(200).json({ status: 'ok', data: event });
   } catch (err) { next(err); }
 });
@@ -45,8 +54,35 @@ router.put('/:id', authenticate, requireEventAdmin, async (req: Request, res: Re
 router.delete('/:id', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await eventService.archive(req.params['id'] as string, auth.user.id);
+    await eventService.archive(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'Event archived' });
+  } catch (err) { next(err); }
+});
+
+router.post('/:id/publish', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const event = await eventService.publish(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: event });
+  } catch (err) { next(err); }
+});
+
+router.post('/:id/cancel', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const event = await eventService.cancel(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: event });
+  } catch (err) { next(err); }
+});
+
+// Support action — restoring an archived event is a Super Admin action,
+// not something a Tenant Admin does for themselves. Mirrors
+// /api/users/:id/reactivate and /api/tenants/:id/reactivate.
+router.post('/:id/reactivate', authenticate, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const event = await eventService.reactivate(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: event });
   } catch (err) { next(err); }
 });
 

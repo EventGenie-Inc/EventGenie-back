@@ -1,0 +1,1 @@
+{"version":3,"file":"email.engine.d.ts","sourceRoot":"","sources":["../../../src/shared/messaging/email.engine.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,KAAK,gBAAgB,EAAE,MAAM,sBAAsB,CAAC;AAa7D,eAAO,MAAM,SAAS,GAAU,IAAI,MAAM,EAAE,SAAS,MAAM,EAAE,MAAM,MAAM,KAAG,OAAO,CAAC,gBAAgB,CASnG,CAAC;AAKF,eAAO,MAAM,qBAAqB,GAAI,SAAS,MAAM,EAAE,UAAU,MAAM,KAAG,MAKzE,CAAC"}

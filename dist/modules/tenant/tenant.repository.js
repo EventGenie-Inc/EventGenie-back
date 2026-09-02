@@ -4,8 +4,11 @@ export const tenantRepository = {
         where: { isArchived: false },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id) => prisma.tenant.findFirst({
-        where: { id, isArchived: false },
+    findById: (id, includeArchived = false) => prisma.tenant.findFirst({
+        where: {
+            id,
+            ...(includeArchived ? {} : { isArchived: false }),
+        },
     }),
     findBySlug: (slug) => prisma.tenant.findFirst({
         where: { slug, isArchived: false },
@@ -18,8 +21,11 @@ export const tenantRepository = {
         where: { id },
         data: { subscriptionStatus: 'ACTIVE' },
     }),
-    findAllUsersByTenant: (tenantId) => prisma.user.findMany({
-        where: { tenantId, isArchived: false },
+    findAllUsersByTenant: (tenantId, includeArchived = false) => prisma.user.findMany({
+        where: {
+            tenantId,
+            ...(includeArchived ? {} : { isArchived: false }),
+        },
     }),
 };
 //# sourceMappingURL=tenant.repository.js.map

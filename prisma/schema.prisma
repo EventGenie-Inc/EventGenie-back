@@ -35,6 +35,14 @@ enum PlatformRole {
   EVENT_VENDOR
 }
 
+// NOTE — COMPLETED is never written to Event.status. It is derived at
+// read time (resolveEffectiveStatus in event-status.util.ts) once a
+// PUBLISHED event's last EventDay has passed, since a scheduled job to
+// flip it in the database isn't reliable on this project's hosting (no
+// paid cron, and in-process schedulers die when the free instance
+// sleeps). Querying Postgres directly will show PUBLISHED for a
+// finished event — that is expected, not a bug. CANCELLED, by
+// contrast, IS written: it reflects a human decision, not a date.
 enum EventStatus {
   DRAFT
   PUBLISHED
@@ -78,6 +86,16 @@ enum MediaType {
   VIDEO
 }
 
+// PENDING/APPROVED/REJECTED — replaces the old plain isApproved Boolean,
+// which couldn't distinguish "not yet reviewed" from "explicitly
+// rejected" (both would just be false). Curation (Memory Hub batch)
+// needs all three as genuinely distinct, listable states.
+enum MemoryItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum VendorCategory {
   CATERING
   DECOR
@@ -106,6 +124,8 @@ model Tenant {
   users        User[]
   events       Event[]
   vendorSpaces VendorSpace[]
+  eventDrafts  EventDraft[]
+  smsSendLogs  SmsSendLog[]
 }
 
 // ─────────────────────────────────────────
@@ -113,23 +133,28 @@ model Tenant {
 // ─────────────────────────────────────────
 
 model User {
-  id            String       @id @default(cuid())
-  tenantId      String?
-  vendorSpaceId String?
-  firebaseUid   String       @unique
-  email         String       @unique
-  username      String
-  role          PlatformRole
-  isActive      Boolean      @default(true)
-  isArchived    Boolean      @default(false)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  id          String       @id @default(cuid())
+  tenantId    String?
+  firebaseUid String       @unique
+  email       String       @unique
+  username    String
+  role        PlatformRole
+  isActive    Boolean      @default(true)
+  isArchived  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-  tenant             Tenant?      @relation(fields: [tenantId], references: [id])
-  managedVendorSpace VendorSpace? @relation(fields: [vendorSpaceId], references: [id])
-  eventsCreated      Event[]
-  memoryItems        MemoryItem[] @relation("MemoryItemUploadedByUser")
-  otpRecords         OtpRecord[]
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id])
+  // Many-to-many — replaces the old single vendorSpaceId FK (Vendor Space
+  // Follow-up batch). A person may legitimately manage more than one
+  // vendor business; the join table also allows several users on one
+  // space (a vendor business with multiple staff), which isn't
+  // artificially restricted — see vendor.service.ts.
+  vendorSpaceUsers VendorSpaceUser[]
+  eventsCreated    Event[]
+  memoryItems      MemoryItem[]      @relation("MemoryItemUploadedByUser")
+  otpRecords       OtpRecord[]
+  eventDrafts      EventDraft[]
 }
 
 // ─────────────────────────────────────────
@@ -166,11 +191,27 @@ model Event {
   latitude           Decimal?        @db.Decimal(10, 7)
   longitude          Decimal?        @db.Decimal(10, 7)
   coverImageUrl      String?
+  // Cloudinary's asset id for coverImageUrl, when the cover was uploaded
+  // through the signed-upload flow (src/modules/upload/) rather than
+  // pasted as an external link. Nullable independently of coverImageUrl —
+  // an externally-hosted URL has no Cloudinary asset to reference. Needed
+  // to delete the old asset on replace and for any future
+  // transform/thumbnail generation (see Batch B report).
+  coverImagePublicId String?
   status             EventStatus     @default(DRAFT)
   visibility         EventVisibility @default(PRIVATE)
   ticketing          EventTicketing  @default(FREE)
   invitationTemplate String?
   invitationConfig   String?
+  // Independent of Event.status — closes guest self-service RSVP only.
+  // Organiser guest management is unaffected. Never folded into
+  // resolveEffectiveStatus (event-status.util.ts).
+  rsvpDeadline       DateTime?
+  // The VENUE's physical capacity — informational, not a billing limit.
+  // Distinct from SubscriptionTierConfig.maxGuestsPerEvent; never conflate
+  // the two. Warns via acceptedGuestCount on the event detail response,
+  // never blocks guest creation/import.
+  capacity           Int?
   isArchived         Boolean         @default(false)
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
@@ -181,6 +222,7 @@ model Event {
   createdByUser User          @relation(fields: [createdByUserId], references: [id])
   eventDays     EventDay[]
   invites       Invite[]
+  guests        Guest[]
   memoryHub     MemoryHub?
   rsvpFields    RsvpField[]
   program       EventProgram?
@@ -189,6 +231,13 @@ model Event {
 
 // ─────────────────────────────────────────
 //  EVENT DAY
+//
+//  label is unique per event (case-sensitively, at the DB level — a
+//  race-condition backstop). The human-meaningful check is
+//  case-insensitive and lives in event-day-validation.util.ts, since two
+//  days labelled "Saturday" and "saturday" are the same ambiguity to
+//  someone typing a spreadsheet even though Postgres treats them as
+//  distinct strings.
 // ─────────────────────────────────────────
 
 model EventDay {
@@ -207,22 +256,36 @@ model EventDay {
   event          Event            @relation(fields: [eventId], references: [id])
   inviteEventDay InviteEventDay[]
   attendances    Attendance[]
+
+  @@unique([eventId, label])
 }
 
 // ─────────────────────────────────────────
 //  GUEST
+//
+//  firstName/surname are optional — a guest imported by phone/email alone
+//  has no name until they RSVP and provide one.
+//
+//  Prisma cannot express "at least one of email/phoneNumber" as a column
+//  constraint, so this rule — and its stricter companion, "exactly one of
+//  email/phoneNumber at creation/update time, never both, never neither" —
+//  is enforced in guest-validation.util.ts and called from every
+//  create/update path in guest.service.ts. The second contact field is
+//  meant to be filled in later, at RSVP time, not here.
 // ─────────────────────────────────────────
 
 model Guest {
   id          String   @id @default(cuid())
-  firstName   String
-  surname     String
+  eventId     String
+  firstName   String?
+  surname     String?
   email       String?
   phoneNumber String?
   isArchived  Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  event       Event        @relation(fields: [eventId], references: [id])
   invites     Invite[]
   memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
 }
@@ -256,6 +319,7 @@ model Invite {
   attendances     Attendance[]
   rsvpResponses   RsvpResponse[]
   ticketPurchases TicketPurchase[]
+  smsSendLogs     SmsSendLog[]
 }
 
 // ─────────────────────────────────────────
@@ -313,23 +377,56 @@ model MemoryHub {
 }
 
 // ─────────────────────────────────────────
+//  EVENT DRAFT
+//  Autosave scratchpad for the event-creation
+//  wizard. One in-progress draft per tenant+user.
+//  Deleted outright once materialized or
+//  discarded — not a soft-deleted record.
+// ─────────────────────────────────────────
+
+model EventDraft {
+  id              String   @id @default(cuid())
+  tenantId        String
+  createdByUserId String
+  currentStep     Int      @default(1)
+  payload         Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant        Tenant @relation(fields: [tenantId], references: [id])
+  createdByUser User   @relation(fields: [createdByUserId], references: [id])
+
+  @@unique([tenantId, createdByUserId])
+}
+
+// ─────────────────────────────────────────
 //  MEMORY ITEM
 // ─────────────────────────────────────────
 
 model MemoryItem {
-  id                String    @id @default(cuid())
-  memoryHubId       String
-  uploadedByGuestId String?
-  uploadedByUserId  String?
-  mediaUrl          String
-  mediaType         MediaType
-  caption           String?
-  isApproved        Boolean   @default(false)
-  isArchived        Boolean   @default(false)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  createdBy         String
-  updatedBy         String
+  id                 String           @id @default(cuid())
+  memoryHubId        String
+  uploadedByGuestId  String?
+  uploadedByUserId   String?
+  mediaUrl           String
+  // Cloudinary's asset id — required (unlike Event.coverImagePublicId,
+  // every MemoryItem comes through the signed-upload flow, never a
+  // pasted external URL) — needed to delete the asset on an explicit
+  // future purge; see the Memory Hub batch report on why reject does
+  // NOT delete it immediately.
+  cloudinaryPublicId String
+  mediaType          MediaType
+  // Reported directly by Cloudinary's own upload response, exactly like
+  // Event.coverImageUrl's sibling field. Storage quota is summed from
+  // these on demand (Memory Hub batch) — never a running counter.
+  bytes              Int
+  caption            String?
+  status             MemoryItemStatus @default(PENDING)
+  isArchived         Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  createdBy          String
+  updatedBy          String
 
   memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
   uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
@@ -359,9 +456,32 @@ model VendorSpace {
   createdBy   String
   updatedBy   String
 
-  tenant         Tenant?         @relation(fields: [tenantId], references: [id])
-  users          User[]
-  vendorServices VendorService[]
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id])
+  vendorSpaceUsers VendorSpaceUser[]
+  vendorServices   VendorService[]
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SPACE USER
+//
+//  Join table — replaces the old single User.vendorSpaceId FK. No
+//  isArchived/updatedAt/updatedBy: this is a plain membership fact (a
+//  user manages this space, or doesn't), same category as Attendance —
+//  one of STEERING's two documented hard-delete exceptions — not a
+//  soft-deletable business entity. "Unassign" hard-deletes the row.
+// ─────────────────────────────────────────
+
+model VendorSpaceUser {
+  id            String   @id @default(cuid())
+  vendorSpaceId String
+  userId        String
+  createdAt     DateTime @default(now())
+  createdBy     String
+
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@unique([vendorSpaceId, userId])
 }
 
 // ─────────────────────────────────────────
@@ -530,6 +650,31 @@ model TicketPurchase {
 }
 
 // ─────────────────────────────────────────
+//  SMS SEND LOG
+//
+//  One row per SUCCESSFUL SMS send only — written by the invite dispatch
+//  orchestrator after a real Twilio success, never on failure (a failed
+//  send costs nothing and must not consume quota). Deliberately no
+//  @@unique on inviteId: a resend that succeeds writes a second row
+//  against the same invite, since it costs a second real SMS. This is
+//  what lets maxSmsPerMonth be enforced by counting rows in the current
+//  calendar month rather than relying on Invite.deliveredAt, which would
+//  undercount a guest resent more than once in the same month.
+// ─────────────────────────────────────────
+
+model SmsSendLog {
+  id       String   @id @default(cuid())
+  tenantId String
+  inviteId String
+  sentAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
+
+  @@index([tenantId, sentAt])
+}
+
+// ─────────────────────────────────────────
 //  SUBSCRIPTION TIER CONFIG
 // ─────────────────────────────────────────
 
@@ -538,6 +683,19 @@ model SubscriptionTierConfig {
   maxEvents           Int?
   maxGuestsPerEvent   Int?
   maxSmsPerMonth      Int?
+  // Vendor Space Batch — number of active (non-archived) VendorSpaces a
+  // tenant may own. Independent of `vendorMarketplace` below: that's an
+  // all-or-nothing capability gate (can this tier use the marketplace at
+  // all), this is a numeric ceiling for tiers that can. null = unlimited,
+  // matching every other max* column's convention.
+  maxVendorSpaces     Int?
+  // Memory Hub Batch — total bytes an event's Memory Hub may hold,
+  // summed on demand from its non-archived, non-rejected MemoryItems
+  // (never a running counter — see memory-hub-tier-enforcement.util.ts).
+  // Independent of memoryHubEnabled below (all-or-nothing capability
+  // gate); this is the numeric ceiling for tiers that have it. null =
+  // unlimited, same convention as every other max* column.
+  maxMemoryHubBytesPerEvent Int?
   emailEnabled        Boolean          @default(true)
   smsEnabled          Boolean          @default(false)
   vendorMarketplace   Boolean          @default(false)

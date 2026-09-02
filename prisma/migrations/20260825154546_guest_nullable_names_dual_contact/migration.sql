@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Guest" ALTER COLUMN "firstName" DROP NOT NULL,
+ALTER COLUMN "surname" DROP NOT NULL;

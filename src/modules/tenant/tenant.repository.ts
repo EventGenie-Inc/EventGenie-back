@@ -8,9 +8,12 @@ export const tenantRepository = {
       orderBy: { createdAt: 'desc' },
     }),
 
-  findById: (id: string) =>
+  findById: (id: string, includeArchived = false) =>
     prisma.tenant.findFirst({
-      where: { id, isArchived: false },
+      where: {
+        id,
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
     }),
 
   findBySlug: (slug: string) =>
@@ -30,8 +33,11 @@ export const tenantRepository = {
       data: { subscriptionStatus: 'ACTIVE' },
     }),
 
-  findAllUsersByTenant: (tenantId: string) =>
+  findAllUsersByTenant: (tenantId: string, includeArchived = false) =>
     prisma.user.findMany({
-      where: { tenantId, isArchived: false },
+      where: {
+        tenantId,
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
     }),
 };
