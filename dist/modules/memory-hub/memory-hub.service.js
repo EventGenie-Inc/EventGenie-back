@@ -52,6 +52,30 @@ const toPublicItem = (item) => ({
     createdAt: item.createdAt,
     uploaderDisplayName: item.uploadedByUser?.username ?? item.uploadedByGuest?.firstName ?? 'A guest',
 });
+// Curation projection — same join as toPublicItem above (Guest:
+// firstName only, User: username only; never email/phone — a display
+// name is all curation needs), reused rather than a second shape.
+// Curation additionally needs to tell guest and organiser uploads
+// apart, which the public gallery never has to; that's the one thing
+// added on top of the shared join. Keyed off the raw FK id rather than
+// the resolved relation so "who uploaded this" survives even when the
+// relation itself doesn't resolve to anything useful — a guest who
+// uploads before ever supplying a name at RSVP (firstName is nullable)
+// falls back exactly like toPublicItem's guest branch does; a
+// completely unresolvable relation (neither id set) is defensive only,
+// not a state normal flows can reach.
+const toCuratedItem = (item) => {
+    const { uploadedByGuest, uploadedByUser, ...rest } = item;
+    const uploaderType = item.uploadedByUserId
+        ? 'ORGANISER'
+        : item.uploadedByGuestId
+            ? 'GUEST'
+            : 'UNKNOWN';
+    const uploaderDisplayName = uploaderType === 'ORGANISER' ? uploadedByUser?.username ?? 'A team member'
+        : uploaderType === 'GUEST' ? uploadedByGuest?.firstName ?? 'A guest'
+            : 'Unknown uploader';
+    return { ...rest, uploaderType, uploaderDisplayName };
+};
 export const memoryHubService = {
     // ── Memory Hub — MANAGEMENT, strictly tenant-scoped ───────────────
     //
@@ -76,6 +100,29 @@ export const memoryHubService = {
         if (!hub)
             throw new HttpError(404, 'Memory hub not found for this event');
         return hub;
+    },
+    // Detail-view read only — adds a usage SUM and a tier-config lookup on
+    // top of getByEventId, same "getDetail wraps getById" split as
+    // event.service.ts's getDetail/getById (see its comment on why:
+    // getById there is the ownership gate every other internal call pays,
+    // so the extra query goes on a detail-only wrapper instead). getByEventId
+    // here has exactly one caller today — the GET /:eventId/memory-hub
+    // route below — but the split keeps it that way rather than assuming it
+    // always will be.
+    //
+    // usedBytes/limitBytes reuse the SAME functions assertMemoryHubQuotaAvailable
+    // uses to enforce the limit (memoryHubRepository.sumBytesForEvent,
+    // getMemoryHubQuotaBytes) — not a re-derivation — so what's reported here
+    // can never disagree with what a guest/organiser upload actually gets
+    // rejected against. limitBytes is `number | null` and always populated;
+    // null unambiguously means unlimited (same convention as every other
+    // max* column) — there is no separate "unknown" state to represent.
+    getDetailByEventId: async (eventId, requestingRole, tenantId) => {
+        const hub = await memoryHubService.getByEventId(eventId, requestingRole, tenantId);
+        const event = await eventService.getById(eventId, requestingRole, tenantId);
+        const usedBytes = await memoryHubRepository.sumBytesForEvent(eventId);
+        const limitBytes = await getMemoryHubQuotaBytes(event.tenantId);
+        return { ...hub, usedBytes, limitBytes };
     },
     getById: async (id, requestingRole, tenantId, includeArchived = false) => {
         const hub = await memoryHubRepository.findById(id, includeArchived);
@@ -174,14 +221,15 @@ export const memoryHubService = {
     // ── Memory Items — organiser/curation side, tenant-scoped ─────────
     getAllItems: async (hubId, requestingRole, tenantId, status) => {
         await memoryHubService.getById(hubId, requestingRole, tenantId); // throws 404 if wrong tenant
-        return memoryHubRepository.findAllItems(hubId, status);
+        const items = await memoryHubRepository.findAllItems(hubId, status);
+        return items.map(toCuratedItem);
     },
     getItemById: async (id, requestingRole, tenantId) => {
         const item = await memoryHubRepository.findItemById(id);
         if (!item)
             throw new HttpError(404, 'Memory item not found');
         await memoryHubService.getById(item.memoryHubId, requestingRole, tenantId);
-        return item;
+        return toCuratedItem(item);
     },
     // ORGANISER upload persist — items land APPROVED immediately (an
     // organiser reviewing their own upload is pointless friction).
