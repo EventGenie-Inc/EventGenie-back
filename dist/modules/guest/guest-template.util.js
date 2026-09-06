@@ -16,14 +16,15 @@ export const buildImportTemplateWorkbook = async (event, eventDays) => {
         { header: 'Surname', key: 'surname', width: 20 },
         { header: 'Contact', key: 'contact', width: 32 },
         { header: 'Day', key: 'day', width: 20 },
+        { header: 'Plus-Ones Allowed', key: 'plusOnesAllowed', width: 18 },
     ];
     sheet.getRow(1).font = { bold: true };
     const singleDayLabel = eventDays.length === 1 ? eventDays[0].label : undefined;
     const exampleDay = (preferred) => singleDayLabel ?? preferred ?? '';
     const exampleRows = [
-        { firstName: 'John', surname: 'Smith', contact: 'john.smith@example.com', day: exampleDay(eventDays[0]?.label) },
-        { firstName: 'Jane', surname: 'Doe', contact: '+27821234567', day: exampleDay(eventDays[1]?.label ?? eventDays[0]?.label) },
-        { firstName: '', surname: '', contact: '+27831234567', day: exampleDay(eventDays[0]?.label) },
+        { firstName: 'John', surname: 'Smith', contact: 'john.smith@example.com', day: exampleDay(eventDays[0]?.label), plusOnesAllowed: 1 },
+        { firstName: 'Jane', surname: 'Doe', contact: '+27821234567', day: exampleDay(eventDays[1]?.label ?? eventDays[0]?.label), plusOnesAllowed: 0 },
+        { firstName: '', surname: '', contact: '+27831234567', day: exampleDay(eventDays[0]?.label), plusOnesAllowed: 0 },
     ];
     for (const example of exampleRows) {
         const row = sheet.addRow(example);
@@ -32,6 +33,9 @@ export const buildImportTemplateWorkbook = async (event, eventDays) => {
     sheet.getCell('C1').note =
         'Enter one email OR one phone number (E.164, e.g. +27821234567) per guest — not both. ' +
             'First Name and Surname may be left blank; the guest can supply their name later when they RSVP.';
+    sheet.getCell('E1').note =
+        'Optional — leave blank for 0. The number of extra guests (plus-ones) this person may bring, ' +
+            'declared by name when they RSVP.';
     if (eventDays.length >= 2) {
         sheet.getCell('D1').note = "Must match one of this event's day labels exactly — see the \"Valid Days\" sheet.";
         const daysSheet = workbook.addWorksheet('Valid Days');

@@ -15,6 +15,7 @@ export declare const subscriptionTierConfigService: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }[]>;
     getByTier: (tier: SubscriptionTier) => Promise<{
         updatedAt: Date;
@@ -30,6 +31,7 @@ export declare const subscriptionTierConfigService: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }>;
     create: (data: CreateSubscriptionTierConfigDto) => Promise<{
         updatedAt: Date;
@@ -45,6 +47,7 @@ export declare const subscriptionTierConfigService: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }>;
     update: (tier: SubscriptionTier, data: UpdateSubscriptionTierConfigDto) => Promise<{
         updatedAt: Date;
@@ -60,6 +63,7 @@ export declare const subscriptionTierConfigService: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }>;
     setAvailability: (tier: SubscriptionTier, isAvailable: boolean) => Promise<{
         updatedAt: Date;
@@ -75,6 +79,7 @@ export declare const subscriptionTierConfigService: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }>;
 };
 //# sourceMappingURL=subscription-tier-config.service.d.ts.map

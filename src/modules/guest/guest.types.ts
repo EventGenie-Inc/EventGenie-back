@@ -5,6 +5,7 @@ export interface CreateGuestDto {
   email?: string;
   phoneNumber?: string;
   eventDayIds: string[];
+  plusOnesAllowed?: number;
 }
 
 // exactOptionalPropertyTypes: `undefined` means "leave this field alone",
@@ -15,4 +16,5 @@ export interface UpdateGuestDto {
   surname?: string | null;
   email?: string | null;
   phoneNumber?: string | null;
+  plusOnesAllowed?: number;
 }

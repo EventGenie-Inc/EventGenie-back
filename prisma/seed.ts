@@ -100,6 +100,7 @@ const TIER_CONFIGS = [
     vendorMarketplace: false,
     memoryHubEnabled: false,
     dragDropBuilder: false,
+    guestExportEnabled: false,
     isAvailable: true,
   },
   {
@@ -118,6 +119,7 @@ const TIER_CONFIGS = [
     vendorMarketplace: true,
     memoryHubEnabled: true,
     dragDropBuilder: false,
+    guestExportEnabled: true,
     isAvailable: true,
   },
   {
@@ -132,6 +134,7 @@ const TIER_CONFIGS = [
     vendorMarketplace: true,
     memoryHubEnabled: true,
     dragDropBuilder: true,
+    guestExportEnabled: true,
     isAvailable: true,
   },
 ];

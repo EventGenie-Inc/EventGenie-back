@@ -17,6 +17,7 @@ export interface CreateGuestWithInviteInput {
   email: string | null;
   phoneNumber: string | null;
   eventDayIds: string[];
+  plusOnesAllowed: number;
 }
 
 export const guestRepository = {
@@ -55,8 +56,38 @@ export const guestRepository = {
       select: { id: true, email: true, phoneNumber: true },
     }),
 
+  // Feeds ONLY the maxGuestsPerEvent tier gate (assertGuestsCreatable) —
+  // deliberately excludes plus-ones. That limit is a billing constraint
+  // the organiser opted into; a guest declaring a plus-one at RSVP time is
+  // not a choice the organiser made, and shouldn't be able to push them
+  // over a limit they'd then have to upgrade or prune guests to fix.
   countForEvent: (eventId: string) =>
-    prisma.guest.count({ where: { eventId, isArchived: false } }),
+    prisma.guest.count({ where: { eventId, isArchived: false, hostGuestId: null } }),
+
+  // Feeds guest-export.util.ts — every non-archived guest (primary AND
+  // plus-one, both live in this same table) with everything a row needs:
+  // hostGuest (for the "Plus-One Of" column, blank on primaries), and
+  // each non-archived invite's day/attendance/response data. A guest
+  // could in principle carry more than one non-archived invite (nothing
+  // stops an organiser creating an extra one); most recent first so the
+  // export util's "take the first" is the most-recently-created invite.
+  findAllForExport: (eventId: string) =>
+    prisma.guest.findMany({
+      where: { eventId, isArchived: false },
+      include: {
+        hostGuest: { select: { firstName: true, surname: true } },
+        invites: {
+          where: { isArchived: false },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            inviteEventDay: { include: { eventDay: true } },
+            attendances: true,
+            rsvpResponses: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
 
   // Manual single-guest create: Guest + Invite + InviteEventDay together,
   // in one transaction. Invite.deliveredAt stays null — nothing is sent
@@ -75,6 +106,7 @@ export const guestRepository = {
           surname: data.surname,
           email: data.email,
           phoneNumber: data.phoneNumber,
+          plusOnesAllowed: data.plusOnesAllowed,
           isArchived: false,
         },
       });
@@ -113,7 +145,7 @@ export const guestRepository = {
   bulkCreateWithInvites: (
     eventId: string,
     userId: string,
-    rows: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; eventDayIds: string[] }[]
+    rows: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; eventDayIds: string[]; plusOnesAllowed: number }[]
   ) =>
     prisma.$transaction(async (tx) => {
       const guestIds = rows.map(() => crypto.randomUUID());
@@ -127,6 +159,7 @@ export const guestRepository = {
           surname: row.surname,
           email: row.email,
           phoneNumber: row.phoneNumber,
+          plusOnesAllowed: row.plusOnesAllowed,
           isArchived: false,
         })),
       });
@@ -162,6 +195,7 @@ export const guestRepository = {
         ...(data.surname !== undefined && { surname: data.surname }),
         ...(data.email !== undefined && { email: data.email }),
         ...(data.phoneNumber !== undefined && { phoneNumber: data.phoneNumber }),
+        ...(data.plusOnesAllowed !== undefined && { plusOnesAllowed: data.plusOnesAllowed }),
       },
     }),
 

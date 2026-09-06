@@ -6,9 +6,11 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { eventService } from '../event/event.service.js';
 import { eventDayRepository } from '../event-day/event-day.repository.js';
 import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
-import { normalizeEmail, assertValidEmail, normalizePhoneToE164, assertExactlyOneContact, findDuplicateContact, } from './guest-validation.util.js';
+import { normalizeEmail, assertValidEmail, normalizePhoneToE164, assertExactlyOneContact, assertValidPlusOnesAllowed, findDuplicateContact, } from './guest-validation.util.js';
 import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
+import { buildGuestExportWorkbook } from './guest-export.util.js';
+import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
 // public event, but that's a UI choice, not a backend guarantee;
@@ -59,7 +61,11 @@ export const guestService = {
         if (email)
             assertValidEmail(email);
         const phoneNumber = data.phoneNumber ? normalizePhoneToE164(data.phoneNumber) : null;
+        // Organiser-created guests are never plus-ones — hostGuestId isn't
+        // settable through this path — so contact stays required here.
         assertExactlyOneContact(email, phoneNumber);
+        const plusOnesAllowed = data.plusOnesAllowed ?? 0;
+        assertValidPlusOnesAllowed(plusOnesAllowed);
         const existingContacts = await guestRepository.findContactsForEvent(eventId);
         const duplicate = findDuplicateContact(existingContacts.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber })), { email, phoneNumber });
         if (duplicate) {
@@ -72,6 +78,7 @@ export const guestService = {
             email,
             phoneNumber,
             eventDayIds: data.eventDayIds,
+            plusOnesAllowed,
         });
     },
     update: async (id, requestingRole, tenantId, data) => {
@@ -84,7 +91,12 @@ export const guestService = {
             : guest.phoneNumber;
         if (nextEmail)
             assertValidEmail(nextEmail);
-        assertExactlyOneContact(nextEmail, nextPhone);
+        // Pass the guest's OWN hostGuestId — a plus-one being edited (e.g. just
+        // their name) must not be rejected for having no contact, which they
+        // never have and never will.
+        assertExactlyOneContact(nextEmail, nextPhone, guest.hostGuestId);
+        if (data.plusOnesAllowed !== undefined)
+            assertValidPlusOnesAllowed(data.plusOnesAllowed);
         return guestRepository.update(id, {
             ...data,
             ...(data.email !== undefined && { email: nextEmail }),
@@ -147,6 +159,22 @@ export const guestService = {
             await guestRepository.bulkCreateWithInvites(eventId, userId, validRows);
         }
         return { totalRows, created: validRows.length, failed: failures.length, failures };
+    },
+    // Celebrate and above (assertGuestExportEnabled). Archived guests are
+    // excluded — an export is a working document for the caterer/organiser
+    // right now, and someone removed from the list shouldn't reach it.
+    // Guests with no name yet (imported by phone, not yet RSVP'd) ARE
+    // included: they're invited, and the organiser needs to see the gap,
+    // not have it silently hidden. Plus-ones get their own rows (their
+    // hostGuestId already comes back on every row from
+    // findAllForEvent/findById elsewhere, but export additionally names the
+    // host by display name via guest-export.util.ts's groupByHost/hostGuest
+    // lookup, since a caterer works from names, not ids).
+    exportGuests: async (eventId, requestingRole, tenantId) => {
+        const event = await eventService.getById(eventId, requestingRole, tenantId);
+        await assertGuestExportEnabled(event.tenantId);
+        const guests = await guestRepository.findAllForExport(eventId);
+        return buildGuestExportWorkbook(event, event.eventDays, event.rsvpFields, guests);
     },
 };
 //# sourceMappingURL=guest.service.js.map

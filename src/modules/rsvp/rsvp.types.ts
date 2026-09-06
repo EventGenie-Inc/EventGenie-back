@@ -6,4 +6,5 @@ export interface SubmitRsvpDto {
   ticketId?: string;
   ticketQuantity?: number;
   paymentRef?: string;
+  plusOneNames?: string[];
 }

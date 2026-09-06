@@ -10,7 +10,7 @@ import { type EngineSendResult } from './messaging.types.js';
 // ─────────────────────────────────────────
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
+const FROM_EMAIL = process.env.RESEND_INVITE_EMAIL ?? 'onboarding@resend.dev';
 
 export const sendEmail = async (to: string, subject: string, html: string): Promise<EngineSendResult> => {
   try {
