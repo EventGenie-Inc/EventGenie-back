@@ -11,6 +11,8 @@ export declare const inviteRepository: {
             eventId: string;
             firstName: string | null;
             surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
         };
         inviteEventDay: ({
             eventDay: {
@@ -62,6 +64,8 @@ export declare const inviteRepository: {
             eventId: string;
             firstName: string | null;
             surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
         };
         inviteEventDay: ({
             eventDay: {
@@ -133,6 +137,8 @@ export declare const inviteRepository: {
             eventId: string;
             firstName: string | null;
             surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
         };
     } & {
         id: string;
@@ -243,6 +249,20 @@ export declare const inviteRepository: {
             updatedBy: string;
         };
         guest: {
+            plusOnes: {
+                id: string;
+                email: string | null;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                phoneNumber: string | null;
+                eventId: string;
+                firstName: string | null;
+                surname: string | null;
+                hostGuestId: string | null;
+                plusOnesAllowed: number;
+            }[];
+        } & {
             id: string;
             email: string | null;
             isArchived: boolean;
@@ -252,6 +272,8 @@ export declare const inviteRepository: {
             eventId: string;
             firstName: string | null;
             surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
         };
         inviteEventDay: ({
             eventDay: {
@@ -273,6 +295,29 @@ export declare const inviteRepository: {
             inviteId: string;
             eventDayId: string;
         })[];
+        attendances: {
+            id: string;
+            inviteId: string;
+            eventDayId: string;
+            confirmedAt: Date;
+        }[];
+        rsvpResponses: {
+            id: string;
+            createdAt: Date;
+            inviteId: string;
+            rsvpFieldId: string;
+            value: string;
+        }[];
+        ticketPurchases: {
+            id: string;
+            inviteId: string;
+            currency: string;
+            ticketId: string;
+            quantity: number;
+            totalPaid: import("@prisma/client-runtime-utils").Decimal;
+            paymentRef: string | null;
+            purchasedAt: Date;
+        }[];
     } & {
         id: string;
         isArchived: boolean;

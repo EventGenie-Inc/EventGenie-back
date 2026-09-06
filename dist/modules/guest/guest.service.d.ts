@@ -11,6 +11,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     }[]>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
         id: string;
@@ -22,6 +24,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     }>;
     getAllForEvent: (eventId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
         id: string;
@@ -33,6 +37,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     }[]>;
     create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateGuestDto) => Promise<{
         id: string;
@@ -44,6 +50,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     }>;
     update: (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateGuestDto) => Promise<{
         id: string;
@@ -55,6 +63,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     }>;
     archive: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
@@ -66,6 +76,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     } | null>;
     reactivate: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
@@ -77,6 +89,8 @@ export declare const guestService: {
         eventId: string;
         firstName: string | null;
         surname: string | null;
+        hostGuestId: string | null;
+        plusOnesAllowed: number;
     } | null>;
     getImportTemplate: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         buffer: Buffer;
@@ -91,6 +105,10 @@ export declare const guestService: {
         created: number;
         failed: number;
         failures: import("./guest-import.engine.js").ImportRowFailure[];
+    }>;
+    exportGuests: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        buffer: Buffer;
+        filename: string;
     }>;
 };
 //# sourceMappingURL=guest.service.d.ts.map

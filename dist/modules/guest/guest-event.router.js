@@ -45,6 +45,18 @@ router.get('/import-template', async (req, res, next) => {
         next(err);
     }
 });
+router.get('/export', async (req, res, next) => {
+    try {
+        const auth = req;
+        const { buffer, filename } = await guestService.exportGuests(req.params['eventId'], auth.user.role, auth.user.tenantId);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.status(200).send(buffer);
+    }
+    catch (err) {
+        next(err);
+    }
+});
 router.post('/import', (req, res, next) => {
     upload.single('file')(req, res, (err) => {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {

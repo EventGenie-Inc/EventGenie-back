@@ -59,7 +59,8 @@ export const inviteDispatchService = {
         const missing = guestIds.filter((id) => !foundGuestIds.has(id));
         if (missing.length) {
             throw new HttpError(400, `${missing.length} guest(s) are not eligible for sending — they may be archived, have an ` +
-                `archived invite, or belong to a different event: ${missing.join(', ')}`);
+                `archived invite, belong to a different event, or be a plus-one (who has no invitation of ` +
+                `their own): ${missing.join(', ')}`);
         }
         // Tier check — all-or-nothing, evaluated BEFORE any dispatch begins.
         const smsCount = invites.filter((i) => i.deliveryMethod === 'SMS').length;
@@ -90,6 +91,15 @@ export const inviteDispatchService = {
     },
     resend: async (inviteId, requestingRole, tenantId) => {
         const invite = await inviteService.getById(inviteId, requestingRole, tenantId);
+        // Must run AFTER getById above (tenant ownership already confirmed by
+        // then) — never before, and never as a query-level swap on the fetch
+        // itself: doing this check ahead of tenant verification would let a
+        // cross-tenant probe distinguish "plus-one" (400) from "wrong tenant"
+        // (404) for a record outside the caller's tenant, exactly the kind of
+        // leak STEERING.md's tenant-scoping rule forbids.
+        if (invite.guest.hostGuestId) {
+            throw new HttpError(400, "This invitation belongs to a plus-one — they're covered by their host's RSVP and have no invitation of their own to resend.");
+        }
         const event = await eventService.getById(invite.eventId, requestingRole, tenantId);
         assertEventIsPublished(event.status);
         assertEventAcceptsInvites(event.visibility);

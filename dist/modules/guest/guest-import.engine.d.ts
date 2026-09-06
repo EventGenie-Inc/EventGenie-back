@@ -6,6 +6,7 @@ export interface ParsedImportRow {
     surnameRaw: string;
     contactRaw: string;
     dayRaw: string;
+    plusOnesAllowedRaw: string;
 }
 export declare const parseImportFile: (buffer: Buffer, originalFilename: string, mimeType: string) => Promise<ParsedImportRow[]>;
 export interface EventDayOption {
@@ -20,6 +21,7 @@ export interface ValidatedGuestRow {
     phoneNumber: string | null;
     deliveryMethod: DeliveryMethod;
     eventDayIds: string[];
+    plusOnesAllowed: number;
 }
 export interface ImportRowFailure {
     row: number;

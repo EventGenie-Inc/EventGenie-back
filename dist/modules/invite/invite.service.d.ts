@@ -12,6 +12,8 @@ export declare const inviteService: {
             eventId: string;
             firstName: string | null;
             surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
         };
         inviteEventDay: ({
             eventDay: {
@@ -63,6 +65,8 @@ export declare const inviteService: {
             eventId: string;
             firstName: string | null;
             surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
         };
         inviteEventDay: ({
             eventDay: {

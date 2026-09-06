@@ -33,6 +33,10 @@ export const eventRepository = {
     // (guest.repository.ts) create exactly one Invite per Guest, and
     // rsvp.service.ts's submit() flips that SAME invite's status rather than
     // creating a new one — so this never double-counts a guest who RSVP'd.
+    // Plus-ones (rsvp.service.ts) keep the same 1:1 invariant — each gets
+    // its own Guest+Invite pair, created already ACCEPTED — so they're
+    // included here deliberately: they occupy a seat, so they count toward
+    // the venue-capacity indicator this feeds (acceptedGuestCount).
     countAcceptedInvitesForEvent: (eventId) => prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED' } }),
     // Wrapped in a transaction so the event never exists without a
     // MemoryHub — the wizard's materialize path (event-draft.service.ts)

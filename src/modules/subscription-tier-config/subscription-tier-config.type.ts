@@ -12,6 +12,7 @@ export interface CreateSubscriptionTierConfigDto {
   vendorMarketplace: boolean;
   memoryHubEnabled: boolean;
   dragDropBuilder: boolean;
+  guestExportEnabled: boolean;
 }
 
 export interface UpdateSubscriptionTierConfigDto {
@@ -25,5 +26,6 @@ export interface UpdateSubscriptionTierConfigDto {
   vendorMarketplace?: boolean;
   memoryHubEnabled?: boolean;
   dragDropBuilder?: boolean;
+  guestExportEnabled?: boolean;
   isAvailable?: boolean;
 }

@@ -11,6 +11,7 @@ export interface CreateSubscriptionTierConfigDto {
     vendorMarketplace: boolean;
     memoryHubEnabled: boolean;
     dragDropBuilder: boolean;
+    guestExportEnabled: boolean;
 }
 export interface UpdateSubscriptionTierConfigDto {
     maxEvents?: number;
@@ -23,6 +24,7 @@ export interface UpdateSubscriptionTierConfigDto {
     vendorMarketplace?: boolean;
     memoryHubEnabled?: boolean;
     dragDropBuilder?: boolean;
+    guestExportEnabled?: boolean;
     isAvailable?: boolean;
 }
 //# sourceMappingURL=subscription-tier-config.type.d.ts.map

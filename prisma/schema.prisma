@@ -275,19 +275,28 @@ model EventDay {
 // ─────────────────────────────────────────
 
 model Guest {
-  id          String   @id @default(cuid())
-  eventId     String
-  firstName   String?
-  surname     String?
-  email       String?
-  phoneNumber String?
-  isArchived  Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  eventId         String
+  firstName       String?
+  surname         String?
+  email           String?
+  phoneNumber     String?
+  isArchived      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  // A plus-one is a Guest row with hostGuestId set — declared during the
+  // host's RSVP, never contacted directly (see assertExactlyOneContact,
+  // which relaxes the email/phone requirement exactly for this case).
+  hostGuestId     String?
+  // Per-guest allowance, not per-event: a couple gets a plus-one, a single
+  // friend gets none. Enforced server-side in rsvp.service.ts's submit().
+  plusOnesAllowed Int      @default(0)
 
   event       Event        @relation(fields: [eventId], references: [id])
   invites     Invite[]
   memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
+  hostGuest   Guest?       @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
+  plusOnes    Guest[]      @relation("GuestPlusOnes")
 }
 
 // ─────────────────────────────────────────
@@ -701,6 +710,9 @@ model SubscriptionTierConfig {
   vendorMarketplace   Boolean          @default(false)
   memoryHubEnabled    Boolean          @default(false)
   dragDropBuilder     Boolean          @default(false)
+  // Guest list export (.xlsx) — Celebrate and above. All-or-nothing
+  // capability gate, same shape as memoryHubEnabled/dragDropBuilder.
+  guestExportEnabled  Boolean          @default(false)
   isAvailable         Boolean          @default(true)
   updatedAt           DateTime         @updatedAt
 }

@@ -37,7 +37,7 @@ const parseXlsxRows = async (buffer) => {
         return [];
     const rows = [];
     worksheet.eachRow({ includeEmpty: false }, (row) => {
-        const cells = [1, 2, 3, 4].map((col) => cellValueToString(row.getCell(col).value));
+        const cells = [1, 2, 3, 4, 5].map((col) => cellValueToString(row.getCell(col).value));
         rows.push({ rowNumber: row.number, cells });
     });
     return rows;
@@ -52,7 +52,7 @@ const parseCsvRows = (buffer) => {
     }
     return records.map((cells, idx) => ({
         rowNumber: idx + 1,
-        cells: [0, 1, 2, 3].map((i) => (cells[i] ?? '').toString().trim()),
+        cells: [0, 1, 2, 3, 4].map((i) => (cells[i] ?? '').toString().trim()),
     }));
 };
 export const parseImportFile = async (buffer, originalFilename, mimeType) => {
@@ -71,8 +71,9 @@ export const parseImportFile = async (buffer, originalFilename, mimeType) => {
         surnameRaw: r.cells[1] ?? '',
         contactRaw: r.cells[2] ?? '',
         dayRaw: r.cells[3] ?? '',
+        plusOnesAllowedRaw: r.cells[4] ?? '',
     }))
-        .filter((r) => r.firstNameRaw || r.surnameRaw || r.contactRaw || r.dayRaw); // drop fully-blank rows
+        .filter((r) => r.firstNameRaw || r.surnameRaw || r.contactRaw || r.dayRaw || r.plusOnesAllowedRaw); // drop fully-blank rows
     if (dataRows.length === 0) {
         throw new HttpError(400, 'The uploaded file has no data rows');
     }
@@ -138,6 +139,15 @@ export const validateImportRows = (rows, eventDays, existingContacts) => {
             }
             eventDayId = matched.id;
         }
+        const plusOnesAllowedRaw = row.plusOnesAllowedRaw.trim();
+        let plusOnesAllowed = 0;
+        if (plusOnesAllowedRaw) {
+            if (!/^\d+$/.test(plusOnesAllowedRaw)) {
+                fail(`'${plusOnesAllowedRaw}' is not a valid plus-ones allowance — it must be a whole number of 0 or more`);
+                continue;
+            }
+            plusOnesAllowed = Number.parseInt(plusOnesAllowedRaw, 10);
+        }
         const dbDuplicate = findDuplicateContact(existingContacts, { email, phoneNumber });
         if (dbDuplicate) {
             fail(`Duplicate contact '${contactRaw}' — already exists for this event`);
@@ -157,6 +167,7 @@ export const validateImportRows = (rows, eventDays, existingContacts) => {
             phoneNumber,
             deliveryMethod: email ? 'EMAIL' : 'SMS',
             eventDayIds: [eventDayId],
+            plusOnesAllowed,
         });
         seenInFile.push({ guestId: `row-${row.rowNumber}`, email, phoneNumber });
     }

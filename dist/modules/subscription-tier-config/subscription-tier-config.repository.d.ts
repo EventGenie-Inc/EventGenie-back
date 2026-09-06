@@ -15,6 +15,7 @@ export declare const subscriptionTierConfigRepository: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }[]>;
     findByTier: (tier: SubscriptionTier) => import("@prisma/client").Prisma.Prisma__SubscriptionTierConfigClient<{
         updatedAt: Date;
@@ -30,6 +31,7 @@ export declare const subscriptionTierConfigRepository: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     create: (data: CreateSubscriptionTierConfigDto) => import("@prisma/client").Prisma.Prisma__SubscriptionTierConfigClient<{
         updatedAt: Date;
@@ -45,6 +47,7 @@ export declare const subscriptionTierConfigRepository: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     update: (tier: SubscriptionTier, data: UpdateSubscriptionTierConfigDto) => import("@prisma/client").Prisma.Prisma__SubscriptionTierConfigClient<{
         updatedAt: Date;
@@ -60,6 +63,7 @@ export declare const subscriptionTierConfigRepository: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     setAvailability: (tier: SubscriptionTier, isAvailable: boolean) => import("@prisma/client").Prisma.Prisma__SubscriptionTierConfigClient<{
         updatedAt: Date;
@@ -75,6 +79,7 @@ export declare const subscriptionTierConfigRepository: {
         vendorMarketplace: boolean;
         memoryHubEnabled: boolean;
         dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
 };
 //# sourceMappingURL=subscription-tier-config.repository.d.ts.map

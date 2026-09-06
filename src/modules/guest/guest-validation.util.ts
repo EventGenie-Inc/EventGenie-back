@@ -51,12 +51,31 @@ export const normalizePhoneToE164 = (raw: string, defaultCountry: CountryCode = 
 // creation/update time — the second field is filled in later, at RSVP
 // time. Prisma cannot express this, so it's enforced here on every
 // create/update path.
-export const assertExactlyOneContact = (email: string | null, phoneNumber: string | null): void => {
-  if (!email && !phoneNumber) {
-    throw new HttpError(400, 'A guest must have either an email or a phone number');
-  }
+//
+// Exception: a plus-one (hostGuestId set) is never contacted directly —
+// their host RSVPs on their behalf — so they hold zero contact methods,
+// permanently. The "not both" rule still applies unconditionally; only
+// the "at least one" rule is skipped for a plus-one.
+export const assertExactlyOneContact = (
+  email: string | null,
+  phoneNumber: string | null,
+  hostGuestId: string | null = null
+): void => {
   if (email && phoneNumber) {
     throw new HttpError(400, 'A guest can only have one contact method at creation — email or phone, not both');
+  }
+  if (!hostGuestId && !email && !phoneNumber) {
+    throw new HttpError(400, 'A guest must have either an email or a phone number');
+  }
+};
+
+// plusOnesAllowed is a per-guest allowance (not per-event) set by the
+// organiser at create/edit time or via the import template's optional
+// column. Enforced here as a simple sanity check; the RSVP flow enforces
+// that a guest never declares more plus-ones than this.
+export const assertValidPlusOnesAllowed = (value: number): void => {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new HttpError(400, `'${value}' is not a valid plus-ones allowance — it must be a whole number of 0 or more.`);
   }
 };
 

@@ -2,8 +2,12 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import {} from './invite.types.js';
 import crypto from 'crypto';
 export const inviteRepository = {
+    // Excludes plus-ones' invites — they never had one to send, so they don't
+    // belong in the invite management / outstanding-invitations / resend
+    // list. A plus-one is visible instead via the guest table, where their
+    // hostGuestId names their host.
     findAll: (eventId) => prisma.invite.findMany({
-        where: { eventId, isArchived: false },
+        where: { eventId, isArchived: false, guest: { hostGuestId: null } },
         include: { guest: true, inviteEventDay: { include: { eventDay: true } } },
         orderBy: { createdAt: 'desc' },
     }),
@@ -17,24 +21,33 @@ export const inviteRepository = {
     }),
     // Doubles as the guest-ownership/eligibility check for the bulk-send
     // flow — must filter BOTH isArchived flags explicitly (an invite can be
-    // archived independently of its guest and vice versa). Any requested
-    // guestId missing from the result is wrong-event, archived-guest, or
-    // archived-invite, and the caller rejects the whole batch on that basis.
+    // archived independently of its guest and vice versa), plus hostGuestId
+    // (a plus-one has no invitation of their own to send). Any requested
+    // guestId missing from the result is wrong-event, archived-guest,
+    // archived-invite, or a plus-one, and the caller rejects the whole batch
+    // on that basis.
     findByGuestIds: (eventId, guestIds) => prisma.invite.findMany({
         where: {
             eventId,
             guestId: { in: guestIds },
             isArchived: false,
-            guest: { isArchived: false },
+            guest: { isArchived: false, hostGuestId: null },
         },
         include: { guest: true },
     }),
     markDelivered: (id) => prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
+    // guest.plusOnes, attendances, rsvpResponses, and ticketPurchases are
+    // included so rsvp.service.ts's validate() can hand an edit form
+    // everything it needs to prefill a guest's previous answer — validate()
+    // is the only caller, and this is its sole query.
     findByToken: (token) => prisma.invite.findUnique({
         where: { token },
         include: {
-            guest: true,
+            guest: { include: { plusOnes: { where: { isArchived: false } } } },
             inviteEventDay: { include: { eventDay: true } },
+            attendances: true,
+            rsvpResponses: true,
+            ticketPurchases: true,
             event: {
                 include: {
                     eventDays: { where: { isArchived: false } },

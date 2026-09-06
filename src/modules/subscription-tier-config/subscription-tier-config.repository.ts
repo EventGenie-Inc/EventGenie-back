@@ -28,6 +28,7 @@ export const subscriptionTierConfigRepository = {
         vendorMarketplace: data.vendorMarketplace,
         memoryHubEnabled: data.memoryHubEnabled,
         dragDropBuilder: data.dragDropBuilder,
+        guestExportEnabled: data.guestExportEnabled,
       },
     }),
 
@@ -45,6 +46,7 @@ export const subscriptionTierConfigRepository = {
         ...(data.vendorMarketplace !== undefined && { vendorMarketplace: data.vendorMarketplace }),
         ...(data.memoryHubEnabled !== undefined && { memoryHubEnabled: data.memoryHubEnabled }),
         ...(data.dragDropBuilder !== undefined && { dragDropBuilder: data.dragDropBuilder }),
+        ...(data.guestExportEnabled !== undefined && { guestExportEnabled: data.guestExportEnabled }),
         ...(data.isAvailable !== undefined && { isAvailable: data.isAvailable }),
       },
     }),
