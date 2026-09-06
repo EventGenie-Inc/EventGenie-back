@@ -8,7 +8,7 @@ import {} from './messaging.types.js';
 //  failure reason.
 // ─────────────────────────────────────────
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
+const FROM_EMAIL = process.env.RESEND_INVITE_EMAIL ?? 'onboarding@resend.dev';
 export const sendEmail = async (to, subject, html) => {
     try {
         const { error } = await resend.emails.send({ from: FROM_EMAIL, to, subject, html });

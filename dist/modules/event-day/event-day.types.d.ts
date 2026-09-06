@@ -7,7 +7,7 @@ export interface CreateEventDayDto {
 export interface UpdateEventDayDto {
     label?: string;
     date?: string;
-    startTime?: string;
-    endTime?: string;
+    startTime?: string | null;
+    endTime?: string | null;
 }
 //# sourceMappingURL=event-day.types.d.ts.map
