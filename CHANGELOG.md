@@ -18,6 +18,114 @@ publicly released yet.
 
 ---
 
+## Vendor Marketplace — September 2026
+
+### Added
+- Full backend build — vendor spaces, services, products, discovery,
+  and subscription-tier gating
+- Discovery is deliberately cross-tenant, so an organiser can browse
+  every tenant's vendors; management stays strictly tenant-scoped
+- Many-to-many vendor user membership, replacing a single foreign key
+  — a vendor space can now have more than one managing user
+- Priority placement derived from subscription tier, breaking ties
+  within a distance band rather than overriding distance itself
+
+### Security
+- The entire module was unscoped, and `requireVendorSpaceOwner` passed
+  any Tenant Admin regardless of actual ownership
+
+---
+
+## Memory Hub — September 2026
+
+### Added
+- Full backend — configuration, organiser and guest uploads, curation,
+  share links, storage quota
+- Organiser management UI — batch upload, curation grid with bulk
+  approve, revocable share link
+
+### Changed
+- `MemoryItem.isApproved` (boolean) replaced by a three-state
+  `status` — the boolean couldn't distinguish PENDING from REJECTED
+- Storage usage is summed on demand rather than stored as a running
+  counter, so it cannot drift from what's actually there
+
+### Security
+- The make-public route let any authenticated event admin from
+  **any** tenant make a stranger's private hub public and receive its
+  share token — now scoped through the same tenant check as every
+  other Memory Hub route
+
+---
+
+## Address & Uploads — September 2026
+
+### Added
+- HERE geocoding proxy for address search, with permanent coordinate
+  storage — powers vendor proximity search
+- Cloudinary signed direct upload, with constraints enforced in the
+  signature itself
+- Event cover images, with delete-on-replace cleanup
+- Required-field markers across every form
+
+---
+
+## Tenant Shell, Session & Tier Gating — September 2026
+
+### Added
+- Config-driven sidebar navigation with role and tier filtering
+- Dashboard with event counts and upcoming events
+- Activity-aware session — silent refresh while active, countdown
+  warning when idle
+- Tier gating convention settled: role gates **hide**, tier gates
+  **show** with an upgrade path
+- Tier guards on routes, redirecting to Pricing rather than 404
+
+### Fixed
+- `routerLinkActive` was used throughout the sidebar template but
+  never imported, so no nav item ever highlighted
+- `TenantSelfService` is a root singleton that `clearSession()` never
+  reset, so switching accounts left the previous tenant's tier cached
+- A user working in the app was logged out with no warning, because
+  client-side navigation generates no HTTP requests and nothing else
+  triggered a refresh
+- Admin routes had no per-route role guard, so an Event Admin could
+  reach User Management by URL despite it being hidden from their nav
+
+---
+
+## Event Lifecycle & Guest Access — September 2026
+
+### Added
+- Nothing reaches a guest until an event is published — invite send,
+  resend, and the share-link lookup are all gated on `PUBLISHED`
+  status
+- RSVP deadline — guest responses close, organiser administration
+  continues
+- Venue capacity — informs, never blocks; distinct from the
+  subscription tier's guest limit
+- Super Admin can list a tenant's events including archived ones, and
+  restore them
+
+### Security
+- RSVP submit accepted six client-supplied fields and validated one —
+  `ticketQuantity` had no type check, so string coercion defeated the
+  stock-limit comparison and the request fell through to Prisma,
+  leaking the schema to an anonymous caller
+- Guest-facing RSVP errors converted from bare `Error` to `HttpError`
+  — previously every guest-facing failure surfaced as a generic 500
+
+---
+
+## Frontend Fixes — September 2026
+
+### Fixed
+- Landing page scrolled horizontally on mobile — a decorative
+  pseudo-element overflowed its section
+- Mobile nav menu had a translucent background over the hero
+
+---
+
 ## Event Control Center — August 2026
 
 The organiser's operational screen: build a guest list, import in bulk,
