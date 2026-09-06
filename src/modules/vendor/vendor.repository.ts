@@ -1,4 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
+import { type Prisma, type SubscriptionTier } from '@prisma/client';
+import { isPriorityTier } from './vendor-priority.util.js';
 import {
   type CreateVendorSpaceDto,
   type UpdateVendorSpaceDto,
@@ -8,55 +10,215 @@ import {
   type UpdateProductDto,
 } from './vendor.types.js';
 
+// ─────────────────────────────────────────
+//  DECIMAL -> NUMBER
+//
+//  VendorSpace.latitude/longitude and Product.price are Prisma Decimal
+//  columns. On read they come back as Decimal instances, which
+//  JSON.stringify (via Decimal's own toJSON) renders as STRINGS, not
+//  numbers — and distance math (Haversine, bounding-box deltas) needs
+//  real numbers, not Decimal objects (no +/-/* operators on them).
+//  Converted explicitly here, once, at the repository boundary, so
+//  every caller — service layer, JSON response, distance calculation —
+//  always sees a plain number. Number(decimal) is the same coercion
+//  already used elsewhere in this codebase (rsvp.service.ts's
+//  totalPaid calculation).
+// ─────────────────────────────────────────
+
+const withPlainCoords = <T extends { latitude: Prisma.Decimal; longitude: Prisma.Decimal }>(
+  space: T
+): Omit<T, 'latitude' | 'longitude'> & { latitude: number; longitude: number } => ({
+  ...space,
+  latitude: Number(space.latitude),
+  longitude: Number(space.longitude),
+});
+
+const withPlainPrice = <T extends { price: Prisma.Decimal | null }>(
+  product: T
+): Omit<T, 'price'> & { price: number | null } => ({
+  ...product,
+  price: product.price === null ? null : Number(product.price),
+});
+
+// Derives isPriority from the owning tenant's CURRENT tier (see
+// vendor-priority.util.ts) and drops the nested tenant object from the
+// response — callers get the boolean, not the tenant's tier directly.
+// A null tenant (platform-level, tenant-less space) is never priority.
+const withPriority = <T extends { tenant: { subscriptionTier: SubscriptionTier } | null }>(
+  space: T
+): Omit<T, 'tenant'> & { isPriority: boolean } => {
+  const { tenant, ...rest } = space;
+  return { ...rest, isPriority: isPriorityTier(tenant?.subscriptionTier) };
+};
+
+// ─────────────────────────────────────────
+//  PROXIMITY — Haversine over a bounding-box pre-filter
+//
+//  Resolves the "proximity calculation method" open decision: the
+//  bounding box alone (kept as the SQL WHERE clause, cheap and
+//  index-friendly) returns a SQUARE region, which includes corner
+//  points outside the true circular radius. Haversine below computes
+//  real great-circle distance in JS to (a) filter those false-positive
+//  corners out and (b) sort by actual proximity, and exposes the result
+//  as `distanceKm` on every returned space. Still not PostGIS — the
+//  existing code comment already flagged that as a future upgrade for
+//  accuracy/performance at real scale; this is the honest middle step,
+//  not a full solution.
+// ─────────────────────────────────────────
+const EARTH_RADIUS_KM = 6371;
+
+const haversineDistanceKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const toRad = (deg: number): number => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return EARTH_RADIUS_KM * c;
+};
+
+// Resolves "radius defaults and maximums": 50km default (a reasonable
+// metro-area search), 200km hard cap (generous for a rural/regional
+// search while bounding worst-case scan cost — nothing stops a caller
+// from requesting radius=999999 today). Both raised as open decisions
+// in the earlier batch report; proceeding with these while flagged.
+const DEFAULT_RADIUS_KM = 50;
+const MAX_RADIUS_KM = 200;
+
+// ─────────────────────────────────────────
+//  RANKING — distance stays primary, priority breaks ties within a
+//  ~1km band. ORDER BY round(distanceKm) ASC, isPriority DESC,
+//  distanceKm ASC — implemented in JS since distance itself is computed
+//  in JS (see Haversine above). Math.round bands are centered on each
+//  integer km (2.4 and 2.5 both round to 2 and compete on priority;
+//  2.5 and 2.6 land in different bands, band always wins). A 30km
+//  ELEVATE vendor must never outrank a 2km CELEBRATE one — banding
+//  first, before priority, is what guarantees that.
+// ─────────────────────────────────────────
+const byBandedDistanceThenPriority = <T extends { distanceKm: number; isPriority: boolean }>(a: T, b: T): number => {
+  const bandA = Math.round(a.distanceKm);
+  const bandB = Math.round(b.distanceKm);
+  if (bandA !== bandB) return bandA - bandB;
+  if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
+  return a.distanceKm - b.distanceKm;
+};
+
 export const vendorRepository = {
 
   // ── Vendor Space ──────────────────────────
 
-  findAllSpaces: (tenantId?: string) =>
-    prisma.vendorSpace.findMany({
+  findAllSpaces: async (tenantId?: string, includeArchived = false) => {
+    const spaces = await prisma.vendorSpace.findMany({
       where: {
-        isArchived: false,
+        ...(includeArchived ? {} : { isArchived: false }),
         ...(tenantId ? { tenantId } : {}),
       },
       include: {
-        users: { where: { role: 'EVENT_VENDOR', isArchived: false } },
+        vendorSpaceUsers: { where: { user: { isArchived: false } }, include: { user: true } },
         vendorServices: { where: { isArchived: false } },
       },
       orderBy: { createdAt: 'desc' },
-    }),
+    });
+    return spaces.map(withPlainCoords);
+  },
 
-  findSpaceById: (id: string) =>
-    prisma.vendorSpace.findFirst({
-      where: { id, isArchived: false },
+  // MANAGEMENT lookup — tenant-scoped like every other by-id method in
+  // this codebase. This is the one the earlier security audit found
+  // missing: findAllSpaces was correctly scoped, this was not.
+  findSpaceById: async (id: string, includeArchived = false, tenantId?: string) => {
+    const space = await prisma.vendorSpace.findFirst({
+      where: {
+        id,
+        ...(includeArchived ? {} : { isArchived: false }),
+        ...(tenantId ? { tenantId } : {}),
+      },
       include: {
-        users: { where: { role: 'EVENT_VENDOR', isArchived: false } },
+        vendorSpaceUsers: { where: { user: { isArchived: false } }, include: { user: true } },
         vendorServices: {
           where: { isArchived: false },
           include: { products: { where: { isArchived: false } } },
         },
       },
-    }),
+    });
+    if (!space) return null;
 
-  // Proximity search — finds vendors within ~radius km of a lat/lng point
-  // Uses basic bounding box for now; can be upgraded to PostGIS later
-  findSpacesNearLocation: (latitude: number, longitude: number, radiusKm = 50) => {
-    const latDelta = radiusKm / 111;
-    const lngDelta = radiusKm / (111 * Math.cos((latitude * Math.PI) / 180));
+    return {
+      ...withPlainCoords(space),
+      vendorServices: space.vendorServices.map((service) => ({
+        ...service,
+        products: service.products.map(withPlainPrice),
+      })),
+    };
+  },
 
-    return prisma.vendorSpace.findMany({
+  countActiveSpacesForTenant: (tenantId: string) =>
+    prisma.vendorSpace.count({ where: { tenantId, isArchived: false } }),
+
+  // ─────────────────────────────────────────
+  //  DISCOVERY — deliberately CROSS-TENANT.
+  //
+  //  This is the marketplace search: an organiser looking for vendors
+  //  near their venue must see every tenant's vendors, not just their
+  //  own (which would usually be zero or a handful — scoping this to
+  //  one tenant would make the marketplace pointless). No tenantId
+  //  filter anywhere in this query, on purpose. isArchived/isActive ARE
+  //  still applied — this is "cross-tenant", not "cross-status".
+  // ─────────────────────────────────────────
+  findSpacesNearLocation: async (latitude: number, longitude: number, radiusKm = DEFAULT_RADIUS_KM) => {
+    const clampedRadiusKm = Math.min(radiusKm, MAX_RADIUS_KM);
+    const latDelta = clampedRadiusKm / 111;
+    const lngDelta = clampedRadiusKm / (111 * Math.cos((latitude * Math.PI) / 180));
+
+    const candidates = await prisma.vendorSpace.findMany({
       where: {
         isArchived: false,
         isActive: true,
         latitude: { gte: latitude - latDelta, lte: latitude + latDelta },
         longitude: { gte: longitude - lngDelta, lte: longitude + lngDelta },
       },
-      include: { vendorServices: { where: { isArchived: false } } },
-      orderBy: { createdAt: 'desc' },
+      include: {
+        tenant: { select: { subscriptionTier: true } },
+        vendorServices: { where: { isArchived: false } },
+      },
     });
+
+    return candidates
+      .map((space) => {
+        const plain = withPriority(withPlainCoords(space));
+        const distanceKm = haversineDistanceKm(latitude, longitude, plain.latitude, plain.longitude);
+        return { ...plain, distanceKm };
+      })
+      .filter((space) => space.distanceKm <= clampedRadiusKm)
+      .sort(byBandedDistanceThenPriority);
   },
 
-  createSpace: (userId: string, data: CreateVendorSpaceDto) =>
-    prisma.vendorSpace.create({
+  // ─────────────────────────────────────────
+  //  GENERAL BROWSE — the third discovery surface (Vendor Space
+  //  Follow-up, Task 2). Cross-tenant, same as nearby search, but with
+  //  no location at all to compute a distance from — priority can
+  //  safely be the PRIMARY sort here (no "distant ELEVATE vendor beats
+  //  a near CELEBRATE one" risk exists without a distance signal).
+  // ─────────────────────────────────────────
+  findSpacesForBrowse: async () => {
+    const spaces = await prisma.vendorSpace.findMany({
+      where: { isArchived: false, isActive: true },
+      include: {
+        tenant: { select: { subscriptionTier: true } },
+        vendorServices: { where: { isArchived: false } },
+      },
+    });
+
+    return spaces
+      .map((space) => withPriority(withPlainCoords(space)))
+      .sort((a, b) => {
+        if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+  },
+
+  createSpace: async (userId: string, data: CreateVendorSpaceDto) => {
+    const space = await prisma.vendorSpace.create({
       data: {
         name: data.name,
         description: data.description ?? null,
@@ -73,10 +235,12 @@ export const vendorRepository = {
         createdBy: userId,
         updatedBy: userId,
       },
-    }),
+    });
+    return withPlainCoords(space);
+  },
 
-  updateSpace: (id: string, userId: string, data: UpdateVendorSpaceDto) =>
-    prisma.vendorSpace.update({
+  updateSpace: async (id: string, userId: string, data: UpdateVendorSpaceDto) => {
+    const space = await prisma.vendorSpace.update({
       where: { id },
       data: {
         ...(data.name !== undefined && { name: data.name }),
@@ -91,7 +255,9 @@ export const vendorRepository = {
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         updatedBy: userId,
       },
-    }),
+    });
+    return withPlainCoords(space);
+  },
 
   archiveSpace: (id: string, userId: string) =>
     prisma.vendorSpace.update({
@@ -99,30 +265,67 @@ export const vendorRepository = {
       data: { isArchived: true, updatedBy: userId },
     }),
 
-  // ── Vendor User Assignment ────────────────
-  // A vendor "user" is now just a platform User with role EVENT_VENDOR,
-  // linked via User.vendorSpaceId. This is a deliberate exception writing
-  // across model boundaries within this repository file, since
-  // User.vendorSpaceId is effectively owned jointly by both modules.
-
-  assignVendorUser: (vendorSpaceId: string, userId: string) =>
-    prisma.user.update({
-      where: { id: userId },
-      data: { vendorSpaceId },
+  reactivateSpace: (id: string, userId: string) =>
+    prisma.vendorSpace.update({
+      where: { id },
+      data: { isArchived: false, updatedBy: userId },
     }),
 
-  // ── Vendor Service ────────────────────────
+  // ── Vendor User Assignment (VendorSpaceUser join table) ───────────
+  // Many-to-many: one vendor user across several spaces, several users
+  // on one space — see vendor.service.ts for the "why no restriction"
+  // reasoning. Ownership/role/cross-tenant validation happens in
+  // vendor.service.ts before these are called; these writes are
+  // intentionally dumb.
 
-  findAllServices: (vendorSpaceId: string) =>
+  findMembership: (vendorSpaceId: string, userId: string) =>
+    prisma.vendorSpaceUser.findUnique({
+      where: { vendorSpaceId_userId: { vendorSpaceId, userId } },
+    }),
+
+  assignVendorUser: (vendorSpaceId: string, userId: string, createdBy: string) =>
+    prisma.vendorSpaceUser.create({
+      data: { vendorSpaceId, userId, createdBy },
+      include: { user: true },
+    }),
+
+  unassignVendorUser: (vendorSpaceId: string, userId: string) =>
+    prisma.vendorSpaceUser.delete({
+      where: { vendorSpaceId_userId: { vendorSpaceId, userId } },
+    }),
+
+  // "Which spaces does this vendor user manage" — a vendor user's own
+  // self-service list (GET /api/vendors/mine). Non-archived spaces
+  // only, same convention as every other list.
+  findSpacesForUser: async (userId: string) => {
+    const memberships = await prisma.vendorSpaceUser.findMany({
+      where: { userId, vendorSpace: { isArchived: false } },
+      include: {
+        vendorSpace: {
+          include: { vendorServices: { where: { isArchived: false } } },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return memberships.map((m) => withPlainCoords(m.vendorSpace));
+  },
+
+  // ── Vendor Service ────────────────────────
+  // VendorService has no tenantId of its own — ownership is transitive
+  // through vendorSpaceId -> VendorSpace.tenantId, enforced in
+  // vendor.service.ts by gating through getSpaceById first, exactly
+  // like event-day/guest/invite gate through eventService.getById.
+
+  findAllServices: (vendorSpaceId: string, includeArchived = false) =>
     prisma.vendorService.findMany({
-      where: { vendorSpaceId, isArchived: false },
+      where: { vendorSpaceId, ...(includeArchived ? {} : { isArchived: false }) },
       include: { products: { where: { isArchived: false } } },
       orderBy: { createdAt: 'desc' },
     }),
 
-  findServiceById: (id: string) =>
+  findServiceById: (id: string, includeArchived = false) =>
     prisma.vendorService.findFirst({
-      where: { id, isArchived: false },
+      where: { id, ...(includeArchived ? {} : { isArchived: false }) },
       include: { products: { where: { isArchived: false } } },
     }),
 
@@ -160,19 +363,35 @@ export const vendorRepository = {
       data: { isArchived: true, updatedBy: userId },
     }),
 
-  // ── Product ───────────────────────────────
-
-  findAllProducts: (vendorServiceId: string) =>
-    prisma.product.findMany({
-      where: { vendorServiceId, isArchived: false },
-      orderBy: { createdAt: 'desc' },
+  reactivateService: (id: string, userId: string) =>
+    prisma.vendorService.update({
+      where: { id },
+      data: { isArchived: false, updatedBy: userId },
     }),
 
-  findProductById: (id: string) =>
-    prisma.product.findFirst({ where: { id, isArchived: false } }),
+  // ── Product ───────────────────────────────
+  // Product has no tenantId of its own either — ownership is transitive
+  // two hops up (vendorServiceId -> VendorService.vendorSpaceId ->
+  // VendorSpace.tenantId), enforced in vendor.service.ts by gating
+  // through getServiceById (which itself gates through getSpaceById).
 
-  createProduct: (vendorServiceId: string, userId: string, data: CreateProductDto) =>
-    prisma.product.create({
+  findAllProducts: async (vendorServiceId: string, includeArchived = false) => {
+    const products = await prisma.product.findMany({
+      where: { vendorServiceId, ...(includeArchived ? {} : { isArchived: false }) },
+      orderBy: { createdAt: 'desc' },
+    });
+    return products.map(withPlainPrice);
+  },
+
+  findProductById: async (id: string, includeArchived = false) => {
+    const product = await prisma.product.findFirst({
+      where: { id, ...(includeArchived ? {} : { isArchived: false }) },
+    });
+    return product ? withPlainPrice(product) : null;
+  },
+
+  createProduct: async (vendorServiceId: string, userId: string, data: CreateProductDto) => {
+    const product = await prisma.product.create({
       data: {
         vendorServiceId,
         name: data.name,
@@ -185,10 +404,12 @@ export const vendorRepository = {
         createdBy: userId,
         updatedBy: userId,
       },
-    }),
+    });
+    return withPlainPrice(product);
+  },
 
-  updateProduct: (id: string, userId: string, data: UpdateProductDto) =>
-    prisma.product.update({
+  updateProduct: async (id: string, userId: string, data: UpdateProductDto) => {
+    const product = await prisma.product.update({
       where: { id },
       data: {
         ...(data.name !== undefined && { name: data.name }),
@@ -199,11 +420,19 @@ export const vendorRepository = {
         ...(data.isAvailable !== undefined && { isAvailable: data.isAvailable }),
         updatedBy: userId,
       },
-    }),
+    });
+    return withPlainPrice(product);
+  },
 
   archiveProduct: (id: string, userId: string) =>
     prisma.product.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
+    }),
+
+  reactivateProduct: (id: string, userId: string) =>
+    prisma.product.update({
+      where: { id },
+      data: { isArchived: false, updatedBy: userId },
     }),
 };

@@ -14,13 +14,18 @@ import { type SessionTokenPayload } from '../../modules/auth/auth.types.js';
 declare global {
   namespace Express {
     interface Request {
+      // vendor-space membership is deliberately NOT carried here — it's
+      // many-to-many now (VendorSpaceUser), so "the" space doesn't exist
+      // as a single value. Anything needing it queries the join table
+      // directly (role.middleware.ts's requireVendorSpaceOwner,
+      // vendorService.getMySpaces) rather than trusting a value cached
+      // at authentication time.
       user?: {
         id: string;
         firebaseUid: string;
         email: string;
         role: string;
         tenantId: string | null;
-        vendorSpaceId: string | null;
       };
     }
   }
@@ -134,7 +139,6 @@ export const authenticate = async (
         email: true,
         role: true,
         tenantId: true,
-        vendorSpaceId: true,
         isActive: true,
         isArchived: true,
       },
@@ -163,7 +167,6 @@ export const authenticate = async (
       email: user.email,
       role: user.role,
       tenantId: user.tenantId,
-      vendorSpaceId: user.vendorSpaceId,
     };
 
     next();

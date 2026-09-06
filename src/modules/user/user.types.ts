@@ -6,7 +6,6 @@ export interface CreateUserDto {
   username: string;
   role: PlatformRole;
   tenantId?: string;
-  vendorSpaceId?: string;
 }
 
 export interface UpdateUserDto {

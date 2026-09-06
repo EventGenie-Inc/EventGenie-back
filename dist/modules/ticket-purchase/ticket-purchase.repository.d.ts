@@ -22,8 +22,8 @@ export declare const ticketPurchaseRepository: {
         };
     } & {
         id: string;
-        currency: string;
         inviteId: string;
+        currency: string;
         ticketId: string;
         quantity: number;
         totalPaid: Prisma.Decimal;
@@ -49,8 +49,8 @@ export declare const ticketPurchaseRepository: {
         };
     } & {
         id: string;
-        currency: string;
         inviteId: string;
+        currency: string;
         ticketId: string;
         quantity: number;
         totalPaid: Prisma.Decimal;
@@ -59,8 +59,8 @@ export declare const ticketPurchaseRepository: {
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     create: (data: CreateTicketPurchaseDto, db?: Db) => Prisma.Prisma__TicketPurchaseClient<{
         id: string;
-        currency: string;
         inviteId: string;
+        currency: string;
         ticketId: string;
         quantity: number;
         totalPaid: Prisma.Decimal;

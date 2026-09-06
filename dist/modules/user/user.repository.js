@@ -1,25 +1,25 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import {} from './user.types.js';
 export const userRepository = {
-    findAll: (tenantId) => prisma.user.findMany({
+    findAll: (tenantId, includeArchived = false) => prisma.user.findMany({
         where: {
-            isArchived: false,
+            ...(includeArchived ? {} : { isArchived: false }),
             ...(tenantId ? { tenantId } : {}),
         },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id) => prisma.user.findFirst({
-        where: { id, isArchived: false },
+    findById: (id, includeArchived = false, tenantId) => prisma.user.findFirst({
+        where: {
+            id,
+            ...(includeArchived ? {} : { isArchived: false }),
+            ...(tenantId ? { tenantId } : {}),
+        },
     }),
     findByFirebaseUid: (firebaseUid) => prisma.user.findUnique({
         where: { firebaseUid },
     }),
     findByEmail: (email) => prisma.user.findFirst({
         where: { email, isArchived: false },
-    }),
-    findByVendorSpace: (vendorSpaceId) => prisma.user.findMany({
-        where: { vendorSpaceId, isArchived: false },
-        orderBy: { createdAt: 'desc' },
     }),
     create: (data) => prisma.user.create({
         data: {
@@ -28,7 +28,6 @@ export const userRepository = {
             username: data.username,
             role: data.role,
             tenantId: data.tenantId ?? null,
-            vendorSpaceId: data.vendorSpaceId ?? null,
             isActive: true,
             isArchived: false,
         },

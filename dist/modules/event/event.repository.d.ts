@@ -1,6 +1,7 @@
+import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 export declare const eventRepository: {
-    findAll: (tenantId?: string) => import("@prisma/client").Prisma.PrismaPromise<({
+    findAll: (tenantId?: string, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<({
         eventDays: {
             id: string;
             isArchived: boolean;
@@ -28,15 +29,18 @@ export declare const eventRepository: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     })[]>;
-    findById: (id: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
+    findById: (id: string, includeArchived?: boolean, tenantId?: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -64,6 +68,62 @@ export declare const eventRepository: {
             startTime: Date | null;
             endTime: Date | null;
         }[];
+        rsvpFields: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            label: string;
+            fieldType: import("@prisma/client").$Enums.RsvpFieldType;
+            isRequired: boolean;
+            options: string | null;
+            order: number;
+        }[];
+        program: ({
+            programItems: {
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                description: string | null;
+                createdBy: string;
+                updatedBy: string;
+                startTime: Date;
+                order: number;
+                title: string;
+                programId: string;
+                durationMins: number | null;
+            }[];
+        } & {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            title: string | null;
+            isPublished: boolean;
+        }) | null;
+        tickets: {
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            price: import("@prisma/client-runtime-utils").Decimal;
+            currency: string;
+            totalQuantity: number | null;
+            soldCount: number;
+            isAvailable: boolean;
+        }[];
     } & {
         name: string;
         id: string;
@@ -78,15 +138,20 @@ export declare const eventRepository: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    create: (tenantId: string, userId: string, data: CreateEventDto) => import("@prisma/client").Prisma.Prisma__EventClient<{
+    countActive: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
+    countAcceptedInvitesForEvent: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
+    create: (tenantId: string, userId: string, data: CreateEventDto) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -100,14 +165,17 @@ export declare const eventRepository: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
-    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    }>;
     update: (id: string, userId: string, data: UpdateEventDto) => import("@prisma/client").Prisma.Prisma__EventClient<{
         name: string;
         id: string;
@@ -122,11 +190,14 @@ export declare const eventRepository: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -144,11 +215,64 @@ export declare const eventRepository: {
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
         coverImageUrl: string | null;
+        coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        createdBy: string;
+        updatedBy: string;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    reactivate: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__EventClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        createdBy: string;
+        updatedBy: string;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    updateStatus: (id: string, userId: string, status: EventStatus) => import("@prisma/client").Prisma.Prisma__EventClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;

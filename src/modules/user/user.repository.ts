@@ -3,18 +3,22 @@ import { type CreateUserDto, type UpdateUserDto } from './user.types.js';
 
 export const userRepository = {
 
-  findAll: (tenantId?: string) =>
+  findAll: (tenantId?: string, includeArchived = false) =>
     prisma.user.findMany({
       where: {
-        isArchived: false,
+        ...(includeArchived ? {} : { isArchived: false }),
         ...(tenantId ? { tenantId } : {}),
       },
       orderBy: { createdAt: 'desc' },
     }),
 
-  findById: (id: string) =>
+  findById: (id: string, includeArchived = false, tenantId?: string) =>
     prisma.user.findFirst({
-      where: { id, isArchived: false },
+      where: {
+        id,
+        ...(includeArchived ? {} : { isArchived: false }),
+        ...(tenantId ? { tenantId } : {}),
+      },
     }),
 
   findByFirebaseUid: (firebaseUid: string) =>
@@ -27,12 +31,6 @@ export const userRepository = {
       where: { email, isArchived: false },
     }),
 
-  findByVendorSpace: (vendorSpaceId: string) =>
-    prisma.user.findMany({
-      where: { vendorSpaceId, isArchived: false },
-      orderBy: { createdAt: 'desc' },
-    }),
-
   create: (data: CreateUserDto) =>
     prisma.user.create({
       data: {
@@ -41,7 +39,6 @@ export const userRepository = {
         username: data.username,
         role: data.role,
         tenantId: data.tenantId ?? null,
-        vendorSpaceId: data.vendorSpaceId ?? null,
         isActive: true,
         isArchived: false,
       },

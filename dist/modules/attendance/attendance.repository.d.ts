@@ -36,6 +36,25 @@ export declare const attendanceRepository: {
             startTime: Date | null;
             endTime: Date | null;
         };
+        invite: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.InviteStatus;
+            createdBy: string;
+            updatedBy: string;
+            expiresAt: Date | null;
+            usedAt: Date | null;
+            eventId: string;
+            guestId: string;
+            token: string;
+            used: boolean;
+            editToken: string | null;
+            editTokenExpiresAt: Date | null;
+            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+            deliveredAt: Date | null;
+        };
     } & {
         id: string;
         inviteId: string;

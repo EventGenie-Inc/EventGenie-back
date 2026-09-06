@@ -13,7 +13,6 @@ export interface AuthenticatedRequest extends Request {
     email: string;
     role: PlatformRole;
     tenantId: string | null;
-    vendorSpaceId: string | null;
   };
 }
 

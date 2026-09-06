@@ -8,7 +8,9 @@ import tenantRouter from './modules/tenant/tenant.router.js';
 import userRouter from './modules/user/user.router.js';
 import eventRouter from './modules/event/event.router.js';
 import eventDayRouter from './modules/event-day/event-day.router.js';
+import eventDraftRouter from './modules/event-draft/event-draft.router.js';
 import guestRouter from './modules/guest/guest.router.js';
+import guestEventRouter from './modules/guest/guest-event.router.js';
 import inviteRouter from './modules/invite/invite.router.js';
 import attendanceRouter from './modules/attendance/attendance.router.js';
 import authRouter from './modules/auth/auth.router.js';
@@ -23,12 +25,8 @@ import programItemRouter from './modules/program-item/program-item.router.js';
 import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
-// ─────────────────────────────────────────
-//  Remaining routers registered as built:
-//  import authRouter from './modules/auth/auth.router.js';
-//  import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
-//  import vendorRouter from './modules/vendor/vendor.router.js';
-// ─────────────────────────────────────────
+import geocodingRouter from './modules/geocoding/geocoding.router.js';
+import uploadRouter from './modules/upload/upload.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -66,6 +64,11 @@ app.use(cors({
         }
     },
     credentials: false,
+    // Without this, the browser can't read Content-Disposition on a
+    // cross-origin response — the guest-import template download falls
+    // back to a generic filename instead of the event-specific one the
+    // backend actually sets.
+    exposedHeaders: ['Content-Disposition'],
 }));
 // ─────────────────────────────────────────
 //  BODY PARSERS
@@ -95,12 +98,14 @@ app.get('/health', (_req, res) => {
 //  /api/users
 //  /api/events
 //  /api/events/:eventId/days
+//  /api/events/:eventId/guests
 //  /api/events/:eventId/invites
 //  /api/events/:eventId/rsvp-fields
 //  /api/events/:eventId/program
 //  /api/events/:eventId/program/:programId/items
 //  /api/events/:eventId/tickets
 //  /api/events/:eventId/memory-hub
+//  /api/event-drafts/current
 //  /api/invites/:inviteId/rsvp-responses
 //  /api/ticket-purchases
 //  /api/memory-hub (public view by shareToken)
@@ -108,6 +113,7 @@ app.get('/health', (_req, res) => {
 //  /api/guests
 //  /api/attendance
 //  /api/vendors
+//  /api/geocoding (address search — HERE proxy)
 // ─────────────────────────────────────────
 app.use('/api/tenants', tenantRouter);
 app.use('/api/users', userRouter);
@@ -116,11 +122,13 @@ app.use('/api/attendance', attendanceRouter);
 // Event router with nested children
 app.use('/api/events', eventRouter);
 app.use('/api/events/:eventId/days', eventDayRouter);
+app.use('/api/events/:eventId/guests', guestEventRouter);
 app.use('/api/events/:eventId/invites', inviteRouter);
 app.use('/api/events/:eventId/rsvp-fields', rsvpFieldRouter);
 app.use('/api/events/:eventId/program', eventProgramRouter);
 app.use('/api/events/:eventId/program/:programId/items', programItemRouter);
 app.use('/api/events/:eventId/tickets', ticketRouter);
+app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
 // ─────────────────────────────────────────
@@ -144,6 +152,14 @@ app.use('/api/subscription-tiers', subscriptionTierConfigRouter);
 //  RSVP ROUTES (public — no auth)
 // ─────────────────────────────────────────
 app.use('/api/rsvp', rsvpRouter);
+// ─────────────────────────────────────────
+//  GEOCODING ROUTES (authenticated, not tenant-scoped)
+// ─────────────────────────────────────────
+app.use('/api/geocoding', geocodingRouter);
+// ─────────────────────────────────────────
+//  UPLOAD ROUTES (signed direct-to-Cloudinary uploads)
+// ─────────────────────────────────────────
+app.use('/api/uploads', uploadRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────

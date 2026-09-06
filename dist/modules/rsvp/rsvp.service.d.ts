@@ -60,11 +60,14 @@ export declare const rsvpService: {
                 latitude: import("@prisma/client-runtime-utils").Decimal | null;
                 longitude: import("@prisma/client-runtime-utils").Decimal | null;
                 coverImageUrl: string | null;
+                coverImagePublicId: string | null;
                 status: import("@prisma/client").$Enums.EventStatus;
                 visibility: import("@prisma/client").$Enums.EventVisibility;
                 ticketing: import("@prisma/client").$Enums.EventTicketing;
                 invitationTemplate: string | null;
                 invitationConfig: string | null;
+                rsvpDeadline: Date | null;
+                capacity: number | null;
                 createdBy: string;
                 updatedBy: string;
             };
@@ -75,8 +78,9 @@ export declare const rsvpService: {
                 createdAt: Date;
                 updatedAt: Date;
                 phoneNumber: string | null;
-                firstName: string;
-                surname: string;
+                eventId: string;
+                firstName: string | null;
+                surname: string | null;
             };
             inviteEventDay: ({
                 eventDay: {
@@ -98,7 +102,6 @@ export declare const rsvpService: {
                 inviteId: string;
                 eventDayId: string;
             })[];
-        } & {
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -119,6 +122,7 @@ export declare const rsvpService: {
         };
         isExpired: boolean;
         isUsed: boolean;
+        isRsvpDeadlinePassed: boolean;
     }>;
     submit: (data: SubmitRsvpDto) => Promise<{
         invite: {
@@ -155,8 +159,8 @@ export declare const rsvpService: {
         }[];
         ticketPurchase: {
             id: string;
-            currency: string;
             inviteId: string;
+            currency: string;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;

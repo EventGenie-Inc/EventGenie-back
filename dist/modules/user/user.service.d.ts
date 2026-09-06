@@ -8,72 +8,66 @@ export declare const userService: {
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    create: (data: CreateUserDto) => Promise<{
+    create: (requestingRole: PlatformRole, requesterId: string, requesterTenantId: string | null, data: CreateUserDto) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    update: (id: string, data: UpdateUserDto) => Promise<{
+    update: (id: string, requestingRole: PlatformRole, tenantId: string | null, requesterId: string, data: UpdateUserDto) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    archive: (id: string) => Promise<{
+    archive: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }>;
-    reactivate: (id: string) => Promise<{
+    reactivate: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         email: string;
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
         tenantId: string | null;
-        vendorSpaceId: string | null;
         firebaseUid: string;
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
