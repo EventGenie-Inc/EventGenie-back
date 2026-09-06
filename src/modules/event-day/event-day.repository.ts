@@ -33,8 +33,12 @@ export const eventDayRepository = {
         // Only include fields that are explicitly provided — never pass undefined
         ...(data.label !== undefined && { label: data.label }),
         ...(data.date !== undefined && { date: new Date(data.date) }),
-        ...(data.startTime !== undefined && { startTime: new Date(data.startTime) }),
-        ...(data.endTime !== undefined && { endTime: new Date(data.endTime) }),
+        // startTime/endTime are nullable — explicit null must clear them,
+        // not fall into new Date(null) (1970-01-01T00:00:00Z), which is
+        // what happened when the ?? null guard sat outside the
+        // transform instead of inside it. Mirrors create()'s handling.
+        ...(data.startTime !== undefined && { startTime: data.startTime ? new Date(data.startTime) : null }),
+        ...(data.endTime !== undefined && { endTime: data.endTime ? new Date(data.endTime) : null }),
         updatedBy: userId,
       },
     }),
