@@ -203,6 +203,15 @@ model Event {
   ticketing          EventTicketing  @default(FREE)
   invitationTemplate String?
   invitationConfig   String?
+  // Organiser-typed display name shown to guests on the invitation/RSVP
+  // page and the public Memory Hub gallery — e.g. "The Mashilo Family" or
+  // "Sarah & Tom". Deliberately separate from Tenant.name (a workspace
+  // name, e.g. "Test Events Co", not something anyone would print on an
+  // invitation) and never falls back to it: an event without a hostName
+  // shows no host line, since falling back to the tenant name would leak
+  // exactly what rsvp.service.ts's guest-facing responses are designed to
+  // withhold.
+  hostName           String?
   // Independent of Event.status — closes guest self-service RSVP only.
   // Organiser guest management is unaffected. Never folded into
   // resolveEffectiveStatus (event-status.util.ts).

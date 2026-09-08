@@ -8,6 +8,7 @@ import { type SubmitRsvpDto } from './rsvp.types.js';
 import { resolveEffectiveStatus, withEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
+import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest/guest-validation.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
@@ -135,6 +136,34 @@ const assertValidSubmission = (data: SubmitRsvpDto): void => {
   if (data.paymentRef !== undefined && typeof data.paymentRef !== 'string') {
     throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
   }
+
+  if (data.firstName !== undefined && typeof data.firstName !== 'string') {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+
+  if (data.surname !== undefined && typeof data.surname !== 'string') {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+
+  if (data.email !== undefined && typeof data.email !== 'string') {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+
+  if (data.phoneNumber !== undefined && typeof data.phoneNumber !== 'string') {
+    throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
+  }
+};
+
+// undefined (field omitted) and '' (submitted blank) both mean "leave
+// existing data alone" — a guest resubmitting a form that only shows
+// SOME fields (e.g. a plain "attending?" toggle with no name field at
+// all) must never be treated as clearing what an earlier submission, or
+// the organiser, already set. Only a genuinely non-empty value is ever
+// written.
+const trimToUndefined = (value: string | undefined): string | undefined => {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 };
 
 export const rsvpService = {
@@ -231,6 +260,89 @@ export const rsvpService = {
       // nothing to clear, so it skips straight past it).
       const isEdit = invite.used;
       assertRsvpDeadlineNotPassed(invite.event.rsvpDeadline, isEdit);
+
+      // Guest-supplied name/contact — the whole reason firstName/surname
+      // are nullable on Guest (schema.prisma) is that a phone-only import
+      // has no name until the guest RSVPs and supplies one here. Computed
+      // up front (before any other write) so a required-name rejection
+      // fails BEFORE the wholesale-clear/attendance/plus-one writes below
+      // start spending round trips, and so the one guest.update this adds
+      // can carry every changed field in a single write.
+      const nextFirstName = trimToUndefined(data.firstName);
+      const nextSurname = trimToUndefined(data.surname);
+      const nextEmailRaw = trimToUndefined(data.email);
+      const nextPhoneRaw = trimToUndefined(data.phoneNumber);
+
+      const guestUpdateData: { firstName?: string; surname?: string; email?: string; phoneNumber?: string } = {};
+
+      if (nextFirstName !== undefined && nextFirstName !== invite.guest.firstName) {
+        guestUpdateData.firstName = nextFirstName;
+      }
+      if (nextSurname !== undefined && nextSurname !== invite.guest.surname) {
+        guestUpdateData.surname = nextSurname;
+      }
+
+      // Contact is a separate question from name: a guest imported by
+      // phone has no email, and the reason BOTH fields exist on Guest is
+      // so the other can be captured here. Unlike
+      // guest-validation.util.ts's assertExactlyOneContact (which governs
+      // organiser create/update), a guest is deliberately allowed to end
+      // up holding both — routing (contactFor/dispatchOne in
+      // invite-dispatch.service.ts) is keyed off the Invite's
+      // already-fixed deliveryMethod, not re-derived from the guest's
+      // contact fields, so an existing invite's delivery is unaffected
+      // either way. If a dynamic per-send channel choice is ever built,
+      // phone should win when both are present — that's a preference
+      // setting, not something to invent here.
+      if (nextEmailRaw !== undefined) {
+        const normalizedEmail = normalizeEmail(nextEmailRaw);
+        assertValidEmail(normalizedEmail);
+        if (normalizedEmail !== invite.guest.email) guestUpdateData.email = normalizedEmail;
+      }
+      if (nextPhoneRaw !== undefined) {
+        const normalizedPhone = normalizePhoneToE164(nextPhoneRaw);
+        if (normalizedPhone !== invite.guest.phoneNumber) guestUpdateData.phoneNumber = normalizedPhone;
+      }
+
+      // Same duplicate rule as guest.service.ts's create/import paths
+      // (STEERING: same email/phone on the same event is a duplicate) —
+      // only queried when a contact is actually changing, since this is
+      // the one extra read this whole block can't avoid.
+      if (guestUpdateData.email || guestUpdateData.phoneNumber) {
+        const duplicate = await tx.guest.findFirst({
+          where: {
+            eventId: invite.eventId,
+            isArchived: false,
+            id: { not: invite.guestId },
+            OR: [
+              ...(guestUpdateData.email ? [{ email: guestUpdateData.email }] : []),
+              ...(guestUpdateData.phoneNumber ? [{ phoneNumber: guestUpdateData.phoneNumber }] : []),
+            ],
+          },
+          select: { id: true },
+        });
+        if (duplicate) {
+          throw new HttpError(
+            409,
+            `Another guest on this event is already using this ${guestUpdateData.email ? 'email address' : 'phone number'}.`
+          );
+        }
+      }
+
+      // Required only when attending, and only when the guest has no name
+      // at all yet — an organiser needs to know who's coming, and this is
+      // the only moment a phone-only-imported guest is ever asked. A
+      // decline needs no name (nothing to seat, nothing to check in), and
+      // a guest who already has a name (organiser-entered or from an
+      // earlier RSVP) is never re-prompted.
+      const finalFirstName = guestUpdateData.firstName ?? invite.guest.firstName;
+      if (data.attending && !finalFirstName) {
+        throw new HttpError(400, "Please tell us your name so the organiser knows who's coming.");
+      }
+
+      if (Object.keys(guestUpdateData).length > 0) {
+        await tx.guest.update({ where: { id: invite.guestId }, data: guestUpdateData });
+      }
 
       // Wholesale replace: an edit states the guest's CURRENT intent, not
       // an amendment to history, so whatever this invite (and any

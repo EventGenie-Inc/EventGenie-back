@@ -213,6 +213,11 @@ export const memoryHubService = {
             title: hub.title,
             description: hub.description,
             eventName: hub.event.name,
+            // Organiser-typed, never Tenant.name — same reasoning as
+            // rsvp.service.ts's validate() projection (schema.prisma's comment
+            // on Event.hostName). Absent (undefined-safe null) rather than
+            // falling back to anything tenant-derived when not set.
+            hostName: hub.event.hostName,
             isOpen,
             isCancelled,
             items: canView ? hub.memoryItems.map(toPublicItem) : [],

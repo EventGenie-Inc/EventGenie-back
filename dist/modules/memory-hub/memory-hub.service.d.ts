@@ -204,6 +204,7 @@ export declare const memoryHubService: {
         title: string | null;
         description: string | null;
         eventName: string;
+        hostName: string | null;
         isOpen: boolean;
         isCancelled: boolean;
         items: {

@@ -13,6 +13,7 @@ export interface CreateEventDto {
     ticketing?: EventTicketing;
     invitationTemplate?: string;
     invitationConfig?: string;
+    hostName?: string;
     rsvpDeadline?: string;
     capacity?: number;
 }
@@ -30,6 +31,7 @@ export interface UpdateEventDto {
     ticketing?: EventTicketing;
     invitationTemplate?: string;
     invitationConfig?: string;
+    hostName?: string | null;
     rsvpDeadline?: string | null;
     capacity?: number | null;
 }
