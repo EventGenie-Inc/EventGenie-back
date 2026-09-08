@@ -10,5 +10,9 @@ export interface SubmitRsvpDto {
     ticketQuantity?: number;
     paymentRef?: string;
     plusOneNames?: string[];
+    firstName?: string;
+    surname?: string;
+    email?: string;
+    phoneNumber?: string;
 }
 //# sourceMappingURL=rsvp.types.d.ts.map

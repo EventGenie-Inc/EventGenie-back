@@ -50,12 +50,21 @@ export const normalizePhoneToE164 = (raw: string, defaultCountry: CountryCode = 
 // Product rule: a guest holds exactly one contact method at
 // creation/update time — the second field is filled in later, at RSVP
 // time. Prisma cannot express this, so it's enforced here on every
-// create/update path.
+// organiser create/update path (guest.service.ts).
 //
-// Exception: a plus-one (hostGuestId set) is never contacted directly —
+// Exception 1: a plus-one (hostGuestId set) is never contacted directly —
 // their host RSVPs on their behalf — so they hold zero contact methods,
 // permanently. The "not both" rule still applies unconditionally; only
 // the "at least one" rule is skipped for a plus-one.
+//
+// Exception 2: rsvp.service.ts's submit() deliberately does NOT call this
+// function. That's where "the second field is filled in later, at RSVP
+// time" (above) actually happens, and it can leave a guest holding BOTH
+// email and phone — the "not both" half of this rule is intentionally
+// guest-facing-exempt, not just unenforced there. See submit()'s own
+// comment for why (dispatch routing is unaffected either way) and
+// guest-export.util.ts's `contact` column (shows both, joined, rather
+// than picking one) for the one other place this was found to matter.
 export const assertExactlyOneContact = (
   email: string | null,
   phoneNumber: string | null,

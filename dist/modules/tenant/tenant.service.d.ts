@@ -67,6 +67,7 @@ export declare const tenantService: {
         ticketing: import("@prisma/client").$Enums.EventTicketing;
         invitationTemplate: string | null;
         invitationConfig: string | null;
+        hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
         createdBy: string;

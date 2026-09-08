@@ -55,6 +55,11 @@ type DispatchableInvite = {
 const guestDisplayName = (guest: { firstName: string | null; surname: string | null }): string =>
   [guest.firstName, guest.surname].filter(Boolean).join(' ').trim() || 'Guest';
 
+// Keyed off the Invite's own deliveryMethod (fixed at creation from
+// whichever contact the guest had then), never re-derived from the
+// guest's current contact fields — so a guest who adds a second contact
+// at RSVP (rsvp.service.ts's submit(), which can leave them holding both
+// email and phone) doesn't change how an existing invite dispatches.
 const contactFor = (invite: DispatchableInvite): string =>
   invite.deliveryMethod === 'EMAIL' ? (invite.guest.email ?? '') : (invite.guest.phoneNumber ?? '');
 

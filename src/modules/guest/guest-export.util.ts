@@ -110,7 +110,11 @@ export const buildGuestExportWorkbook = async (
     const row: Record<string, string> = {
       firstName: guest.firstName ?? '',
       surname: guest.surname ?? '',
-      contact: guest.email ?? guest.phoneNumber ?? '',
+      // Joined rather than "email ?? phone" — a guest who added the
+      // channel they weren't imported with at RSVP (rsvp.service.ts's
+      // submit()) can hold both, and silently dropping one here would put
+      // the organiser right back in the dark this export exists to fix.
+      contact: [guest.email, guest.phoneNumber].filter(Boolean).join(' / '),
       invitedDays: invitedDayLabels.join(', '),
       inviteStatus: invite?.status ?? '',
       plusOneOf: guest.hostGuest ? displayName(guest.hostGuest) : '',

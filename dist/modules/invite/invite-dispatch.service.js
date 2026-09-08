@@ -10,6 +10,11 @@ import { buildInviteRsvpLink, buildInviteEmailSubject, buildInviteEmailHtml, bui
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
 const guestDisplayName = (guest) => [guest.firstName, guest.surname].filter(Boolean).join(' ').trim() || 'Guest';
+// Keyed off the Invite's own deliveryMethod (fixed at creation from
+// whichever contact the guest had then), never re-derived from the
+// guest's current contact fields — so a guest who adds a second contact
+// at RSVP (rsvp.service.ts's submit(), which can leave them holding both
+// email and phone) doesn't change how an existing invite dispatches.
 const contactFor = (invite) => invite.deliveryMethod === 'EMAIL' ? (invite.guest.email ?? '') : (invite.guest.phoneNumber ?? '');
 // PUBLIC events don't use invites — they use the share link (Task 5) and
 // guests self-create on RSVP. Applies to both a fresh send and a resend.
