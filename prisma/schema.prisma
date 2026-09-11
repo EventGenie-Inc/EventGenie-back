@@ -221,6 +221,15 @@ model Event {
   // the two. Warns via acceptedGuestCount on the event detail response,
   // never blocks guest creation/import.
   capacity           Int?
+  // Public self-registration credential — same shape and purpose as
+  // MemoryHub.shareToken (32 random bytes hex, unguessable, unique).
+  // Null until the organiser first requests a share link for a PUBLIC
+  // event (lazily generated — see event.service.ts's getShareLink).
+  // Regenerating overwrites this column, which genuinely invalidates
+  // the previous link rather than just hiding it. Never the raw Event.id
+  // — a cuid in a public URL lets anyone enumerate events by guessing,
+  // and could never be revoked once shared somewhere it shouldn't be.
+  shareToken         String?         @unique
   isArchived         Boolean         @default(false)
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt

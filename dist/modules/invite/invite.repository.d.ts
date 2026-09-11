@@ -246,6 +246,7 @@ export declare const inviteRepository: {
             hostName: string | null;
             rsvpDeadline: Date | null;
             capacity: number | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
         };
@@ -338,6 +339,25 @@ export declare const inviteRepository: {
         deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
         deliveredAt: Date | null;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
+    findLatestActiveByGuestId: (guestId: string) => import("@prisma/client").Prisma.Prisma__InviteClient<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.InviteStatus;
+        createdBy: string;
+        updatedBy: string;
+        expiresAt: Date | null;
+        usedAt: Date | null;
+        eventId: string;
+        guestId: string;
+        token: string;
+        used: boolean;
+        editToken: string | null;
+        editTokenExpiresAt: Date | null;
+        deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+        deliveredAt: Date | null;
+    } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     create: (eventId: string, userId: string, data: CreateInviteDto) => Promise<{
         id: string;
         isArchived: boolean;

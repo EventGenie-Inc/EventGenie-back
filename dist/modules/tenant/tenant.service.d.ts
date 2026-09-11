@@ -70,6 +70,7 @@ export declare const tenantService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     })[]>;

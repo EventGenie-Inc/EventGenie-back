@@ -34,12 +34,12 @@ export declare const eventDraftService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -134,6 +134,7 @@ export declare const eventDraftService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }) | null>;

@@ -25,6 +25,7 @@ import programItemRouter from './modules/program-item/program-item.router.js';
 import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
+import eventPublicRouter from './modules/event-public/event-public.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
 const app = express();
@@ -110,6 +111,7 @@ app.get('/health', (_req, res) => {
 //  /api/ticket-purchases
 //  /api/memory-hub (public view by shareToken)
 //  /api/rsvp (public — validate/:token, submit)
+//  /api/public-events (public — view + register by shareToken)
 //  /api/guests
 //  /api/attendance
 //  /api/vendors
@@ -152,6 +154,12 @@ app.use('/api/subscription-tiers', subscriptionTierConfigRouter);
 //  RSVP ROUTES (public — no auth)
 // ─────────────────────────────────────────
 app.use('/api/rsvp', rsvpRouter);
+// ─────────────────────────────────────────
+//  PUBLIC EVENT REGISTRATION (public — no auth)
+//  /api/public-events/:shareToken           GET  — public event view
+//  /api/public-events/:shareToken/register  POST — self-register a guest
+// ─────────────────────────────────────────
+app.use('/api/public-events', eventPublicRouter);
 // ─────────────────────────────────────────
 //  GEOCODING ROUTES (authenticated, not tenant-scoped)
 // ─────────────────────────────────────────

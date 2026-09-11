@@ -69,6 +69,19 @@ export const inviteRepository = {
       },
     }),
 
+  // Feeds event-public.service.ts's duplicate-registration path: a
+  // returning public registrant is matched back to their existing Guest
+  // by contact, then handed the token of THIS invite so they land back
+  // in their own RSVP rather than a stranded dead end. Most-recent
+  // non-archived invite — a guest can in principle hold more than one
+  // (an organiser can archive one invite without archiving its guest,
+  // see invite.service.ts's archive), so this picks the one still live.
+  findLatestActiveByGuestId: (guestId: string) =>
+    prisma.invite.findFirst({
+      where: { guestId, isArchived: false },
+      orderBy: { createdAt: 'desc' },
+    }),
+
   create: (eventId: string, userId: string, data: CreateInviteDto) =>
     prisma.$transaction(async (tx) => {
       const invite = await tx.invite.create({

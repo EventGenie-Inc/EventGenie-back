@@ -25,12 +25,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     getDetailByEventId: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
@@ -58,12 +58,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
@@ -90,12 +90,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateMemoryHubDto) => Promise<{
@@ -104,12 +104,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryHubDto) => Promise<{
@@ -118,12 +118,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
@@ -132,12 +132,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     reactivate: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
@@ -164,12 +164,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     regenerateShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
@@ -178,12 +178,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     revokeShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
@@ -192,12 +192,12 @@ export declare const memoryHubService: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }>;
     viewByShareToken: (shareToken: string) => Promise<{

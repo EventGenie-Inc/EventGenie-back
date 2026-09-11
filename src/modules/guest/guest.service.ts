@@ -95,7 +95,11 @@ export const guestService = {
 
     await assertGuestsCreatable(eventId, event.tenantId, 1);
 
-    return guestRepository.createWithInvite(eventId, userId, {
+    // Unwrapped to `.guest` — this route's response contract is (and
+    // stays) the Guest row alone; the paired Invite that
+    // createWithInvite now also returns is consumed by
+    // event-public.service.ts's registration path instead.
+    const { guest } = await guestRepository.createWithInvite(eventId, userId, {
       firstName: data.firstName ?? null,
       surname: data.surname ?? null,
       email,
@@ -103,6 +107,7 @@ export const guestService = {
       eventDayIds: data.eventDayIds,
       plusOnesAllowed,
     });
+    return guest;
   },
 
   update: async (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateGuestDto) => {

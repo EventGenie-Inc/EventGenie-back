@@ -25,12 +25,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<({
@@ -57,12 +57,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findByShareToken: (shareToken: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<({
@@ -103,6 +103,7 @@ export declare const memoryHubRepository: {
             hostName: string | null;
             rsvpDeadline: Date | null;
             capacity: number | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
         };
@@ -136,12 +137,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     create: (eventId: string, userId: string, data: CreateMemoryHubDto) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<{
@@ -150,12 +151,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     update: (id: string, userId: string, data: UpdateMemoryHubDto) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<{
@@ -164,12 +165,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     generateShareToken: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<{
@@ -178,12 +179,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     revokeShareToken: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<{
@@ -192,12 +193,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     archive: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<{
@@ -206,12 +207,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     reactivate: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<{
@@ -220,12 +221,12 @@ export declare const memoryHubRepository: {
         createdAt: Date;
         updatedAt: Date;
         description: string | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
         eventId: string;
         title: string | null;
         isPublic: boolean;
-        shareToken: string | null;
         opensAt: Date | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     sumBytesForEvent: (eventId: string) => Promise<number>;

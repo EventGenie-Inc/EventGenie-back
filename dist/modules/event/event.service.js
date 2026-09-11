@@ -132,20 +132,40 @@ export const eventService = {
         await eventRepository.reactivate(id, userId);
         return eventService.getById(id, requestingRole, tenantId, true);
     },
-    // PUBLIC-only: the organiser copies this link, no per-guest token or
-    // guest record involved. NOTE: no guest self-registration flow exists
-    // yet anywhere in the codebase (confirmed — rsvp.router.ts is entirely
-    // token-driven via a pre-existing Invite), so this endpoint returns a
-    // URL contract only; nothing on the backend currently resolves it into
-    // a working RSVP for a stranger holding the link. That flow is out of
-    // scope here.
-    getShareLink: async (id, requestingRole, tenantId) => {
+    // PUBLIC-only: the organiser copies this link and distributes it
+    // (WhatsApp group, etc) — a guest opening it lands on the public
+    // registration page (event-public.service.ts / G2), which creates a
+    // Guest+Invite for them and hands them into the same RSVP flow every
+    // other guest uses. The link itself carries Event.shareToken, never
+    // the raw Event.id: a cuid in a public URL would let anyone enumerate
+    // events by guessing, and could never be revoked once shared
+    // somewhere it shouldn't be — same reasoning as MemoryHub.shareToken.
+    // Generated lazily on first request rather than at creation/publish
+    // time — most events never get a share link requested at all (private
+    // by default), so there's no reason to mint one nobody asked for.
+    getShareLink: async (id, userId, requestingRole, tenantId) => {
         const event = await eventService.getById(id, requestingRole, tenantId);
         assertEventIsPublished(event.status);
         if (event.visibility !== 'PUBLIC') {
             throw new HttpError(400, 'Share links are only available for public events — private events use individual invites instead.');
         }
-        return { url: `${process.env.FRONTEND_BASE_URL}/rsvp?eventId=${event.id}` };
+        const shareToken = event.shareToken ?? (await eventRepository.generateShareToken(id, userId)).shareToken;
+        return { url: `${process.env.FRONTEND_BASE_URL}/register?token=${shareToken}` };
+    },
+    // Explicit regenerate (Task-parallel to Memory Hub's regenerateShareLink)
+    // — overwrites the token, so the previous link stops resolving to
+    // anything. An organiser reaches for this after a link leaked
+    // somewhere it shouldn't have (posted publicly, shared with the wrong
+    // group) and needs the old one dead without waiting for anything else
+    // to change.
+    regenerateShareLink: async (id, userId, requestingRole, tenantId) => {
+        const event = await eventService.getById(id, requestingRole, tenantId);
+        assertEventIsPublished(event.status);
+        if (event.visibility !== 'PUBLIC') {
+            throw new HttpError(400, 'Share links are only available for public events — private events use individual invites instead.');
+        }
+        const updated = await eventRepository.generateShareToken(id, userId);
+        return { url: `${process.env.FRONTEND_BASE_URL}/register?token=${updated.shareToken}` };
     },
     // ─────────────────────────────────────────
     //  PUBLISH — DRAFT → PUBLISHED

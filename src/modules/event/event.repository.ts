@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
@@ -36,6 +37,28 @@ export const eventRepository = {
 
   countActive: (tenantId: string) =>
     prisma.event.count({ where: { tenantId, isArchived: false } }),
+
+  // Public self-registration entry point (G2) — resolves an event from
+  // its unguessable shareToken alone, no tenant/session context
+  // involved. eventDays included so resolveEffectiveStatus can be
+  // computed before anything goes out to a guest's browser, exactly
+  // like memoryHubRepository.findByShareToken's equivalent include.
+  findByShareToken: (shareToken: string) =>
+    prisma.event.findFirst({
+      where: { shareToken, isArchived: false },
+      include: { eventDays: { where: { isArchived: false } } },
+    }),
+
+  // Generates (or regenerates, overwriting whatever was there) the
+  // public share token — 32 random bytes hex, matching invite/Memory
+  // Hub token generation exactly. Regenerating invalidates the old link
+  // by construction: the column is overwritten, so the previous value
+  // simply stops matching anything.
+  generateShareToken: (id: string, userId: string) =>
+    prisma.event.update({
+      where: { id },
+      data: { shareToken: crypto.randomBytes(32).toString('hex'), updatedBy: userId },
+    }),
 
   // Accepted invites ≈ accepted guests: createWithInvite/bulkCreateWithInvites
   // (guest.repository.ts) create exactly one Invite per Guest, and

@@ -125,17 +125,38 @@ export declare const guestRepository: {
         plusOnesAllowed: number;
     })[]>;
     createWithInvite: (eventId: string, userId: string, data: CreateGuestWithInviteInput) => Promise<{
-        id: string;
-        email: string | null;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        phoneNumber: string | null;
-        eventId: string;
-        firstName: string | null;
-        surname: string | null;
-        hostGuestId: string | null;
-        plusOnesAllowed: number;
+        guest: {
+            id: string;
+            email: string | null;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            phoneNumber: string | null;
+            eventId: string;
+            firstName: string | null;
+            surname: string | null;
+            hostGuestId: string | null;
+            plusOnesAllowed: number;
+        };
+        invite: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.InviteStatus;
+            createdBy: string;
+            updatedBy: string;
+            expiresAt: Date | null;
+            usedAt: Date | null;
+            eventId: string;
+            guestId: string;
+            token: string;
+            used: boolean;
+            editToken: string | null;
+            editTokenExpiresAt: Date | null;
+            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+            deliveredAt: Date | null;
+        };
     }>;
     bulkCreateWithInvites: (eventId: string, userId: string, rows: {
         firstName: string | null;
