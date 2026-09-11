@@ -5,7 +5,7 @@ import { inviteRepository } from '../invite/invite.repository.js';
 import { ticketRepository } from '../ticket/ticket.repository.js';
 import { ticketPurchaseRepository } from '../ticket-purchase/ticket-purchase.repository.js';
 import { type SubmitRsvpDto } from './rsvp.types.js';
-import { resolveEffectiveStatus, withEffectiveStatus } from '../event/event-status.util.js';
+import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest/guest-validation.util.js';
@@ -23,7 +23,11 @@ import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest
 // language a guest should never see. In practice a guest can only ever
 // hold a token for an event that WAS published (invites can't be sent
 // to a draft event — Task 3), so this branch is defensive, not reachable.
-const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
+// Exported — event-public.service.ts's registration flow (G2) reuses
+// the COMPLETED/CANCELLED wording verbatim (they read fine for either
+// context, same reasoning as this comment already gave) and overrides
+// DRAFT with its own text, rather than duplicating the two shared strings.
+export const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
   DRAFT: 'This event is not yet open for RSVPs.',
   COMPLETED: 'This event has already taken place.',
   CANCELLED: 'This event has been cancelled.',
@@ -180,12 +184,71 @@ export const rsvpService = {
     }
 
     const isExpired = !!invite.expiresAt && invite.expiresAt < new Date();
+    const ticketPurchase = invite.ticketPurchases[0] ?? null;
 
     return {
-      // event.status reported as the EFFECTIVE status, consistent with
-      // every other read path — the guest's browser can check it to
-      // decide whether to render the RSVP form at all.
-      invite: { ...invite, event: withEffectiveStatus(invite.event) },
+      // Deliberate, hand-picked projection — a guest sees an invitation,
+      // not a database row. Mirrors event-public.service.ts's
+      // toPublicView: no tenantId, no createdByUserId/createdBy/updatedBy,
+      // no coverImagePublicId, no shareToken, no internal counters
+      // (Ticket.soldCount). Built as an explicit allowlist (not a spread
+      // of the Prisma row) so this can never silently start leaking a
+      // field added to Invite/Event/Guest/Ticket later.
+      invite: {
+        // The invite's own credential — already known to this caller (it's
+        // how they reached this response), and submit()/reloadAfterDeadline
+        // on the frontend resend it, so it stays in the payload.
+        token: invite.token,
+        status: invite.status,
+        expiresAt: invite.expiresAt,
+        guest: {
+          firstName: invite.guest.firstName,
+          surname: invite.guest.surname,
+          email: invite.guest.email,
+          phoneNumber: invite.guest.phoneNumber,
+          plusOnesAllowed: invite.guest.plusOnesAllowed,
+        },
+        // The days THIS invite offers — never every EventDay on the
+        // event (a guest may be invited to a subset).
+        inviteEventDay: invite.inviteEventDay.map((d) => ({
+          eventDay: {
+            id: d.eventDay.id,
+            label: d.eventDay.label,
+            date: d.eventDay.date,
+            startTime: d.eventDay.startTime,
+            endTime: d.eventDay.endTime,
+          },
+        })),
+        event: {
+          name: invite.event.name,
+          description: invite.event.description,
+          hostName: invite.event.hostName,
+          location: invite.event.location,
+          address: invite.event.address,
+          coverImageUrl: invite.event.coverImageUrl,
+          rsvpDeadline: invite.event.rsvpDeadline,
+          // Reported as the EFFECTIVE status, consistent with every other
+          // read path — the guest's browser branches on this to decide
+          // whether to render the RSVP form at all.
+          status: resolveEffectiveStatus(invite.event),
+          ticketing: invite.event.ticketing,
+          rsvpFields: invite.event.rsvpFields.map((f) => ({
+            id: f.id,
+            label: f.label,
+            fieldType: f.fieldType,
+            isRequired: f.isRequired,
+            options: f.options,
+          })),
+          // Only non-archived, isAvailable tickets — see
+          // invite.repository.ts's findByToken.
+          tickets: invite.event.tickets.map((t) => ({
+            id: t.id,
+            name: t.name,
+            price: t.price,
+            currency: t.currency,
+          })),
+        },
+      },
       isExpired,
       isUsed: invite.used,
       // Flag, not a throw — same "return flags, don't throw" design as
@@ -199,7 +262,14 @@ export const rsvpService = {
       attendingDayIds: invite.attendances.map((a) => a.eventDayId),
       rsvpResponses: invite.rsvpResponses.map((r) => ({ rsvpFieldId: r.rsvpFieldId, value: r.value })),
       plusOneNames: invite.guest.plusOnes.map((p) => p.firstName),
-      ticketPurchase: invite.ticketPurchases[0] ?? null,
+      ticketPurchase: ticketPurchase
+        ? {
+            ticketId: ticketPurchase.ticketId,
+            quantity: ticketPurchase.quantity,
+            totalPaid: ticketPurchase.totalPaid,
+            currency: ticketPurchase.currency,
+          }
+        : null,
     };
   },
 

@@ -161,4 +161,82 @@ export const memoryHubGuestUploadLimiter = rateLimit({
         message: 'Too many upload requests. Please wait a few minutes and try again.',
     },
 });
+// ─────────────────────────────────────────
+//  RATE LIMITER — PUBLIC EVENT VIEW
+//
+//  Same exposure profile as memoryHubGalleryLimiter: fully
+//  unauthenticated, reached with nothing but an unguessable shareToken
+//  that's meant to be shared widely. Keyed by IP. Same 60/5min budget —
+//  generous enough that several people on one shared IP browsing an
+//  event page before registering is never affected, while bounding a
+//  script hammering a leaked/guessed token.
+// ─────────────────────────────────────────
+export const publicEventViewLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many requests. Please wait a few minutes and try again.',
+    },
+});
+// ─────────────────────────────────────────
+//  RATE LIMITERS — PUBLIC EVENT REGISTRATION
+//
+//  Unlike every other limiter in this file, registration WRITES a
+//  database row (Guest + Invite) on success — closer in risk to
+//  uploadSignatureLimiter (every response is a grant) than to a read
+//  endpoint, except here there's no session at all gating who can call
+//  it. Two limiters stacked, keyed differently, because they guard
+//  against different abuse shapes:
+//
+//  Per IP — a genuine registrant submits once, maybe a couple of times
+//  if they mistype their contact and get a validation error back. 8 per
+//  15 minutes comfortably covers that (plus a shared-IP household
+//  registering a couple of people back to back) while making a
+//  single-machine script mass-registering fake guests impractical.
+//
+//  Per event (keyed by the shareToken in the URL, not the IP) — a
+//  script distributed across many IPs would sail through the IP limiter
+//  above untouched, so this is the actual backstop against "thousands
+//  of fake guests" on one popular link. The window is deliberately
+//  short and the ceiling deliberately generous (30/minute = up to 1800/
+//  hour if sustained) specifically because a link just dropped into a
+//  busy WhatsApp group can legitimately produce a burst of real
+//  registrations from different people within seconds of each other —
+//  a tight per-event limit would reject genuine guests during exactly
+//  the moment the feature is supposed to shine. This is a pace guard
+//  against a sustained script, not a hard ceiling on total
+//  registrations — SubscriptionTierConfig.maxGuestsPerEvent
+//  (guest-tier-enforcement.util.ts) is what actually bounds the total
+//  for tiers that have a cap; for unlimited tiers this is the only
+//  brake, and a patient, low-and-slow attacker could still get through
+//  it over time — same tradeoff addressLimiter's own comment already
+//  accepts for that endpoint (a script-abuse guard, not a hard
+//  ceiling).
+// ─────────────────────────────────────────
+export const publicRegistrationIpLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 8,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many registration attempts. Please wait a few minutes and try again.',
+    },
+});
+export const publicRegistrationEventLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `event:${req.params['shareToken'] ?? 'unknown'}`,
+    message: {
+        status: 'error',
+        message: 'Registration for this event is receiving a high volume of requests right now. Please try again in a moment.',
+    },
+});
 //# sourceMappingURL=rate-limit.middleware.js.map

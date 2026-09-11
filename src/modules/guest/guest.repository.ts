@@ -97,6 +97,14 @@ export const guestRepository = {
   // Guest now has its own eventId — InviteEventDay (the only place day
   // selections are recorded) requires a non-null inviteId, so day
   // selection still needs an Invite to attach to.
+  //
+  // Returns BOTH rows, not just the guest — event-public.service.ts's
+  // self-registration path (G2) needs the invite's token to hand back to
+  // the registrant, and this is the one already-batched Guest+Invite
+  // transaction in the codebase (reused rather than writing a second
+  // one). guest.service.ts's create() is the pre-existing caller; it
+  // unwraps `.guest` to keep its own response shape unchanged for the
+  // organiser-facing route.
   createWithInvite: (eventId: string, userId: string, data: CreateGuestWithInviteInput) =>
     prisma.$transaction(async (tx) => {
       const guest = await tx.guest.create({
@@ -130,7 +138,7 @@ export const guestRepository = {
         data: data.eventDayIds.map((eventDayId) => ({ inviteId: invite.id, eventDayId })),
       });
 
-      return guest;
+      return { guest, invite };
     }),
 
   // Bulk import create — see guest-import.engine.ts for row validation.

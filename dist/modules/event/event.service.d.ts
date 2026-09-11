@@ -38,6 +38,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     })[]>;
@@ -48,12 +49,12 @@ export declare const eventService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -148,6 +149,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -159,12 +161,12 @@ export declare const eventService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -258,6 +260,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -284,6 +287,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -294,12 +298,12 @@ export declare const eventService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -394,6 +398,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -420,6 +425,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -430,12 +436,12 @@ export declare const eventService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -530,10 +536,14 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
-    getShareLink: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+    getShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        url: string;
+    }>;
+    regenerateShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         url: string;
     }>;
     publish: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
@@ -543,12 +553,12 @@ export declare const eventService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -643,6 +653,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -653,12 +664,12 @@ export declare const eventService: {
             createdAt: Date;
             updatedAt: Date;
             description: string | null;
+            shareToken: string | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             title: string | null;
             isPublic: boolean;
-            shareToken: string | null;
             opensAt: Date | null;
         } | null;
         eventDays: {
@@ -753,6 +764,7 @@ export declare const eventService: {
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
+        shareToken: string | null;
         createdBy: string;
         updatedBy: string;
     }>;
