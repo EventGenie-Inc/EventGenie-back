@@ -14,14 +14,15 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: Prisma.Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }[]>;
-    findById: (id: string) => Prisma.Prisma__TicketClient<{
+    findById: (id: string, db?: Db) => Prisma.Prisma__TicketClient<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -30,11 +31,12 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: Prisma.Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     create: (eventId: string, userId: string, data: CreateTicketDto) => Prisma.Prisma__TicketClient<{
@@ -46,11 +48,12 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: Prisma.Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     update: (id: string, userId: string, data: UpdateTicketDto) => Prisma.Prisma__TicketClient<{
@@ -62,11 +65,12 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: Prisma.Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     archive: (id: string, userId: string) => Prisma.Prisma__TicketClient<{
@@ -78,11 +82,30 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: Prisma.Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
+        isAvailable: boolean;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    reserveHold: (ticketId: string, quantity: number, db?: Db) => Promise<boolean>;
+    releaseHold: (ticketId: string, quantity: number, db?: Db) => Prisma.Prisma__TicketClient<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        currency: string;
+        eventId: string;
+        price: Prisma.Decimal;
+        totalQuantity: number | null;
+        soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     incrementSoldCount: (id: string, quantity: number, db?: Db) => Prisma.Prisma__TicketClient<{
@@ -94,11 +117,12 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: Prisma.Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
 };

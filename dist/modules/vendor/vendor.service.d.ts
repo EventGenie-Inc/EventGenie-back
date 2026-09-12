@@ -69,8 +69,8 @@ export declare const vendorService: {
                 description: string | null;
                 createdBy: string;
                 updatedBy: string;
-                price: import("@prisma/client-runtime-utils").Decimal | null;
                 currency: string;
+                price: import("@prisma/client-runtime-utils").Decimal | null;
                 isAvailable: boolean;
                 vendorServiceId: string;
                 imageUrls: string[];
@@ -314,8 +314,8 @@ export declare const vendorService: {
                 description: string | null;
                 createdBy: string;
                 updatedBy: string;
-                price: import("@prisma/client-runtime-utils").Decimal | null;
                 currency: string;
+                price: import("@prisma/client-runtime-utils").Decimal | null;
                 isAvailable: boolean;
                 vendorServiceId: string;
                 imageUrls: string[];
@@ -447,8 +447,8 @@ export declare const vendorService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            price: import("@prisma/client-runtime-utils").Decimal | null;
             currency: string;
+            price: import("@prisma/client-runtime-utils").Decimal | null;
             isAvailable: boolean;
             vendorServiceId: string;
             imageUrls: string[];
@@ -477,8 +477,8 @@ export declare const vendorService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            price: import("@prisma/client-runtime-utils").Decimal | null;
             currency: string;
+            price: import("@prisma/client-runtime-utils").Decimal | null;
             isAvailable: boolean;
             vendorServiceId: string;
             imageUrls: string[];
@@ -549,8 +549,8 @@ export declare const vendorService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            price: import("@prisma/client-runtime-utils").Decimal | null;
             currency: string;
+            price: import("@prisma/client-runtime-utils").Decimal | null;
             isAvailable: boolean;
             vendorServiceId: string;
             imageUrls: string[];
@@ -578,8 +578,8 @@ export declare const vendorService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: import("@prisma/client-runtime-utils").Decimal | null;
         currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -595,8 +595,8 @@ export declare const vendorService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: import("@prisma/client-runtime-utils").Decimal | null;
         currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -612,8 +612,8 @@ export declare const vendorService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: import("@prisma/client-runtime-utils").Decimal | null;
         currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -629,8 +629,8 @@ export declare const vendorService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: import("@prisma/client-runtime-utils").Decimal | null;
         currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -646,8 +646,8 @@ export declare const vendorService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: import("@prisma/client-runtime-utils").Decimal | null;
         currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -661,8 +661,8 @@ export declare const vendorService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: import("@prisma/client-runtime-utils").Decimal | null;
         currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];

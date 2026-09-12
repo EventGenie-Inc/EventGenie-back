@@ -110,9 +110,19 @@ separate times**. Assume it is missing until you have read the code.
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Two documented exceptions: `Attendance` (a fact record — it happened or
-it did not) and `EventDraft` (transient wizard state, deleted on
-materialisation).
+Three documented exceptions: `Attendance` (a fact record — it happened or
+it did not), `EventDraft` (transient wizard state, deleted on
+materialisation), and `PaymentLedgerEntry` (Payments Foundation — an
+append-only money ledger, never soft-deleted OR edited: no `isArchived`,
+no `updatedAt`, and deliberately no update/delete method anywhere in
+`payment-ledger.repository.ts`). The first two are about records that
+either never existed as durable facts or stopped mattering once
+consumed; `PaymentLedgerEntry` is the opposite case — a record of
+something that happened to money, which does not stop having happened.
+A correction is a NEW entry, never an edit to an old one. What a tenant
+has earned, whether a subscription is current, etc. are all summed from
+entries at read time — there is no balance column to instead mark
+`isArchived` on, and none should be added.
 
 **Every archive needs a working restore.** And restore's own lookup must
 **not** filter archived records out:

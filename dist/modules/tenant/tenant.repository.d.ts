@@ -9,6 +9,12 @@ export declare const tenantRepository: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     }[]>;
     findById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
@@ -20,6 +26,12 @@ export declare const tenantRepository: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findBySlug: (slug: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
@@ -31,6 +43,12 @@ export declare const tenantRepository: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     suspend: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
@@ -42,6 +60,12 @@ export declare const tenantRepository: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     reactivate: (id: string) => import("@prisma/client").Prisma.Prisma__TenantClient<{
         name: string;
@@ -53,6 +77,12 @@ export declare const tenantRepository: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findAllUsersByTenant: (tenantId: string, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<{
         id: string;

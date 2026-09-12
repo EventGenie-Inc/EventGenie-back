@@ -21,4 +21,28 @@ router.post('/submit', async (req: Request, res: Response, next: NextFunction) =
   } catch (err) { next(err); }
 });
 
+// POST /api/rsvp/ticket-purchase/retry
+// Body: { token }
+// Re-initiates payment for an existing FAILED/EXPIRED ticket purchase —
+// never resubmits the whole RSVP form. See rsvp.service.ts's
+// retryTicketPayment.
+router.post('/ticket-purchase/retry', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await rsvpService.retryTicketPayment(req.body?.token as string);
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// GET /api/rsvp/ticket-purchase/confirm/:token
+// Called from the guest's Paystack callback landing page. Never trusts
+// the callback's own query parameters as proof of payment — this makes
+// an authoritative call back to Paystack if still PENDING. See
+// rsvp.service.ts's confirmTicketPayment / ticketPurchaseService.reconcile.
+router.get('/ticket-purchase/confirm/:token', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await rsvpService.confirmTicketPayment(req.params['token'] as string);
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
 export default router;

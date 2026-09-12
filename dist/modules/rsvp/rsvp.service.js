@@ -2,8 +2,7 @@ import {} from '@prisma/client';
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { inviteRepository } from '../invite/invite.repository.js';
-import { ticketRepository } from '../ticket/ticket.repository.js';
-import { ticketPurchaseRepository } from '../ticket-purchase/ticket-purchase.repository.js';
+import { ticketPurchaseService } from '../ticket-purchase/ticket-purchase.service.js';
 import {} from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -202,6 +201,15 @@ export const rsvpService = {
                     // whether to render the RSVP form at all.
                     status: resolveEffectiveStatus(invite.event),
                     ticketing: invite.event.ticketing,
+                    // Deliberately added to this explicit allowlist, not a spread —
+                    // see this projection's own header comment. Informational only
+                    // (schema.prisma's comment on Event.ticketsRefundable), but
+                    // must reach the guest BEFORE they pay: someone should know
+                    // what they're agreeing to at the point of purchase, not
+                    // discover it afterwards. Meaningless while ticketing is FREE;
+                    // sent regardless since it costs nothing and keeps this
+                    // projection simple.
+                    ticketsRefundable: invite.event.ticketsRefundable,
                     rsvpFields: invite.event.rsvpFields.map((f) => ({
                         id: f.id,
                         label: f.label,
@@ -238,13 +246,18 @@ export const rsvpService = {
                     quantity: ticketPurchase.quantity,
                     totalPaid: ticketPurchase.totalPaid,
                     currency: ticketPurchase.currency,
+                    // PENDING/PAID/FAILED/EXPIRED — lets the guest's browser
+                    // show "confirming your payment" / "paid" / "try again"
+                    // instead of assuming existence-of-a-row means paid, which
+                    // was true before Ticketing & Payments and no longer is.
+                    status: ticketPurchase.status,
                 }
                 : null,
         };
     },
-    submit: (data) => {
+    submit: async (data) => {
         assertValidSubmission(data);
-        return prisma.$transaction(async (tx) => {
+        const result = await prisma.$transaction(async (tx) => {
             // Every lookup a later step could need is folded into this ONE
             // query — existing plus-ones (with their invite ids, for archiving)
             // and any existing ticket purchase included right here — rather
@@ -518,28 +531,28 @@ export const rsvpService = {
                 await tx.rsvpResponse.createMany({ data: responseRows });
                 rsvpResponses.push(...responseRows);
             }
-            // Paid-event decision: once a ticket is purchased, the purchase is
-            // immutable through this edit flow — it is never replaced, and
-            // never deleted. Refunds aren't built (payments aren't built), so
-            // (a) blocking all further edits or (c) silently orphaning/creating
-            // a second purchase were the alternatives; both are worse than
-            // simply freezing the one thing this system can't safely change
-            // while leaving everything else (attendance, responses, plus-ones,
-            // even accept/decline itself) fully editable. A resubmission that
-            // repeats the SAME ticket/quantity is treated as a no-op (the
-            // common case — an edit form resending what it was prefilled with);
-            // one that asks for something different is rejected with a specific
-            // reason, rather than silently ignored. No separate lookup here —
+            // Paid-event decision: once a purchase exists for this invite, its
+            // ticket/quantity are immutable through this edit flow — never
+            // replaced, never deleted, regardless of whether it ended up PAID,
+            // PENDING, FAILED, or EXPIRED. Changing ticket selection isn't
+            // supported (contact the organiser); a resubmission that repeats
+            // the SAME ticket/quantity is a no-op that returns the purchase
+            // as-is — retrying or checking on its PAYMENT is a separate,
+            // dedicated flow (rsvp.service.ts's retryTicketPayment /
+            // confirmTicketPayment below), not something resubmitting the
+            // whole RSVP form triggers. No separate lookup here —
             // `invite.ticketPurchases` already came back with the initial fetch.
             const existingPurchase = invite.ticketPurchases[0] ?? null;
             let ticketPurchase = existingPurchase;
+            let freshReservation = null;
+            let guestEmailForReservation = null;
             if (data.ticketId && data.attending) {
                 if (existingPurchase) {
                     const requestedQuantity = data.ticketQuantity ?? 1;
                     if (existingPurchase.ticketId !== data.ticketId || existingPurchase.quantity !== requestedQuantity) {
-                        throw new HttpError(409, "You've already purchased a ticket for this event, and changing your ticket selection isn't supported yet. Contact the organiser to make changes.");
+                        throw new HttpError(409, "You've already started a ticket purchase for this event, and changing your ticket selection isn't supported yet. Contact the organiser to make changes.");
                     }
-                    // Identical resubmission of what was already bought — no-op.
+                    // Identical resubmission of what was already started/bought — no-op.
                 }
                 else {
                     const ticket = invite.event.tickets.find((t) => t.id === data.ticketId);
@@ -550,30 +563,44 @@ export const rsvpService = {
                         throw new HttpError(409, 'This ticket type is no longer available. Please choose a different option or contact the organiser.');
                     }
                     const quantity = data.ticketQuantity ?? 1;
-                    // 409 — same bucket: sold-out is a conflict with current stock,
-                    // not a malformed request. soldCount/totalQuantity are internal
-                    // counters and stay out of the message.
-                    if (ticket.totalQuantity !== null && ticket.soldCount + quantity > ticket.totalQuantity) {
-                        throw new HttpError(409, "There aren't enough tickets left for the quantity you selected. Try a smaller quantity or contact the organiser.");
+                    // A ticket purchase needs somewhere to send the Paystack
+                    // checkout link and receipt — a guest imported by phone alone
+                    // has no email until they supply one, same moment as any
+                    // other contact-detail gap this form fills.
+                    guestEmailForReservation = guestUpdateData.email ?? invite.guest.email;
+                    if (!guestEmailForReservation) {
+                        throw new HttpError(400, 'An email address is required to purchase a ticket — please provide one above.');
                     }
-                    // totalPaid is always computed server-side — never trust a client-supplied amount.
-                    const totalPaid = Number(ticket.price) * quantity;
-                    ticketPurchase = await ticketPurchaseRepository.create({
+                    // No totalQuantity/soldCount pre-check here — that would be
+                    // exactly the read-then-check-then-write race this design
+                    // exists to avoid. ticketPurchaseService.reserveWithinTransaction's
+                    // atomic guard (a single conditional UPDATE) is the real,
+                    // database-level check, and throws HttpError(409) itself if
+                    // there isn't room.
+                    freshReservation = await ticketPurchaseService.reserveWithinTransaction(tx, {
+                        tenantId: invite.event.tenantId,
+                        eventId: invite.eventId,
+                        inviteId: invite.id,
+                        ticket: { id: ticket.id, price: ticket.price, currency: ticket.currency },
+                        quantity,
+                    });
+                    ticketPurchase = {
+                        id: freshReservation.purchaseId,
                         ticketId: ticket.id,
                         inviteId: invite.id,
                         quantity,
-                        totalPaid,
-                        currency: ticket.currency,
-                        ...(data.paymentRef !== undefined && { paymentRef: data.paymentRef }),
-                    }, tx);
-                    await ticketRepository.incrementSoldCount(ticket.id, quantity, tx);
+                        status: 'PENDING',
+                    };
                 }
             }
-            // A guest declining while a purchase still stands is exactly the
+            // A guest declining while a PAID purchase stands is exactly the
             // case with no automated resolution — the RSVP change itself goes
             // through (their attendance/responses/plus-ones are already
-            // cleared above), but the money doesn't move on its own.
-            const refundNotice = !data.attending && existingPurchase
+            // cleared above), but the money doesn't move on its own. A
+            // PENDING/FAILED/EXPIRED purchase isn't paid yet, so there's
+            // nothing to refund-notice about — it simply lapses via its own
+            // hold expiry if nobody ever completes it.
+            const refundNotice = !data.attending && existingPurchase?.status === 'PAID'
                 ? "You have a paid ticket for this event. Declining doesn't automatically refund it — contact the organiser directly about a refund."
                 : null;
             const updatedInvite = await tx.invite.update({
@@ -585,7 +612,7 @@ export const rsvpService = {
                     updatedBy: GUEST_ACTOR,
                 },
             });
-            return { invite: updatedInvite, attendances, rsvpResponses, ticketPurchase, refundNotice };
+            return { invite: updatedInvite, attendances, rsvpResponses, ticketPurchase, refundNotice, freshReservation, guestEmailForReservation };
         }, {
             // Every write in this transaction is already batched to a FIXED
             // number of round trips regardless of day/field/plus-one count —
@@ -604,7 +631,110 @@ export const rsvpService = {
             // bulkCreateWithInvites's original timeout, which scaled with row
             // count and had no fixed floor to hit.
             timeout: 15000,
+            // Added for Ticketing & Payments — maxWait (time allowed to
+            // ACQUIRE a connection and START the transaction, distinct from
+            // `timeout` above which bounds the transaction's own execution
+            // once running) wasn't set here before, and Prisma's default
+            // (~2s) is tuned for a warm pool. It didn't surface until this
+            // batch's concurrency testing genuinely opened two simultaneous
+            // interactive transactions against the same serverless
+            // connection — P2028, "unable to start a transaction in the given
+            // time" — which a single request never triggers. Two guests
+            // racing for the last unit of a ticket is exactly the scenario
+            // this whole file exists to get right, so this couldn't be left
+            // as a latent gap.
+            maxWait: 10000,
         });
+        const { freshReservation, guestEmailForReservation, ...rest } = result;
+        // No ticket reservation happened this call — the common case
+        // (declining, or a no-op resubmission of an existing purchase).
+        if (!freshReservation) {
+            return { ...rest, paymentAction: null };
+        }
+        // The one external network call in this whole flow — deliberately
+        // AFTER the transaction above has already committed. Failure here
+        // is handled by startPaystackCheckout itself (it releases the hold
+        // and marks the purchase FAILED via ticketPurchaseService.
+        // failPayment), so this RSVP submission still succeeds either way —
+        // only paymentAction tells the caller whether checkout is ready or
+        // needs a retry.
+        const checkout = await ticketPurchaseService.startPaystackCheckout({
+            paymentRef: freshReservation.paymentRef,
+            totalChargeCents: freshReservation.totalChargeCents,
+            platformChargeCents: freshReservation.platformChargeCents,
+            // Asserted non-null: reaching this point required
+            // guestEmailForPurchase to have been present inside the
+            // transaction (submit() throws HttpError(400) beforehand
+            // otherwise), and that's exactly what guestEmailForReservation is.
+            guestEmail: guestEmailForReservation,
+            subaccountCode: freshReservation.subaccountCode,
+            callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(data.token)}`,
+        });
+        if ('failed' in checkout) {
+            return { ...rest, paymentAction: { type: 'retry_needed', reason: checkout.reason } };
+        }
+        return { ...rest, paymentAction: { type: 'redirect', authorizationUrl: checkout.authorizationUrl } };
+    },
+    // ── RETRY — guest-facing, token-scoped. Re-initiates payment for an
+    // existing FAILED/EXPIRED purchase on this invite without touching
+    // any other RSVP state (attendance, responses, plus-ones). Does
+    // nothing to (and returns the current status of) a PENDING or PAID
+    // purchase — see ticketPurchaseService.retryPayment's own comment.
+    retryTicketPayment: async (token) => {
+        const invite = await inviteRepository.findByToken(token);
+        if (!invite) {
+            throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+        }
+        const purchase = invite.ticketPurchases[0];
+        if (!purchase) {
+            throw new HttpError(404, 'There is no ticket purchase to retry for this invitation.');
+        }
+        const ticket = invite.event.tickets.find((t) => t.id === purchase.ticketId);
+        if (!ticket) {
+            throw new HttpError(404, 'This ticket type is no longer available.');
+        }
+        const outcome = await ticketPurchaseService.retryPayment({
+            purchaseId: purchase.id,
+            ticketId: ticket.id,
+            ticketPrice: ticket.price,
+            currency: ticket.currency,
+            quantity: purchase.quantity,
+            tenantId: invite.event.tenantId,
+        });
+        if (outcome.status !== 'RETRYING') {
+            return { status: outcome.status, authorizationUrl: null };
+        }
+        const guestEmail = invite.guest.email;
+        if (!guestEmail) {
+            throw new HttpError(400, 'An email address is required to purchase a ticket — please add one via the RSVP form first.');
+        }
+        const checkout = await ticketPurchaseService.startPaystackCheckout({
+            paymentRef: outcome.paymentRef,
+            totalChargeCents: outcome.totalChargeCents,
+            platformChargeCents: outcome.platformChargeCents,
+            guestEmail,
+            subaccountCode: outcome.subaccountCode,
+            callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(token)}`,
+        });
+        if ('failed' in checkout) {
+            return { status: 'FAILED', authorizationUrl: null, reason: checkout.reason };
+        }
+        return { status: 'RETRYING', authorizationUrl: checkout.authorizationUrl };
+    },
+    // ── CONFIRM — guest-facing, token-scoped. Called from the Paystack
+    // callback landing page. NEVER treats the callback's own return alone
+    // as proof of payment — see ticketPurchaseService.reconcile's comment.
+    // This just resolves the token to a purchase id and delegates.
+    confirmTicketPayment: async (token) => {
+        const invite = await inviteRepository.findByToken(token);
+        if (!invite) {
+            throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+        }
+        const purchase = invite.ticketPurchases[0];
+        if (!purchase) {
+            throw new HttpError(404, 'There is no ticket purchase for this invitation.');
+        }
+        return ticketPurchaseService.reconcile(purchase.id);
     },
 };
 //# sourceMappingURL=rsvp.service.js.map

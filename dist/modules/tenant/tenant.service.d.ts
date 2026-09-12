@@ -9,6 +9,12 @@ export declare const tenantService: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     }[]>;
     getById: (id: string, includeArchived?: boolean) => Promise<{
         name: string;
@@ -20,6 +26,12 @@ export declare const tenantService: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     }>;
     getUsers: (id: string) => Promise<{
         id: string;
@@ -71,6 +83,7 @@ export declare const tenantService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     })[]>;
@@ -84,6 +97,12 @@ export declare const tenantService: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     } | null>;
     reactivate: (id: string, superAdminUserId: string) => Promise<{
         name: string;
@@ -95,6 +114,12 @@ export declare const tenantService: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     } | null>;
 };
 //# sourceMappingURL=tenant.service.d.ts.map

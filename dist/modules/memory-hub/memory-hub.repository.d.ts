@@ -104,6 +104,7 @@ export declare const memoryHubRepository: {
             rsvpDeadline: Date | null;
             capacity: number | null;
             shareToken: string | null;
+            ticketsRefundable: boolean;
             createdBy: string;
             updatedBy: string;
         };

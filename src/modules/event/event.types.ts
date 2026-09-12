@@ -25,6 +25,9 @@ export interface CreateEventDto {
   hostName?: string;
   rsvpDeadline?: string;
   capacity?: number;
+  // Organiser-chosen, informational only — see schema.prisma's comment.
+  // Meaningless while ticketing is FREE.
+  ticketsRefundable?: boolean;
 }
 
 export interface UpdateEventDto {
@@ -44,4 +47,5 @@ export interface UpdateEventDto {
   hostName?: string | null;
   rsvpDeadline?: string | null;
   capacity?: number | null;
+  ticketsRefundable?: boolean;
 }

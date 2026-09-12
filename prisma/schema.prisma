@@ -106,6 +106,58 @@ enum VendorCategory {
   OTHER
 }
 
+// Tenant readiness to receive a ticket-sale split. Driven directly by
+// Paystack's own `active` flag on the subaccount object, not a guess:
+// NOT_STARTED — no subaccount submitted yet.
+// PENDING      — Paystack accepted the subaccount but returned active:false.
+// ACTIVE       — Paystack returned active:true — splits can land here.
+// FAILED       — Paystack rejected the submitted bank details outright;
+//                paystackSubaccountFailureReason on Tenant carries why.
+enum PaystackSubaccountStatus {
+  NOT_STARTED
+  PENDING
+  ACTIVE
+  FAILED
+}
+
+// Every state change a payment can go through. Failures are first-class
+// members, not an afterthought — see PaymentLedgerEntry's own comment on
+// why an absent failure record is indistinguishable from an attempt that
+// never happened. WEBHOOK_EVENT_UNHANDLED / WEBHOOK_EVENT_DUPLICATE are
+// written by the generic webhook mechanism itself (payment-webhook
+// module) for deliveries no feature-specific handler has claimed yet —
+// ticket/subscription handlers arrive with their own features and will
+// use the *_INITIATED/_SUCCEEDED/_FAILED types below instead once built.
+// PENDING: a hold exists (Ticket.heldCount reserved), payment not yet
+// resolved. PAID: confirmed by Paystack (webhook or verified callback),
+// terminal, never reversed here (no refund pipeline — see Event.
+// ticketsRefundable's comment). FAILED: the current payment attempt was
+// declined/errored; the hold is released, and a retry re-acquires a
+// fresh one (which can itself fail if stock sold out meanwhile).
+// EXPIRED: the PENDING hold's window lapsed with no resolution; released
+// the same as FAILED. FAILED and EXPIRED both remain retryable via the
+// same TicketPurchase row (ticket-purchase.service.ts's retryPayment) —
+// only PAID is terminal.
+enum TicketPurchaseStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+}
+
+enum LedgerEntryType {
+  TICKET_PAYMENT_INITIATED
+  TICKET_PAYMENT_SUCCEEDED
+  TICKET_PAYMENT_FAILED
+  COMMISSION_TAKEN
+  SUBSCRIPTION_CHARGE_INITIATED
+  SUBSCRIPTION_CHARGE_SUCCEEDED
+  SUBSCRIPTION_CHARGE_FAILED
+  REFUND_ISSUED
+  WEBHOOK_EVENT_UNHANDLED
+  WEBHOOK_EVENT_DUPLICATE
+}
+
 // ─────────────────────────────────────────
 //  TENANT
 // ─────────────────────────────────────────
@@ -121,11 +173,27 @@ model Tenant {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  users        User[]
-  events       Event[]
-  vendorSpaces VendorSpace[]
-  eventDrafts  EventDraft[]
-  smsSendLogs  SmsSendLog[]
+  // ── Paystack subaccount (ticket-sale split destination) ──
+  // Deliberately separate from anything subscription/card-related — this
+  // is where the organiser's TICKET earnings land, not where their
+  // subscription is charged from. See paystack.client.ts and the
+  // payment-account module. Never store the bank account number itself:
+  // Paystack holds it, this is only the reference back to it plus enough
+  // metadata (which bank, whose business name) to show the tenant admin
+  // what's on file without another round-trip.
+  paystackSubaccountCode          String?                  @unique
+  paystackSubaccountStatus        PaystackSubaccountStatus @default(NOT_STARTED)
+  paystackBusinessName            String?
+  paystackSettlementBankCode      String?
+  paystackSettlementBankName      String?
+  paystackSubaccountFailureReason String?
+
+  users                User[]
+  events               Event[]
+  vendorSpaces         VendorSpace[]
+  eventDrafts          EventDraft[]
+  smsSendLogs          SmsSendLog[]
+  paymentLedgerEntries PaymentLedgerEntry[]
 }
 
 // ─────────────────────────────────────────
@@ -230,21 +298,30 @@ model Event {
   // — a cuid in a public URL lets anyone enumerate events by guessing,
   // and could never be revoked once shared somewhere it shouldn't be.
   shareToken         String?         @unique
+  // Organiser-chosen, informational only — Ticketing & Payments batch.
+  // With split-at-source, a ticket's money lands directly in the
+  // organiser's bank account (possibly weeks before a refund request
+  // ever reaches EventGenie), and there is no refund pipeline to claw it
+  // back. This is display copy shown to the guest BEFORE they pay (see
+  // rsvp.service.ts's validate() projection), never something this
+  // backend acts on. Meaningless (and unused) while ticketing is FREE.
+  ticketsRefundable  Boolean         @default(false)
   isArchived         Boolean         @default(false)
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
   createdBy          String
   updatedBy          String
 
-  tenant        Tenant        @relation(fields: [tenantId], references: [id])
-  createdByUser User          @relation(fields: [createdByUserId], references: [id])
-  eventDays     EventDay[]
-  invites       Invite[]
-  guests        Guest[]
-  memoryHub     MemoryHub?
-  rsvpFields    RsvpField[]
-  program       EventProgram?
-  tickets       Ticket[]
+  tenant               Tenant               @relation(fields: [tenantId], references: [id])
+  createdByUser        User                 @relation(fields: [createdByUserId], references: [id])
+  eventDays            EventDay[]
+  invites              Invite[]
+  guests               Guest[]
+  memoryHub            MemoryHub?
+  rsvpFields           RsvpField[]
+  program              EventProgram?
+  tickets              Ticket[]
+  paymentLedgerEntries PaymentLedgerEntry[]
 }
 
 // ─────────────────────────────────────────
@@ -646,7 +723,25 @@ model Ticket {
   price         Decimal  @db.Decimal(10, 2)
   currency      String   @default("ZAR")
   totalQuantity Int?
+  // Truly, permanently sold — incremented ONLY when a TicketPurchase is
+  // confirmed PAID (Ticketing & Payments batch), never at checkout
+  // initiation. See heldCount below for stock claimed by an in-flight
+  // (not yet confirmed) payment attempt. Available stock for a NEW
+  // purchase attempt is always `totalQuantity - soldCount - heldCount`.
   soldCount     Int      @default(0)
+  // Stock claimed by PENDING TicketPurchases whose payment hasn't
+  // resolved yet — a temporary hold, not a sale. Reserved atomically at
+  // checkout-initiation time (ticket.repository.ts's reserveHold, a
+  // single conditional UPDATE, not read-then-write) so two guests can
+  // never both be let through to pay for the same last unit; released
+  // (FAILED/EXPIRED) or converted into soldCount (PAID) exactly once per
+  // purchase. See ticket-purchase.service.ts's report comment for why a
+  // hold-with-expiry was chosen over letting both guests pay and
+  // resolving the conflict after the fact — with split-at-source, money
+  // that lands in the organiser's account can't be clawed back, so the
+  // conflict must be prevented BEFORE either guest is allowed to pay,
+  // not discovered after.
+  heldCount     Int      @default(0)
   isAvailable   Boolean  @default(true)
   isArchived    Boolean  @default(false)
   createdAt     DateTime @default(now())
@@ -660,20 +755,61 @@ model Ticket {
 
 // ─────────────────────────────────────────
 //  TICKET PURCHASE
+//
+//  purchasedAt is when this ROW was created (checkout initiated), not
+//  necessarily when payment was confirmed — see confirmedAt for that.
+//  Kept as-is (not renamed) to avoid touching every existing read of it;
+//  new code should prefer confirmedAt when "was this actually paid, and
+//  when" is the question being asked.
 // ─────────────────────────────────────────
 
 model TicketPurchase {
-  id          String   @id @default(cuid())
-  ticketId    String
-  inviteId    String
-  quantity    Int      @default(1)
-  totalPaid   Decimal  @db.Decimal(10, 2)
-  currency    String   @default("ZAR")
-  paymentRef  String?
-  purchasedAt DateTime @default(now())
+  id               String               @id @default(cuid())
+  ticketId         String
+  inviteId         String
+  quantity         Int                  @default(1)
+  // What the GUEST pays in total (gross-up inclusive of platform
+  // commission and Paystack's fee) — never the raw ticket price.
+  totalPaid        Decimal              @db.Decimal(10, 2)
+  currency         String               @default("ZAR")
+  // Snapshots of the gross-up breakdown LOCKED IN at initiation
+  // (ticket-purchase-pricing.util.ts), in integer cents. Deliberately
+  // NOT re-derived from the live Ticket.price at confirm/audit time —
+  // an organiser editing a ticket's price after a purchase was already
+  // initiated must never retroactively change what that purchase's
+  // ledger entries say was charged. ticketPriceCents is the organiser's
+  // guaranteed net for THIS purchase (quantity already applied);
+  // commissionCents is EventGenie's target cut, both written once at
+  // initiation and read back, unchanged, by the confirm path
+  // (ticket-purchase.service.ts) to log accurate TICKET_PAYMENT_
+  // SUCCEEDED/COMMISSION_TAKEN ledger entries. Paystack's own fee is the
+  // remainder: totalPaid - ticketPriceCents - commissionCents.
+  ticketPriceCents Int
+  commissionCents  Int
+  // The CURRENT/latest Paystack transaction reference for this purchase
+  // — set before the Paystack call, not after, so initiation can be
+  // logged to the ledger under a known reference from the start. A
+  // failed attempt's reference stays in the ledger's history forever;
+  // this column is overwritten with a fresh reference on retry (a new
+  // Paystack transaction, same TicketPurchase row) — see
+  // ticket-purchase.service.ts's retryPayment.
+  paymentRef       String?              @unique
+  status           TicketPurchaseStatus @default(PENDING)
+  // When the current PENDING hold lapses if payment hasn't resolved by
+  // then — the "hold with expiry" this batch's report explains. Reset to
+  // a fresh window on every retry. Meaningless once status leaves
+  // PENDING, but never cleared — it's a record of what applied.
+  holdExpiresAt    DateTime?
+  // Set exactly once, by the confirm path (webhook or verified
+  // callback-reconciliation), never by the callback alone. Null until
+  // PAID.
+  confirmedAt      DateTime?
+  purchasedAt      DateTime             @default(now())
 
   ticket Ticket @relation(fields: [ticketId], references: [id])
   invite Invite @relation(fields: [inviteId], references: [id])
+
+  @@index([ticketId, status])
 }
 
 // ─────────────────────────────────────────
@@ -706,16 +842,16 @@ model SmsSendLog {
 // ─────────────────────────────────────────
 
 model SubscriptionTierConfig {
-  tier                SubscriptionTier @id
-  maxEvents           Int?
-  maxGuestsPerEvent   Int?
-  maxSmsPerMonth      Int?
+  tier                      SubscriptionTier @id
+  maxEvents                 Int?
+  maxGuestsPerEvent         Int?
+  maxSmsPerMonth            Int?
   // Vendor Space Batch — number of active (non-archived) VendorSpaces a
   // tenant may own. Independent of `vendorMarketplace` below: that's an
   // all-or-nothing capability gate (can this tier use the marketplace at
   // all), this is a numeric ceiling for tiers that can. null = unlimited,
   // matching every other max* column's convention.
-  maxVendorSpaces     Int?
+  maxVendorSpaces           Int?
   // Memory Hub Batch — total bytes an event's Memory Hub may hold,
   // summed on demand from its non-archived, non-rejected MemoryItems
   // (never a running counter — see memory-hub-tier-enforcement.util.ts).
@@ -723,14 +859,124 @@ model SubscriptionTierConfig {
   // gate); this is the numeric ceiling for tiers that have it. null =
   // unlimited, same convention as every other max* column.
   maxMemoryHubBytesPerEvent Int?
-  emailEnabled        Boolean          @default(true)
-  smsEnabled          Boolean          @default(false)
-  vendorMarketplace   Boolean          @default(false)
-  memoryHubEnabled    Boolean          @default(false)
-  dragDropBuilder     Boolean          @default(false)
+  emailEnabled              Boolean          @default(true)
+  smsEnabled                Boolean          @default(false)
+  vendorMarketplace         Boolean          @default(false)
+  memoryHubEnabled          Boolean          @default(false)
+  dragDropBuilder           Boolean          @default(false)
   // Guest list export (.xlsx) — Celebrate and above. All-or-nothing
   // capability gate, same shape as memoryHubEnabled/dragDropBuilder.
-  guestExportEnabled  Boolean          @default(false)
-  isAvailable         Boolean          @default(true)
-  updatedAt           DateTime         @updatedAt
+  guestExportEnabled        Boolean          @default(false)
+  isAvailable               Boolean          @default(true)
+  updatedAt                 DateTime         @updatedAt
+}
+
+// ─────────────────────────────────────────
+//  PAYMENT LEDGER ENTRY
+//
+//  Append-only record of everything that happens to money — ticketing
+//  and subscription billing both sit on this, though neither is built
+//  yet (Payments Foundation). This is the THIRD documented exception to
+//  the soft-delete convention (alongside Attendance and EventDraft — see
+//  STEERING.md section 3): an entry is a statement that something
+//  happened, and things that happened do not stop having happened. There
+//  is no isArchived, no updatedAt, and deliberately no update/delete
+//  path anywhere in payment-ledger.repository.ts — a correction is a NEW
+//  entry referencing the old one via relatedType/relatedId, never an
+//  edit. Do not add an update method here no matter how tempting a "fix
+//  a typo'd entry" use case seems later; write a correcting entry instead.
+//
+//  What a tenant has earned, what a guest paid, whether a subscription
+//  is current — all of that is SUMMED from entries at read time. No
+//  balance column exists anywhere and none should ever be added: a
+//  stored balance and a ledger will disagree eventually, and then nobody
+//  knows which one is true.
+//
+//  amountCents is intentionally NOT nullable — every row here is a
+//  statement about a specific amount of money. A non-monetary fact (a
+//  subaccount being created, say) does not belong in this table at all;
+//  see payment-account.service.ts, which raises an HttpError with
+//  Paystack's real message instead of forcing a false amountCents:0 row
+//  in here.
+// ─────────────────────────────────────────
+
+model PaymentLedgerEntry {
+  id          String          @id @default(cuid())
+  type        LedgerEntryType
+  amountCents Int
+  // Every amount carries its currency explicitly — ZAR today, but an
+  // amount without a currency is a bug waiting for the day it isn't.
+  currency    String          @default("ZAR")
+
+  // Who/what this entry is about — both nullable because not every entry
+  // has both (a subscription charge has a tenant but no event; a webhook
+  // received for an event/reference we don't recognise yet may have
+  // neither resolved).
+  tenantId String?
+  eventId  String?
+
+  // Paystack's own reference/transaction id for this money movement —
+  // the thread that ties TICKET_PAYMENT_INITIATED -> _SUCCEEDED (or
+  // _FAILED) entries for the same attempt together. Deliberately NOT
+  // unique: a single reference legitimately gets more than one entry
+  // over its lifecycle (initiated, then succeeded/failed; a commission
+  // entry alongside the payment it was taken from).
+  paystackReference String?
+
+  // What business record this money movement is ultimately about —
+  // e.g. relatedType: "TicketPurchase", relatedId: <id> — once ticketing
+  // exists to populate it. Generic on purpose: this table predates
+  // ticketing and subscription billing and must not import their types.
+  relatedType String?
+  relatedId   String?
+
+  // The exact bytes the provider sent, verbatim. When something disputed
+  // happens months from now, this is the only thing that settles it —
+  // never reconstruct this from application logs.
+  payload Json?
+
+  // When the money event actually happened, per the provider (paid_at,
+  // etc.) — may predate createdAt if we learn about it late (a delayed
+  // or retried webhook). createdAt is when THIS ROW was written and is
+  // the only timestamp that can ever be trusted for "was this entry
+  // written before or after that other one."
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+  event  Event?  @relation(fields: [eventId], references: [id])
+
+  @@index([tenantId, occurredAt])
+  @@index([eventId, occurredAt])
+  @@index([paystackReference])
+  @@index([type, occurredAt])
+}
+
+// ─────────────────────────────────────────
+//  PAYSTACK WEBHOOK EVENT
+//
+//  Pure idempotency guard — NOT a financial record (see
+//  PaymentLedgerEntry above for that). Its only job is making "has this
+//  exact webhook delivery already been processed" a single indexed
+//  insert instead of a check-then-write race: the service attempts
+//  create() and treats a unique-constraint violation on dedupeKey as
+//  "already handled", exactly like event-day-validation.util.ts's
+//  isDayLabelUniqueViolation pattern. Paystack does not document a
+//  single canonical delivery-id field the way Stripe's `evt_...` does,
+//  so dedupeKey is synthesised in payment-webhook.service.ts from
+//  `${event}:${data.id ?? data.reference}` — stable across retries of
+//  the SAME delivery, since Paystack resends the identical payload.
+//
+//  No tenant/amount/currency here on purpose — this table answers "have
+//  we seen this before", not "what happened financially". That's the
+//  ledger's job.
+// ─────────────────────────────────────────
+
+model PaystackWebhookEvent {
+  id         String   @id @default(cuid())
+  eventType  String
+  dedupeKey  String   @unique
+  receivedAt DateTime @default(now())
+
+  @@index([eventType, receivedAt])
 }
