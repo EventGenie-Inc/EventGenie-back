@@ -39,6 +39,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     })[]>;
@@ -119,11 +120,12 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -150,6 +152,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -231,11 +234,12 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
         name: string;
@@ -261,6 +265,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -288,6 +293,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -368,11 +374,12 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -399,6 +406,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -426,6 +434,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -506,11 +515,12 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -537,6 +547,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -623,11 +634,12 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -654,6 +666,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -734,11 +747,12 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -765,6 +779,7 @@ export declare const eventService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;

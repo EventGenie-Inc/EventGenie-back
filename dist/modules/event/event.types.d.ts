@@ -16,6 +16,7 @@ export interface CreateEventDto {
     hostName?: string;
     rsvpDeadline?: string;
     capacity?: number;
+    ticketsRefundable?: boolean;
 }
 export interface UpdateEventDto {
     name?: string;
@@ -34,5 +35,6 @@ export interface UpdateEventDto {
     hostName?: string | null;
     rsvpDeadline?: string | null;
     capacity?: number | null;
+    ticketsRefundable?: boolean;
 }
 //# sourceMappingURL=event.types.d.ts.map

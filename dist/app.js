@@ -1,6 +1,7 @@
 import express, {} from 'express';
 import cors from 'cors';
 import { HttpError } from './shared/errors/http-error.js';
+import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
 // ─────────────────────────────────────────
 //  ROUTERS
 // ─────────────────────────────────────────
@@ -28,6 +29,8 @@ import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import eventPublicRouter from './modules/event-public/event-public.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
+import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
+import paymentWebhookRouter from './modules/payment-webhook/payment-webhook.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -74,7 +77,11 @@ app.use(cors({
 // ─────────────────────────────────────────
 //  BODY PARSERS
 // ─────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+// `verify` stashes the exact raw bytes of every request body onto
+// req.rawBody as it parses — needed so payment-webhook.router.ts can
+// verify Paystack's HMAC signature against the real bytes sent, not a
+// re-serialised copy. See raw-body.middleware.ts.
+app.use(express.json({ limit: '10mb', verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // ─────────────────────────────────────────
 //  HEALTH CHECK
@@ -116,6 +123,8 @@ app.get('/health', (_req, res) => {
 //  /api/attendance
 //  /api/vendors
 //  /api/geocoding (address search — HERE proxy)
+//  /api/payments/subaccount (tenant admin — Paystack subaccount onboarding)
+//  /api/payments/webhook (public — Paystack calls this)
 // ─────────────────────────────────────────
 app.use('/api/tenants', tenantRouter);
 app.use('/api/users', userRouter);
@@ -168,6 +177,14 @@ app.use('/api/geocoding', geocodingRouter);
 //  UPLOAD ROUTES (signed direct-to-Cloudinary uploads)
 // ─────────────────────────────────────────
 app.use('/api/uploads', uploadRouter);
+// ─────────────────────────────────────────
+//  PAYMENTS ROUTES
+//  /api/payments/subaccount         — tenant admin subaccount onboarding
+//  /api/payments/subaccount/banks   — bank list for the onboarding form
+//  /api/payments/webhook            — public, unauthenticated (Paystack calls this)
+// ─────────────────────────────────────────
+app.use('/api/payments/subaccount', paymentAccountRouter);
+app.use('/api/payments/webhook', paymentWebhookRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────

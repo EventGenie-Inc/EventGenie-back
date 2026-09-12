@@ -10,7 +10,7 @@ export const ticketRepository = {
         },
         orderBy: { createdAt: 'desc' },
     }),
-    findById: (id) => prisma.ticket.findFirst({
+    findById: (id, db = prisma) => db.ticket.findFirst({
         where: { id, isArchived: false },
     }),
     create: (eventId, userId, data) => prisma.ticket.create({
@@ -44,8 +44,50 @@ export const ticketRepository = {
         where: { id },
         data: { isArchived: true, updatedBy: userId },
     }),
-    // Accepts an optional transaction client so it can be called both
-    // standalone and inside the RSVP-submit prisma.$transaction.
+    // ─────────────────────────────────────────
+    //  STOCK — Ticketing & Payments batch
+    //
+    //  Overselling is prevented HERE, at reserveHold, not at confirmSale.
+    //  reserveHold is the only place that ever refuses a request for lack
+    //  of stock; incrementSoldCount/releaseHold below are only ever called
+    //  for a quantity a prior reserveHold already, verifiably, secured —
+    //  they have nothing left to guard and are plain unconditional
+    //  updates. See ticket-purchase.service.ts's report comment for the
+    //  full hold-with-expiry design and why.
+    // ─────────────────────────────────────────
+    // Single-statement, conditional UPDATE — not a read-then-check-then-
+    // write. Two concurrent calls for the same ticket's last unit
+    // serialize on Postgres's row lock for that UPDATE; whichever runs
+    // second re-evaluates its WHERE clause against the FIRST call's
+    // already-applied heldCount increment, so at most one of them can
+    // ever see enough room. Returns whether THIS call secured the hold —
+    // false means either the ticket doesn't exist / is
+    // archived/unavailable, or there wasn't enough stock
+    // (totalQuantity - soldCount - heldCount < quantity) at that instant.
+    reserveHold: async (ticketId, quantity, db = prisma) => {
+        const affected = await db.$executeRaw `
+      UPDATE "Ticket"
+      SET "heldCount" = "heldCount" + ${quantity}
+      WHERE "id" = ${ticketId}
+        AND "isArchived" = false
+        AND "isAvailable" = true
+        AND ("totalQuantity" IS NULL OR "soldCount" + "heldCount" + ${quantity} <= "totalQuantity")
+    `;
+        return affected === 1;
+    },
+    // Releases a hold that failed or expired without paying — unconditional,
+    // since the caller only ever passes a quantity a matching reserveHold
+    // already secured for this exact purchase, exactly once.
+    releaseHold: (ticketId, quantity, db = prisma) => db.ticket.update({
+        where: { id: ticketId },
+        data: { heldCount: { decrement: quantity } },
+    }),
+    // Converts a hold into a real sale (or, for a late confirmation whose
+    // hold already lapsed, just records the sale outright) — the caller
+    // decides separately whether releaseHold also needs to run alongside
+    // this, based on the purchase's pre-transition status. Accepts an
+    // optional transaction client so it can run standalone (rare) or
+    // inside the confirm-purchase transaction (the normal case).
     incrementSoldCount: (id, quantity, db = prisma) => db.ticket.update({
         where: { id },
         data: { soldCount: { increment: quantity } },

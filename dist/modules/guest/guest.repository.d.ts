@@ -96,9 +96,9 @@ export declare const guestRepository: {
             status: import("@prisma/client").$Enums.InviteStatus;
             createdBy: string;
             updatedBy: string;
+            eventId: string;
             expiresAt: Date | null;
             usedAt: Date | null;
-            eventId: string;
             guestId: string;
             token: string;
             used: boolean;
@@ -146,9 +146,9 @@ export declare const guestRepository: {
             status: import("@prisma/client").$Enums.InviteStatus;
             createdBy: string;
             updatedBy: string;
+            eventId: string;
             expiresAt: Date | null;
             usedAt: Date | null;
-            eventId: string;
             guestId: string;
             token: string;
             used: boolean;

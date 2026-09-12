@@ -3,6 +3,7 @@ import {} from './event.types.js';
 import {} from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertTenantReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
 import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
@@ -70,6 +71,11 @@ export const eventService = {
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
         });
+        // A paid event needs somewhere for a ticket split to land — see
+        // payment-account-readiness.util.ts's own comment.
+        if (data.ticketing === 'PAID') {
+            await assertTenantReadyToSellTickets(tenantId);
+        }
         return eventRepository.create(tenantId, userId, data);
     },
     update: async (id, userId, requestingRole, tenantId, data) => {
@@ -91,6 +97,9 @@ export const eventService = {
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
         });
+        if (data.ticketing === 'PAID') {
+            await assertTenantReadyToSellTickets(event.tenantId);
+        }
         await eventRepository.update(id, userId, data);
         // Cover REPLACED (including cleared to null) — delete the now-orphaned
         // old asset. Fire-and-forget: never let a Cloudinary hiccup fail an
@@ -200,6 +209,13 @@ export const eventService = {
             missing.push('at least one event day');
         if (missing.length) {
             throw new HttpError(422, `This event isn't ready to publish yet — it's missing: ${missing.join(', ')}.`);
+        }
+        // Re-checked here, not just at create/update: the tenant's
+        // subaccount can regress from ACTIVE to FAILED between when a PAID
+        // event was created and when it's published (a rejected bank-detail
+        // update attempt) — see payment-account-readiness.util.ts.
+        if (event.ticketing === 'PAID') {
+            await assertTenantReadyToSellTickets(event.tenantId);
         }
         await eventRepository.updateStatus(id, userId, 'PUBLISHED');
         return eventService.getById(id, requestingRole, tenantId);

@@ -11,6 +11,12 @@ export declare const authRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            paystackSubaccountCode: string | null;
+            paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+            paystackBusinessName: string | null;
+            paystackSettlementBankCode: string | null;
+            paystackSettlementBankName: string | null;
+            paystackSubaccountFailureReason: string | null;
         } | null;
     } & {
         id: string;
@@ -35,6 +41,12 @@ export declare const authRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            paystackSubaccountCode: string | null;
+            paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+            paystackBusinessName: string | null;
+            paystackSettlementBankCode: string | null;
+            paystackSettlementBankName: string | null;
+            paystackSubaccountFailureReason: string | null;
         } | null;
     } & {
         id: string;
@@ -58,6 +70,12 @@ export declare const authRepository: {
         isArchived: boolean;
         createdAt: Date;
         updatedAt: Date;
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankCode: string | null;
+        paystackSettlementBankName: string | null;
+        paystackSubaccountFailureReason: string | null;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     registerTenantAndAdmin: (firebaseUid: string, email: string, data: RegisterDto) => Promise<{
         user: {
@@ -82,6 +100,12 @@ export declare const authRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            paystackSubaccountCode: string | null;
+            paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+            paystackBusinessName: string | null;
+            paystackSettlementBankCode: string | null;
+            paystackSettlementBankName: string | null;
+            paystackSubaccountFailureReason: string | null;
         };
     }>;
     invalidatePreviousOtps: (userId: string) => import("@prisma/client").Prisma.PrismaPromise<import("@prisma/client").Prisma.BatchPayload>;

@@ -104,11 +104,12 @@ export declare const eventDraftService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -135,6 +136,7 @@ export declare const eventDraftService: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }) | null>;

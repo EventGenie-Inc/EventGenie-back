@@ -42,9 +42,9 @@ export declare const attendanceService: {
             status: import("@prisma/client").$Enums.InviteStatus;
             createdBy: string;
             updatedBy: string;
+            eventId: string;
             expiresAt: Date | null;
             usedAt: Date | null;
-            eventId: string;
             guestId: string;
             token: string;
             used: boolean;

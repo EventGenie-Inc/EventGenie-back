@@ -9,11 +9,12 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: import("@prisma/client-runtime-utils").Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }[]>;
     getAllPublic: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<{
@@ -25,11 +26,12 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: import("@prisma/client-runtime-utils").Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }[]>;
     getById: (id: string) => Promise<{
@@ -41,11 +43,12 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: import("@prisma/client-runtime-utils").Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }>;
     create: (eventId: string, userId: string, data: CreateTicketDto) => import("@prisma/client").Prisma.Prisma__TicketClient<{
@@ -57,11 +60,12 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: import("@prisma/client-runtime-utils").Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     update: (id: string, userId: string, data: UpdateTicketDto) => Promise<{
@@ -73,11 +77,12 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: import("@prisma/client-runtime-utils").Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }>;
     archive: (id: string, userId: string) => Promise<{
@@ -89,11 +94,12 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
+        currency: string;
         eventId: string;
         price: import("@prisma/client-runtime-utils").Decimal;
-        currency: string;
         totalQuantity: number | null;
         soldCount: number;
+        heldCount: number;
         isAvailable: boolean;
     }>;
 };

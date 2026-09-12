@@ -1,6 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type Prisma } from '@prisma/client';
-import { type CreateTicketPurchaseDto } from './ticket-purchase.types.js';
+import { type CreatePendingTicketPurchaseDto, type RetryPaymentAttemptDto, type LockedTicketPurchase } from './ticket-purchase.types.js';
 type Db = Prisma.TransactionClient | typeof prisma;
 export declare const ticketPurchaseRepository: {
     findAll: (inviteId: string) => Prisma.PrismaPromise<({
@@ -13,24 +13,30 @@ export declare const ticketPurchaseRepository: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: Prisma.Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         };
     } & {
         id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
         inviteId: string;
         currency: string;
+        confirmedAt: Date | null;
         ticketId: string;
         quantity: number;
         totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
         paymentRef: string | null;
+        holdExpiresAt: Date | null;
         purchasedAt: Date;
     })[]>;
-    findById: (id: string) => Prisma.Prisma__TicketPurchaseClient<({
+    findById: (id: string, db?: Db) => Prisma.Prisma__TicketPurchaseClient<({
         ticket: {
             name: string;
             id: string;
@@ -40,33 +46,193 @@ export declare const ticketPurchaseRepository: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: Prisma.Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         };
     } & {
         id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
         inviteId: string;
         currency: string;
+        confirmedAt: Date | null;
         ticketId: string;
         quantity: number;
         totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
         paymentRef: string | null;
+        holdExpiresAt: Date | null;
         purchasedAt: Date;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
-    create: (data: CreateTicketPurchaseDto, db?: Db) => Prisma.Prisma__TicketPurchaseClient<{
+    findByPaymentRef: (paymentRef: string, db?: Db) => Prisma.Prisma__TicketPurchaseClient<({
+        ticket: {
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            currency: string;
+            eventId: string;
+            price: Prisma.Decimal;
+            totalQuantity: number | null;
+            soldCount: number;
+            heldCount: number;
+            isAvailable: boolean;
+        };
+    } & {
         id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
         inviteId: string;
         currency: string;
+        confirmedAt: Date | null;
         ticketId: string;
         quantity: number;
         totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
         paymentRef: string | null;
+        holdExpiresAt: Date | null;
+        purchasedAt: Date;
+    }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    findAllForEvent: (eventId: string) => Prisma.PrismaPromise<({
+        invite: {
+            guest: {
+                id: string;
+                email: string | null;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                phoneNumber: string | null;
+                eventId: string;
+                firstName: string | null;
+                surname: string | null;
+                hostGuestId: string | null;
+                plusOnesAllowed: number;
+            };
+        } & {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.InviteStatus;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            expiresAt: Date | null;
+            usedAt: Date | null;
+            guestId: string;
+            token: string;
+            used: boolean;
+            editToken: string | null;
+            editTokenExpiresAt: Date | null;
+            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
+            deliveredAt: Date | null;
+        };
+        ticket: {
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            currency: string;
+            eventId: string;
+            price: Prisma.Decimal;
+            totalQuantity: number | null;
+            soldCount: number;
+            heldCount: number;
+            isAvailable: boolean;
+        };
+    } & {
+        id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
+        inviteId: string;
+        currency: string;
+        confirmedAt: Date | null;
+        ticketId: string;
+        quantity: number;
+        totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
+        paymentRef: string | null;
+        holdExpiresAt: Date | null;
+        purchasedAt: Date;
+    })[]>;
+    create: (data: CreatePendingTicketPurchaseDto, db?: Db) => Prisma.Prisma__TicketPurchaseClient<{
+        id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
+        inviteId: string;
+        currency: string;
+        confirmedAt: Date | null;
+        ticketId: string;
+        quantity: number;
+        totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
+        paymentRef: string | null;
+        holdExpiresAt: Date | null;
         purchasedAt: Date;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    resetForRetry: (id: string, data: RetryPaymentAttemptDto, db?: Db) => Prisma.Prisma__TicketPurchaseClient<{
+        id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
+        inviteId: string;
+        currency: string;
+        confirmedAt: Date | null;
+        ticketId: string;
+        quantity: number;
+        totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
+        paymentRef: string | null;
+        holdExpiresAt: Date | null;
+        purchasedAt: Date;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    findByIdForUpdate: (id: string, tx: Prisma.TransactionClient) => Promise<LockedTicketPurchase | null>;
+    markPaid: (id: string, tx: Prisma.TransactionClient) => Prisma.Prisma__TicketPurchaseClient<{
+        id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
+        inviteId: string;
+        currency: string;
+        confirmedAt: Date | null;
+        ticketId: string;
+        quantity: number;
+        totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
+        paymentRef: string | null;
+        holdExpiresAt: Date | null;
+        purchasedAt: Date;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    markFailed: (id: string, tx: Prisma.TransactionClient) => Prisma.Prisma__TicketPurchaseClient<{
+        id: string;
+        status: import("@prisma/client").$Enums.TicketPurchaseStatus;
+        inviteId: string;
+        currency: string;
+        confirmedAt: Date | null;
+        ticketId: string;
+        quantity: number;
+        totalPaid: Prisma.Decimal;
+        ticketPriceCents: number;
+        commissionCents: number;
+        paymentRef: string | null;
+        holdExpiresAt: Date | null;
+        purchasedAt: Date;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    sweepExpiredHolds: (ticketId: string, tx: Prisma.TransactionClient) => Promise<{
+        id: string;
+        quantity: number;
+    }[]>;
 };
 export {};
 //# sourceMappingURL=ticket-purchase.repository.d.ts.map

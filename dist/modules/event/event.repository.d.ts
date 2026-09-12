@@ -39,6 +39,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     })[]>;
@@ -119,11 +120,12 @@ export declare const eventRepository: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
+            currency: string;
             eventId: string;
             price: import("@prisma/client-runtime-utils").Decimal;
-            currency: string;
             totalQuantity: number | null;
             soldCount: number;
+            heldCount: number;
             isAvailable: boolean;
         }[];
     } & {
@@ -150,6 +152,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -192,6 +195,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -219,6 +223,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -247,6 +252,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }>;
@@ -274,6 +280,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -301,6 +308,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -328,6 +336,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
@@ -355,6 +364,7 @@ export declare const eventRepository: {
         rsvpDeadline: Date | null;
         capacity: number | null;
         shareToken: string | null;
+        ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;

@@ -69,8 +69,8 @@ export declare const vendorRepository: {
                 description: string | null;
                 createdBy: string;
                 updatedBy: string;
-                price: Prisma.Decimal | null;
                 currency: string;
+                price: Prisma.Decimal | null;
                 isAvailable: boolean;
                 vendorServiceId: string;
                 imageUrls: string[];
@@ -369,8 +369,8 @@ export declare const vendorRepository: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            price: Prisma.Decimal | null;
             currency: string;
+            price: Prisma.Decimal | null;
             isAvailable: boolean;
             vendorServiceId: string;
             imageUrls: string[];
@@ -399,8 +399,8 @@ export declare const vendorRepository: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            price: Prisma.Decimal | null;
             currency: string;
+            price: Prisma.Decimal | null;
             isAvailable: boolean;
             vendorServiceId: string;
             imageUrls: string[];
@@ -484,8 +484,8 @@ export declare const vendorRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: Prisma.Decimal | null;
         currency: string;
+        price: Prisma.Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -501,8 +501,8 @@ export declare const vendorRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: Prisma.Decimal | null;
         currency: string;
+        price: Prisma.Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -518,8 +518,8 @@ export declare const vendorRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: Prisma.Decimal | null;
         currency: string;
+        price: Prisma.Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -535,8 +535,8 @@ export declare const vendorRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: Prisma.Decimal | null;
         currency: string;
+        price: Prisma.Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -552,8 +552,8 @@ export declare const vendorRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: Prisma.Decimal | null;
         currency: string;
+        price: Prisma.Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];
@@ -567,8 +567,8 @@ export declare const vendorRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        price: Prisma.Decimal | null;
         currency: string;
+        price: Prisma.Decimal | null;
         isAvailable: boolean;
         vendorServiceId: string;
         imageUrls: string[];

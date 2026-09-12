@@ -42,9 +42,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -115,9 +115,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -148,9 +148,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -167,9 +167,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -216,11 +216,12 @@ export declare const inviteRepository: {
                 description: string | null;
                 createdBy: string;
                 updatedBy: string;
+                currency: string;
                 eventId: string;
                 price: import("@prisma/client-runtime-utils").Decimal;
-                currency: string;
                 totalQuantity: number | null;
                 soldCount: number;
+                heldCount: number;
                 isAvailable: boolean;
             }[];
         } & {
@@ -247,6 +248,7 @@ export declare const inviteRepository: {
             rsvpDeadline: Date | null;
             capacity: number | null;
             shareToken: string | null;
+            ticketsRefundable: boolean;
             createdBy: string;
             updatedBy: string;
         };
@@ -312,12 +314,17 @@ export declare const inviteRepository: {
         }[];
         ticketPurchases: {
             id: string;
+            status: import("@prisma/client").$Enums.TicketPurchaseStatus;
             inviteId: string;
             currency: string;
+            confirmedAt: Date | null;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;
+            ticketPriceCents: number;
+            commissionCents: number;
             paymentRef: string | null;
+            holdExpiresAt: Date | null;
             purchasedAt: Date;
         }[];
     } & {
@@ -328,9 +335,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -347,9 +354,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -366,9 +373,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -385,9 +392,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -404,9 +411,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
@@ -423,9 +430,9 @@ export declare const inviteRepository: {
         status: import("@prisma/client").$Enums.InviteStatus;
         createdBy: string;
         updatedBy: string;
+        eventId: string;
         expiresAt: Date | null;
         usedAt: Date | null;
-        eventId: string;
         guestId: string;
         token: string;
         used: boolean;
