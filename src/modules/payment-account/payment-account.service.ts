@@ -64,10 +64,14 @@ export const paymentAccountService = {
         });
         tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
         if (!tenant) throw new HttpError(404, 'Tenant not found');
-      } catch {
-        // The cached metadata below is still safe to return. It is better
-        // to show "not available yet" than to conceal the full account
-        // status just because Paystack is temporarily unreachable.
+      } catch (err) {
+        // The cached metadata below is still safe to return. It is
+        // better to show "not available yet" than to conceal the full
+        // account status just because Paystack is temporarily
+        // unreachable — but that's a decision to keep serving, not a
+        // reason to keep it invisible: this used to be a bare `catch {}`
+        // with nothing logged at all.
+        console.error(`[payment-account] legacy last-4 backfill failed — tenant ${tenantId}:`, err);
       }
     }
     // `tenant` can only become null in the defensive re-read above if a
@@ -108,12 +112,16 @@ export const paymentAccountService = {
       });
     } catch (err) {
       if (err instanceof PaystackApiError) {
+        console.error(`[payment-account] subaccount submission failed — tenant ${tenantId}:`, err);
         await paymentAccountRepository.markFailed(tenantId, err.paystackMessage);
         // 422 — the shape of the request was valid, but Paystack's own
         // verification of the bank details failed a precondition. The
         // real reason ("account number does not match the bank") is
         // Paystack's own message, surfaced verbatim rather than
-        // replaced with a generic string.
+        // replaced with a generic string. (Tenant.paystackSubaccountFailureReason
+        // is a self-service status field for the tenant's own onboarding
+        // UI, not the payment ledger — a clean human message is the
+        // correct content for it, unlike a PaymentLedgerEntry.payload.)
         throw new HttpError(422, err.paystackMessage);
       }
       throw err;
@@ -156,6 +164,7 @@ export const paymentAccountService = {
       });
     } catch (err) {
       if (err instanceof PaystackApiError) {
+        console.error(`[payment-account] subaccount update failed — tenant ${tenantId}:`, err);
         await paymentAccountRepository.markFailed(tenantId, err.paystackMessage);
         throw new HttpError(422, err.paystackMessage);
       }

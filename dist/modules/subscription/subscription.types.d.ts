@@ -41,19 +41,13 @@ export interface ActivateSubscriptionInput {
     cardExpMonth?: string;
     cardExpYear?: string;
 }
-export type CheckoutResult = {
+export interface CheckoutResult {
     authorizationUrl: string;
-} | {
-    failed: true;
-    reason: string;
-};
+}
 export type ChangeTierResult = {
     outcome: 'accepted';
 } | {
     outcome: 'scheduled';
     effectiveAt: Date | null;
-} | {
-    outcome: 'failed';
-    reason: string;
 };
 //# sourceMappingURL=subscription.types.d.ts.map

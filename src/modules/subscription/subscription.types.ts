@@ -54,14 +54,20 @@ export interface ActivateSubscriptionInput {
   cardExpYear?: string;
 }
 
-export type CheckoutResult = { authorizationUrl: string } | { failed: true; reason: string };
+// A failed checkout initialization is no longer a value in this union —
+// it's a thrown HttpError (422 for a real Paystack rejection, 500 for
+// a server misconfiguration like a missing plan code) so the caller
+// gets a real status code instead of a 200 carrying bad news. See
+// subscription.service.ts's subscribe().
+export interface CheckoutResult {
+  authorizationUrl: string;
+}
 
 // changeTier's upgrade path charges an already-saved card directly —
 // no redirect, so there is no authorizationUrl to hand back. The tier
 // itself only flips once the resulting webhook confirms it (see
 // subscription.service.ts's own comment), so `accepted` here means
 // "Paystack took the request", not "the tenant is on the new plan yet".
-export type ChangeTierResult =
-  | { outcome: 'accepted' }
-  | { outcome: 'scheduled'; effectiveAt: Date | null }
-  | { outcome: 'failed'; reason: string };
+// Same as CheckoutResult above: a failed upgrade is a thrown HttpError,
+// not an `{outcome: 'failed'}` value.
+export type ChangeTierResult = { outcome: 'accepted' } | { outcome: 'scheduled'; effectiveAt: Date | null };

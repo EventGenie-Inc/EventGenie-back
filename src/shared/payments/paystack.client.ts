@@ -46,12 +46,22 @@ const SECRET_KEY: string = PAYSTACK_SECRET_KEY;
 export class PaystackApiError extends Error {
   paystackMessage: string;
   httpStatus: number;
+  // The exact response body Paystack (or a description of a network/
+  // parse failure when there wasn't one) returned — never rebuilt or
+  // paraphrased. Callers that write a PaymentLedgerEntry for a failed
+  // charge attempt must store THIS, not just `paystackMessage`: a
+  // dispute investigated months from now needs the real bytes Paystack
+  // sent, not our own summary of them. See describePaystackFailure
+  // below, which every payment-initiating call site should route
+  // through rather than hand-rolling this extraction again.
+  raw: unknown;
 
-  constructor(paystackMessage: string, httpStatus: number) {
+  constructor(paystackMessage: string, httpStatus: number, raw: unknown) {
     super(`Paystack request failed (${httpStatus}): ${paystackMessage}`);
     this.name = 'PaystackApiError';
     this.paystackMessage = paystackMessage;
     this.httpStatus = httpStatus;
+    this.raw = raw;
   }
 }
 
@@ -78,21 +88,71 @@ const paystackRequest = async <T>(
     });
   } catch (networkError) {
     const reason = networkError instanceof Error ? networkError.message : 'Unknown network error';
-    throw new PaystackApiError(`Could not reach Paystack: ${reason}`, 0);
+    throw new PaystackApiError(`Could not reach Paystack: ${reason}`, 0, { networkError: reason });
   }
 
-  let json: PaystackEnvelope<T>;
+  // Read as text FIRST, not response.json() directly — a body can only
+  // be consumed once, and a non-JSON or malformed-JSON response must
+  // still have its raw text preserved on the thrown error rather than
+  // being reduced to a made-up string, for the exact same "store what
+  // actually came back" reason as the parsed-JSON case below.
+  const rawText = await response.text();
+  let json: PaystackEnvelope<T> | null = null;
   try {
-    json = (await response.json()) as PaystackEnvelope<T>;
+    json = JSON.parse(rawText) as PaystackEnvelope<T>;
   } catch {
-    throw new PaystackApiError('Paystack returned a non-JSON response', response.status);
+    json = null;
   }
 
-  if (!response.ok || !json.status) {
-    throw new PaystackApiError(json.message || 'Unknown Paystack error', response.status);
+  if (!response.ok || !json || !json.status) {
+    throw new PaystackApiError(
+      json?.message || 'Unknown Paystack error',
+      response.status,
+      json ?? { nonJsonBody: rawText }
+    );
   }
 
   return json.data;
+};
+
+// Turns whatever a paystackClient.* call threw into one shape for
+// logging and for a PaymentLedgerEntry.payload — every subscription
+// and ticketing call site that initiates a charge and can fail
+// synchronously should route its catch block through this rather than
+// re-deriving `err instanceof PaystackApiError ? ... : ...` itself.
+// `isPaystackRejection: false` means Paystack was never actually
+// reached with a bad request — e.g. subscription-plans.config.ts's
+// getPlanCode throwing because a plan-code env var isn't set. That is
+// a server misconfiguration, not a rejected charge, and callers should
+// treat it as a 500, not a 422: no tenant input or retry fixes it.
+export interface PaystackFailureDescription {
+  isPaystackRejection: boolean;
+  // Paystack's own message (or the JS error's message) — short enough
+  // to log inline and, when isPaystackRejection is true, usually safe
+  // enough to surface to the tenant too (same paystackMessage
+  // passthrough this codebase already uses elsewhere, e.g.
+  // payment-account.service.ts's 422s).
+  summary: string;
+  // The full raw material for the ledger: Paystack's response body
+  // (plus its HTTP status) for a real rejection, or the JS error's own
+  // message/stack when it never got that far.
+  raw: unknown;
+}
+
+export const describePaystackFailure = (err: unknown): PaystackFailureDescription => {
+  if (err instanceof PaystackApiError) {
+    return {
+      isPaystackRejection: true,
+      summary: err.paystackMessage,
+      raw: { httpStatus: err.httpStatus, body: err.raw },
+    };
+  }
+  const summary = err instanceof Error ? err.message : String(err);
+  return {
+    isPaystackRejection: false,
+    summary,
+    raw: { message: summary, stack: err instanceof Error ? err.stack : undefined },
+  };
 };
 
 // ─────────────────────────────────────────
