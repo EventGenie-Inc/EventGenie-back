@@ -13,6 +13,7 @@ export interface InitializeTransactionParams {
     subaccount?: string;
     transactionChargeCents?: number;
     bearer?: 'account' | 'subaccount';
+    plan?: string;
     metadata?: Record<string, unknown>;
 }
 export interface InitializeTransactionResult {
@@ -89,5 +90,42 @@ export declare const listBanks: (params?: {
     currency?: string;
 }) => Promise<PaystackBank[]>;
 export declare const verifyWebhookSignature: (rawBody: Buffer | string, signatureHeader: string | string[] | undefined) => boolean;
+export interface CreatePlanParams {
+    name: string;
+    amountCents: number;
+    interval: string;
+    currency?: string;
+    description?: string;
+}
+export interface PaystackPlan {
+    planCode: string;
+    name: string;
+    amountCents: number;
+    interval: string;
+    currency: string;
+}
+export declare const createPlan: (params: CreatePlanParams) => Promise<PaystackPlan>;
+export declare const listPlans: () => Promise<PaystackPlan[]>;
+export interface CreateSubscriptionParams {
+    customerCode: string;
+    planCode: string;
+    authorizationCode?: string;
+}
+export interface PaystackSubscription {
+    subscriptionCode: string;
+    emailToken: string;
+    nextPaymentDate: string;
+    status: string;
+    customerCode: string | null;
+    planCode: string | null;
+    authorizationCode: string | null;
+    cardLast4: string | null;
+    cardBrand: string | null;
+    cardExpMonth: string | null;
+    cardExpYear: string | null;
+}
+export declare const createSubscription: (params: CreateSubscriptionParams) => Promise<PaystackSubscription>;
+export declare const disableSubscription: (subscriptionCode: string, emailToken: string) => Promise<void>;
+export declare const getSubscription: (subscriptionCode: string) => Promise<PaystackSubscription>;
 export {};
 //# sourceMappingURL=paystack.client.d.ts.map

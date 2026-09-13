@@ -4,5 +4,8 @@ type Db = Prisma.TransactionClient | typeof prisma;
 export declare const assertTenantReadyToSellTickets: (tenantId: string, db?: Db) => Promise<{
     subaccountCode: string;
 }>;
+export declare const assertSubaccountReadyForPurchase: (tenantId: string, db?: Db) => Promise<{
+    subaccountCode: string;
+}>;
 export {};
 //# sourceMappingURL=payment-account-readiness.util.d.ts.map

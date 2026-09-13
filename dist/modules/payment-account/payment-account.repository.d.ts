@@ -11,6 +11,9 @@ export declare const paymentAccountRepository: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionGraceStartedAt: Date | null;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     saveSubaccount: (tenantId: string, data: {
         subaccountCode: string;
@@ -34,6 +37,22 @@ export declare const paymentAccountRepository: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionPendingTierAfterPeriodEnd: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionGraceStartedAt: Date | null;
+        paystackCustomerCode: string | null;
+        paystackSubscriptionCode: string | null;
+        paystackSubscriptionEmailToken: string | null;
+        paystackAuthorizationCode: string | null;
+        paystackCardBrand: string | null;
+        paystackCardLast4: string | null;
+        paystackCardExpMonth: string | null;
+        paystackCardExpYear: string | null;
+        subscriptionPendingReference: string | null;
+        subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     markFailed: (tenantId: string, reason: string) => Prisma.Prisma__TenantClient<{
         name: string;
@@ -51,6 +70,22 @@ export declare const paymentAccountRepository: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionPendingTierAfterPeriodEnd: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionGraceStartedAt: Date | null;
+        paystackCustomerCode: string | null;
+        paystackSubscriptionCode: string | null;
+        paystackSubscriptionEmailToken: string | null;
+        paystackAuthorizationCode: string | null;
+        paystackCardBrand: string | null;
+        paystackCardLast4: string | null;
+        paystackCardExpMonth: string | null;
+        paystackCardExpYear: string | null;
+        subscriptionPendingReference: string | null;
+        subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
 };
 export {};

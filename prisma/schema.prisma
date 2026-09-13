@@ -28,6 +28,15 @@ enum SubscriptionStatus {
   CANCELLED
 }
 
+// Billing period for a PAID subscription — orthogonal to
+// SubscriptionStatus above (platform-level lockout by a Super Admin;
+// see STEERING.md's terminology table) and to SubscriptionTier (which
+// plan). Null/meaningless for SPARK, which is free and unmetered.
+enum SubscriptionPeriod {
+  MONTHLY
+  ANNUAL
+}
+
 enum PlatformRole {
   SUPER_ADMIN
   TENANT_ADMIN
@@ -153,6 +162,17 @@ enum LedgerEntryType {
   SUBSCRIPTION_CHARGE_INITIATED
   SUBSCRIPTION_CHARGE_SUCCEEDED
   SUBSCRIPTION_CHARGE_FAILED
+  // Upgrade, downgrade-scheduled, or monthly<->annual period switch —
+  // payload carries the from/to tier+period so "why is this tenant on
+  // this tier" is answerable from the ledger alone, per this batch's
+  // report requirement.
+  SUBSCRIPTION_TIER_CHANGED
+  // Written the moment cancellation (or a downgrade-to-a-different-
+  // paid-tier, which uses the same disable-now/derive-until-period-end
+  // mechanism) is requested — not when access actually lapses, which is
+  // derived, not evented (see Tenant.subscriptionGraceStartedAt's
+  // comment for why grace expiry has no entry of its own either).
+  SUBSCRIPTION_CANCELLED
   REFUND_ISSUED
   WEBHOOK_EVENT_UNHANDLED
   WEBHOOK_EVENT_DUPLICATE
@@ -187,6 +207,74 @@ model Tenant {
   paystackSettlementBankCode      String?
   paystackSettlementBankName      String?
   paystackSubaccountFailureReason String?
+
+  // ── Subscription billing (Subscription Billing batch) ──
+  // Opposite direction from the subaccount above: this is EventGenie's
+  // OWN money, charged to the tenant's card. No split, no subaccount.
+  // Paystack owns the renewal schedule (see subscription.service.ts's
+  // header comment) — this codebase never charges a card on its own
+  // initiative; every field below is either set from a webhook Paystack
+  // sent us, or is our own derivation of what that implies.
+  subscriptionPeriod                    SubscriptionPeriod?
+  // When the CURRENT paid period ends — the next scheduled renewal date
+  // while active, or the date access reverts to SPARK once cancelled.
+  // Sourced from Paystack's own `next_payment_date` at subscription
+  // create/renewal time, never computed by adding an interval ourselves
+  // (a card can be charged a day late; trust what Paystack reports).
+  subscriptionCurrentPeriodEnd          DateTime?
+  // True once the tenant has asked to cancel or downgrade — the CURRENT
+  // subscription has already been disabled at Paystack (it will not
+  // renew), but access continues until subscriptionCurrentPeriodEnd:
+  // see effective-tier.util.ts's resolveEffectiveTier, the one place
+  // this is ever read for an access decision.
+  subscriptionCancelAtPeriodEnd         Boolean             @default(false)
+  // Informational only — what the tenant said they wanted next when
+  // downgrading between two PAID tiers (Elevate -> Celebrate). NOT
+  // auto-applied: this codebase has no scheduler to create the new paid
+  // subscription at the boundary, and Paystack has no documented
+  // future-dated subscription start — see the batch report's proration
+  // section. Surfaced back to the tenant so they know what to
+  // resubscribe to; effective tier still falls to SPARK at period end
+  // regardless of this value.
+  subscriptionPendingTierAfterPeriodEnd SubscriptionTier?
+  // Set the moment a renewal charge fails (webhook charge.failed for
+  // this subscription); cleared the moment a charge succeeds again.
+  // Non-null AND older than 5 days is what resolveEffectiveTier reads as
+  // "grace has lapsed, fall to SPARK" — derived at read time, never
+  // swept by a job (this codebase has none — same reasoning as
+  // event-status.util.ts's COMPLETED derivation and the ticketing
+  // batch's hold-expiry sweep).
+  subscriptionGraceStartedAt            DateTime?
+
+  // Paystack's own identifiers for the CURRENT subscription — needed to
+  // disable it (subscription_code + email_token, both required by
+  // Paystack's disable-subscription endpoint) and to correlate a
+  // renewal's charge.success/failed webhook back to this tenant (via
+  // customerCode, since a renewal charge carries no reference we chose
+  // — see payment-webhook.service.ts's subscription dispatch).
+  paystackCustomerCode           String? @unique
+  paystackSubscriptionCode       String? @unique
+  paystackSubscriptionEmailToken String?
+
+  // Display-only card details from the authorization Paystack returns
+  // on a successful charge — never the card number itself, same
+  // never-store-the-sensitive-instrument rule as the subaccount's bank
+  // details above.
+  paystackAuthorizationCode String?
+  paystackCardBrand         String?
+  paystackCardLast4         String?
+  paystackCardExpMonth      String?
+  paystackCardExpYear       String?
+
+  // The reference WE generated for an in-flight subscribe/change
+  // attempt (passed as `reference` to Initialize Transaction, alongside
+  // `plan`) — how a charge.success/failed webhook for the FIRST charge
+  // of a new subscription gets matched back to this tenant, exactly
+  // mirroring TicketPurchase.paymentRef. Cleared once resolved
+  // (success or failure); a tenant has at most one attempt in flight.
+  subscriptionPendingReference String?             @unique
+  subscriptionPendingTier      SubscriptionTier?
+  subscriptionPendingPeriod    SubscriptionPeriod?
 
   users                User[]
   events               Event[]

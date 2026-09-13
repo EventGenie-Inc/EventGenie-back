@@ -31,6 +31,7 @@ import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
 import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
 import paymentWebhookRouter from './modules/payment-webhook/payment-webhook.router.js';
+import subscriptionRouter from './modules/subscription/subscription.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -181,10 +182,12 @@ app.use('/api/uploads', uploadRouter);
 //  PAYMENTS ROUTES
 //  /api/payments/subaccount         — tenant admin subaccount onboarding
 //  /api/payments/subaccount/banks   — bank list for the onboarding form
-//  /api/payments/webhook            — public, unauthenticated (Paystack calls this)
+//  /api/payments/webhook            — public, unauthenticated (Paystack calls this — both ticketing and subscription events)
+//  /api/subscriptions               — tenant admin subscription billing (Subscription Billing batch)
 // ─────────────────────────────────────────
 app.use('/api/payments/subaccount', paymentAccountRouter);
 app.use('/api/payments/webhook', paymentWebhookRouter);
+app.use('/api/subscriptions', subscriptionRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────

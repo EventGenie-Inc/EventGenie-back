@@ -126,6 +126,13 @@ export interface InitializeTransactionParams {
   subaccount?: string;
   transactionChargeCents?: number;
   bearer?: 'account' | 'subaccount';
+  // A Paystack Plan code — passed by the Subscription Billing batch's
+  // subscribe flow to turn a one-off checkout into the first charge of
+  // a recurring subscription (Paystack creates the Subscription object
+  // automatically on success and reports it via a subscription.create
+  // webhook). This client has no opinion on what a plan is; it just
+  // forwards the code.
+  plan?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -148,6 +155,7 @@ export const initializeTransaction = async (
     ...(params.subaccount !== undefined && { subaccount: params.subaccount }),
     ...(params.transactionChargeCents !== undefined && { transaction_charge: params.transactionChargeCents }),
     ...(params.bearer !== undefined && { bearer: params.bearer }),
+    ...(params.plan !== undefined && { plan: params.plan }),
     ...(params.metadata !== undefined && { metadata: params.metadata }),
   });
 
@@ -349,4 +357,196 @@ export const verifyWebhookSignature = (
   if (expectedBuf.length !== receivedBuf.length) return false;
 
   return crypto.timingSafeEqual(expectedBuf, receivedBuf);
+};
+
+// ─────────────────────────────────────────
+//  PLANS
+//
+//  A Plan is Paystack's own recurring-billing template (amount,
+//  interval, currency) — created once per environment (see
+//  prisma/create-subscription-plans.ts, run manually) and referenced
+//  thereafter by plan code from configuration
+//  (subscription-plans.config.ts). This client only knows how to create
+//  and list them; it has no opinion on whether that happens once at
+//  setup time or is re-run idempotently — that decision, and why, lives
+//  in the Subscription Billing batch report.
+// ─────────────────────────────────────────
+
+interface PaystackPlanData {
+  plan_code: string;
+  name: string;
+  amount: number;
+  interval: string;
+  currency: string;
+  [key: string]: unknown;
+}
+
+export interface CreatePlanParams {
+  name: string;
+  amountCents: number;
+  // Paystack's own interval vocabulary (per their current docs: daily,
+  // weekly, monthly, quarterly, annually) — passed through verbatim
+  // rather than re-typed as a narrower union, since this client has no
+  // opinion on which intervals a caller uses.
+  interval: string;
+  currency?: string;
+  description?: string;
+}
+
+export interface PaystackPlan {
+  planCode: string;
+  name: string;
+  amountCents: number;
+  interval: string;
+  currency: string;
+}
+
+const toPlan = (data: PaystackPlanData): PaystackPlan => ({
+  planCode: data.plan_code,
+  name: data.name,
+  amountCents: data.amount,
+  interval: data.interval,
+  currency: data.currency,
+});
+
+export const createPlan = async (params: CreatePlanParams): Promise<PaystackPlan> => {
+  const data = await paystackRequest<PaystackPlanData>('POST', '/plan', {
+    name: params.name,
+    amount: params.amountCents,
+    interval: params.interval,
+    currency: params.currency ?? 'ZAR',
+    ...(params.description !== undefined && { description: params.description }),
+  });
+  return toPlan(data);
+};
+
+export const listPlans = async (): Promise<PaystackPlan[]> => {
+  const data = await paystackRequest<PaystackPlanData[]>('GET', '/plan?perPage=100');
+  return data.map(toPlan);
+};
+
+// ─────────────────────────────────────────
+//  SUBSCRIPTIONS
+//
+//  Paystack owns the renewal schedule entirely — this client only ever
+//  creates or disables a subscription in reaction to a tenant's own
+//  request; it never runs on a timer. See subscription.service.ts.
+// ─────────────────────────────────────────
+
+// Paystack is NOT consistent about this shape across endpoints, unlike
+// most of its other resources — confirmed against the real test API
+// while building this batch, not assumed from docs. POST /subscription
+// (create) returns customer/plan/authorization as BARE NUMERIC IDS
+// (e.g. "customer": 399123022), while GET /subscription/:code and the
+// subscription.create WEBHOOK both return the fuller nested objects
+// ("customer": { "customer_code": "CUS_...", "email": "..." }). toSubscription
+// below handles both, extracting what it can and leaving a field null
+// only when a bare id genuinely has nothing else to read.
+interface PaystackSubscriptionData {
+  subscription_code: string;
+  email_token: string;
+  next_payment_date: string;
+  status: string;
+  customer: { customer_code: string; email: string } | number;
+  plan: { plan_code: string } | string | number;
+  authorization?: {
+    authorization_code: string;
+    last4: string;
+    card_type: string;
+    exp_month: string;
+    exp_year: string;
+  } | number;
+  [key: string]: unknown;
+}
+
+export interface CreateSubscriptionParams {
+  // The customer to subscribe — Paystack accepts either the numeric
+  // customer id or the customer_code; this client always passes the
+  // code, since that's the only one callers ever have on hand (never
+  // the numeric id, which this codebase doesn't store).
+  customerCode: string;
+  planCode: string;
+  // Which saved card to charge — omitted lets Paystack pick the
+  // customer's most recent reusable authorization, per their own
+  // documented default. Passed explicitly whenever the caller already
+  // knows which one (e.g. reusing the card from an existing
+  // subscription for an upgrade).
+  authorizationCode?: string;
+}
+
+export interface PaystackSubscription {
+  subscriptionCode: string;
+  emailToken: string;
+  nextPaymentDate: string;
+  status: string;
+  // null when the response only carried a bare numeric id (POST
+  // /subscription's own response — see PaystackSubscriptionData's
+  // comment) rather than the fuller nested object (GET
+  // /subscription/:code and the subscription.create webhook both give
+  // the real code). A caller that needs it unconditionally should read
+  // it from GET /subscription/:code (getSubscription below) instead.
+  customerCode: string | null;
+  planCode: string | null;
+  authorizationCode: string | null;
+  cardLast4: string | null;
+  cardBrand: string | null;
+  cardExpMonth: string | null;
+  cardExpYear: string | null;
+}
+
+const toSubscription = (data: PaystackSubscriptionData): PaystackSubscription => {
+  const customer = typeof data.customer === 'object' ? data.customer : null;
+  const authorization = typeof data.authorization === 'object' ? data.authorization : null;
+  const planCode = typeof data.plan === 'string' ? data.plan : typeof data.plan === 'object' ? data.plan.plan_code : null;
+
+  return {
+    subscriptionCode: data.subscription_code,
+    emailToken: data.email_token,
+    nextPaymentDate: data.next_payment_date,
+    status: data.status,
+    customerCode: customer?.customer_code ?? null,
+    planCode,
+    authorizationCode: authorization?.authorization_code ?? null,
+    cardLast4: authorization?.last4 ?? null,
+    cardBrand: authorization?.card_type ?? null,
+    cardExpMonth: authorization?.exp_month ?? null,
+    cardExpYear: authorization?.exp_year ?? null,
+  };
+};
+
+// Used for an upgrade that reuses an existing saved card — the tenant
+// has already authorised a card via a prior Initialize Transaction, so
+// this charges it immediately for the new plan with no checkout
+// redirect. NOT used for a tenant's first-ever subscribe, which goes
+// through initializeTransaction with a `plan` param instead (that's
+// the only way to collect a NEW card — see subscription.service.ts).
+export const createSubscription = async (params: CreateSubscriptionParams): Promise<PaystackSubscription> => {
+  const data = await paystackRequest<PaystackSubscriptionData>('POST', '/subscription', {
+    customer: params.customerCode,
+    plan: params.planCode,
+    ...(params.authorizationCode !== undefined && { authorization: params.authorizationCode }),
+  });
+  return toSubscription(data);
+};
+
+// Paystack requires BOTH the subscription code and its email_token to
+// disable a subscription (a deliberate anti-tamper pairing — knowing
+// the code alone isn't enough to cancel someone else's subscription).
+export const disableSubscription = async (subscriptionCode: string, emailToken: string): Promise<void> => {
+  await paystackRequest<{ status: boolean }>('POST', '/subscription/disable', {
+    code: subscriptionCode,
+    token: emailToken,
+  });
+};
+
+// Fetches the CURRENT authoritative state of a subscription — used
+// after a renewal's charge.success to learn the fresh next_payment_date,
+// which that webhook event does not itself carry (only
+// subscription.create does, and Paystack does not resend that event on
+// each renewal — see subscription.service.ts's own comment on this).
+// Never used to compute a period end ourselves; only to read the one
+// Paystack already computed.
+export const getSubscription = async (subscriptionCode: string): Promise<PaystackSubscription> => {
+  const data = await paystackRequest<PaystackSubscriptionData>('GET', `/subscription/${encodeURIComponent(subscriptionCode)}`);
+  return toSubscription(data);
 };

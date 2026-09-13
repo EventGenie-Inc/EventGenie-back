@@ -6,7 +6,7 @@ import { decimalToCents } from '../../shared/payments/money.util.js';
 import * as paystackClient from '../../shared/payments/paystack.client.js';
 import { PaystackApiError } from '../../shared/payments/paystack.client.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
-import { assertTenantReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
+import { assertSubaccountReadyForPurchase } from '../payment-account/payment-account-readiness.util.js';
 import { ticketRepository } from '../ticket/ticket.repository.js';
 import { ticketPurchaseRepository } from './ticket-purchase.repository.js';
 import { computeTicketChargeCents } from './ticket-purchase-pricing.util.js';
@@ -64,8 +64,17 @@ export const ticketPurchaseService = {
     // reserveHold is a single conditional UPDATE, not read-then-write.
     // Throws HttpError(409) if there isn't room; nothing is partially
     // reserved.
+    //
+    // Deliberately checks ONLY subaccount readiness, not tier
+    // (assertSubaccountReadyForPurchase, not assertTenantReadyToSellTickets)
+    // — this runs for EVERY purchase attempt, including on an event that
+    // was published long ago under a tier the tenant no longer holds. The
+    // tier gate belongs at event create/publish time only; see that
+    // function's own comment for why re-checking it here would break a
+    // live, already-selling event out from under guests who did nothing
+    // wrong (Subscription Billing batch).
     reserveWithinTransaction: async (tx, input) => {
-        const { subaccountCode } = await assertTenantReadyToSellTickets(input.tenantId, tx);
+        const { subaccountCode } = await assertSubaccountReadyForPurchase(input.tenantId, tx);
         // Lazy expiry sweep — see ticket-purchase.repository.ts's
         // sweepExpiredHolds for why this replaces a scheduler this codebase
         // doesn't have. Run right before attempting a new hold so a lapsed
@@ -172,9 +181,11 @@ export const ticketPurchaseService = {
             if (locked.status === 'PENDING')
                 return { status: 'PENDING' };
             // FAILED or EXPIRED — genuinely retryable. Re-checked here too:
-            // a tenant's subaccount or plan can have changed since the
-            // original attempt.
-            const { subaccountCode } = await assertTenantReadyToSellTickets(input.tenantId, tx);
+            // a tenant's subaccount can have changed since the original
+            // attempt. Same tier-blind reasoning as reserveWithinTransaction —
+            // retrying payment on an already-live purchase is access-time,
+            // not creation-time.
+            const { subaccountCode } = await assertSubaccountReadyForPurchase(input.tenantId, tx);
             const expired = await ticketPurchaseRepository.sweepExpiredHolds(input.ticketId, tx);
             if (expired.length > 0) {
                 const releasedQty = expired.reduce((sum, e) => sum + e.quantity, 0);

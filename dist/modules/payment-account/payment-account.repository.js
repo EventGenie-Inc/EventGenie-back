@@ -16,6 +16,13 @@ export const paymentAccountRepository = {
             // this repository's own getStatus()/submit()/update() callers
             // simply ignore the extra field.
             subscriptionTier: true,
+            // Selected so payment-account-readiness.util.ts's event-
+            // creation-time guard can compute the tenant's EFFECTIVE tier
+            // (Subscription Billing batch) rather than the raw stored one —
+            // see effective-tier.util.ts.
+            subscriptionCancelAtPeriodEnd: true,
+            subscriptionCurrentPeriodEnd: true,
+            subscriptionGraceStartedAt: true,
             paystackSubaccountCode: true,
             paystackSubaccountStatus: true,
             paystackBusinessName: true,

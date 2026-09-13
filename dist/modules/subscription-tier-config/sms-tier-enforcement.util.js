@@ -2,6 +2,7 @@ import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 // Called before any dispatch begins on a batch that includes SMS-bound
 // invites — both the bulk-send endpoint and resend share this one check,
 // mirroring assertGuestsCreatable's shape exactly.
@@ -19,9 +20,13 @@ export const assertSmsSendable = async (eventTenantId, batchSmsCount) => {
     const tenant = await tenantRepository.findById(eventTenantId);
     if (!tenant)
         throw new HttpError(404, 'Tenant not found');
-    const config = await subscriptionTierConfigRepository.findByTier(tenant.subscriptionTier);
+    // ACTION-time (dispatching NEW sms) — an already-delivered invite
+    // still resolves regardless of this check; only sending MORE is
+    // gated on the tenant's current effective tier.
+    const effectiveTier = resolveEffectiveTier(tenant);
+    const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.smsEnabled) {
-        throw new HttpError(403, `The ${tenant.subscriptionTier} plan does not include SMS invites. ` +
+        throw new HttpError(403, `The ${effectiveTier} plan does not include SMS invites. ` +
             `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
             `invited by SMS. Add an email address for these guests, or upgrade the plan to enable SMS.`);
     }
@@ -30,7 +35,7 @@ export const assertSmsSendable = async (eventTenantId, batchSmsCount) => {
         const usedThisMonth = await smsSendLogRepository.countForTenantThisMonth(eventTenantId);
         const remaining = config.maxSmsPerMonth - usedThisMonth;
         if (batchSmsCount > remaining) {
-            throw new HttpError(403, `The ${tenant.subscriptionTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
+            throw new HttpError(403, `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
                 `${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
                 `— this batch needs ${batchSmsCount}. Reduce the batch, wait until next month, or upgrade the plan.`);
         }

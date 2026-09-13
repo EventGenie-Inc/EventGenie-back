@@ -2,14 +2,20 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { tenantRepository } from './tenant.repository.js';
 import { eventRepository } from '../event/event.repository.js';
 import { withEffectiveStatus } from '../event/event-status.util.js';
+import { withEffectiveTier } from '../subscription/effective-tier.util.js';
 import { suspendFirebaseAccount, reactivateFirebaseAccount, } from '../../shared/firebase/firebase-account-status.util.js';
 export const tenantService = {
-    getAll: () => tenantRepository.findAll(),
+    // Routed through withEffectiveTier (Subscription Billing batch), same
+    // shape as event.service.ts's withEffectiveStatus — a client-facing
+    // tenant read must show the CURRENT effective tier, never the raw
+    // stored one, or a lapsed tenant's own frontend (GET /api/tenants/me)
+    // would keep offering features it no longer has.
+    getAll: async () => (await tenantRepository.findAll()).map(withEffectiveTier),
     getById: async (id, includeArchived = false) => {
         const tenant = await tenantRepository.findById(id, includeArchived);
         if (!tenant)
             throw new Error('Tenant not found');
-        return tenant;
+        return withEffectiveTier(tenant);
     },
     getUsers: async (id) => {
         await tenantService.getById(id);
@@ -46,6 +52,19 @@ export const tenantService = {
                     data: { isArchived: true, isActive: false },
                 });
             }
+        }, {
+            // Task 0 (Subscription Billing batch) audit: this loop was one of
+            // several prisma.$transaction calls found with NEITHER timeout nor
+            // maxWait set — Prisma's defaults (~2s to acquire a connection,
+            // ~5s to execute) are tuned for a warm pool and a small, fixed
+            // statement count. A tenant's user count is unbounded (every
+            // TENANT_ADMIN/EVENT_ADMIN/EVENT_VENDOR under it), making this the
+            // same shape of bug bulkCreateWithInvites and rsvp.service.ts's
+            // transaction already hit — sequential per-row round trips inside
+            // one interactive transaction. Fixed here defensively rather than
+            // waiting for a large tenant to hit it in production.
+            maxWait: 10000,
+            timeout: 15000,
         });
         for (const user of users) {
             await suspendFirebaseAccount(user.firebaseUid);
@@ -82,6 +101,11 @@ export const tenantService = {
                     data: { isArchived: false, isActive: true },
                 });
             }
+        }, {
+            // Same reasoning as suspend()'s identical transaction above —
+            // Task 0 audit, unbounded per-user loop.
+            maxWait: 10000,
+            timeout: 15000,
         });
         for (const user of users) {
             await reactivateFirebaseAccount(user.firebaseUid);

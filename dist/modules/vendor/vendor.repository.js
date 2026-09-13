@@ -1,6 +1,7 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import {} from '@prisma/client';
 import { isPriorityTier } from './vendor-priority.util.js';
+import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import {} from './vendor.types.js';
 // ─────────────────────────────────────────
 //  DECIMAL -> NUMBER
@@ -25,13 +26,18 @@ const withPlainPrice = (product) => ({
     ...product,
     price: product.price === null ? null : Number(product.price),
 });
-// Derives isPriority from the owning tenant's CURRENT tier (see
-// vendor-priority.util.ts) and drops the nested tenant object from the
-// response — callers get the boolean, not the tenant's tier directly.
-// A null tenant (platform-level, tenant-less space) is never priority.
+// Derives isPriority from the owning tenant's CURRENT EFFECTIVE tier
+// (Subscription Billing batch — a lapsed-to-SPARK tenant's own vendor
+// space stops getting priority placement in search results; this is a
+// ranking preference recomputed on every search, not an access grant
+// tied to anything already committed, so there's no "breaking a live
+// event" risk in applying the derivation here) and drops the nested
+// tenant object from the response — callers get the boolean, not the
+// tenant's tier directly. A null tenant (platform-level, tenant-less
+// space) is never priority.
 const withPriority = (space) => {
     const { tenant, ...rest } = space;
-    return { ...rest, isPriority: isPriorityTier(tenant?.subscriptionTier) };
+    return { ...rest, isPriority: isPriorityTier(tenant ? resolveEffectiveTier(tenant) : undefined) };
 };
 // ─────────────────────────────────────────
 //  PROXIMITY — Haversine over a bounding-box pre-filter
@@ -150,7 +156,14 @@ export const vendorRepository = {
                 longitude: { gte: longitude - lngDelta, lte: longitude + lngDelta },
             },
             include: {
-                tenant: { select: { subscriptionTier: true } },
+                tenant: {
+                    select: {
+                        subscriptionTier: true,
+                        subscriptionCancelAtPeriodEnd: true,
+                        subscriptionCurrentPeriodEnd: true,
+                        subscriptionGraceStartedAt: true,
+                    },
+                },
                 vendorServices: { where: { isArchived: false } },
             },
         });
@@ -174,7 +187,14 @@ export const vendorRepository = {
         const spaces = await prisma.vendorSpace.findMany({
             where: { isArchived: false, isActive: true },
             include: {
-                tenant: { select: { subscriptionTier: true } },
+                tenant: {
+                    select: {
+                        subscriptionTier: true,
+                        subscriptionCancelAtPeriodEnd: true,
+                        subscriptionCurrentPeriodEnd: true,
+                        subscriptionGraceStartedAt: true,
+                    },
+                },
                 vendorServices: { where: { isArchived: false } },
             },
         });
