@@ -3,13 +3,24 @@ import {} from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import * as paystackClient from '../../shared/payments/paystack.client.js';
-import { PaystackApiError } from '../../shared/payments/paystack.client.js';
+import { describePaystackFailure } from '../../shared/payments/paystack.client.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { subscriptionRepository } from './subscription.repository.js';
 import { resolveEffectiveTier } from './effective-tier.util.js';
 import { getPlanCode, resolveTierAndPeriodFromPlanCode, SUBSCRIPTION_PRICES_CENTS, isPaidTier, } from './subscription-plans.config.js';
 import {} from './subscription.types.js';
 const generateSubscribeReference = () => `sub_${crypto.randomBytes(16).toString('hex')}`;
+// Every synchronous Paystack call in this file that can fail (as
+// opposed to an outcome reported later by webhook, handled separately
+// below) throws through this. A real Paystack rejection — a bad email
+// on file, an unrecognised plan code, a declined card at initialize
+// time — is a 422: the request shape was valid, a precondition wasn't
+// met. Anything else (most notably subscription-plans.config.ts's
+// getPlanCode throwing because a PAYSTACK_PLAN_* env var isn't set —
+// see that file's own comment) never reached Paystack with a request
+// at all; that is a server misconfiguration, not a rejected charge, so
+// it is a 500 — no tenant input, retry, or different card fixes it.
+const toSubscriptionHttpError = (failure, fallbackMessage) => new HttpError(failure.isPaystackRejection ? 422 : 500, failure.isPaystackRejection ? failure.summary : fallbackMessage);
 const TIER_RANK = { SPARK: 0, CELEBRATE: 1, ELEVATE: 2 };
 const PERIOD_RANK = { MONTHLY: 0, ANNUAL: 1 };
 // ─────────────────────────────────────────
@@ -121,7 +132,15 @@ export const subscriptionService = {
             return { authorizationUrl: result.authorizationUrl };
         }
         catch (err) {
-            const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not start subscription checkout. Please try again.';
+            const failure = describePaystackFailure(err);
+            // Named, correlatable, and actually present in the logs — this
+            // exact failure used to reach neither the console nor a usable
+            // ledger payload (see the payload write below, and
+            // paystack.client.ts's PaystackApiError.raw for what closed that
+            // gap). `err` itself, not just failure.summary, so a
+            // PaystackApiError's `raw` (Paystack's own response body) prints
+            // too, not only its message.
+            console.error(`[subscription] checkout initialization failed — tenant ${tenantId}, ref ${reference}, plan ${dto.tier}/${dto.period}:`, err);
             await subscriptionRepository.clearPendingAttempt(tenantId);
             await paymentLedgerService.record({
                 type: 'SUBSCRIPTION_CHARGE_FAILED',
@@ -131,9 +150,14 @@ export const subscriptionService = {
                 paystackReference: reference,
                 relatedType: 'Tenant',
                 relatedId: tenantId,
-                payload: { stage: 'initialize', reason },
+                // The provider's actual response (or, for a config error, the
+                // real JS error) lives in `raw` — `summary` sits alongside it
+                // for a quick glance, never replacing it. See this file's own
+                // header note on why a sanitised string used to be written here
+                // instead, and what that cost.
+                payload: { stage: 'initialize', summary: failure.summary, raw: failure.raw },
             });
-            return { failed: true, reason };
+            throw toSubscriptionHttpError(failure, 'Something went wrong while starting this subscription. Please try again, or contact support if this keeps happening.');
         }
     },
     // ── CHANGE TIER — upgrade/downgrade between Celebrate and Elevate,
@@ -187,8 +211,9 @@ export const subscriptionService = {
                 // create a new one would risk the tenant paying for two active
                 // subscriptions at once — refuse rather than risk a double
                 // charge.
-                const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not update the existing subscription.';
-                throw new HttpError(422, reason);
+                const failure = describePaystackFailure(err);
+                console.error(`[subscription] disable-before-upgrade failed — tenant ${tenantId}, target ${dto.tier}/${dto.period}:`, err);
+                throw toSubscriptionHttpError(failure, 'Could not update the existing subscription.');
             }
             try {
                 const created = await paystackClient.createSubscription({
@@ -214,7 +239,8 @@ export const subscriptionService = {
                 return { outcome: 'accepted' };
             }
             catch (err) {
-                const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not start the new plan. Please contact support — your previous plan may need to be restored.';
+                const failure = describePaystackFailure(err);
+                console.error(`[subscription] upgrade charge failed — tenant ${tenantId}, target ${dto.tier}/${dto.period}:`, err);
                 await paymentLedgerService.record({
                     type: 'SUBSCRIPTION_CHARGE_FAILED',
                     amountCents: SUBSCRIPTION_PRICES_CENTS[dto.tier][dto.period],
@@ -222,9 +248,9 @@ export const subscriptionService = {
                     tenantId,
                     relatedType: 'Tenant',
                     relatedId: tenantId,
-                    payload: { stage: 'upgrade', reason },
+                    payload: { stage: 'upgrade', summary: failure.summary, raw: failure.raw },
                 });
-                return { outcome: 'failed', reason };
+                throw toSubscriptionHttpError(failure, 'Could not start the new plan. Please contact support — your previous plan may need to be restored.');
             }
         }
         // Downgrade — deferred to period end, per the decision above.
@@ -232,8 +258,9 @@ export const subscriptionService = {
             await paystackClient.disableSubscription(tenant.paystackSubscriptionCode, tenant.paystackSubscriptionEmailToken);
         }
         catch (err) {
-            const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not schedule this downgrade.';
-            throw new HttpError(422, reason);
+            const failure = describePaystackFailure(err);
+            console.error(`[subscription] downgrade-disable failed — tenant ${tenantId}, target ${dto.tier}/${dto.period}:`, err);
+            throw toSubscriptionHttpError(failure, 'Could not schedule this downgrade.');
         }
         await subscriptionRepository.scheduleEndOfPeriodChange(tenantId, dto.tier);
         await paymentLedgerService.record({
@@ -273,8 +300,9 @@ export const subscriptionService = {
             return { link };
         }
         catch (err) {
-            const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not generate a card update link. Please try again.';
-            throw new HttpError(422, reason);
+            const failure = describePaystackFailure(err);
+            console.error(`[subscription] update-card-link failed — tenant ${tenantId}:`, err);
+            throw toSubscriptionHttpError(failure, 'Could not generate a card update link. Please try again.');
         }
     },
     // ── CANCEL — same mechanism as a downgrade, target tier SPARK
@@ -293,8 +321,9 @@ export const subscriptionService = {
             await paystackClient.disableSubscription(tenant.paystackSubscriptionCode, tenant.paystackSubscriptionEmailToken);
         }
         catch (err) {
-            const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not cancel this subscription.';
-            throw new HttpError(422, reason);
+            const failure = describePaystackFailure(err);
+            console.error(`[subscription] cancel failed — tenant ${tenantId}:`, err);
+            throw toSubscriptionHttpError(failure, 'Could not cancel this subscription.');
         }
         await subscriptionRepository.scheduleEndOfPeriodChange(tenantId, null);
         await paymentLedgerService.record({

@@ -4,7 +4,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { decimalToCents } from '../../shared/payments/money.util.js';
 import * as paystackClient from '../../shared/payments/paystack.client.js';
-import { PaystackApiError } from '../../shared/payments/paystack.client.js';
+import { describePaystackFailure } from '../../shared/payments/paystack.client.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { assertSubaccountReadyForPurchase } from '../payment-account/payment-account-readiness.util.js';
 import { ticketRepository } from '../ticket/ticket.repository.js';
@@ -243,16 +243,24 @@ export const ticketPurchaseService = {
       });
       return { authorizationUrl: result.authorizationUrl };
     } catch (err) {
-      const reason = err instanceof PaystackApiError
-        ? err.paystackMessage
-        : 'Could not start payment. Please try again.';
+      const failure = describePaystackFailure(err);
+      // Named and correlatable by paymentRef — same convention as
+      // subscription.service.ts's equivalent catch blocks.
+      console.error(`[ticket-purchase] checkout initialization failed — ref ${params.paymentRef}:`, err);
 
       await ticketPurchaseService.failPayment(params.paymentRef, {
         stage: 'initialize',
-        reason,
+        // The provider's actual response (or the real JS error, for a
+        // non-Paystack failure) lives in `raw` — `summary` sits
+        // alongside it for a quick glance, never replacing it. This
+        // used to store only a sanitised `reason` string here, which
+        // discarded the real Paystack response entirely — see
+        // paystack.client.ts's describePaystackFailure.
+        summary: failure.summary,
+        raw: failure.raw,
       } as unknown as Prisma.InputJsonValue);
 
-      return { failed: true, reason };
+      return { failed: true, reason: failure.summary };
     }
   },
 

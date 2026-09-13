@@ -39,11 +39,21 @@ const SECRET_KEY = PAYSTACK_SECRET_KEY;
 export class PaystackApiError extends Error {
     paystackMessage;
     httpStatus;
-    constructor(paystackMessage, httpStatus) {
+    // The exact response body Paystack (or a description of a network/
+    // parse failure when there wasn't one) returned — never rebuilt or
+    // paraphrased. Callers that write a PaymentLedgerEntry for a failed
+    // charge attempt must store THIS, not just `paystackMessage`: a
+    // dispute investigated months from now needs the real bytes Paystack
+    // sent, not our own summary of them. See describePaystackFailure
+    // below, which every payment-initiating call site should route
+    // through rather than hand-rolling this extraction again.
+    raw;
+    constructor(paystackMessage, httpStatus, raw) {
         super(`Paystack request failed (${httpStatus}): ${paystackMessage}`);
         this.name = 'PaystackApiError';
         this.paystackMessage = paystackMessage;
         this.httpStatus = httpStatus;
+        this.raw = raw;
     }
 }
 const paystackRequest = async (method, path, body) => {
@@ -60,19 +70,40 @@ const paystackRequest = async (method, path, body) => {
     }
     catch (networkError) {
         const reason = networkError instanceof Error ? networkError.message : 'Unknown network error';
-        throw new PaystackApiError(`Could not reach Paystack: ${reason}`, 0);
+        throw new PaystackApiError(`Could not reach Paystack: ${reason}`, 0, { networkError: reason });
     }
-    let json;
+    // Read as text FIRST, not response.json() directly — a body can only
+    // be consumed once, and a non-JSON or malformed-JSON response must
+    // still have its raw text preserved on the thrown error rather than
+    // being reduced to a made-up string, for the exact same "store what
+    // actually came back" reason as the parsed-JSON case below.
+    const rawText = await response.text();
+    let json = null;
     try {
-        json = (await response.json());
+        json = JSON.parse(rawText);
     }
     catch {
-        throw new PaystackApiError('Paystack returned a non-JSON response', response.status);
+        json = null;
     }
-    if (!response.ok || !json.status) {
-        throw new PaystackApiError(json.message || 'Unknown Paystack error', response.status);
+    if (!response.ok || !json || !json.status) {
+        throw new PaystackApiError(json?.message || 'Unknown Paystack error', response.status, json ?? { nonJsonBody: rawText });
     }
     return json.data;
+};
+export const describePaystackFailure = (err) => {
+    if (err instanceof PaystackApiError) {
+        return {
+            isPaystackRejection: true,
+            summary: err.paystackMessage,
+            raw: { httpStatus: err.httpStatus, body: err.raw },
+        };
+    }
+    const summary = err instanceof Error ? err.message : String(err);
+    return {
+        isPaystackRejection: false,
+        summary,
+        raw: { message: summary, stack: err instanceof Error ? err.stack : undefined },
+    };
 };
 export const initializeTransaction = async (params) => {
     const data = await paystackRequest('POST', '/transaction/initialize', {

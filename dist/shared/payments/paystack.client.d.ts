@@ -1,8 +1,15 @@
 export declare class PaystackApiError extends Error {
     paystackMessage: string;
     httpStatus: number;
-    constructor(paystackMessage: string, httpStatus: number);
+    raw: unknown;
+    constructor(paystackMessage: string, httpStatus: number, raw: unknown);
 }
+export interface PaystackFailureDescription {
+    isPaystackRejection: boolean;
+    summary: string;
+    raw: unknown;
+}
+export declare const describePaystackFailure: (err: unknown) => PaystackFailureDescription;
 export interface InitializeTransactionParams {
     email: string;
     amountCents: number;
