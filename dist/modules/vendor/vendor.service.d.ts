@@ -166,6 +166,9 @@ export declare const vendorService: {
     getBrowseVendors: (requestingTenantId: string | null) => Promise<(Omit<Omit<{
         tenant: {
             subscriptionTier: import("@prisma/client").$Enums.SubscriptionTier;
+            subscriptionCurrentPeriodEnd: Date | null;
+            subscriptionCancelAtPeriodEnd: boolean;
+            subscriptionGraceStartedAt: Date | null;
         } | null;
         vendorServices: {
             name: string;

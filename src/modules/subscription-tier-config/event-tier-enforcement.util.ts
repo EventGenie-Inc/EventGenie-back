@@ -3,6 +3,7 @@ import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { eventRepository } from '../event/event.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 
 export interface EventTierCheckInput {
   visibility?: EventVisibility;
@@ -27,23 +28,29 @@ const assertSparkCapabilityGates = (tier: SubscriptionTier, input: EventTierChec
   }
 };
 
-// Called before creating a new event (POST /api/events and event-draft materialize).
+// Called before creating a new event (POST /api/events and event-draft
+// materialize). CREATION-TIME: correctly bound by the tenant's CURRENT
+// effective tier (Subscription Billing batch) — a lapsed tenant cannot
+// start a sixth event or a new PUBLIC/PAID one, exactly as a tenant who
+// never upgraded couldn't. This never touches an event that already
+// exists, so it cannot break one.
 export const assertEventCreatable = async (tenantId: string, input: EventTierCheckInput): Promise<void> => {
   const tenant = await tenantRepository.findById(tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  assertSparkCapabilityGates(tenant.subscriptionTier, input);
+  const effectiveTier = resolveEffectiveTier(tenant);
+  assertSparkCapabilityGates(effectiveTier, input);
 
   // maxEvents is read from SubscriptionTierConfig for every tier (including
   // SPARK) rather than hardcoded, so a Super Admin changing the config
   // takes effect immediately without a code change.
-  const config = await subscriptionTierConfigRepository.findByTier(tenant.subscriptionTier);
+  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
   if (config?.maxEvents != null) {
     const activeCount = await eventRepository.countActive(tenantId);
     if (activeCount >= config.maxEvents) {
       throw new HttpError(
         403,
-        `The ${tenant.subscriptionTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`
+        `The ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`
       );
     }
   }
@@ -51,8 +58,28 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 
 // Called before updating an existing event (PUT /api/events/:id). No
 // maxEvents check here — an update doesn't create a new event.
+//
+// Still CREATION-adjacent, not access-time, and safe on effective tier:
+// assertSparkCapabilityGates only fires when visibility/ticketing is
+// EXPLICITLY part of THIS update payload (see the conditional spreads at
+// every call site — event.service.ts never includes a field the caller
+// didn't send), so editing an unrelated field (name, description) on an
+// event that is already PUBLIC/PAID never re-evaluates this gate at
+// all. Only a genuine attempt to newly flip visibility to PUBLIC or
+// ticketing to PAID is blocked for a lapsed tenant — the event's
+// EXISTING public/paid status, and everything guest-facing built on it
+// (RSVPs, ticket purchases), is untouched by this function, which
+// never runs on any guest-facing path.
+//
+// Flagged, not fixed (pre-existing, independent of this batch): a
+// well-behaved frontend that always resends the event's CURRENT
+// ticketing/visibility on every edit (rather than omitting unchanged
+// fields) would re-trigger this gate on every save once a tenant lapses
+// — even though nothing is actually changing. Fixing that needs this
+// function to compare against the event's stored value, which is a
+// larger signature change out of scope for subscription billing.
 export const assertEventUpdatable = async (tenantId: string, input: EventTierCheckInput): Promise<void> => {
   const tenant = await tenantRepository.findById(tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  assertSparkCapabilityGates(tenant.subscriptionTier, input);
+  assertSparkCapabilityGates(resolveEffectiveTier(tenant), input);
 };

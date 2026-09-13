@@ -1,5 +1,5 @@
 export declare const tenantService: {
-    getAll: () => import("@prisma/client").Prisma.PrismaPromise<{
+    getAll: () => Promise<{
         name: string;
         id: string;
         slug: string;
@@ -15,6 +15,22 @@ export declare const tenantService: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionPendingTierAfterPeriodEnd: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionGraceStartedAt: Date | null;
+        paystackCustomerCode: string | null;
+        paystackSubscriptionCode: string | null;
+        paystackSubscriptionEmailToken: string | null;
+        paystackAuthorizationCode: string | null;
+        paystackCardBrand: string | null;
+        paystackCardLast4: string | null;
+        paystackCardExpMonth: string | null;
+        paystackCardExpYear: string | null;
+        subscriptionPendingReference: string | null;
+        subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     }[]>;
     getById: (id: string, includeArchived?: boolean) => Promise<{
         name: string;
@@ -32,6 +48,22 @@ export declare const tenantService: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionPendingTierAfterPeriodEnd: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionGraceStartedAt: Date | null;
+        paystackCustomerCode: string | null;
+        paystackSubscriptionCode: string | null;
+        paystackSubscriptionEmailToken: string | null;
+        paystackAuthorizationCode: string | null;
+        paystackCardBrand: string | null;
+        paystackCardLast4: string | null;
+        paystackCardExpMonth: string | null;
+        paystackCardExpYear: string | null;
+        subscriptionPendingReference: string | null;
+        subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     }>;
     getUsers: (id: string) => Promise<{
         id: string;
@@ -103,6 +135,22 @@ export declare const tenantService: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionPendingTierAfterPeriodEnd: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionGraceStartedAt: Date | null;
+        paystackCustomerCode: string | null;
+        paystackSubscriptionCode: string | null;
+        paystackSubscriptionEmailToken: string | null;
+        paystackAuthorizationCode: string | null;
+        paystackCardBrand: string | null;
+        paystackCardLast4: string | null;
+        paystackCardExpMonth: string | null;
+        paystackCardExpYear: string | null;
+        subscriptionPendingReference: string | null;
+        subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     } | null>;
     reactivate: (id: string, superAdminUserId: string) => Promise<{
         name: string;
@@ -120,6 +168,22 @@ export declare const tenantService: {
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
         paystackSubaccountFailureReason: string | null;
+        subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
+        subscriptionCurrentPeriodEnd: Date | null;
+        subscriptionCancelAtPeriodEnd: boolean;
+        subscriptionPendingTierAfterPeriodEnd: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionGraceStartedAt: Date | null;
+        paystackCustomerCode: string | null;
+        paystackSubscriptionCode: string | null;
+        paystackSubscriptionEmailToken: string | null;
+        paystackAuthorizationCode: string | null;
+        paystackCardBrand: string | null;
+        paystackCardLast4: string | null;
+        paystackCardExpMonth: string | null;
+        paystackCardExpYear: string | null;
+        subscriptionPendingReference: string | null;
+        subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
+        subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     } | null>;
 };
 //# sourceMappingURL=tenant.service.d.ts.map

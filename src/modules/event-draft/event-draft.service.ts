@@ -222,6 +222,18 @@ export const eventDraftService = {
       });
 
       return event;
+    }, {
+      // Task 0 (Subscription Billing batch) audit: found with neither
+      // timeout nor maxWait set. This materializes a whole wizard draft
+      // in sequential per-row loops (days, tickets, custom RSVP fields,
+      // program items) — unbounded by any of those counts, the same
+      // shape of bug bulkCreateWithInvites and rsvp.service.ts's
+      // transaction already hit at real row counts. A draft with a
+      // multi-day program and a long custom-field list is a realistic
+      // way to exceed Prisma's defaults (~2s connection acquisition,
+      // ~5s execution) well before touching Neon's own cold-start cost.
+      maxWait: 10000,
+      timeout: 15000,
     });
 
     // Only delete the draft after the transaction fully succeeds.

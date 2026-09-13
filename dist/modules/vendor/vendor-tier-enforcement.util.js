@@ -2,6 +2,7 @@ import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
 import { vendorRepository } from './vendor.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 // Called before creating a new vendor space (POST /api/vendors).
 //
 // tenantId is null for a SUPER_ADMIN-managed, tenant-less vendor space
@@ -18,10 +19,12 @@ export const assertVendorSpaceCreatable = async (tenantId) => {
         throw new HttpError(404, 'Tenant not found');
     // vendorMarketplace is an all-or-nothing capability gate (can this
     // tier use the marketplace at all) — read at runtime, never hardcoded,
-    // so a Super Admin toggling it takes effect immediately.
-    const config = await subscriptionTierConfigRepository.findByTier(tenant.subscriptionTier);
+    // so a Super Admin toggling it takes effect immediately. CREATION-time
+    // (a new vendor space): bound by the tenant's current effective tier.
+    const effectiveTier = resolveEffectiveTier(tenant);
+    const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.vendorMarketplace) {
-        throw new HttpError(403, `The ${tenant.subscriptionTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`);
+        throw new HttpError(403, `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`);
     }
     // maxVendorSpaces is the separate numeric ceiling for tiers that DO
     // have marketplace access — null means unlimited, same convention as
@@ -29,7 +32,7 @@ export const assertVendorSpaceCreatable = async (tenantId) => {
     if (config.maxVendorSpaces != null) {
         const activeCount = await vendorRepository.countActiveSpacesForTenant(tenantId);
         if (activeCount >= config.maxVendorSpaces) {
-            throw new HttpError(403, `The ${tenant.subscriptionTier} plan allows a maximum of ${config.maxVendorSpaces} active vendor space(s). Archive an existing space or upgrade your plan to add another.`);
+            throw new HttpError(403, `The ${effectiveTier} plan allows a maximum of ${config.maxVendorSpaces} active vendor space(s). Archive an existing space or upgrade your plan to add another.`);
         }
     }
 };
@@ -48,9 +51,12 @@ export const assertVendorMarketplaceAccessible = async (tenantId) => {
     const tenant = await tenantRepository.findById(tenantId);
     if (!tenant)
         throw new HttpError(404, 'Tenant not found');
-    const config = await subscriptionTierConfigRepository.findByTier(tenant.subscriptionTier);
+    // Organiser browsing for their own event planning — not guest-facing,
+    // so a lapsed tenant losing search access breaks nothing already live.
+    const effectiveTier = resolveEffectiveTier(tenant);
+    const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.vendorMarketplace) {
-        throw new HttpError(403, `The ${tenant.subscriptionTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`);
+        throw new HttpError(403, `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`);
     }
 };
 //# sourceMappingURL=vendor-tier-enforcement.util.js.map

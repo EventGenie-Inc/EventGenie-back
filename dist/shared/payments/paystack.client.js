@@ -85,6 +85,7 @@ export const initializeTransaction = async (params) => {
         ...(params.subaccount !== undefined && { subaccount: params.subaccount }),
         ...(params.transactionChargeCents !== undefined && { transaction_charge: params.transactionChargeCents }),
         ...(params.bearer !== undefined && { bearer: params.bearer }),
+        ...(params.plan !== undefined && { plan: params.plan }),
         ...(params.metadata !== undefined && { metadata: params.metadata }),
     });
     return {
@@ -173,5 +174,78 @@ export const verifyWebhookSignature = (rawBody, signatureHeader) => {
     if (expectedBuf.length !== receivedBuf.length)
         return false;
     return crypto.timingSafeEqual(expectedBuf, receivedBuf);
+};
+const toPlan = (data) => ({
+    planCode: data.plan_code,
+    name: data.name,
+    amountCents: data.amount,
+    interval: data.interval,
+    currency: data.currency,
+});
+export const createPlan = async (params) => {
+    const data = await paystackRequest('POST', '/plan', {
+        name: params.name,
+        amount: params.amountCents,
+        interval: params.interval,
+        currency: params.currency ?? 'ZAR',
+        ...(params.description !== undefined && { description: params.description }),
+    });
+    return toPlan(data);
+};
+export const listPlans = async () => {
+    const data = await paystackRequest('GET', '/plan?perPage=100');
+    return data.map(toPlan);
+};
+const toSubscription = (data) => {
+    const customer = typeof data.customer === 'object' ? data.customer : null;
+    const authorization = typeof data.authorization === 'object' ? data.authorization : null;
+    const planCode = typeof data.plan === 'string' ? data.plan : typeof data.plan === 'object' ? data.plan.plan_code : null;
+    return {
+        subscriptionCode: data.subscription_code,
+        emailToken: data.email_token,
+        nextPaymentDate: data.next_payment_date,
+        status: data.status,
+        customerCode: customer?.customer_code ?? null,
+        planCode,
+        authorizationCode: authorization?.authorization_code ?? null,
+        cardLast4: authorization?.last4 ?? null,
+        cardBrand: authorization?.card_type ?? null,
+        cardExpMonth: authorization?.exp_month ?? null,
+        cardExpYear: authorization?.exp_year ?? null,
+    };
+};
+// Used for an upgrade that reuses an existing saved card — the tenant
+// has already authorised a card via a prior Initialize Transaction, so
+// this charges it immediately for the new plan with no checkout
+// redirect. NOT used for a tenant's first-ever subscribe, which goes
+// through initializeTransaction with a `plan` param instead (that's
+// the only way to collect a NEW card — see subscription.service.ts).
+export const createSubscription = async (params) => {
+    const data = await paystackRequest('POST', '/subscription', {
+        customer: params.customerCode,
+        plan: params.planCode,
+        ...(params.authorizationCode !== undefined && { authorization: params.authorizationCode }),
+    });
+    return toSubscription(data);
+};
+// Paystack requires BOTH the subscription code and its email_token to
+// disable a subscription (a deliberate anti-tamper pairing — knowing
+// the code alone isn't enough to cancel someone else's subscription).
+export const disableSubscription = async (subscriptionCode, emailToken) => {
+    await paystackRequest('POST', '/subscription/disable', {
+        code: subscriptionCode,
+        token: emailToken,
+    });
+};
+// Fetches the CURRENT authoritative state of a subscription — used
+// after a renewal's charge.success to learn the fresh next_payment_date,
+// which that webhook event does not itself carry (only
+// subscription.create does, and Paystack does not resend that event on
+// each renewal — see subscription.service.ts's own comment on this).
+// Never used to compute a period end ourselves; only to read the one
+// Paystack already computed.
+export const getSubscription = async (subscriptionCode) => {
+    const data = await paystackRequest('GET', `/subscription/${encodeURIComponent(subscriptionCode)}`);
+    return toSubscription(data);
 };
 //# sourceMappingURL=paystack.client.js.map
