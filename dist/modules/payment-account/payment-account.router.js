@@ -48,8 +48,8 @@ router.post('/', async (req, res, next) => {
         const tenantId = requireOwnTenantId(req, res);
         if (!tenantId)
             return;
-        const tenant = await paymentAccountService.submit(tenantId, req.body);
-        res.status(201).json({ status: 'ok', data: tenant });
+        const status = await paymentAccountService.submit(tenantId, req.body);
+        res.status(201).json({ status: 'ok', data: status });
     }
     catch (err) {
         next(err);
@@ -60,8 +60,8 @@ router.put('/', async (req, res, next) => {
         const tenantId = requireOwnTenantId(req, res);
         if (!tenantId)
             return;
-        const tenant = await paymentAccountService.update(tenantId, req.body);
-        res.status(200).json({ status: 'ok', data: tenant });
+        const status = await paymentAccountService.update(tenantId, req.body);
+        res.status(200).json({ status: 'ok', data: status });
     }
     catch (err) {
         next(err);

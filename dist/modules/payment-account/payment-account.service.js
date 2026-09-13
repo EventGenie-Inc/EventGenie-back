@@ -14,19 +14,60 @@ import {} from './payment-account.types.js';
 //  there is no cross-tenant surface to guard because a tenant admin can
 //  only ever act on their own tenant's payout account.
 // ─────────────────────────────────────────
+// Shared by getStatus/submit/update — every one of them ends with "a
+// tenant's current subaccount status, projected for the browser".
+// Built as an explicit allowlist against saveSubaccount's own select
+// (not a spread), for the same reason that select exists: whatever
+// Prisma call produced this object, only these fields are safe to send
+// back, and a Tenant field added later must never leak into this DTO
+// by accident.
+const toStatusDto = (tenant) => ({
+    status: tenant.paystackSubaccountStatus,
+    readyToSell: tenant.paystackSubaccountStatus === 'ACTIVE',
+    subaccountCode: tenant.paystackSubaccountCode,
+    businessName: tenant.paystackBusinessName,
+    bankName: tenant.paystackSettlementBankName,
+    accountNumberLast4: tenant.paystackAccountNumberLast4,
+    // Legacy entries predate the distinct field. businessName is a
+    // useful fallback for those records, but new submissions retain
+    // the organiser-entered holder name separately.
+    accountHolderName: tenant.paystackAccountHolderName ?? tenant.paystackBusinessName,
+    failureReason: tenant.paystackSubaccountFailureReason,
+});
 export const paymentAccountService = {
     getStatus: async (tenantId) => {
-        const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
+        let tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
         if (!tenant)
             throw new HttpError(404, 'Tenant not found');
-        return {
-            status: tenant.paystackSubaccountStatus,
-            readyToSell: tenant.paystackSubaccountStatus === 'ACTIVE',
-            subaccountCode: tenant.paystackSubaccountCode,
-            businessName: tenant.paystackBusinessName,
-            bankName: tenant.paystackSettlementBankName,
-            failureReason: tenant.paystackSubaccountFailureReason,
-        };
+        // The Paystack create/update response contains the account number,
+        // so new entries always populate last-four locally. For a pre-column
+        // subaccount, make one read to Paystack and cache only its final four
+        // digits. A provider outage must not turn a tenant's existing status
+        // page into a 500, so retain the known local status in that case.
+        if (tenant.paystackSubaccountCode && !tenant.paystackAccountNumberLast4) {
+            try {
+                const live = await paystackClient.getSubaccount(tenant.paystackSubaccountCode);
+                await paymentAccountRepository.cacheVisibleDetails(tenantId, {
+                    businessName: live.businessName,
+                    settlementBankName: live.settlementBank,
+                    accountNumberLast4: live.accountNumber.slice(-4),
+                });
+                tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
+                if (!tenant)
+                    throw new HttpError(404, 'Tenant not found');
+            }
+            catch {
+                // The cached metadata below is still safe to return. It is better
+                // to show "not available yet" than to conceal the full account
+                // status just because Paystack is temporarily unreachable.
+            }
+        }
+        // `tenant` can only become null in the defensive re-read above if a
+        // concurrent archive/removal occurred; keep the public contract a
+        // normal 404 rather than dereferencing a nullable row.
+        if (!tenant)
+            throw new HttpError(404, 'Tenant not found');
+        return toStatusDto(tenant);
     },
     listBanks: () => paystackClient.listBanks(),
     submit: async (tenantId, data) => {
@@ -64,7 +105,7 @@ export const paymentAccountService = {
             }
             throw err;
         }
-        return paymentAccountRepository.saveSubaccount(tenantId, {
+        const saved = await paymentAccountRepository.saveSubaccount(tenantId, {
             subaccountCode: result.subaccountCode,
             // PENDING vs ACTIVE is read directly off Paystack's own `active`
             // flag on the created subaccount, not guessed.
@@ -75,7 +116,10 @@ export const paymentAccountService = {
             // subaccount object — stored as-is rather than re-deriving it
             // from a second listBanks() lookup.
             settlementBankName: result.settlementBank,
+            accountNumberLast4: result.accountNumber.slice(-4),
+            ...(data.accountHolderName !== undefined && { accountHolderName: data.accountHolderName }),
         });
+        return toStatusDto(saved);
     },
     update: async (tenantId, data) => {
         const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
@@ -102,13 +146,16 @@ export const paymentAccountService = {
             }
             throw err;
         }
-        return paymentAccountRepository.saveSubaccount(tenantId, {
+        const saved = await paymentAccountRepository.saveSubaccount(tenantId, {
             subaccountCode: result.subaccountCode,
             status: result.active ? 'ACTIVE' : 'PENDING',
             businessName: result.businessName,
             settlementBankCode: data.settlementBank ?? tenant.paystackSettlementBankCode,
             settlementBankName: result.settlementBank,
+            accountNumberLast4: data.accountNumber ? result.accountNumber.slice(-4) : tenant.paystackAccountNumberLast4,
+            ...(data.accountHolderName !== undefined && { accountHolderName: data.accountHolderName }),
         });
+        return toStatusDto(saved);
     },
 };
 //# sourceMappingURL=payment-account.service.js.map

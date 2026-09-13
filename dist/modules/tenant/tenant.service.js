@@ -3,19 +3,36 @@ import { tenantRepository } from './tenant.repository.js';
 import { eventRepository } from '../event/event.repository.js';
 import { withEffectiveStatus } from '../event/event-status.util.js';
 import { withEffectiveTier } from '../subscription/effective-tier.util.js';
+import {} from './tenant.types.js';
 import { suspendFirebaseAccount, reactivateFirebaseAccount, } from '../../shared/firebase/firebase-account-status.util.js';
+// Deliberate, hand-picked projection (ClientTenantDto) — see that
+// type's own comment. Every method below that hands a Tenant back to
+// tenant.router.ts (and from there, a browser) goes through this;
+// tenantRepository.findById itself stays a full, unselected row
+// because the subscription-tier-config/*-tier-enforcement.util.ts
+// family calls it directly (bypassing this service entirely) and needs
+// the full subscription-state columns for resolveEffectiveTier.
+const toClientTenant = (tenant) => ({
+    id: tenant.id,
+    name: tenant.name,
+    slug: tenant.slug,
+    email: tenant.email,
+    subscriptionTier: tenant.subscriptionTier,
+    subscriptionStatus: tenant.subscriptionStatus,
+    createdAt: tenant.createdAt,
+});
 export const tenantService = {
     // Routed through withEffectiveTier (Subscription Billing batch), same
     // shape as event.service.ts's withEffectiveStatus — a client-facing
     // tenant read must show the CURRENT effective tier, never the raw
     // stored one, or a lapsed tenant's own frontend (GET /api/tenants/me)
     // would keep offering features it no longer has.
-    getAll: async () => (await tenantRepository.findAll()).map(withEffectiveTier),
+    getAll: async () => (await tenantRepository.findAll()).map(withEffectiveTier).map(toClientTenant),
     getById: async (id, includeArchived = false) => {
         const tenant = await tenantRepository.findById(id, includeArchived);
         if (!tenant)
             throw new Error('Tenant not found');
-        return withEffectiveTier(tenant);
+        return toClientTenant(withEffectiveTier(tenant));
     },
     getUsers: async (id) => {
         await tenantService.getById(id);
@@ -69,7 +86,7 @@ export const tenantService = {
         for (const user of users) {
             await suspendFirebaseAccount(user.firebaseUid);
         }
-        return tenantRepository.findById(id);
+        return tenantService.getById(id);
     },
     reactivate: async (id, superAdminUserId) => {
         // includeArchived: true — the whole point of reactivate is to find a
@@ -110,7 +127,7 @@ export const tenantService = {
         for (const user of users) {
             await reactivateFirebaseAccount(user.firebaseUid);
         }
-        return tenantRepository.findById(id);
+        return tenantService.getById(id);
     },
 };
 //# sourceMappingURL=tenant.service.js.map

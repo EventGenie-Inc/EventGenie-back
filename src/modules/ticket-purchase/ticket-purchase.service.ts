@@ -72,6 +72,14 @@ export interface RetryPaymentInput {
   tenantId: string;
 }
 
+export interface TicketQuote {
+  ticketPriceCents: number;
+  commissionCents: number;
+  processingFeeCents: number;
+  totalChargeCents: number;
+  currency: string;
+}
+
 // ─────────────────────────────────────────
 //  TICKET PURCHASE SERVICE
 //
@@ -84,6 +92,20 @@ export interface RetryPaymentInput {
 //  here, so this file never needs to know what a guest token is.
 // ─────────────────────────────────────────
 export const ticketPurchaseService = {
+
+  // The guest quote and the reservation path below deliberately share
+  // this one calculation. A second gross-up implementation would let a
+  // guest see one total and be charged another after a fee/config change.
+  quote: (ticket: { price: Prisma.Decimal; currency: string }, quantity: number): TicketQuote => {
+    const breakdown = computeTicketChargeCents(decimalToCents(ticket.price), quantity);
+    return {
+      ticketPriceCents: breakdown.ticketPriceCents,
+      commissionCents: breakdown.commissionCents,
+      processingFeeCents: breakdown.platformChargeCents - breakdown.commissionCents,
+      totalChargeCents: breakdown.totalChargeCents,
+      currency: ticket.currency,
+    };
+  },
 
   getAll: (inviteId: string) => ticketPurchaseRepository.findAll(inviteId),
 
@@ -146,8 +168,7 @@ export const ticketPurchaseService = {
       );
     }
 
-    const unitPriceCents = decimalToCents(input.ticket.price);
-    const breakdown = computeTicketChargeCents(unitPriceCents, input.quantity);
+    const quote = ticketPurchaseService.quote(input.ticket, input.quantity);
     const paymentRef = generatePaymentReference();
     const holdExpiresAt = nextHoldExpiry();
 
@@ -156,9 +177,9 @@ export const ticketPurchaseService = {
         ticketId: input.ticket.id,
         inviteId: input.inviteId,
         quantity: input.quantity,
-        ticketPriceCents: breakdown.ticketPriceCents,
-        commissionCents: breakdown.commissionCents,
-        totalPaidCents: breakdown.totalChargeCents,
+        ticketPriceCents: quote.ticketPriceCents,
+        commissionCents: quote.commissionCents,
+        totalPaidCents: quote.totalChargeCents,
         currency: input.ticket.currency,
         paymentRef,
         holdExpiresAt,
@@ -177,14 +198,14 @@ export const ticketPurchaseService = {
     await paymentLedgerService.record(
       {
         type: 'TICKET_PAYMENT_INITIATED',
-        amountCents: breakdown.totalChargeCents,
+        amountCents: quote.totalChargeCents,
         currency: input.ticket.currency,
         tenantId: input.tenantId,
         eventId: input.eventId,
         paystackReference: paymentRef,
         relatedType: 'TicketPurchase',
         relatedId: purchase.id,
-        payload: breakdown as unknown as Prisma.InputJsonValue,
+        payload: quote as unknown as Prisma.InputJsonValue,
       },
       tx
     );
@@ -192,8 +213,8 @@ export const ticketPurchaseService = {
     return {
       purchaseId: purchase.id,
       paymentRef,
-      totalChargeCents: breakdown.totalChargeCents,
-      platformChargeCents: breakdown.platformChargeCents,
+      totalChargeCents: quote.totalChargeCents,
+      platformChargeCents: quote.commissionCents + quote.processingFeeCents,
       subaccountCode,
     };
   },

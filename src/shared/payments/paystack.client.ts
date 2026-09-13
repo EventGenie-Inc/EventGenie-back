@@ -251,6 +251,7 @@ export interface SubaccountResult {
   subaccountCode: string;
   businessName: string;
   settlementBank: string;
+  accountNumber: string;
   active: boolean;
   raw: PaystackSubaccountData;
 }
@@ -259,6 +260,7 @@ const toSubaccountResult = (data: PaystackSubaccountData): SubaccountResult => (
   subaccountCode: data.subaccount_code,
   businessName: data.business_name,
   settlementBank: data.settlement_bank,
+  accountNumber: data.account_number,
   active: data.active,
   raw: data,
 });
@@ -294,6 +296,18 @@ export const updateSubaccount = async (
     ...(params.active !== undefined && { active: params.active }),
   });
 
+  return toSubaccountResult(data);
+};
+
+// Used only to fill the masked-detail cache for subaccounts that existed
+// before EventGenie stored a last-four fragment. Normal status reads stay
+// local after that one refresh; this is not a Paystack dependency on every
+// organiser page load.
+export const getSubaccount = async (subaccountCode: string): Promise<SubaccountResult> => {
+  const data = await paystackRequest<PaystackSubaccountData>(
+    'GET',
+    `/subaccount/${encodeURIComponent(subaccountCode)}`
+  );
   return toSubaccountResult(data);
 };
 
@@ -549,4 +563,24 @@ export const disableSubscription = async (subscriptionCode: string, emailToken: 
 export const getSubscription = async (subscriptionCode: string): Promise<PaystackSubscription> => {
   const data = await paystackRequest<PaystackSubscriptionData>('GET', `/subscription/${encodeURIComponent(subscriptionCode)}`);
   return toSubscription(data);
+};
+
+interface PaystackManageLinkData {
+  link: string;
+}
+
+// "Generate Update Subscription Link" — the one Paystack-native way to
+// let a customer replace the card on an EXISTING subscription. Neither
+// initializeTransaction (a fresh checkout, no subscription to attach
+// to) nor createSubscription (a new subscription, i.e. a second one
+// alongside the failing one) does this: this returns a hosted Paystack
+// page, scoped to this one subscription, where Paystack captures the
+// new card and swaps it in as the subscription's authorization —
+// nothing about the card ever reaches this backend.
+export const generateSubscriptionManageLink = async (subscriptionCode: string): Promise<string> => {
+  const data = await paystackRequest<PaystackManageLinkData>(
+    'GET',
+    `/subscription/${encodeURIComponent(subscriptionCode)}/manage/link`
+  );
+  return data.link;
 };

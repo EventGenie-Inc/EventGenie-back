@@ -19,6 +19,18 @@ const requireOwnTenantId = (req: Request, res: Response): string | undefined => 
   return auth.user.tenantId;
 };
 
+// Registered before '/' — a static path, not a param route, so order
+// doesn't strictly matter here, but this matches the specific-before-
+// generic convention used across the other routers. Not tenant-scoped
+// (see subscriptionService.getPricing's own comment): every tenant
+// reads the exact same four prices.
+router.get('/plans', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pricing = subscriptionService.getPricing();
+    res.status(200).json({ status: 'ok', data: pricing });
+  } catch (err) { next(err); }
+});
+
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = requireOwnTenantId(req, res);
@@ -34,6 +46,15 @@ router.post('/subscribe', async (req: Request, res: Response, next: NextFunction
     if (!tenantId) return;
     const callbackUrl = `${process.env.FRONTEND_BASE_URL}/billing/callback`;
     const result = await subscriptionService.subscribe(tenantId, req.body, callbackUrl);
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+router.get('/update-card-link', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = requireOwnTenantId(req, res);
+    if (!tenantId) return;
+    const result = await subscriptionService.getUpdateCardLink(tenantId);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });

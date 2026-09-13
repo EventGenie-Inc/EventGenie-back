@@ -1,5 +1,9 @@
 import { type SubscriptionTier, type SubscriptionPeriod } from '@prisma/client';
 import { type PaidSubscriptionTier } from './subscription-plans.config.js';
+export interface SubscriptionPricingDto {
+    currency: string;
+    prices: Record<SubscriptionTier, Record<SubscriptionPeriod, number>>;
+}
 export interface SubscribeDto {
     tier: PaidSubscriptionTier;
     period: SubscriptionPeriod;

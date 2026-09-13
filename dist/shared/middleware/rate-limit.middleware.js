@@ -161,6 +161,21 @@ export const memoryHubGuestUploadLimiter = rateLimit({
         message: 'Too many upload requests. Please wait a few minutes and try again.',
     },
 });
+// Ticket quotes are public-token reads that fire when a guest changes
+// quantity. Thirty a minute leaves room for a mobile UI's debounced
+// adjustments and a shared venue Wi-Fi, while preventing a leaked invite
+// link from becoming a tight-loop source of configuration-derived pricing.
+export const ticketQuoteLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many ticket price requests. Please wait a moment and try again.',
+    },
+});
 // ─────────────────────────────────────────
 //  RATE LIMITER — PUBLIC EVENT VIEW
 //

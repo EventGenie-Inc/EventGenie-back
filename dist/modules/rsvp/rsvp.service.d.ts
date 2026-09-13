@@ -1,7 +1,8 @@
 import { type EventStatus } from '@prisma/client';
-import { type SubmitRsvpDto } from './rsvp.types.js';
+import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 export declare const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>>;
 export declare const rsvpService: {
+    quoteTicket: (data: QuoteTicketDto) => Promise<import("../ticket-purchase/ticket-purchase.service.js").TicketQuote>;
     validate: (token: string) => Promise<{
         invite: {
             token: string;
