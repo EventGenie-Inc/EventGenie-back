@@ -106,6 +106,8 @@ export declare const subscriptionRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;
@@ -139,6 +141,8 @@ export declare const subscriptionRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;
@@ -179,6 +183,8 @@ export declare const subscriptionRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;
@@ -212,6 +218,8 @@ export declare const subscriptionRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;
@@ -245,6 +253,8 @@ export declare const subscriptionRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;
@@ -279,6 +289,8 @@ export declare const subscriptionRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;

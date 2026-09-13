@@ -39,7 +39,18 @@ export interface RetryPaymentInput {
     quantity: number;
     tenantId: string;
 }
+export interface TicketQuote {
+    ticketPriceCents: number;
+    commissionCents: number;
+    processingFeeCents: number;
+    totalChargeCents: number;
+    currency: string;
+}
 export declare const ticketPurchaseService: {
+    quote: (ticket: {
+        price: Prisma.Decimal;
+        currency: string;
+    }, quantity: number) => TicketQuote;
     getAll: (inviteId: string) => Prisma.PrismaPromise<({
         ticket: {
             name: string;

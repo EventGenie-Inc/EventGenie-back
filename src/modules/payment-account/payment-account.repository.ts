@@ -32,6 +32,8 @@ export const  paymentAccountRepository = {
         paystackBusinessName: true,
         paystackSettlementBankCode: true,
         paystackSettlementBankName: true,
+        paystackAccountNumberLast4: true,
+        paystackAccountHolderName: true,
         paystackSubaccountFailureReason: true,
       },
     }),
@@ -49,6 +51,8 @@ export const  paymentAccountRepository = {
       businessName: string;
       settlementBankCode: string | null;
       settlementBankName: string | null;
+      accountNumberLast4: string | null;
+      accountHolderName?: string;
     }
   ) =>
     prisma.tenant.update({
@@ -59,7 +63,28 @@ export const  paymentAccountRepository = {
         paystackBusinessName: data.businessName,
         paystackSettlementBankCode: data.settlementBankCode,
         paystackSettlementBankName: data.settlementBankName,
+        paystackAccountNumberLast4: data.accountNumberLast4,
+        ...(data.accountHolderName !== undefined && { paystackAccountHolderName: data.accountHolderName }),
         paystackSubaccountFailureReason: null,
+      },
+      // Explicit select — without one, Prisma's update() returns the
+      // FULL updated row, and this is a live leak: paymentAccountService's
+      // submit()/update() hand this straight back to the router as the
+      // response body. The unselected row includes paystackAuthorizationCode
+      // (a live Paystack charging credential, entirely unrelated to this
+      // module — see Tenant's schema comment on the two separate Paystack
+      // surfaces) and every other subscription-billing column. Same
+      // fields as findStatusByTenantId's own select, minus the two
+      // subscription-tier columns that select carries only for
+      // payment-account-readiness.util.ts's internal use.
+      select: {
+        paystackSubaccountCode: true,
+        paystackSubaccountStatus: true,
+        paystackBusinessName: true,
+        paystackSettlementBankName: true,
+        paystackAccountNumberLast4: true,
+        paystackAccountHolderName: true,
+        paystackSubaccountFailureReason: true,
       },
     }),
 
@@ -69,6 +94,19 @@ export const  paymentAccountRepository = {
       data: {
         paystackSubaccountStatus: 'FAILED',
         paystackSubaccountFailureReason: reason,
+      },
+    }),
+
+  cacheVisibleDetails: (
+    tenantId: string,
+    data: { businessName: string; settlementBankName: string; accountNumberLast4: string }
+  ) =>
+    prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        paystackBusinessName: data.businessName,
+        paystackSettlementBankName: data.settlementBankName,
+        paystackAccountNumberLast4: data.accountNumberLast4,
       },
     }),
 };

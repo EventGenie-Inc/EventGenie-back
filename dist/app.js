@@ -32,6 +32,7 @@ import uploadRouter from './modules/upload/upload.router.js';
 import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
 import paymentWebhookRouter from './modules/payment-webhook/payment-webhook.router.js';
 import subscriptionRouter from './modules/subscription/subscription.router.js';
+import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -184,10 +185,12 @@ app.use('/api/uploads', uploadRouter);
 //  /api/payments/subaccount/banks   — bank list for the onboarding form
 //  /api/payments/webhook            — public, unauthenticated (Paystack calls this — both ticketing and subscription events)
 //  /api/subscriptions               — tenant admin subscription billing (Subscription Billing batch)
+//  /api/billing-history             — tenant admin read-only view of their subscription ledger entries
 // ─────────────────────────────────────────
 app.use('/api/payments/subaccount', paymentAccountRouter);
 app.use('/api/payments/webhook', paymentWebhookRouter);
 app.use('/api/subscriptions', subscriptionRouter);
+app.use('/api/billing-history', paymentLedgerRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────

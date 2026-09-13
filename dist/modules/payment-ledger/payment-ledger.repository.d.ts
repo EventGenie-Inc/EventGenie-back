@@ -17,6 +17,14 @@ export declare const paymentLedgerRepository: {
         relatedId: string | null;
         occurredAt: Date;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    findBillingHistoryByTenant: (tenantId: string) => Prisma.PrismaPromise<{
+        id: string;
+        payload: Prisma.JsonValue;
+        type: import("@prisma/client").$Enums.LedgerEntryType;
+        amountCents: number;
+        currency: string;
+        occurredAt: Date;
+    }[]>;
 };
 export {};
 //# sourceMappingURL=payment-ledger.repository.d.ts.map

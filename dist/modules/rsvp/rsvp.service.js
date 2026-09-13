@@ -80,6 +80,17 @@ const isValidRsvpResponseShape = (value) => typeof value === 'object' &&
 // single submission can claim; it's a sanity ceiling independent of (and
 // in addition to) the per-ticket totalQuantity check further down.
 const MAX_TICKET_QUANTITY = 10;
+const assertValidTicketQuote = (data) => {
+    if (!isNonEmptyString(data.token)) {
+        throw new HttpError(400, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+    }
+    if (!isNonEmptyString(data.ticketId)) {
+        throw new HttpError(400, "The selected ticket isn't valid. Please refresh the page and try again.");
+    }
+    if (!isPositiveInteger(data.quantity) || data.quantity > MAX_TICKET_QUANTITY) {
+        throw new HttpError(400, `Ticket quantity must be a whole number between 1 and ${MAX_TICKET_QUANTITY}.`);
+    }
+};
 // A single guard for the whole payload, run once before the transaction
 // opens — every field below arrives straight from an unauthenticated
 // POST body, so a malformed shape anywhere must be rejected before any
@@ -143,6 +154,23 @@ const trimToUndefined = (value) => {
     return trimmed.length > 0 ? trimmed : undefined;
 };
 export const rsvpService = {
+    quoteTicket: async (data) => {
+        assertValidTicketQuote(data);
+        const invite = await inviteRepository.findByToken(data.token);
+        if (!invite) {
+            throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+        }
+        if (invite.expiresAt && invite.expiresAt < new Date()) {
+            throw new HttpError(410, `This invitation link expired on ${formatGuestDate(invite.expiresAt)}. Contact the organiser for a new one.`);
+        }
+        assertEventAcceptsRsvp(resolveEffectiveStatus(invite.event));
+        assertRsvpDeadlineNotPassed(invite.event.rsvpDeadline, invite.used);
+        const ticket = invite.event.tickets.find((candidate) => candidate.id === data.ticketId);
+        if (!ticket) {
+            throw new HttpError(404, 'This ticket type is no longer available.');
+        }
+        return ticketPurchaseService.quote(ticket, data.quantity);
+    },
     // Public, unauthenticated read — returns flags rather than throwing on
     // invalid state, since the caller is a guest's browser rendering a form.
     validate: async (token) => {

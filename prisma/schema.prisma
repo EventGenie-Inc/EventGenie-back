@@ -200,12 +200,18 @@ model Tenant {
   // payment-account module. Never store the bank account number itself:
   // Paystack holds it, this is only the reference back to it plus enough
   // metadata (which bank, whose business name) to show the tenant admin
-  // what's on file without another round-trip.
+  // what's on file without another round-trip. The account number is
+  // never stored: only its last four digits are retained for the tenant
+  // admin's confirmation check.
   paystackSubaccountCode          String?                  @unique
   paystackSubaccountStatus        PaystackSubaccountStatus @default(NOT_STARTED)
   paystackBusinessName            String?
   paystackSettlementBankCode      String?
   paystackSettlementBankName      String?
+  paystackAccountNumberLast4      String?
+  // Separate from businessName: Paystack displays businessName, while
+  // this is the organiser's own, unverified account-holder declaration.
+  paystackAccountHolderName       String?
   paystackSubaccountFailureReason String?
 
   // ── Subscription billing (Subscription Billing batch) ──

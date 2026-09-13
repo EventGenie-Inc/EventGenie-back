@@ -10,6 +10,8 @@ export declare const paymentAccountRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionCurrentPeriodEnd: Date | null;
         subscriptionCancelAtPeriodEnd: boolean;
@@ -21,7 +23,18 @@ export declare const paymentAccountRepository: {
         businessName: string;
         settlementBankCode: string | null;
         settlementBankName: string | null;
+        accountNumberLast4: string | null;
+        accountHolderName?: string;
     }) => Prisma.Prisma__TenantClient<{
+        paystackSubaccountCode: string | null;
+        paystackSubaccountStatus: import("@prisma/client").$Enums.PaystackSubaccountStatus;
+        paystackBusinessName: string | null;
+        paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
+        paystackSubaccountFailureReason: string | null;
+    }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
+    markFailed: (tenantId: string, reason: string) => Prisma.Prisma__TenantClient<{
         name: string;
         id: string;
         slug: string;
@@ -36,6 +49,8 @@ export declare const paymentAccountRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;
@@ -54,7 +69,11 @@ export declare const paymentAccountRepository: {
         subscriptionPendingTier: import("@prisma/client").$Enums.SubscriptionTier | null;
         subscriptionPendingPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
-    markFailed: (tenantId: string, reason: string) => Prisma.Prisma__TenantClient<{
+    cacheVisibleDetails: (tenantId: string, data: {
+        businessName: string;
+        settlementBankName: string;
+        accountNumberLast4: string;
+    }) => Prisma.Prisma__TenantClient<{
         name: string;
         id: string;
         slug: string;
@@ -69,6 +88,8 @@ export declare const paymentAccountRepository: {
         paystackBusinessName: string | null;
         paystackSettlementBankCode: string | null;
         paystackSettlementBankName: string | null;
+        paystackAccountNumberLast4: string | null;
+        paystackAccountHolderName: string | null;
         paystackSubaccountFailureReason: string | null;
         subscriptionPeriod: import("@prisma/client").$Enums.SubscriptionPeriod | null;
         subscriptionCurrentPeriodEnd: Date | null;

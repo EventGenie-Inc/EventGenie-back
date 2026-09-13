@@ -19,3 +19,9 @@ export interface SubmitRsvpDto {
   email?: string;
   phoneNumber?: string;
 }
+
+export interface QuoteTicketDto {
+  token: string;
+  ticketId: string;
+  quantity: number;
+}

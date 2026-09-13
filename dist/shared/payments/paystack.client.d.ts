@@ -74,6 +74,7 @@ export interface SubaccountResult {
     subaccountCode: string;
     businessName: string;
     settlementBank: string;
+    accountNumber: string;
     active: boolean;
     raw: PaystackSubaccountData;
 }
@@ -81,6 +82,7 @@ export declare const createSubaccount: (params: CreateSubaccountParams) => Promi
 export declare const updateSubaccount: (subaccountCode: string, params: Partial<CreateSubaccountParams> & {
     active?: boolean;
 }) => Promise<SubaccountResult>;
+export declare const getSubaccount: (subaccountCode: string) => Promise<SubaccountResult>;
 export interface PaystackBank {
     name: string;
     code: string;
@@ -127,5 +129,6 @@ export interface PaystackSubscription {
 export declare const createSubscription: (params: CreateSubscriptionParams) => Promise<PaystackSubscription>;
 export declare const disableSubscription: (subscriptionCode: string, emailToken: string) => Promise<void>;
 export declare const getSubscription: (subscriptionCode: string) => Promise<PaystackSubscription>;
+export declare const generateSubscriptionManageLink: (subscriptionCode: string) => Promise<string>;
 export {};
 //# sourceMappingURL=paystack.client.d.ts.map

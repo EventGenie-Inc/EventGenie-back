@@ -38,6 +38,19 @@ const nextHoldExpiry = () => new Date(Date.now() + HOLD_DURATION_MINUTES * 60_00
 //  here, so this file never needs to know what a guest token is.
 // ─────────────────────────────────────────
 export const ticketPurchaseService = {
+    // The guest quote and the reservation path below deliberately share
+    // this one calculation. A second gross-up implementation would let a
+    // guest see one total and be charged another after a fee/config change.
+    quote: (ticket, quantity) => {
+        const breakdown = computeTicketChargeCents(decimalToCents(ticket.price), quantity);
+        return {
+            ticketPriceCents: breakdown.ticketPriceCents,
+            commissionCents: breakdown.commissionCents,
+            processingFeeCents: breakdown.platformChargeCents - breakdown.commissionCents,
+            totalChargeCents: breakdown.totalChargeCents,
+            currency: ticket.currency,
+        };
+    },
     getAll: (inviteId) => ticketPurchaseRepository.findAll(inviteId),
     getById: async (id) => {
         const purchase = await ticketPurchaseRepository.findById(id);
@@ -88,17 +101,16 @@ export const ticketPurchaseService = {
         if (!secured) {
             throw new HttpError(409, "There aren't enough tickets left for the quantity you selected. Try a smaller quantity or contact the organiser.");
         }
-        const unitPriceCents = decimalToCents(input.ticket.price);
-        const breakdown = computeTicketChargeCents(unitPriceCents, input.quantity);
+        const quote = ticketPurchaseService.quote(input.ticket, input.quantity);
         const paymentRef = generatePaymentReference();
         const holdExpiresAt = nextHoldExpiry();
         const purchase = await ticketPurchaseRepository.create({
             ticketId: input.ticket.id,
             inviteId: input.inviteId,
             quantity: input.quantity,
-            ticketPriceCents: breakdown.ticketPriceCents,
-            commissionCents: breakdown.commissionCents,
-            totalPaidCents: breakdown.totalChargeCents,
+            ticketPriceCents: quote.ticketPriceCents,
+            commissionCents: quote.commissionCents,
+            totalPaidCents: quote.totalChargeCents,
             currency: input.ticket.currency,
             paymentRef,
             holdExpiresAt,
@@ -113,20 +125,20 @@ export const ticketPurchaseService = {
         // indistinguishable from an attempt that never happened.
         await paymentLedgerService.record({
             type: 'TICKET_PAYMENT_INITIATED',
-            amountCents: breakdown.totalChargeCents,
+            amountCents: quote.totalChargeCents,
             currency: input.ticket.currency,
             tenantId: input.tenantId,
             eventId: input.eventId,
             paystackReference: paymentRef,
             relatedType: 'TicketPurchase',
             relatedId: purchase.id,
-            payload: breakdown,
+            payload: quote,
         }, tx);
         return {
             purchaseId: purchase.id,
             paymentRef,
-            totalChargeCents: breakdown.totalChargeCents,
-            platformChargeCents: breakdown.platformChargeCents,
+            totalChargeCents: quote.totalChargeCents,
+            platformChargeCents: quote.commissionCents + quote.processingFeeCents,
             subaccountCode,
         };
     },

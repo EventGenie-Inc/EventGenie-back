@@ -27,6 +27,19 @@ const PERIOD_RANK = { MONTHLY: 0, ANNUAL: 1 };
 //  passed" — that action belongs to Paystack alone.
 // ─────────────────────────────────────────
 export const subscriptionService = {
+    // Read-only mirror of SUBSCRIPTION_PRICES_CENTS — the frontend was
+    // duplicating these four prices in its own config (no endpoint
+    // existed to read them from), which drifts silently: a tenant sees
+    // one number on the pricing page and is charged another the moment
+    // this file's own constant changes. Pure and synchronous, no tenantId
+    // param — pricing is not tenant-specific, so subscription.router.ts's
+    // requireOwnTenantId doesn't apply here; it's still mounted behind
+    // the router's own authenticate+requireTenantAdmin guard rather than
+    // opened up as a new unauthenticated surface just to serve four numbers.
+    getPricing: () => ({
+        currency: 'ZAR',
+        prices: SUBSCRIPTION_PRICES_CENTS,
+    }),
     getStatus: async (tenantId) => {
         const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
         if (!tenant)
@@ -237,6 +250,32 @@ export const subscriptionService = {
             },
         });
         return { outcome: 'scheduled', effectiveAt: tenant.subscriptionCurrentPeriodEnd };
+    },
+    // ── UPDATE CARD LINK — the fix action for a tenant in grace (a
+    // renewal charge failed) and for anyone who just wants to replace
+    // their card pre-emptively. Neither subscribe() (409s while a
+    // subscription is already active — see above) nor changeTier() (same
+    // tier+period would fall into the DOWNGRADE branch and schedule an
+    // end-of-period lapse, not fix anything) can do this — see
+    // paystack.client.ts's generateSubscriptionManageLink for why this
+    // needs its own Paystack call. Returns Paystack's own hosted link;
+    // the browser is sent there directly, same redirect-based shape as
+    // subscribe()'s authorizationUrl.
+    getUpdateCardLink: async (tenantId) => {
+        const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
+        if (!tenant)
+            throw new HttpError(404, 'Tenant not found');
+        if (!tenant.paystackSubscriptionCode) {
+            throw new HttpError(422, 'This tenant has no subscription to update a card for.');
+        }
+        try {
+            const link = await paystackClient.generateSubscriptionManageLink(tenant.paystackSubscriptionCode);
+            return { link };
+        }
+        catch (err) {
+            const reason = err instanceof PaystackApiError ? err.paystackMessage : 'Could not generate a card update link. Please try again.';
+            throw new HttpError(422, reason);
+        }
     },
     // ── CANCEL — same mechanism as a downgrade, target tier SPARK
     // (nothing to resubscribe to automatically since Spark is free).
