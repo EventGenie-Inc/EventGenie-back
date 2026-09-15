@@ -15,6 +15,7 @@ import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { signMemoryItemUpload } from '../upload/upload.service.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable, getMemoryHubQuotaBytes } from './memory-hub-tier-enforcement.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { isMemoryItemTooLarge, memoryItemTooLargeMessage } from './memory-item-limits.util.js';
 
 // Guest-originated writes have no platform userId — Invite.updatedBy is
@@ -30,8 +31,7 @@ const GUEST_ACTOR = 'guest-memory-upload';
 // from Cloudinary immediately rather than left as an orphan nobody
 // ever references — same reasoning as event-cover-image.util.ts.
 const assertItemAcceptableOrDestroy = async (
-  eventId: string,
-  tenantId: string,
+  event: EntitlementDerivableEvent & { id: string },
   mediaType: MediaType,
   bytes: number,
   cloudinaryPublicId: string
@@ -45,9 +45,9 @@ const assertItemAcceptableOrDestroy = async (
     throw new HttpError(400, memoryItemTooLargeMessage(mediaType, bytes));
   }
 
-  const maxBytes = await getMemoryHubQuotaBytes(tenantId);
+  const maxBytes = await getMemoryHubQuotaBytes(event);
   if (maxBytes != null) {
-    const usedBytes = await memoryHubRepository.sumBytesForEvent(eventId);
+    const usedBytes = await memoryHubRepository.sumBytesForEvent(event.id);
     if (usedBytes + bytes > maxBytes) {
       void destroyAsset(cloudinaryPublicId, resourceType).then((result) => {
         if (!result.ok) console.error('[cloudinary cleanup] failed to delete over-quota memory item:', result.reason);
@@ -131,7 +131,7 @@ export const memoryHubService = {
   getByEventId: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId); // throws 404 if wrong tenant
     if (requestingRole !== 'SUPER_ADMIN') {
-      await assertMemoryHubAccessible(event.tenantId);
+      await assertMemoryHubAccessible(event);
     }
     const hub = await memoryHubRepository.findByEventId(eventId, includeArchived);
     if (!hub) throw new HttpError(404, 'Memory hub not found for this event');
@@ -158,7 +158,7 @@ export const memoryHubService = {
     const hub = await memoryHubService.getByEventId(eventId, requestingRole, tenantId);
     const event = await eventService.getById(eventId, requestingRole, tenantId);
     const usedBytes = await memoryHubRepository.sumBytesForEvent(eventId);
-    const limitBytes = await getMemoryHubQuotaBytes(event.tenantId);
+    const limitBytes = await getMemoryHubQuotaBytes(event);
     return { ...hub, usedBytes, limitBytes };
   },
 
@@ -308,7 +308,7 @@ export const memoryHubService = {
     const hub = await memoryHubService.getById(hubId, requestingRole, tenantId);
     const event = await eventService.getById(hub.eventId, requestingRole, tenantId);
 
-    await assertItemAcceptableOrDestroy(hub.eventId, event.tenantId, data.mediaType, data.bytes, data.cloudinaryPublicId);
+    await assertItemAcceptableOrDestroy(event, data.mediaType, data.bytes, data.cloudinaryPublicId);
 
     return memoryHubRepository.createItem(hubId, userId, {
       mediaUrl: data.mediaUrl,
@@ -401,8 +401,8 @@ export const memoryHubService = {
       throw new HttpError(403, `The Memory Hub for this event opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
     }
 
-    await assertMemoryHubAccessible(invite.event.tenantId);
-    await assertMemoryHubQuotaAvailable(invite.eventId, invite.event.tenantId);
+    await assertMemoryHubAccessible(invite.event);
+    await assertMemoryHubQuotaAvailable(invite.event);
 
     return signMemoryItemUpload(invite.event.tenantId, invite.eventId, mediaType);
   },
@@ -446,7 +446,7 @@ export const memoryHubService = {
       throw new HttpError(403, `The Memory Hub for this event opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
     }
 
-    await assertItemAcceptableOrDestroy(invite.eventId, invite.event.tenantId, data.mediaType, data.bytes, data.cloudinaryPublicId);
+    await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId);
 
     return memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
       mediaUrl: data.mediaUrl,

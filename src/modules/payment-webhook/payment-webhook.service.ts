@@ -7,6 +7,7 @@ import { isDuplicateWebhookEvent } from './payment-webhook-idempotency.util.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { ticketPurchaseService } from '../ticket-purchase/ticket-purchase.service.js';
 import { subscriptionService } from '../subscription/subscription.service.js';
+import { eventPassService } from '../event-pass/event-pass.service.js';
 import { type PaystackWebhookPayload, type WebhookProcessOutcome } from './payment-webhook.types.js';
 
 // Building block for the dedupe key AND the ledger's paystackReference —
@@ -86,6 +87,16 @@ const dispatchToFeatureHandler = async (
     if (merchantReference) {
       const ticket = await ticketPurchaseService.confirmPaymentWithinTransaction(tx, merchantReference, jsonPayload);
       if (ticket.outcome !== 'not_found') return { claimed: true };
+
+      // Event Pass batch — tried by the same merchant reference, same
+      // "not_found means try the next feature" chain. paymentRef is
+      // globally @unique per model, so at most one of these ever claims
+      // a given reference; no prefix-parsing needed.
+      const pass = await eventPassService.confirmPassPurchaseWithinTransaction(tx, merchantReference, jsonPayload);
+      if (pass.outcome !== 'not_found') return { claimed: true };
+
+      const bundle = await eventPassService.confirmSmsBundlePurchaseWithinTransaction(tx, merchantReference, jsonPayload);
+      if (bundle.outcome !== 'not_found') return { claimed: true };
     }
     return subscriptionService.handleChargeSuccessWithinTransaction(tx, data);
   }
@@ -95,6 +106,12 @@ const dispatchToFeatureHandler = async (
     if (merchantReference) {
       const ticket = await ticketPurchaseService.failPaymentWithinTransaction(tx, merchantReference, jsonPayload);
       if (ticket.outcome !== 'not_found') return { claimed: true };
+
+      const pass = await eventPassService.failPassPurchaseWithinTransaction(tx, merchantReference, jsonPayload);
+      if (pass.outcome !== 'not_found') return { claimed: true };
+
+      const bundle = await eventPassService.failSmsBundlePurchaseWithinTransaction(tx, merchantReference, jsonPayload);
+      if (bundle.outcome !== 'not_found') return { claimed: true };
     }
     return subscriptionService.handleChargeFailedWithinTransaction(tx, data);
   }

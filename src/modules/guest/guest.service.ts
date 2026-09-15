@@ -93,7 +93,7 @@ export const guestService = {
       throw new HttpError(409, `A guest with this ${email ? 'email' : 'phone number'} already exists for this event`);
     }
 
-    await assertGuestsCreatable(eventId, event.tenantId, 1);
+    await assertGuestsCreatable(event, 1);
 
     // Unwrapped to `.guest` — this route's response contract is (and
     // stays) the Guest row alone; the paired Invite that
@@ -205,7 +205,7 @@ export const guestService = {
     const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts);
 
     if (validRows.length > 0) {
-      await assertGuestsCreatable(eventId, event.tenantId, validRows.length);
+      await assertGuestsCreatable(event, validRows.length);
       await guestRepository.bulkCreateWithInvites(eventId, userId, validRows);
     }
 
@@ -224,7 +224,7 @@ export const guestService = {
   // lookup, since a caterer works from names, not ids).
   exportGuests: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
-    await assertGuestExportEnabled(event.tenantId);
+    await assertGuestExportEnabled(event);
 
     const guests = await guestRepository.findAllForExport(eventId);
     return buildGuestExportWorkbook(event, event.eventDays, event.rsvpFields, guests);
