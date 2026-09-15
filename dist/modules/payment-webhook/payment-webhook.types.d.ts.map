@@ -1,0 +1,1 @@
+{"version":3,"file":"payment-webhook.types.d.ts","sourceRoot":"","sources":["../../../src/modules/payment-webhook/payment-webhook.types.ts"],"names":[],"mappings":"AAKA,MAAM,WAAW,sBAAsB;IACrC,KAAK,EAAE,MAAM,CAAC;IACd,IAAI,CAAC,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,CAAC;CAChC;AAED,MAAM,MAAM,qBAAqB,GAAG,WAAW,GAAG,WAAW,CAAC"}

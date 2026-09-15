@@ -1,0 +1,1249 @@
+// ============================================================
+//  EventGenie — Prisma Schema
+//  Database: PostgreSQL via Neon
+//  ORM: Prisma
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────
+//  ENUMS
+// ─────────────────────────────────────────
+
+enum SubscriptionTier {
+  SPARK
+  CELEBRATE
+  ELEVATE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+// Billing period for a PAID subscription — orthogonal to
+// SubscriptionStatus above (platform-level lockout by a Super Admin;
+// see STEERING.md's terminology table) and to SubscriptionTier (which
+// plan). Null/meaningless for SPARK, which is free and unmetered.
+enum SubscriptionPeriod {
+  MONTHLY
+  ANNUAL
+}
+
+enum PlatformRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  EVENT_ADMIN
+  EVENT_VENDOR
+}
+
+// NOTE — COMPLETED is never written to Event.status. It is derived at
+// read time (resolveEffectiveStatus in event-status.util.ts) once a
+// PUBLISHED event's last EventDay has passed, since a scheduled job to
+// flip it in the database isn't reliable on this project's hosting (no
+// paid cron, and in-process schedulers die when the free instance
+// sleeps). Querying Postgres directly will show PUBLISHED for a
+// finished event — that is expected, not a bug. CANCELLED, by
+// contrast, IS written: it reflects a human decision, not a date.
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  COMPLETED
+  CANCELLED
+}
+
+enum EventVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum EventTicketing {
+  FREE
+  PAID
+}
+
+enum RsvpFieldType {
+  TEXT
+  NUMBER
+  EMAIL
+  PHONE
+  DROPDOWN
+  CHECKBOX
+  DATE
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum DeliveryMethod {
+  EMAIL
+  SMS
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+// PENDING/APPROVED/REJECTED — replaces the old plain isApproved Boolean,
+// which couldn't distinguish "not yet reviewed" from "explicitly
+// rejected" (both would just be false). Curation (Memory Hub batch)
+// needs all three as genuinely distinct, listable states.
+enum MemoryItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum VendorCategory {
+  CATERING
+  DECOR
+  FURNITURE
+  PHOTOGRAPHY
+  ENTERTAINMENT
+  FLORISTRY
+  OTHER
+}
+
+// Tenant readiness to receive a ticket-sale split. Driven directly by
+// Paystack's own `active` flag on the subaccount object, not a guess:
+// NOT_STARTED — no subaccount submitted yet.
+// PENDING      — Paystack accepted the subaccount but returned active:false.
+// ACTIVE       — Paystack returned active:true — splits can land here.
+// FAILED       — Paystack rejected the submitted bank details outright;
+//                paystackSubaccountFailureReason on Tenant carries why.
+enum PaystackSubaccountStatus {
+  NOT_STARTED
+  PENDING
+  ACTIVE
+  FAILED
+}
+
+// Event Pass batch. Small/Standard/Large is the price/guest-count tier a
+// tenant BUYS; it is mapped to a SubscriptionTier equivalent (never a
+// second feature matrix — see event-pass/event-pass-plans.config.ts) via
+// EVENT_PASS_GRANTED_TIER before it ever reaches a tier check.
+enum EventPassTier {
+  SMALL
+  STANDARD
+  LARGE
+}
+
+// Shared by EventPassPurchase and EventSmsBundlePurchase — both are
+// simple one-off Paystack charges with no stock/hold to manage (unlike
+// TicketPurchaseStatus, there is no PENDING "hold" to expire: a failed
+// or abandoned attempt is just retried as a brand-new purchase).
+enum PaymentAttemptStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+// Which of the two, deliberately never-pooled SMS accounting systems a
+// given SmsSendLog row drew from — see sms-tier-enforcement.util.ts's
+// header comment. QUOTA is the tenant-wide monthly allowance
+// (SubscriptionTierConfig.maxSmsPerMonth); BUNDLE is a specific event's
+// purchased, non-resetting SMS credits (EventSmsBundlePurchase). Existing
+// rows predate this feature and default to QUOTA, which is correct: they
+// were always tenant-quota sends.
+enum SmsSendSource {
+  QUOTA
+  BUNDLE
+}
+
+// Every state change a payment can go through. Failures are first-class
+// members, not an afterthought — see PaymentLedgerEntry's own comment on
+// why an absent failure record is indistinguishable from an attempt that
+// never happened. WEBHOOK_EVENT_UNHANDLED / WEBHOOK_EVENT_DUPLICATE are
+// written by the generic webhook mechanism itself (payment-webhook
+// module) for deliveries no feature-specific handler has claimed yet —
+// ticket/subscription handlers arrive with their own features and will
+// use the *_INITIATED/_SUCCEEDED/_FAILED types below instead once built.
+// PENDING: a hold exists (Ticket.heldCount reserved), payment not yet
+// resolved. PAID: confirmed by Paystack (webhook or verified callback),
+// terminal, never reversed here (no refund pipeline — see Event.
+// ticketsRefundable's comment). FAILED: the current payment attempt was
+// declined/errored; the hold is released, and a retry re-acquires a
+// fresh one (which can itself fail if stock sold out meanwhile).
+// EXPIRED: the PENDING hold's window lapsed with no resolution; released
+// the same as FAILED. FAILED and EXPIRED both remain retryable via the
+// same TicketPurchase row (ticket-purchase.service.ts's retryPayment) —
+// only PAID is terminal.
+enum TicketPurchaseStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+}
+
+enum LedgerEntryType {
+  TICKET_PAYMENT_INITIATED
+  TICKET_PAYMENT_SUCCEEDED
+  TICKET_PAYMENT_FAILED
+  COMMISSION_TAKEN
+  SUBSCRIPTION_CHARGE_INITIATED
+  SUBSCRIPTION_CHARGE_SUCCEEDED
+  SUBSCRIPTION_CHARGE_FAILED
+  // Event Pass batch — a one-off purchase against a single event, never
+  // pooled with subscription billing. See EventPass/EventPassPurchase.
+  EVENT_PASS_PURCHASE_INITIATED
+  EVENT_PASS_PURCHASE_SUCCEEDED
+  EVENT_PASS_PURCHASE_FAILED
+  // Per-event SMS bundle — a separate purchase from the pass itself, and
+  // a separate accounting pool from the tenant's monthly SMS quota. See
+  // EventSmsBundlePurchase and sms-tier-enforcement.util.ts.
+  SMS_BUNDLE_PURCHASE_INITIATED
+  SMS_BUNDLE_PURCHASE_SUCCEEDED
+  SMS_BUNDLE_PURCHASE_FAILED
+  // Upgrade, downgrade-scheduled, or monthly<->annual period switch —
+  // payload carries the from/to tier+period so "why is this tenant on
+  // this tier" is answerable from the ledger alone, per this batch's
+  // report requirement.
+  SUBSCRIPTION_TIER_CHANGED
+  // Written the moment cancellation (or a downgrade-to-a-different-
+  // paid-tier, which uses the same disable-now/derive-until-period-end
+  // mechanism) is requested — not when access actually lapses, which is
+  // derived, not evented (see Tenant.subscriptionGraceStartedAt's
+  // comment for why grace expiry has no entry of its own either).
+  SUBSCRIPTION_CANCELLED
+  REFUND_ISSUED
+  WEBHOOK_EVENT_UNHANDLED
+  WEBHOOK_EVENT_DUPLICATE
+}
+
+// ─────────────────────────────────────────
+//  TENANT
+// ─────────────────────────────────────────
+
+model Tenant {
+  id                 String             @id @default(cuid())
+  name               String
+  slug               String             @unique
+  email              String             @unique
+  subscriptionTier   SubscriptionTier   @default(SPARK)
+  subscriptionStatus SubscriptionStatus @default(ACTIVE)
+  isArchived         Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  // ── Paystack subaccount (ticket-sale split destination) ──
+  // Deliberately separate from anything subscription/card-related — this
+  // is where the organiser's TICKET earnings land, not where their
+  // subscription is charged from. See paystack.client.ts and the
+  // payment-account module. Never store the bank account number itself:
+  // Paystack holds it, this is only the reference back to it plus enough
+  // metadata (which bank, whose business name) to show the tenant admin
+  // what's on file without another round-trip. The account number is
+  // never stored: only its last four digits are retained for the tenant
+  // admin's confirmation check.
+  paystackSubaccountCode          String?                  @unique
+  paystackSubaccountStatus        PaystackSubaccountStatus @default(NOT_STARTED)
+  paystackBusinessName            String?
+  paystackSettlementBankCode      String?
+  paystackSettlementBankName      String?
+  paystackAccountNumberLast4      String?
+  // Separate from businessName: Paystack displays businessName, while
+  // this is the organiser's own, unverified account-holder declaration.
+  paystackAccountHolderName       String?
+  paystackSubaccountFailureReason String?
+
+  // ── Subscription billing (Subscription Billing batch) ──
+  // Opposite direction from the subaccount above: this is EventGenie's
+  // OWN money, charged to the tenant's card. No split, no subaccount.
+  // Paystack owns the renewal schedule (see subscription.service.ts's
+  // header comment) — this codebase never charges a card on its own
+  // initiative; every field below is either set from a webhook Paystack
+  // sent us, or is our own derivation of what that implies.
+  subscriptionPeriod                    SubscriptionPeriod?
+  // When the CURRENT paid period ends — the next scheduled renewal date
+  // while active, or the date access reverts to SPARK once cancelled.
+  // Sourced from Paystack's own `next_payment_date` at subscription
+  // create/renewal time, never computed by adding an interval ourselves
+  // (a card can be charged a day late; trust what Paystack reports).
+  subscriptionCurrentPeriodEnd          DateTime?
+  // True once the tenant has asked to cancel or downgrade — the CURRENT
+  // subscription has already been disabled at Paystack (it will not
+  // renew), but access continues until subscriptionCurrentPeriodEnd:
+  // see effective-tier.util.ts's resolveEffectiveTier, the one place
+  // this is ever read for an access decision.
+  subscriptionCancelAtPeriodEnd         Boolean             @default(false)
+  // Informational only — what the tenant said they wanted next when
+  // downgrading between two PAID tiers (Elevate -> Celebrate). NOT
+  // auto-applied: this codebase has no scheduler to create the new paid
+  // subscription at the boundary, and Paystack has no documented
+  // future-dated subscription start — see the batch report's proration
+  // section. Surfaced back to the tenant so they know what to
+  // resubscribe to; effective tier still falls to SPARK at period end
+  // regardless of this value.
+  subscriptionPendingTierAfterPeriodEnd SubscriptionTier?
+  // Set the moment a renewal charge fails (webhook charge.failed for
+  // this subscription); cleared the moment a charge succeeds again.
+  // Non-null AND older than 5 days is what resolveEffectiveTier reads as
+  // "grace has lapsed, fall to SPARK" — derived at read time, never
+  // swept by a job (this codebase has none — same reasoning as
+  // event-status.util.ts's COMPLETED derivation and the ticketing
+  // batch's hold-expiry sweep).
+  subscriptionGraceStartedAt            DateTime?
+
+  // Paystack's own identifiers for the CURRENT subscription — needed to
+  // disable it (subscription_code + email_token, both required by
+  // Paystack's disable-subscription endpoint) and to correlate a
+  // renewal's charge.success/failed webhook back to this tenant (via
+  // customerCode, since a renewal charge carries no reference we chose
+  // — see payment-webhook.service.ts's subscription dispatch).
+  paystackCustomerCode           String? @unique
+  paystackSubscriptionCode       String? @unique
+  paystackSubscriptionEmailToken String?
+
+  // Display-only card details from the authorization Paystack returns
+  // on a successful charge — never the card number itself, same
+  // never-store-the-sensitive-instrument rule as the subaccount's bank
+  // details above.
+  paystackAuthorizationCode String?
+  paystackCardBrand         String?
+  paystackCardLast4         String?
+  paystackCardExpMonth      String?
+  paystackCardExpYear       String?
+
+  // The reference WE generated for an in-flight subscribe/change
+  // attempt (passed as `reference` to Initialize Transaction, alongside
+  // `plan`) — how a charge.success/failed webhook for the FIRST charge
+  // of a new subscription gets matched back to this tenant, exactly
+  // mirroring TicketPurchase.paymentRef. Cleared once resolved
+  // (success or failure); a tenant has at most one attempt in flight.
+  subscriptionPendingReference String?             @unique
+  subscriptionPendingTier      SubscriptionTier?
+  subscriptionPendingPeriod    SubscriptionPeriod?
+
+  users                   User[]
+  events                  Event[]
+  vendorSpaces            VendorSpace[]
+  eventDrafts             EventDraft[]
+  smsSendLogs             SmsSendLog[]
+  paymentLedgerEntries    PaymentLedgerEntry[]
+  eventPasses             EventPass[]
+  eventPassPurchases      EventPassPurchase[]
+  eventSmsBundlePurchases EventSmsBundlePurchase[]
+}
+
+// ─────────────────────────────────────────
+//  USER
+// ─────────────────────────────────────────
+
+model User {
+  id          String       @id @default(cuid())
+  tenantId    String?
+  firebaseUid String       @unique
+  email       String       @unique
+  username    String
+  role        PlatformRole
+  isActive    Boolean      @default(true)
+  isArchived  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id])
+  // Many-to-many — replaces the old single vendorSpaceId FK (Vendor Space
+  // Follow-up batch). A person may legitimately manage more than one
+  // vendor business; the join table also allows several users on one
+  // space (a vendor business with multiple staff), which isn't
+  // artificially restricted — see vendor.service.ts.
+  vendorSpaceUsers VendorSpaceUser[]
+  eventsCreated    Event[]
+  memoryItems      MemoryItem[]      @relation("MemoryItemUploadedByUser")
+  otpRecords       OtpRecord[]
+  eventDrafts      EventDraft[]
+}
+
+// ─────────────────────────────────────────
+//  OTP RECORD
+//  Stores 2FA OTP codes for platform users.
+//  One active OTP per user at a time.
+//  Expired and used records are retained
+//  for audit purposes.
+// ─────────────────────────────────────────
+
+model OtpRecord {
+  id        String    @id @default(cuid())
+  userId    String
+  otp       String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  EVENT
+// ─────────────────────────────────────────
+
+model Event {
+  id                 String          @id @default(cuid())
+  tenantId           String
+  createdByUserId    String
+  name               String
+  description        String?
+  location           String
+  address            String?
+  latitude           Decimal?        @db.Decimal(10, 7)
+  longitude          Decimal?        @db.Decimal(10, 7)
+  coverImageUrl      String?
+  // Cloudinary's asset id for coverImageUrl, when the cover was uploaded
+  // through the signed-upload flow (src/modules/upload/) rather than
+  // pasted as an external link. Nullable independently of coverImageUrl —
+  // an externally-hosted URL has no Cloudinary asset to reference. Needed
+  // to delete the old asset on replace and for any future
+  // transform/thumbnail generation (see Batch B report).
+  coverImagePublicId String?
+  status             EventStatus     @default(DRAFT)
+  visibility         EventVisibility @default(PRIVATE)
+  ticketing          EventTicketing  @default(FREE)
+  invitationTemplate String?
+  invitationConfig   String?
+  // Organiser-typed display name shown to guests on the invitation/RSVP
+  // page and the public Memory Hub gallery — e.g. "The Mashilo Family" or
+  // "Sarah & Tom". Deliberately separate from Tenant.name (a workspace
+  // name, e.g. "Test Events Co", not something anyone would print on an
+  // invitation) and never falls back to it: an event without a hostName
+  // shows no host line, since falling back to the tenant name would leak
+  // exactly what rsvp.service.ts's guest-facing responses are designed to
+  // withhold.
+  hostName           String?
+  // Independent of Event.status — closes guest self-service RSVP only.
+  // Organiser guest management is unaffected. Never folded into
+  // resolveEffectiveStatus (event-status.util.ts).
+  rsvpDeadline       DateTime?
+  // The VENUE's physical capacity — informational, not a billing limit.
+  // Distinct from SubscriptionTierConfig.maxGuestsPerEvent; never conflate
+  // the two. Warns via acceptedGuestCount on the event detail response,
+  // never blocks guest creation/import.
+  capacity           Int?
+  // Public self-registration credential — same shape and purpose as
+  // MemoryHub.shareToken (32 random bytes hex, unguessable, unique).
+  // Null until the organiser first requests a share link for a PUBLIC
+  // event (lazily generated — see event.service.ts's getShareLink).
+  // Regenerating overwrites this column, which genuinely invalidates
+  // the previous link rather than just hiding it. Never the raw Event.id
+  // — a cuid in a public URL lets anyone enumerate events by guessing,
+  // and could never be revoked once shared somewhere it shouldn't be.
+  shareToken         String?         @unique
+  // Organiser-chosen, informational only — Ticketing & Payments batch.
+  // With split-at-source, a ticket's money lands directly in the
+  // organiser's bank account (possibly weeks before a refund request
+  // ever reaches EventGenie), and there is no refund pipeline to claw it
+  // back. This is display copy shown to the guest BEFORE they pay (see
+  // rsvp.service.ts's validate() projection), never something this
+  // backend acts on. Meaningless (and unused) while ticketing is FREE.
+  ticketsRefundable  Boolean         @default(false)
+  isArchived         Boolean         @default(false)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  tenant                  Tenant                   @relation(fields: [tenantId], references: [id])
+  createdByUser           User                     @relation(fields: [createdByUserId], references: [id])
+  eventDays               EventDay[]
+  invites                 Invite[]
+  guests                  Guest[]
+  memoryHub               MemoryHub?
+  rsvpFields              RsvpField[]
+  program                 EventProgram?
+  tickets                 Ticket[]
+  paymentLedgerEntries    PaymentLedgerEntry[]
+  // Event Pass batch — see EventPass's own comment for why this is a
+  // singular, one-row-per-event relation rather than a list.
+  eventPass               EventPass?
+  eventPassPurchases      EventPassPurchase[]
+  eventSmsBundlePurchases EventSmsBundlePurchase[]
+  smsSendLogs             SmsSendLog[]
+}
+
+// ─────────────────────────────────────────
+//  EVENT DAY
+//
+//  label is unique per event (case-sensitively, at the DB level — a
+//  race-condition backstop). The human-meaningful check is
+//  case-insensitive and lives in event-day-validation.util.ts, since two
+//  days labelled "Saturday" and "saturday" are the same ambiguity to
+//  someone typing a spreadsheet even though Postgres treats them as
+//  distinct strings.
+// ─────────────────────────────────────────
+
+model EventDay {
+  id         String    @id @default(cuid())
+  eventId    String
+  label      String
+  date       DateTime  @db.Date
+  startTime  DateTime?
+  endTime    DateTime?
+  isArchived Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  event          Event            @relation(fields: [eventId], references: [id])
+  inviteEventDay InviteEventDay[]
+  attendances    Attendance[]
+
+  @@unique([eventId, label])
+}
+
+// ─────────────────────────────────────────
+//  GUEST
+//
+//  firstName/surname are optional — a guest imported by phone/email alone
+//  has no name until they RSVP and provide one.
+//
+//  Prisma cannot express "at least one of email/phoneNumber" as a column
+//  constraint, so this rule — and its stricter companion, "exactly one of
+//  email/phoneNumber at creation/update time, never both, never neither" —
+//  is enforced in guest-validation.util.ts and called from every
+//  create/update path in guest.service.ts. The second contact field is
+//  meant to be filled in later, at RSVP time, not here.
+// ─────────────────────────────────────────
+
+model Guest {
+  id              String   @id @default(cuid())
+  eventId         String
+  firstName       String?
+  surname         String?
+  email           String?
+  phoneNumber     String?
+  isArchived      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  // A plus-one is a Guest row with hostGuestId set — declared during the
+  // host's RSVP, never contacted directly (see assertExactlyOneContact,
+  // which relaxes the email/phone requirement exactly for this case).
+  hostGuestId     String?
+  // Per-guest allowance, not per-event: a couple gets a plus-one, a single
+  // friend gets none. Enforced server-side in rsvp.service.ts's submit().
+  plusOnesAllowed Int      @default(0)
+
+  event       Event        @relation(fields: [eventId], references: [id])
+  invites     Invite[]
+  memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
+  hostGuest   Guest?       @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
+  plusOnes    Guest[]      @relation("GuestPlusOnes")
+}
+
+// ─────────────────────────────────────────
+//  INVITE
+// ─────────────────────────────────────────
+
+model Invite {
+  id                 String         @id @default(cuid())
+  eventId            String
+  guestId            String
+  token              String         @unique
+  status             InviteStatus   @default(PENDING)
+  used               Boolean        @default(false)
+  usedAt             DateTime?
+  expiresAt          DateTime?
+  editToken          String?        @unique
+  editTokenExpiresAt DateTime?
+  deliveryMethod     DeliveryMethod
+  deliveredAt        DateTime?
+  isArchived         Boolean        @default(false)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  event           Event            @relation(fields: [eventId], references: [id])
+  guest           Guest            @relation(fields: [guestId], references: [id])
+  inviteEventDay  InviteEventDay[]
+  attendances     Attendance[]
+  rsvpResponses   RsvpResponse[]
+  ticketPurchases TicketPurchase[]
+  smsSendLogs     SmsSendLog[]
+}
+
+// ─────────────────────────────────────────
+//  INVITE EVENT DAY
+// ─────────────────────────────────────────
+
+model InviteEventDay {
+  id         String   @id @default(cuid())
+  inviteId   String
+  eventDayId String
+  createdAt  DateTime @default(now())
+
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  ATTENDANCE
+// ─────────────────────────────────────────
+
+model Attendance {
+  id          String   @id @default(cuid())
+  inviteId    String
+  eventDayId  String
+  confirmedAt DateTime @default(now())
+
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  MEMORY HUB
+// ─────────────────────────────────────────
+
+model MemoryHub {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+  title       String?
+  description String?
+  isPublic    Boolean   @default(false)
+  shareToken  String?   @unique
+  opensAt     DateTime?
+  isArchived  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  event       Event        @relation(fields: [eventId], references: [id])
+  memoryItems MemoryItem[]
+}
+
+// ─────────────────────────────────────────
+//  EVENT DRAFT
+//  Autosave scratchpad for the event-creation
+//  wizard. One in-progress draft per tenant+user.
+//  Deleted outright once materialized or
+//  discarded — not a soft-deleted record.
+// ─────────────────────────────────────────
+
+model EventDraft {
+  id              String   @id @default(cuid())
+  tenantId        String
+  createdByUserId String
+  currentStep     Int      @default(1)
+  payload         Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant        Tenant @relation(fields: [tenantId], references: [id])
+  createdByUser User   @relation(fields: [createdByUserId], references: [id])
+
+  @@unique([tenantId, createdByUserId])
+}
+
+// ─────────────────────────────────────────
+//  MEMORY ITEM
+// ─────────────────────────────────────────
+
+model MemoryItem {
+  id                 String           @id @default(cuid())
+  memoryHubId        String
+  uploadedByGuestId  String?
+  uploadedByUserId   String?
+  mediaUrl           String
+  // Cloudinary's asset id — required (unlike Event.coverImagePublicId,
+  // every MemoryItem comes through the signed-upload flow, never a
+  // pasted external URL) — needed to delete the asset on an explicit
+  // future purge; see the Memory Hub batch report on why reject does
+  // NOT delete it immediately.
+  cloudinaryPublicId String
+  mediaType          MediaType
+  // Reported directly by Cloudinary's own upload response, exactly like
+  // Event.coverImageUrl's sibling field. Storage quota is summed from
+  // these on demand (Memory Hub batch) — never a running counter.
+  bytes              Int
+  caption            String?
+  status             MemoryItemStatus @default(PENDING)
+  isArchived         Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
+  uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
+  uploadedByUser  User?     @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SPACE
+// ─────────────────────────────────────────
+
+model VendorSpace {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  name        String
+  description String?
+  email       String
+  phoneNumber String?
+  website     String?
+  address     String?
+  latitude    Decimal  @db.Decimal(10, 7)
+  longitude   Decimal  @db.Decimal(10, 7)
+  isVerified  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id])
+  vendorSpaceUsers VendorSpaceUser[]
+  vendorServices   VendorService[]
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SPACE USER
+//
+//  Join table — replaces the old single User.vendorSpaceId FK. No
+//  isArchived/updatedAt/updatedBy: this is a plain membership fact (a
+//  user manages this space, or doesn't), same category as Attendance —
+//  one of STEERING's two documented hard-delete exceptions — not a
+//  soft-deletable business entity. "Unassign" hard-deletes the row.
+// ─────────────────────────────────────────
+
+model VendorSpaceUser {
+  id            String   @id @default(cuid())
+  vendorSpaceId String
+  userId        String
+  createdAt     DateTime @default(now())
+  createdBy     String
+
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@unique([vendorSpaceId, userId])
+}
+
+// ─────────────────────────────────────────
+//  VENDOR SERVICE
+// ─────────────────────────────────────────
+
+model VendorService {
+  id             String         @id @default(cuid())
+  vendorSpaceId  String
+  name           String
+  category       VendorCategory
+  description    String?
+  operatingDays  String?
+  operatingHours String?
+  isArchived     Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  createdBy      String
+  updatedBy      String
+
+  vendorSpace VendorSpace @relation(fields: [vendorSpaceId], references: [id])
+  products    Product[]
+}
+
+// ─────────────────────────────────────────
+//  PRODUCT
+// ─────────────────────────────────────────
+
+model Product {
+  id              String   @id @default(cuid())
+  vendorServiceId String
+  name            String
+  description     String?
+  price           Decimal? @db.Decimal(10, 2)
+  currency        String   @default("ZAR")
+  imageUrls       String[]
+  isAvailable     Boolean  @default(true)
+  isArchived      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdBy       String
+  updatedBy       String
+
+  vendorService VendorService @relation(fields: [vendorServiceId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  RSVP FIELD
+// ─────────────────────────────────────────
+
+model RsvpField {
+  id         String        @id @default(cuid())
+  eventId    String
+  label      String
+  fieldType  RsvpFieldType
+  isRequired Boolean       @default(false)
+  options    String?
+  order      Int
+  isArchived Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  createdBy  String
+  updatedBy  String
+
+  event     Event          @relation(fields: [eventId], references: [id])
+  responses RsvpResponse[]
+}
+
+// ─────────────────────────────────────────
+//  RSVP RESPONSE
+// ─────────────────────────────────────────
+
+model RsvpResponse {
+  id          String   @id @default(cuid())
+  inviteId    String
+  rsvpFieldId String
+  value       String
+  createdAt   DateTime @default(now())
+
+  invite    Invite    @relation(fields: [inviteId], references: [id])
+  rsvpField RsvpField @relation(fields: [rsvpFieldId], references: [id])
+
+  @@unique([inviteId, rsvpFieldId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT PROGRAM
+// ─────────────────────────────────────────
+
+model EventProgram {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  title       String?
+  isPublished Boolean  @default(false)
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String
+  updatedBy   String
+
+  event        Event         @relation(fields: [eventId], references: [id])
+  programItems ProgramItem[]
+}
+
+// ─────────────────────────────────────────
+//  PROGRAM ITEM
+// ─────────────────────────────────────────
+
+model ProgramItem {
+  id           String   @id @default(cuid())
+  programId    String
+  title        String
+  description  String?
+  startTime    DateTime
+  durationMins Int?
+  order        Int
+  isArchived   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  createdBy    String
+  updatedBy    String
+
+  program EventProgram @relation(fields: [programId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  TICKET
+// ─────────────────────────────────────────
+
+model Ticket {
+  id            String   @id @default(cuid())
+  eventId       String
+  name          String
+  description   String?
+  price         Decimal  @db.Decimal(10, 2)
+  currency      String   @default("ZAR")
+  totalQuantity Int?
+  // Truly, permanently sold — incremented ONLY when a TicketPurchase is
+  // confirmed PAID (Ticketing & Payments batch), never at checkout
+  // initiation. See heldCount below for stock claimed by an in-flight
+  // (not yet confirmed) payment attempt. Available stock for a NEW
+  // purchase attempt is always `totalQuantity - soldCount - heldCount`.
+  soldCount     Int      @default(0)
+  // Stock claimed by PENDING TicketPurchases whose payment hasn't
+  // resolved yet — a temporary hold, not a sale. Reserved atomically at
+  // checkout-initiation time (ticket.repository.ts's reserveHold, a
+  // single conditional UPDATE, not read-then-write) so two guests can
+  // never both be let through to pay for the same last unit; released
+  // (FAILED/EXPIRED) or converted into soldCount (PAID) exactly once per
+  // purchase. See ticket-purchase.service.ts's report comment for why a
+  // hold-with-expiry was chosen over letting both guests pay and
+  // resolving the conflict after the fact — with split-at-source, money
+  // that lands in the organiser's account can't be clawed back, so the
+  // conflict must be prevented BEFORE either guest is allowed to pay,
+  // not discovered after.
+  heldCount     Int      @default(0)
+  isAvailable   Boolean  @default(true)
+  isArchived    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     String
+  updatedBy     String
+
+  event     Event            @relation(fields: [eventId], references: [id])
+  purchases TicketPurchase[]
+}
+
+// ─────────────────────────────────────────
+//  TICKET PURCHASE
+//
+//  purchasedAt is when this ROW was created (checkout initiated), not
+//  necessarily when payment was confirmed — see confirmedAt for that.
+//  Kept as-is (not renamed) to avoid touching every existing read of it;
+//  new code should prefer confirmedAt when "was this actually paid, and
+//  when" is the question being asked.
+// ─────────────────────────────────────────
+
+model TicketPurchase {
+  id               String               @id @default(cuid())
+  ticketId         String
+  inviteId         String
+  quantity         Int                  @default(1)
+  // What the GUEST pays in total (gross-up inclusive of platform
+  // commission and Paystack's fee) — never the raw ticket price.
+  totalPaid        Decimal              @db.Decimal(10, 2)
+  currency         String               @default("ZAR")
+  // Snapshots of the gross-up breakdown LOCKED IN at initiation
+  // (ticket-purchase-pricing.util.ts), in integer cents. Deliberately
+  // NOT re-derived from the live Ticket.price at confirm/audit time —
+  // an organiser editing a ticket's price after a purchase was already
+  // initiated must never retroactively change what that purchase's
+  // ledger entries say was charged. ticketPriceCents is the organiser's
+  // guaranteed net for THIS purchase (quantity already applied);
+  // commissionCents is EventGenie's target cut, both written once at
+  // initiation and read back, unchanged, by the confirm path
+  // (ticket-purchase.service.ts) to log accurate TICKET_PAYMENT_
+  // SUCCEEDED/COMMISSION_TAKEN ledger entries. Paystack's own fee is the
+  // remainder: totalPaid - ticketPriceCents - commissionCents.
+  ticketPriceCents Int
+  commissionCents  Int
+  // The CURRENT/latest Paystack transaction reference for this purchase
+  // — set before the Paystack call, not after, so initiation can be
+  // logged to the ledger under a known reference from the start. A
+  // failed attempt's reference stays in the ledger's history forever;
+  // this column is overwritten with a fresh reference on retry (a new
+  // Paystack transaction, same TicketPurchase row) — see
+  // ticket-purchase.service.ts's retryPayment.
+  paymentRef       String?              @unique
+  status           TicketPurchaseStatus @default(PENDING)
+  // When the current PENDING hold lapses if payment hasn't resolved by
+  // then — the "hold with expiry" this batch's report explains. Reset to
+  // a fresh window on every retry. Meaningless once status leaves
+  // PENDING, but never cleared — it's a record of what applied.
+  holdExpiresAt    DateTime?
+  // Set exactly once, by the confirm path (webhook or verified
+  // callback-reconciliation), never by the callback alone. Null until
+  // PAID.
+  confirmedAt      DateTime?
+  purchasedAt      DateTime             @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
+
+  @@index([ticketId, status])
+}
+
+// ─────────────────────────────────────────
+//  SMS SEND LOG
+//
+//  One row per SUCCESSFUL SMS send only — written by the invite dispatch
+//  orchestrator after a real Twilio success, never on failure (a failed
+//  send costs nothing and must not consume quota). Deliberately no
+//  @@unique on inviteId: a resend that succeeds writes a second row
+//  against the same invite, since it costs a second real SMS. This is
+//  what lets maxSmsPerMonth be enforced by counting rows in the current
+//  calendar month rather than relying on Invite.deliveredAt, which would
+//  undercount a guest resent more than once in the same month.
+// ─────────────────────────────────────────
+
+model SmsSendLog {
+  id       String        @id @default(cuid())
+  tenantId String
+  inviteId String
+  sentAt   DateTime      @default(now())
+  // Event Pass batch — eventId is denormalized (derivable via
+  // invite.event, but needed directly here so a BUNDLE-sourced send can
+  // be counted per event without joining through Invite on every read —
+  // see sms-tier-enforcement.util.ts). Nullable because it's backfilled
+  // going forward only; every row written before this feature existed
+  // was necessarily a QUOTA send and has no bundle to count against.
+  // source distinguishes which of the two never-pooled accounting
+  // systems (see SmsSendSource's own comment) this send drew from —
+  // existing rows default to QUOTA, which is correct for their history.
+  eventId  String?
+  source   SmsSendSource @default(QUOTA)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
+  event  Event? @relation(fields: [eventId], references: [id])
+
+  @@index([tenantId, sentAt])
+  @@index([eventId, source])
+}
+
+// ─────────────────────────────────────────
+//  SUBSCRIPTION TIER CONFIG
+// ─────────────────────────────────────────
+
+model SubscriptionTierConfig {
+  tier                      SubscriptionTier @id
+  maxEvents                 Int?
+  maxGuestsPerEvent         Int?
+  maxSmsPerMonth            Int?
+  // Vendor Space Batch — number of active (non-archived) VendorSpaces a
+  // tenant may own. Independent of `vendorMarketplace` below: that's an
+  // all-or-nothing capability gate (can this tier use the marketplace at
+  // all), this is a numeric ceiling for tiers that can. null = unlimited,
+  // matching every other max* column's convention.
+  maxVendorSpaces           Int?
+  // Memory Hub Batch — total bytes an event's Memory Hub may hold,
+  // summed on demand from its non-archived, non-rejected MemoryItems
+  // (never a running counter — see memory-hub-tier-enforcement.util.ts).
+  // Independent of memoryHubEnabled below (all-or-nothing capability
+  // gate); this is the numeric ceiling for tiers that have it. null =
+  // unlimited, same convention as every other max* column.
+  maxMemoryHubBytesPerEvent Int?
+  emailEnabled              Boolean          @default(true)
+  smsEnabled                Boolean          @default(false)
+  vendorMarketplace         Boolean          @default(false)
+  memoryHubEnabled          Boolean          @default(false)
+  dragDropBuilder           Boolean          @default(false)
+  // Guest list export (.xlsx) — Celebrate and above. All-or-nothing
+  // capability gate, same shape as memoryHubEnabled/dragDropBuilder.
+  guestExportEnabled        Boolean          @default(false)
+  isAvailable               Boolean          @default(true)
+  updatedAt                 DateTime         @updatedAt
+}
+
+// ─────────────────────────────────────────
+//  EVENT PASS
+//
+//  A PASS GRANTS A TIER EQUIVALENT, FOR ONE EVENT — see
+//  event-pass/event-entitlement.util.ts's resolveEventEntitlement, which
+//  COMPOSES resolveEffectiveTier (subscription/effective-tier.util.ts)
+//  rather than duplicating it. Singular per event (@unique eventId): an
+//  upgrade mutates passTier on this SAME row rather than creating a
+//  second one, so "does this event have a pass, and which tier" is
+//  always a single lookup. Every individual purchase/upgrade attempt is
+//  its own EventPassPurchase row below — this row is just the CURRENT
+//  grant, same "one current state, separate immutable history" split as
+//  Ticket (current stock) vs TicketPurchase (each attempt).
+//
+//  No isArchived/delete path — same precedent as TicketPurchase: nothing
+//  here is ever removed, only superseded in place by a later upgrade.
+//
+//  No stored expiresAt — expiry (30 days after the event's last day) is
+//  DERIVED AT READ TIME from the event's own EventDays, exactly like
+//  event-status.util.ts's COMPLETED derivation. This codebase has no
+//  scheduler by deliberate choice; adding a stored expiry would need one
+//  to keep it honest as event days are edited after the fact.
+// ─────────────────────────────────────────
+
+model EventPass {
+  id        String        @id @default(cuid())
+  eventId   String        @unique
+  tenantId  String
+  passTier  EventPassTier
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  event     Event               @relation(fields: [eventId], references: [id])
+  tenant    Tenant              @relation(fields: [tenantId], references: [id])
+  purchases EventPassPurchase[]
+
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT PASS PURCHASE
+//
+//  One row per purchase/upgrade ATTEMPT — mirrors TicketPurchase's
+//  PENDING -> PAID/FAILED shape, minus the hold/expiry machinery: there
+//  is no stock to contend for here, so a FAILED attempt is simply
+//  retried as a brand-new purchase (no retryPayment-style row reuse).
+//  eventPassId is set once PAID (the row that grant now lives on, or
+//  was updated on for an upgrade); null while PENDING/FAILED, since no
+//  EventPass may exist yet for a first-ever purchase.
+// ─────────────────────────────────────────
+
+model EventPassPurchase {
+  id              String               @id @default(cuid())
+  eventId         String
+  tenantId        String
+  eventPassId     String?
+  // The tier being bought — for an upgrade, the NEW (target) tier.
+  passTier        EventPassTier
+  isUpgrade       Boolean              @default(false)
+  amountPaidCents Int
+  currency        String               @default("ZAR")
+  paymentRef      String?              @unique
+  status          PaymentAttemptStatus @default(PENDING)
+  confirmedAt     DateTime?
+  purchasedAt     DateTime             @default(now())
+
+  event     Event      @relation(fields: [eventId], references: [id])
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  eventPass EventPass? @relation(fields: [eventPassId], references: [id])
+
+  @@index([eventId])
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT SMS BUNDLE PURCHASE
+//
+//  A per-event, non-resetting SMS credit purchase — deliberately
+//  separate from EventPass (an event pass grants FEATURES; SMS is
+//  metered separately at roughly R2.22/invite regardless of pass tier —
+//  see the batch prompt). smsCount is priced linearly
+//  (SMS_BUNDLE_UNIT_PRICE_CENTS * smsCount); no fixed pack sizes, since
+//  none were specified. The available balance for an event is always
+//  SUMMED at read time from PAID rows here minus SmsSendLog rows with
+//  source=BUNDLE for the same event — never a running counter, same
+//  convention as every other summed quantity in this codebase (Memory
+//  Hub bytes, the payment ledger itself).
+// ─────────────────────────────────────────
+
+model EventSmsBundlePurchase {
+  id              String               @id @default(cuid())
+  eventId         String
+  tenantId        String
+  smsCount        Int
+  amountPaidCents Int
+  currency        String               @default("ZAR")
+  paymentRef      String?              @unique
+  status          PaymentAttemptStatus @default(PENDING)
+  confirmedAt     DateTime?
+  purchasedAt     DateTime             @default(now())
+
+  event  Event  @relation(fields: [eventId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([eventId])
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────
+//  PAYMENT LEDGER ENTRY
+//
+//  Append-only record of everything that happens to money — ticketing
+//  and subscription billing both sit on this, though neither is built
+//  yet (Payments Foundation). This is the THIRD documented exception to
+//  the soft-delete convention (alongside Attendance and EventDraft — see
+//  STEERING.md section 3): an entry is a statement that something
+//  happened, and things that happened do not stop having happened. There
+//  is no isArchived, no updatedAt, and deliberately no update/delete
+//  path anywhere in payment-ledger.repository.ts — a correction is a NEW
+//  entry referencing the old one via relatedType/relatedId, never an
+//  edit. Do not add an update method here no matter how tempting a "fix
+//  a typo'd entry" use case seems later; write a correcting entry instead.
+//
+//  What a tenant has earned, what a guest paid, whether a subscription
+//  is current — all of that is SUMMED from entries at read time. No
+//  balance column exists anywhere and none should ever be added: a
+//  stored balance and a ledger will disagree eventually, and then nobody
+//  knows which one is true.
+//
+//  amountCents is intentionally NOT nullable — every row here is a
+//  statement about a specific amount of money. A non-monetary fact (a
+//  subaccount being created, say) does not belong in this table at all;
+//  see payment-account.service.ts, which raises an HttpError with
+//  Paystack's real message instead of forcing a false amountCents:0 row
+//  in here.
+// ─────────────────────────────────────────
+
+model PaymentLedgerEntry {
+  id          String          @id @default(cuid())
+  type        LedgerEntryType
+  amountCents Int
+  // Every amount carries its currency explicitly — ZAR today, but an
+  // amount without a currency is a bug waiting for the day it isn't.
+  currency    String          @default("ZAR")
+
+  // Who/what this entry is about — both nullable because not every entry
+  // has both (a subscription charge has a tenant but no event; a webhook
+  // received for an event/reference we don't recognise yet may have
+  // neither resolved).
+  tenantId String?
+  eventId  String?
+
+  // Paystack's own reference/transaction id for this money movement —
+  // the thread that ties TICKET_PAYMENT_INITIATED -> _SUCCEEDED (or
+  // _FAILED) entries for the same attempt together. Deliberately NOT
+  // unique: a single reference legitimately gets more than one entry
+  // over its lifecycle (initiated, then succeeded/failed; a commission
+  // entry alongside the payment it was taken from).
+  paystackReference String?
+
+  // What business record this money movement is ultimately about —
+  // e.g. relatedType: "TicketPurchase", relatedId: <id> — once ticketing
+  // exists to populate it. Generic on purpose: this table predates
+  // ticketing and subscription billing and must not import their types.
+  relatedType String?
+  relatedId   String?
+
+  // The exact bytes the provider sent, verbatim. When something disputed
+  // happens months from now, this is the only thing that settles it —
+  // never reconstruct this from application logs.
+  payload Json?
+
+  // When the money event actually happened, per the provider (paid_at,
+  // etc.) — may predate createdAt if we learn about it late (a delayed
+  // or retried webhook). createdAt is when THIS ROW was written and is
+  // the only timestamp that can ever be trusted for "was this entry
+  // written before or after that other one."
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+  event  Event?  @relation(fields: [eventId], references: [id])
+
+  @@index([tenantId, occurredAt])
+  @@index([eventId, occurredAt])
+  @@index([paystackReference])
+  @@index([type, occurredAt])
+}
+
+// ─────────────────────────────────────────
+//  PAYSTACK WEBHOOK EVENT
+//
+//  Pure idempotency guard — NOT a financial record (see
+//  PaymentLedgerEntry above for that). Its only job is making "has this
+//  exact webhook delivery already been processed" a single indexed
+//  insert instead of a check-then-write race: the service attempts
+//  create() and treats a unique-constraint violation on dedupeKey as
+//  "already handled", exactly like event-day-validation.util.ts's
+//  isDayLabelUniqueViolation pattern. Paystack does not document a
+//  single canonical delivery-id field the way Stripe's `evt_...` does,
+//  so dedupeKey is synthesised in payment-webhook.service.ts from
+//  `${event}:${data.id ?? data.reference}` — stable across retries of
+//  the SAME delivery, since Paystack resends the identical payload.
+//
+//  No tenant/amount/currency here on purpose — this table answers "have
+//  we seen this before", not "what happened financially". That's the
+//  ledger's job.
+// ─────────────────────────────────────────
+
+model PaystackWebhookEvent {
+  id         String   @id @default(cuid())
+  eventType  String
+  dedupeKey  String   @unique
+  receivedAt DateTime @default(now())
+
+  @@index([eventType, receivedAt])
+}

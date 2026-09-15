@@ -1,0 +1,62 @@
+import { type ClientTenantDto } from './tenant.types.js';
+export declare const tenantService: {
+    getAll: () => Promise<ClientTenantDto[]>;
+    getById: (id: string, includeArchived?: boolean) => Promise<ClientTenantDto>;
+    getUsers: (id: string) => Promise<{
+        id: string;
+        email: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string | null;
+        firebaseUid: string;
+        username: string;
+        role: import("@prisma/client").$Enums.PlatformRole;
+        isActive: boolean;
+    }[]>;
+    getEvents: (id: string) => Promise<({
+        eventDays: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            label: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }[];
+    } & {
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        hostName: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        shareToken: string | null;
+        ticketsRefundable: boolean;
+        createdBy: string;
+        updatedBy: string;
+    })[]>;
+    suspend: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;
+    reactivate: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;
+};
+//# sourceMappingURL=tenant.service.d.ts.map

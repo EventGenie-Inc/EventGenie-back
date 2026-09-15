@@ -1,0 +1,387 @@
+import { type PlatformRole } from '@prisma/client';
+import { type CreateMemoryHubDto, type UpdateMemoryHubDto, type CreateMemoryItemDto, type CreateGuestMemoryItemDto, type UpdateMemoryItemDto } from './memory-hub.types.js';
+export declare const memoryHubService: {
+    getByEventId: (eventId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
+        memoryItems: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.MemoryItemStatus;
+            createdBy: string;
+            updatedBy: string;
+            bytes: number;
+            memoryHubId: string;
+            uploadedByGuestId: string | null;
+            uploadedByUserId: string | null;
+            mediaUrl: string;
+            cloudinaryPublicId: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+        }[];
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    getDetailByEventId: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        usedBytes: number;
+        limitBytes: number | null;
+        memoryItems: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.MemoryItemStatus;
+            createdBy: string;
+            updatedBy: string;
+            bytes: number;
+            memoryHubId: string;
+            uploadedByGuestId: string | null;
+            uploadedByUserId: string | null;
+            mediaUrl: string;
+            cloudinaryPublicId: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+        }[];
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
+        memoryItems: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.MemoryItemStatus;
+            createdBy: string;
+            updatedBy: string;
+            bytes: number;
+            memoryHubId: string;
+            uploadedByGuestId: string | null;
+            uploadedByUserId: string | null;
+            mediaUrl: string;
+            cloudinaryPublicId: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+        }[];
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateMemoryHubDto) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryHubDto) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    reactivate: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        memoryItems: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            status: import("@prisma/client").$Enums.MemoryItemStatus;
+            createdBy: string;
+            updatedBy: string;
+            bytes: number;
+            memoryHubId: string;
+            uploadedByGuestId: string | null;
+            uploadedByUserId: string | null;
+            mediaUrl: string;
+            cloudinaryPublicId: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+        }[];
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    regenerateShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    revokeShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        shareToken: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        title: string | null;
+        isPublic: boolean;
+        opensAt: Date | null;
+    }>;
+    viewByShareToken: (shareToken: string) => Promise<{
+        title: string | null;
+        description: string | null;
+        eventName: string;
+        hostName: string | null;
+        isOpen: boolean;
+        isCancelled: boolean;
+        items: {
+            id: string;
+            mediaUrl: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+            createdAt: Date;
+            uploaderDisplayName: string;
+        }[];
+    }>;
+    getAllItems: (hubId: string, requestingRole: PlatformRole, tenantId: string | null, status?: "PENDING" | "APPROVED" | "REJECTED") => Promise<(Omit<{
+        uploadedByGuest: {
+            firstName: string | null;
+        } | null;
+        uploadedByUser: {
+            username: string;
+        } | null;
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }, "uploadedByGuest" | "uploadedByUser"> & {
+        uploaderType: "GUEST" | "ORGANISER" | "UNKNOWN";
+        uploaderDisplayName: string;
+    })[]>;
+    getItemById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<{
+        uploadedByGuest: {
+            firstName: string | null;
+        } | null;
+        uploadedByUser: {
+            username: string;
+        } | null;
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }, "uploadedByGuest" | "uploadedByUser"> & {
+        uploaderType: "GUEST" | "ORGANISER" | "UNKNOWN";
+        uploaderDisplayName: string;
+    }>;
+    createOrganiserItem: (hubId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateMemoryItemDto) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }>;
+    updateItem: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryItemDto) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }>;
+    curateItem: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, status: "APPROVED" | "REJECTED") => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }>;
+    archiveItem: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }>;
+    reactivateItem: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<{
+        uploadedByGuest: {
+            firstName: string | null;
+        } | null;
+        uploadedByUser: {
+            username: string;
+        } | null;
+    } & {
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }, "uploadedByGuest" | "uploadedByUser"> & {
+        uploaderType: "GUEST" | "ORGANISER" | "UNKNOWN";
+        uploaderDisplayName: string;
+    }>;
+    requestGuestUploadSignature: (token: unknown, mediaType: unknown) => Promise<import("../upload/upload.types.js").UploadSignatureResponse>;
+    createGuestItem: (data: CreateGuestMemoryItemDto) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }>;
+};
+//# sourceMappingURL=memory-hub.service.d.ts.map

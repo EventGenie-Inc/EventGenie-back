@@ -1,0 +1,67 @@
+import { Router } from 'express';
+import { rsvpService } from './rsvp.service.js';
+import { ticketQuoteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+// Fully public surface — a guest only has a bare invite token, never a
+// platform session. No auth middleware anywhere in this file.
+const router = Router();
+// GET /api/rsvp/validate/:token
+router.get('/validate/:token', async (req, res, next) => {
+    try {
+        const result = await rsvpService.validate(req.params['token']);
+        res.status(200).json({ status: 'ok', data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// POST rather than a query string: the invite token is the guest's
+// credential and must not be placed in URLs, logs, or referrers.
+router.post('/ticket-quote', ticketQuoteLimiter, async (req, res, next) => {
+    try {
+        const quote = await rsvpService.quoteTicket(req.body);
+        res.status(200).json({ status: 'ok', data: quote });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// POST /api/rsvp/submit
+router.post('/submit', async (req, res, next) => {
+    try {
+        const result = await rsvpService.submit(req.body);
+        res.status(200).json({ status: 'ok', data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// POST /api/rsvp/ticket-purchase/retry
+// Body: { token }
+// Re-initiates payment for an existing FAILED/EXPIRED ticket purchase —
+// never resubmits the whole RSVP form. See rsvp.service.ts's
+// retryTicketPayment.
+router.post('/ticket-purchase/retry', async (req, res, next) => {
+    try {
+        const result = await rsvpService.retryTicketPayment(req.body?.token);
+        res.status(200).json({ status: 'ok', data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// GET /api/rsvp/ticket-purchase/confirm/:token
+// Called from the guest's Paystack callback landing page. Never trusts
+// the callback's own query parameters as proof of payment — this makes
+// an authoritative call back to Paystack if still PENDING. See
+// rsvp.service.ts's confirmTicketPayment / ticketPurchaseService.reconcile.
+router.get('/ticket-purchase/confirm/:token', async (req, res, next) => {
+    try {
+        const result = await rsvpService.confirmTicketPayment(req.params['token']);
+        res.status(200).json({ status: 'ok', data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+export default router;
+//# sourceMappingURL=rsvp.router.js.map

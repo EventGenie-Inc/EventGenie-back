@@ -1,0 +1,1 @@
+{"version":3,"file":"event-public.types.d.ts","sourceRoot":"","sources":["../../../src/modules/event-public/event-public.types.ts"],"names":[],"mappings":"AAIA,MAAM,WAAW,gBAAgB;IAC/B,SAAS,EAAE,MAAM,CAAC;IAClB,OAAO,CAAC,EAAE,MAAM,CAAC;IACjB,KAAK,CAAC,EAAE,MAAM,CAAC;IACf,WAAW,CAAC,EAAE,MAAM,CAAC;CACtB"}

@@ -1,0 +1,85 @@
+import { type CreateSubscriptionTierConfigDto, type UpdateSubscriptionTierConfigDto } from './subscription-tier-config.type.js';
+import { type SubscriptionTier } from '@prisma/client';
+export declare const subscriptionTierConfigService: {
+    getAll: () => import("@prisma/client").Prisma.PrismaPromise<{
+        updatedAt: Date;
+        isAvailable: boolean;
+        tier: import("@prisma/client").$Enums.SubscriptionTier;
+        maxEvents: number | null;
+        maxGuestsPerEvent: number | null;
+        maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
+        maxMemoryHubBytesPerEvent: number | null;
+        emailEnabled: boolean;
+        smsEnabled: boolean;
+        vendorMarketplace: boolean;
+        memoryHubEnabled: boolean;
+        dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
+    }[]>;
+    getByTier: (tier: SubscriptionTier) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
+        tier: import("@prisma/client").$Enums.SubscriptionTier;
+        maxEvents: number | null;
+        maxGuestsPerEvent: number | null;
+        maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
+        maxMemoryHubBytesPerEvent: number | null;
+        emailEnabled: boolean;
+        smsEnabled: boolean;
+        vendorMarketplace: boolean;
+        memoryHubEnabled: boolean;
+        dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
+    }>;
+    create: (data: CreateSubscriptionTierConfigDto) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
+        tier: import("@prisma/client").$Enums.SubscriptionTier;
+        maxEvents: number | null;
+        maxGuestsPerEvent: number | null;
+        maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
+        maxMemoryHubBytesPerEvent: number | null;
+        emailEnabled: boolean;
+        smsEnabled: boolean;
+        vendorMarketplace: boolean;
+        memoryHubEnabled: boolean;
+        dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
+    }>;
+    update: (tier: SubscriptionTier, data: UpdateSubscriptionTierConfigDto) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
+        tier: import("@prisma/client").$Enums.SubscriptionTier;
+        maxEvents: number | null;
+        maxGuestsPerEvent: number | null;
+        maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
+        maxMemoryHubBytesPerEvent: number | null;
+        emailEnabled: boolean;
+        smsEnabled: boolean;
+        vendorMarketplace: boolean;
+        memoryHubEnabled: boolean;
+        dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
+    }>;
+    setAvailability: (tier: SubscriptionTier, isAvailable: boolean) => Promise<{
+        updatedAt: Date;
+        isAvailable: boolean;
+        tier: import("@prisma/client").$Enums.SubscriptionTier;
+        maxEvents: number | null;
+        maxGuestsPerEvent: number | null;
+        maxSmsPerMonth: number | null;
+        maxVendorSpaces: number | null;
+        maxMemoryHubBytesPerEvent: number | null;
+        emailEnabled: boolean;
+        smsEnabled: boolean;
+        vendorMarketplace: boolean;
+        memoryHubEnabled: boolean;
+        dragDropBuilder: boolean;
+        guestExportEnabled: boolean;
+    }>;
+};
+//# sourceMappingURL=subscription-tier-config.service.d.ts.map
