@@ -79,6 +79,30 @@ export const describeBillingHistoryEntry = (type: LedgerEntryType, rawPayload: u
     case 'SUBSCRIPTION_CANCELLED':
       return { description: 'Subscription cancelled', outcome: 'INFO' };
 
+    case 'EVENT_PASS_PURCHASE_SUCCEEDED': {
+      const isUpgrade = payload['isUpgrade'] === true;
+      const passTier = typeof payload['passTier'] === 'string' ? payload['passTier'] : null;
+      return {
+        description: passTier ? `Event Pass ${isUpgrade ? 'upgraded to' : 'purchased'}: ${passTier}` : 'Event Pass purchased',
+        outcome: 'SUCCESS',
+      };
+    }
+
+    case 'EVENT_PASS_PURCHASE_FAILED': {
+      const summary = typeof payload['summary'] === 'string' ? payload['summary'] : null;
+      return { description: summary ? `Event Pass purchase failed — ${summary}` : 'Event Pass purchase failed', outcome: 'FAILED' };
+    }
+
+    case 'SMS_BUNDLE_PURCHASE_SUCCEEDED': {
+      const smsCount = typeof payload['smsCount'] === 'number' ? payload['smsCount'] : null;
+      return { description: smsCount ? `SMS bundle purchased: ${smsCount} credits` : 'SMS bundle purchased', outcome: 'SUCCESS' };
+    }
+
+    case 'SMS_BUNDLE_PURCHASE_FAILED': {
+      const summary = typeof payload['summary'] === 'string' ? payload['summary'] : null;
+      return { description: summary ? `SMS bundle purchase failed — ${summary}` : 'SMS bundle purchase failed', outcome: 'FAILED' };
+    }
+
     default:
       return { description: type, outcome: 'INFO' };
   }

@@ -129,6 +129,38 @@ enum PaystackSubaccountStatus {
   FAILED
 }
 
+// Event Pass batch. Small/Standard/Large is the price/guest-count tier a
+// tenant BUYS; it is mapped to a SubscriptionTier equivalent (never a
+// second feature matrix — see event-pass/event-pass-plans.config.ts) via
+// EVENT_PASS_GRANTED_TIER before it ever reaches a tier check.
+enum EventPassTier {
+  SMALL
+  STANDARD
+  LARGE
+}
+
+// Shared by EventPassPurchase and EventSmsBundlePurchase — both are
+// simple one-off Paystack charges with no stock/hold to manage (unlike
+// TicketPurchaseStatus, there is no PENDING "hold" to expire: a failed
+// or abandoned attempt is just retried as a brand-new purchase).
+enum PaymentAttemptStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+// Which of the two, deliberately never-pooled SMS accounting systems a
+// given SmsSendLog row drew from — see sms-tier-enforcement.util.ts's
+// header comment. QUOTA is the tenant-wide monthly allowance
+// (SubscriptionTierConfig.maxSmsPerMonth); BUNDLE is a specific event's
+// purchased, non-resetting SMS credits (EventSmsBundlePurchase). Existing
+// rows predate this feature and default to QUOTA, which is correct: they
+// were always tenant-quota sends.
+enum SmsSendSource {
+  QUOTA
+  BUNDLE
+}
+
 // Every state change a payment can go through. Failures are first-class
 // members, not an afterthought — see PaymentLedgerEntry's own comment on
 // why an absent failure record is indistinguishable from an attempt that
@@ -162,6 +194,17 @@ enum LedgerEntryType {
   SUBSCRIPTION_CHARGE_INITIATED
   SUBSCRIPTION_CHARGE_SUCCEEDED
   SUBSCRIPTION_CHARGE_FAILED
+  // Event Pass batch — a one-off purchase against a single event, never
+  // pooled with subscription billing. See EventPass/EventPassPurchase.
+  EVENT_PASS_PURCHASE_INITIATED
+  EVENT_PASS_PURCHASE_SUCCEEDED
+  EVENT_PASS_PURCHASE_FAILED
+  // Per-event SMS bundle — a separate purchase from the pass itself, and
+  // a separate accounting pool from the tenant's monthly SMS quota. See
+  // EventSmsBundlePurchase and sms-tier-enforcement.util.ts.
+  SMS_BUNDLE_PURCHASE_INITIATED
+  SMS_BUNDLE_PURCHASE_SUCCEEDED
+  SMS_BUNDLE_PURCHASE_FAILED
   // Upgrade, downgrade-scheduled, or monthly<->annual period switch —
   // payload carries the from/to tier+period so "why is this tenant on
   // this tier" is answerable from the ledger alone, per this batch's
@@ -282,12 +325,15 @@ model Tenant {
   subscriptionPendingTier      SubscriptionTier?
   subscriptionPendingPeriod    SubscriptionPeriod?
 
-  users                User[]
-  events               Event[]
-  vendorSpaces         VendorSpace[]
-  eventDrafts          EventDraft[]
-  smsSendLogs          SmsSendLog[]
-  paymentLedgerEntries PaymentLedgerEntry[]
+  users                   User[]
+  events                  Event[]
+  vendorSpaces            VendorSpace[]
+  eventDrafts             EventDraft[]
+  smsSendLogs             SmsSendLog[]
+  paymentLedgerEntries    PaymentLedgerEntry[]
+  eventPasses             EventPass[]
+  eventPassPurchases      EventPassPurchase[]
+  eventSmsBundlePurchases EventSmsBundlePurchase[]
 }
 
 // ─────────────────────────────────────────
@@ -406,16 +452,22 @@ model Event {
   createdBy          String
   updatedBy          String
 
-  tenant               Tenant               @relation(fields: [tenantId], references: [id])
-  createdByUser        User                 @relation(fields: [createdByUserId], references: [id])
-  eventDays            EventDay[]
-  invites              Invite[]
-  guests               Guest[]
-  memoryHub            MemoryHub?
-  rsvpFields           RsvpField[]
-  program              EventProgram?
-  tickets              Ticket[]
-  paymentLedgerEntries PaymentLedgerEntry[]
+  tenant                  Tenant                   @relation(fields: [tenantId], references: [id])
+  createdByUser           User                     @relation(fields: [createdByUserId], references: [id])
+  eventDays               EventDay[]
+  invites                 Invite[]
+  guests                  Guest[]
+  memoryHub               MemoryHub?
+  rsvpFields              RsvpField[]
+  program                 EventProgram?
+  tickets                 Ticket[]
+  paymentLedgerEntries    PaymentLedgerEntry[]
+  // Event Pass batch — see EventPass's own comment for why this is a
+  // singular, one-row-per-event relation rather than a list.
+  eventPass               EventPass?
+  eventPassPurchases      EventPassPurchase[]
+  eventSmsBundlePurchases EventSmsBundlePurchase[]
+  smsSendLogs             SmsSendLog[]
 }
 
 // ─────────────────────────────────────────
@@ -920,15 +972,28 @@ model TicketPurchase {
 // ─────────────────────────────────────────
 
 model SmsSendLog {
-  id       String   @id @default(cuid())
+  id       String        @id @default(cuid())
   tenantId String
   inviteId String
-  sentAt   DateTime @default(now())
+  sentAt   DateTime      @default(now())
+  // Event Pass batch — eventId is denormalized (derivable via
+  // invite.event, but needed directly here so a BUNDLE-sourced send can
+  // be counted per event without joining through Invite on every read —
+  // see sms-tier-enforcement.util.ts). Nullable because it's backfilled
+  // going forward only; every row written before this feature existed
+  // was necessarily a QUOTA send and has no bundle to count against.
+  // source distinguishes which of the two never-pooled accounting
+  // systems (see SmsSendSource's own comment) this send drew from —
+  // existing rows default to QUOTA, which is correct for their history.
+  eventId  String?
+  source   SmsSendSource @default(QUOTA)
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   invite Invite @relation(fields: [inviteId], references: [id])
+  event  Event? @relation(fields: [eventId], references: [id])
 
   @@index([tenantId, sentAt])
+  @@index([eventId, source])
 }
 
 // ─────────────────────────────────────────
@@ -963,6 +1028,114 @@ model SubscriptionTierConfig {
   guestExportEnabled        Boolean          @default(false)
   isAvailable               Boolean          @default(true)
   updatedAt                 DateTime         @updatedAt
+}
+
+// ─────────────────────────────────────────
+//  EVENT PASS
+//
+//  A PASS GRANTS A TIER EQUIVALENT, FOR ONE EVENT — see
+//  event-pass/event-entitlement.util.ts's resolveEventEntitlement, which
+//  COMPOSES resolveEffectiveTier (subscription/effective-tier.util.ts)
+//  rather than duplicating it. Singular per event (@unique eventId): an
+//  upgrade mutates passTier on this SAME row rather than creating a
+//  second one, so "does this event have a pass, and which tier" is
+//  always a single lookup. Every individual purchase/upgrade attempt is
+//  its own EventPassPurchase row below — this row is just the CURRENT
+//  grant, same "one current state, separate immutable history" split as
+//  Ticket (current stock) vs TicketPurchase (each attempt).
+//
+//  No isArchived/delete path — same precedent as TicketPurchase: nothing
+//  here is ever removed, only superseded in place by a later upgrade.
+//
+//  No stored expiresAt — expiry (30 days after the event's last day) is
+//  DERIVED AT READ TIME from the event's own EventDays, exactly like
+//  event-status.util.ts's COMPLETED derivation. This codebase has no
+//  scheduler by deliberate choice; adding a stored expiry would need one
+//  to keep it honest as event days are edited after the fact.
+// ─────────────────────────────────────────
+
+model EventPass {
+  id        String        @id @default(cuid())
+  eventId   String        @unique
+  tenantId  String
+  passTier  EventPassTier
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  event     Event               @relation(fields: [eventId], references: [id])
+  tenant    Tenant              @relation(fields: [tenantId], references: [id])
+  purchases EventPassPurchase[]
+
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT PASS PURCHASE
+//
+//  One row per purchase/upgrade ATTEMPT — mirrors TicketPurchase's
+//  PENDING -> PAID/FAILED shape, minus the hold/expiry machinery: there
+//  is no stock to contend for here, so a FAILED attempt is simply
+//  retried as a brand-new purchase (no retryPayment-style row reuse).
+//  eventPassId is set once PAID (the row that grant now lives on, or
+//  was updated on for an upgrade); null while PENDING/FAILED, since no
+//  EventPass may exist yet for a first-ever purchase.
+// ─────────────────────────────────────────
+
+model EventPassPurchase {
+  id              String               @id @default(cuid())
+  eventId         String
+  tenantId        String
+  eventPassId     String?
+  // The tier being bought — for an upgrade, the NEW (target) tier.
+  passTier        EventPassTier
+  isUpgrade       Boolean              @default(false)
+  amountPaidCents Int
+  currency        String               @default("ZAR")
+  paymentRef      String?              @unique
+  status          PaymentAttemptStatus @default(PENDING)
+  confirmedAt     DateTime?
+  purchasedAt     DateTime             @default(now())
+
+  event     Event      @relation(fields: [eventId], references: [id])
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  eventPass EventPass? @relation(fields: [eventPassId], references: [id])
+
+  @@index([eventId])
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT SMS BUNDLE PURCHASE
+//
+//  A per-event, non-resetting SMS credit purchase — deliberately
+//  separate from EventPass (an event pass grants FEATURES; SMS is
+//  metered separately at roughly R2.22/invite regardless of pass tier —
+//  see the batch prompt). smsCount is priced linearly
+//  (SMS_BUNDLE_UNIT_PRICE_CENTS * smsCount); no fixed pack sizes, since
+//  none were specified. The available balance for an event is always
+//  SUMMED at read time from PAID rows here minus SmsSendLog rows with
+//  source=BUNDLE for the same event — never a running counter, same
+//  convention as every other summed quantity in this codebase (Memory
+//  Hub bytes, the payment ledger itself).
+// ─────────────────────────────────────────
+
+model EventSmsBundlePurchase {
+  id              String               @id @default(cuid())
+  eventId         String
+  tenantId        String
+  smsCount        Int
+  amountPaidCents Int
+  currency        String               @default("ZAR")
+  paymentRef      String?              @unique
+  status          PaymentAttemptStatus @default(PENDING)
+  confirmedAt     DateTime?
+  purchasedAt     DateTime             @default(now())
+
+  event  Event  @relation(fields: [eventId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([eventId])
+  @@index([tenantId])
 }
 
 // ─────────────────────────────────────────

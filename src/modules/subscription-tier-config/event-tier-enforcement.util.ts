@@ -4,6 +4,7 @@ import { subscriptionTierConfigRepository } from './subscription-tier-config.rep
 import { eventRepository } from '../event/event.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
+import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 
 export interface EventTierCheckInput {
   visibility?: EventVisibility;
@@ -59,17 +60,25 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 // Called before updating an existing event (PUT /api/events/:id). No
 // maxEvents check here — an update doesn't create a new event.
 //
-// Still CREATION-adjacent, not access-time, and safe on effective tier:
-// assertSparkCapabilityGates only fires when visibility/ticketing is
-// EXPLICITLY part of THIS update payload (see the conditional spreads at
-// every call site — event.service.ts never includes a field the caller
-// didn't send), so editing an unrelated field (name, description) on an
-// event that is already PUBLIC/PAID never re-evaluates this gate at
-// all. Only a genuine attempt to newly flip visibility to PUBLIC or
-// ticketing to PAID is blocked for a lapsed tenant — the event's
-// EXISTING public/paid status, and everything guest-facing built on it
-// (RSVPs, ticket purchases), is untouched by this function, which
-// never runs on any guest-facing path.
+// EVENT-SCOPED (Event Pass batch) — unlike assertEventCreatable, this
+// runs on an event that already EXISTS and may already hold an active
+// pass, so it resolves entitlement via resolveEventEntitlement (the
+// greater of the tenant's own effective tier and the event's pass)
+// rather than resolveEffectiveTier alone. Takes the full fetched event
+// (not a bare tenantId) so a missed call site fails to compile rather
+// than silently falling back to tenant-only resolution.
+//
+// Still CREATION-adjacent, not access-time, and safe on effective
+// entitlement: assertSparkCapabilityGates only fires when
+// visibility/ticketing is EXPLICITLY part of THIS update payload (see
+// the conditional spreads at every call site — event.service.ts never
+// includes a field the caller didn't send), so editing an unrelated
+// field (name, description) on an event that is already PUBLIC/PAID
+// never re-evaluates this gate at all. Only a genuine attempt to newly
+// flip visibility to PUBLIC or ticketing to PAID is blocked for a
+// lapsed-and-unpassed tenant — the event's EXISTING public/paid status,
+// and everything guest-facing built on it (RSVPs, ticket purchases), is
+// untouched by this function, which never runs on any guest-facing path.
 //
 // Flagged, not fixed (pre-existing, independent of this batch): a
 // well-behaved frontend that always resends the event's CURRENT
@@ -78,8 +87,8 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 // — even though nothing is actually changing. Fixing that needs this
 // function to compare against the event's stored value, which is a
 // larger signature change out of scope for subscription billing.
-export const assertEventUpdatable = async (tenantId: string, input: EventTierCheckInput): Promise<void> => {
-  const tenant = await tenantRepository.findById(tenantId);
+export const assertEventUpdatable = async (event: EntitlementDerivableEvent, input: EventTierCheckInput): Promise<void> => {
+  const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  assertSparkCapabilityGates(resolveEffectiveTier(tenant), input);
+  assertSparkCapabilityGates(resolveEventEntitlement(tenant, event), input);
 };

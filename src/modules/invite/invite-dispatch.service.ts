@@ -2,7 +2,7 @@ import { type PlatformRole, type DeliveryMethod } from '@prisma/client';
 import { inviteRepository } from './invite.repository.js';
 import { inviteService } from './invite.service.js';
 import { eventService } from '../event/event.service.js';
-import { assertSmsSendable } from '../subscription-tier-config/sms-tier-enforcement.util.js';
+import { assertSmsSendable, type SmsSendPool } from '../subscription-tier-config/sms-tier-enforcement.util.js';
 import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
 import { sendSms } from '../../shared/messaging/sms.engine.js';
 import { sendEmail } from '../../shared/messaging/email.engine.js';
@@ -81,11 +81,18 @@ const earliestDayLabel = (eventDays: { date: Date }[]): string | null => {
 };
 
 const dispatchOne = async (
+  eventId: string,
   eventTenantId: string,
   eventName: string,
   location: string,
   dateLabel: string | null,
-  invite: DispatchableInvite
+  invite: DispatchableInvite,
+  // Which of the two never-pooled SMS accounting systems this batch was
+  // already resolved (once, by assertSmsSendable) to draw from — passed
+  // through rather than re-derived per guest, so the log can never
+  // disagree with what was actually enforced. Meaningless for an EMAIL
+  // delivery.
+  smsSource: SmsSendPool
 ): Promise<{ ok: true } | { ok: false; reason: string }> => {
   const rsvpLink = buildInviteRsvpLink(invite.token);
 
@@ -103,7 +110,7 @@ const dispatchOne = async (
   // possible for anything that fails here, since deliveredAt stays null.
   await inviteRepository.markDelivered(invite.id);
   if (invite.deliveryMethod === 'SMS') {
-    await smsSendLogRepository.create(eventTenantId, invite.id);
+    await smsSendLogRepository.create(eventTenantId, eventId, invite.id, smsSource);
   }
   return { ok: true };
 };
@@ -143,8 +150,11 @@ export const inviteDispatchService = {
     }
 
     // Tier check — all-or-nothing, evaluated BEFORE any dispatch begins.
+    // Also resolves WHICH pool (bundle vs quota) this whole batch draws
+    // from — see sms-tier-enforcement.util.ts's header comment on why
+    // that decision is made once per batch, never per guest.
     const smsCount = invites.filter((i) => i.deliveryMethod === 'SMS').length;
-    await assertSmsSendable(event.tenantId, smsCount);
+    const { source: smsSource } = await assertSmsSendable(event, smsCount);
 
     const dateLabel = earliestDayLabel(event.eventDays);
     const failures: InviteDispatchFailure[] = [];
@@ -156,7 +166,7 @@ export const inviteDispatchService = {
     // pre-flight rejects above): one bad phone number must not abort the
     // rest of the batch.
     for (const invite of invites) {
-      const result = await dispatchOne(event.tenantId, event.name, event.location, dateLabel, invite);
+      const result = await dispatchOne(event.id, event.tenantId, event.name, event.location, dateLabel, invite, smsSource);
       if (result.ok) {
         sent += 1;
       } else {
@@ -197,15 +207,16 @@ export const inviteDispatchService = {
     assertEventAcceptsInvites(event.visibility);
 
     // A resend still costs a real SMS — re-check the tier rules for a
-    // batch-of-one before dispatching.
-    if (invite.deliveryMethod === 'SMS') {
-      await assertSmsSendable(event.tenantId, 1);
-    }
+    // batch-of-one before dispatching. EMAIL never touches either SMS
+    // pool, so `smsSource` is meaningless (and unused) in that branch —
+    // 'QUOTA' is just a harmless placeholder, never written anywhere.
+    const smsSource: SmsSendPool =
+      invite.deliveryMethod === 'SMS' ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
 
     const dateLabel = earliestDayLabel(event.eventDays);
     // Dispatches using the invite's EXISTING token — never regenerated,
     // so a guest who opens an old link days later doesn't find it dead.
-    const result = await dispatchOne(event.tenantId, event.name, event.location, dateLabel, invite);
+    const result = await dispatchOne(event.id, event.tenantId, event.name, event.location, dateLabel, invite, smsSource);
 
     return {
       guestId: invite.guestId,

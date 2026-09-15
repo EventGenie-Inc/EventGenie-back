@@ -1,7 +1,7 @@
 import { vendorRepository } from './vendor.repository.js';
 import { userRepository } from '../user/user.repository.js';
 import { eventService } from '../event/event.service.js';
-import { assertVendorSpaceCreatable, assertVendorMarketplaceAccessible } from './vendor-tier-enforcement.util.js';
+import { assertVendorSpaceCreatable, assertVendorMarketplaceAccessible, assertEventVendorMarketplaceAccessible } from './vendor-tier-enforcement.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {
   type CreateVendorSpaceDto,
@@ -108,8 +108,12 @@ export const vendorService = {
     tenantId: string | null,
     radiusKm?: number
   ) => {
-    await assertVendorMarketplaceAccessible(tenantId);
+    // Fetched FIRST (unlike findNearbyVendors/getBrowseVendors above,
+    // which have no event to fetch) — the gate below is EVENT-scoped
+    // (Event Pass batch: "uses the event's own coordinates"), so it
+    // needs the event's pass/day fields, not just the tenant.
     const event = await eventService.getById(eventId, requestingRole, tenantId);
+    await assertEventVendorMarketplaceAccessible(event);
 
     if (event.latitude === null || event.longitude === null) {
       throw new HttpError(

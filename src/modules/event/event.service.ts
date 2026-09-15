@@ -3,7 +3,7 @@ import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole, type EventStatus } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
-import { assertTenantReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
+import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
 import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
@@ -102,12 +102,12 @@ export const eventService = {
       assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
     }
 
-    await assertEventUpdatable(event.tenantId, {
+    await assertEventUpdatable(event, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
     });
     if (data.ticketing === 'PAID') {
-      await assertTenantReadyToSellTickets(event.tenantId);
+      await assertEventReadyToSellTickets(event);
     }
     await eventRepository.update(id, userId, data);
 
@@ -234,7 +234,7 @@ export const eventService = {
     // event was created and when it's published (a rejected bank-detail
     // update attempt) — see payment-account-readiness.util.ts.
     if (event.ticketing === 'PAID') {
-      await assertTenantReadyToSellTickets(event.tenantId);
+      await assertEventReadyToSellTickets(event);
     }
 
     await eventRepository.updateStatus(id, userId, 'PUBLISHED');
