@@ -44,6 +44,14 @@ export declare const eventService: {
         updatedBy: string;
     })[]>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -120,8 +128,8 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;
@@ -158,6 +166,22 @@ export declare const eventService: {
     }>;
     getDetail: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         acceptedGuestCount: number;
+        guestLimit: {
+            limit: number | null;
+            currentCount: number;
+            source: string;
+            tenantTier: import("@prisma/client").$Enums.SubscriptionTier;
+            passTier: import("@prisma/client").$Enums.EventPassTier | null;
+            passActive: boolean;
+        };
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -234,8 +258,8 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;
@@ -298,6 +322,14 @@ export declare const eventService: {
         updatedBy: string;
     }>;
     update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => Promise<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -374,8 +406,8 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;
@@ -439,6 +471,14 @@ export declare const eventService: {
         updatedBy: string;
     }>;
     reactivate: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -515,8 +555,8 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;
@@ -558,6 +598,14 @@ export declare const eventService: {
         url: string;
     }>;
     publish: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -634,8 +682,8 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;
@@ -671,6 +719,14 @@ export declare const eventService: {
         updatedBy: string;
     }>;
     cancel: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -747,8 +803,8 @@ export declare const eventService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;

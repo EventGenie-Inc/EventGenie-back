@@ -104,8 +104,8 @@ export declare const inviteRepository: {
         } & {
             id: string;
             inviteId: string;
-            eventDayId: string;
             confirmedAt: Date;
+            eventDayId: string;
         })[];
     } & {
         id: string;
@@ -180,6 +180,14 @@ export declare const inviteRepository: {
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     findByToken: (token: string) => import("@prisma/client").Prisma.Prisma__InviteClient<({
         event: {
+            eventPass: {
+                id: string;
+                createdAt: Date;
+                updatedAt: Date;
+                tenantId: string;
+                eventId: string;
+                passTier: import("@prisma/client").$Enums.EventPassTier;
+            } | null;
             eventDays: {
                 id: string;
                 isArchived: boolean;
@@ -216,8 +224,8 @@ export declare const inviteRepository: {
                 description: string | null;
                 createdBy: string;
                 updatedBy: string;
-                currency: string;
                 eventId: string;
+                currency: string;
                 price: import("@prisma/client-runtime-utils").Decimal;
                 totalQuantity: number | null;
                 soldCount: number;
@@ -302,8 +310,8 @@ export declare const inviteRepository: {
         attendances: {
             id: string;
             inviteId: string;
-            eventDayId: string;
             confirmedAt: Date;
+            eventDayId: string;
         }[];
         rsvpResponses: {
             id: string;
@@ -317,15 +325,15 @@ export declare const inviteRepository: {
             status: import("@prisma/client").$Enums.TicketPurchaseStatus;
             inviteId: string;
             currency: string;
+            paymentRef: string | null;
             confirmedAt: Date | null;
+            purchasedAt: Date;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;
             ticketPriceCents: number;
             commissionCents: number;
-            paymentRef: string | null;
             holdExpiresAt: Date | null;
-            purchasedAt: Date;
         }[];
     } & {
         id: string;

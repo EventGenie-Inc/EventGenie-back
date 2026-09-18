@@ -105,8 +105,8 @@ export declare const inviteService: {
         } & {
             id: string;
             inviteId: string;
-            eventDayId: string;
             confirmedAt: Date;
+            eventDayId: string;
         })[];
     } & {
         id: string;

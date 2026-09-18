@@ -27,9 +27,20 @@ export const eventRepository = {
                     programItems: { where: { isArchived: false }, orderBy: { order: 'asc' } },
                 },
             },
+            // Event Pass batch — included alongside eventDays (already here)
+            // so every event-scoped tier check that receives this object can
+            // resolve entitlement (event-entitlement.util.ts's
+            // EntitlementDerivableEvent) with no extra query.
+            eventPass: true,
         },
     }),
-    countActive: (tenantId) => prisma.event.count({ where: { tenantId, isArchived: false } }),
+    // Event Pass batch: `eventPass: null` excludes any event that has EVER
+    // held a pass, permanently — not just while a pass is currently
+    // active. See event-entitlement.util.ts / the batch report for why
+    // this is permanent rather than re-counting the moment a pass expires
+    // (a retroactive maxEvents penalty the "expiry grandfathers, it does
+    // not break" principle argues against).
+    countActive: (tenantId) => prisma.event.count({ where: { tenantId, isArchived: false, eventPass: null } }),
     // Public self-registration entry point (G2) — resolves an event from
     // its unguessable shareToken alone, no tenant/session context
     // involved. eventDays included so resolveEffectiveStatus can be
@@ -37,7 +48,10 @@ export const eventRepository = {
     // like memoryHubRepository.findByShareToken's equivalent include.
     findByShareToken: (shareToken) => prisma.event.findFirst({
         where: { shareToken, isArchived: false },
-        include: { eventDays: { where: { isArchived: false } } },
+        // eventPass included alongside eventDays — event-public.service.ts's
+        // register() calls assertGuestsCreatable, which is event-scoped
+        // (Event Pass batch) and needs both to resolve entitlement.
+        include: { eventDays: { where: { isArchived: false } }, eventPass: true },
     }),
     // Generates (or regenerates, overwriting whatever was there) the
     // public share token — 32 random bytes hex, matching invite/Memory

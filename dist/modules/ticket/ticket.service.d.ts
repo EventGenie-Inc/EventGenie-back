@@ -9,8 +9,8 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: import("@prisma/client-runtime-utils").Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -26,8 +26,8 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: import("@prisma/client-runtime-utils").Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -43,8 +43,8 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: import("@prisma/client-runtime-utils").Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -60,8 +60,8 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: import("@prisma/client-runtime-utils").Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -77,8 +77,8 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: import("@prisma/client-runtime-utils").Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -94,8 +94,8 @@ export declare const ticketService: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: import("@prisma/client-runtime-utils").Decimal;
         totalQuantity: number | null;
         soldCount: number;

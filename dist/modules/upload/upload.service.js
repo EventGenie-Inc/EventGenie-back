@@ -132,19 +132,23 @@ export const uploadService = {
             throw new HttpError(400, "mediaType ('IMAGE' or 'VIDEO') is required for a Memory Hub upload");
         }
         let tenantId;
+        let event;
         if (requestingRole === 'SUPER_ADMIN') {
-            const event = await eventService.getById(data.eventId, 'SUPER_ADMIN', null);
+            event = await eventService.getById(data.eventId, 'SUPER_ADMIN', null);
             tenantId = event.tenantId;
         }
         else {
             if (!requestingTenantId) {
                 throw new HttpError(400, 'User has no associated tenant');
             }
-            await eventService.getById(data.eventId, requestingRole, requestingTenantId); // 404s cross-tenant
+            // Captured (this previously discarded the fetched event) — needed
+            // below to resolve entitlement (Event Pass batch), not just for
+            // the 404s-cross-tenant ownership check it already provided.
+            event = await eventService.getById(data.eventId, requestingRole, requestingTenantId);
             tenantId = requestingTenantId;
         }
-        await assertMemoryHubAccessible(tenantId);
-        await assertMemoryHubQuotaAvailable(data.eventId, tenantId);
+        await assertMemoryHubAccessible(event);
+        await assertMemoryHubQuotaAvailable(event);
         return signMemoryItemUpload(tenantId, data.eventId, data.mediaType);
     },
 };

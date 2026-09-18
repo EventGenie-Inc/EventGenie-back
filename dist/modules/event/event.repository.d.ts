@@ -44,6 +44,14 @@ export declare const eventRepository: {
         updatedBy: string;
     })[]>;
     findById: (id: string, includeArchived?: boolean, tenantId?: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -120,8 +128,8 @@ export declare const eventRepository: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;
@@ -158,6 +166,14 @@ export declare const eventRepository: {
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     countActive: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
     findByShareToken: (shareToken: string) => import("@prisma/client").Prisma.Prisma__EventClient<({
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         eventDays: {
             id: string;
             isArchived: boolean;

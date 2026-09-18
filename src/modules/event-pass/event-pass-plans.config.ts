@@ -66,10 +66,14 @@ export const EVENT_PASS_GRANTED_TIER: Record<EventPassTier, PaidSubscriptionTier
 //  number (that was the bug: Small and Standard both mapping to
 //  Celebrate's 300-guest ceiling made the middle tier worthless).
 //
-//  Consumed ONLY by assertGuestsCreatable
-//  (guest-tier-enforcement.util.ts), taking the greater of this and the
-//  tenant's own effective-tier guest limit — never a bare replacement,
-//  same reasoning as resolveEventEntitlement's max-of-two for features.
+//  Consumed ONLY by resolveGuestLimit (guest-tier-enforcement.util.ts),
+//  taking the greater of this and the tenant's own effective-tier guest
+//  limit — never a bare replacement, same reasoning as
+//  resolveEventEntitlement's max-of-two for features. Both
+//  assertGuestsCreatable (write-time enforcement) and
+//  event.service.ts's getDetail (read-only exposure to the Control
+//  Center) go through that one function rather than each reading this
+//  table directly, so the two can never disagree.
 // ─────────────────────────────────────────
 export const EVENT_PASS_GUEST_CAP: Record<EventPassTier, number> = {
   SMALL: 50,

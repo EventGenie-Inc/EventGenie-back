@@ -33,6 +33,17 @@ import {} from '@prisma/client';
 // ─────────────────────────────────────────
 const GRACE_PERIOD_DAYS = 5;
 const GRACE_PERIOD_MS = GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
+// Ordering used to compare tiers — e.g. subscription.service.ts's
+// changeTier (upgrade vs downgrade) and, additively, the Event Pass
+// batch's resolveEventEntitlement (event-pass/event-entitlement.util.ts),
+// which needs to know whether a pass's granted tier outranks the
+// tenant's own effective tier. Exported here (rather than left as the
+// private const subscription.service.ts already declares for its own
+// tier+period comparison) purely so a second module doesn't have to
+// redeclare the same SPARK<CELEBRATE<ELEVATE ordering — subscription.
+// service.ts's own local copy is untouched, since its concern (tier AND
+// period together) isn't quite the same shape as this one.
+export const TIER_RANK = { SPARK: 0, CELEBRATE: 1, ELEVATE: 2 };
 export const resolveEffectiveTier = (tenant, now = new Date()) => {
     // Nothing to derive — SPARK has no lower fallback and no billing
     // state that could lapse.

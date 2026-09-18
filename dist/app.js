@@ -33,6 +33,8 @@ import paymentAccountRouter from './modules/payment-account/payment-account.rout
 import paymentWebhookRouter from './modules/payment-webhook/payment-webhook.router.js';
 import subscriptionRouter from './modules/subscription/subscription.router.js';
 import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.js';
+import eventPassRouter from './modules/event-pass/event-pass.router.js';
+import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -141,6 +143,7 @@ app.use('/api/events/:eventId/rsvp-fields', rsvpFieldRouter);
 app.use('/api/events/:eventId/program', eventProgramRouter);
 app.use('/api/events/:eventId/program/:programId/items', programItemRouter);
 app.use('/api/events/:eventId/tickets', ticketRouter);
+app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
@@ -186,11 +189,14 @@ app.use('/api/uploads', uploadRouter);
 //  /api/payments/webhook            — public, unauthenticated (Paystack calls this — both ticketing and subscription events)
 //  /api/subscriptions               — tenant admin subscription billing (Subscription Billing batch)
 //  /api/billing-history             — tenant admin read-only view of their subscription ledger entries
+//  /api/events/:eventId/pass        — one-off Event Pass + per-event SMS bundle purchase/status (Event Pass batch)
+//  /api/event-passes/signal         — tenant-wide repeat-purchase signal (Event Pass batch)
 // ─────────────────────────────────────────
 app.use('/api/payments/subaccount', paymentAccountRouter);
 app.use('/api/payments/webhook', paymentWebhookRouter);
 app.use('/api/subscriptions', subscriptionRouter);
 app.use('/api/billing-history', paymentLedgerRouter);
+app.use('/api/event-passes', eventPassSignalRouter);
 // ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────

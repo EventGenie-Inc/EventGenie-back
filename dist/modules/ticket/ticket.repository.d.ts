@@ -14,8 +14,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -31,8 +31,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -48,8 +48,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -65,8 +65,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -82,8 +82,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -100,8 +100,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;
@@ -117,8 +117,8 @@ export declare const ticketRepository: {
         description: string | null;
         createdBy: string;
         updatedBy: string;
-        currency: string;
         eventId: string;
+        currency: string;
         price: Prisma.Decimal;
         totalQuantity: number | null;
         soldCount: number;

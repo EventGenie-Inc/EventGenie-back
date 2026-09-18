@@ -10,6 +10,8 @@ import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { guestRepository } from '../guest/guest.repository.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -55,14 +57,35 @@ export const eventService = {
     return withEffectiveStatus(event);
   },
 
-  // Detail-view read only — adds one extra count query on top of getById,
-  // so this is deliberately NOT what every internal ownership-gate call
+  // Detail-view read only — adds extra queries on top of getById, so
+  // this is deliberately NOT what every internal ownership-gate call
   // (guest/event-day/invite/attendance services all call plain getById)
   // pays on every request; only the actual GET /:id route uses this.
+  //
+  // guestLimit reuses resolveGuestLimit — the same resolution
+  // assertGuestsCreatable enforces at write time — so this can never
+  // tell an organiser they have room only for the write to then be
+  // refused. currentCount is guestRepository.countForEvent, the exact
+  // denominator that check compares against (organiser-added guests,
+  // excluding plus-ones), not acceptedGuestCount above, which counts a
+  // different thing (accepted invites, plus-ones included).
   getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const event = await eventService.getById(id, requestingRole, tenantId);
     const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
-    return { ...event, acceptedGuestCount };
+    const guestLimitInfo = await resolveGuestLimit(event);
+    const currentGuestCount = await guestRepository.countForEvent(id);
+    return {
+      ...event,
+      acceptedGuestCount,
+      guestLimit: {
+        limit: guestLimitInfo.limit, // null = unlimited; the object itself is always present
+        currentCount: currentGuestCount,
+        source: guestLimitInfo.boundByPass ? 'PASS' : 'PLAN',
+        tenantTier: guestLimitInfo.tenantTier,
+        passTier: guestLimitInfo.passTier,
+        passActive: guestLimitInfo.passActive,
+      },
+    };
   },
 
   create: async (tenantId: string, userId: string, data: CreateEventDto) => {

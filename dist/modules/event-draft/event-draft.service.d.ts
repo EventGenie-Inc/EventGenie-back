@@ -28,6 +28,14 @@ export declare const eventDraftService: {
         payload: import("@prisma/client/runtime/client").JsonValue;
     }>;
     materialize: (tenantId: string, userId: string) => Promise<({
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
         memoryHub: {
             id: string;
             isArchived: boolean;
@@ -104,8 +112,8 @@ export declare const eventDraftService: {
             description: string | null;
             createdBy: string;
             updatedBy: string;
-            currency: string;
             eventId: string;
+            currency: string;
             price: import("@prisma/client-runtime-utils").Decimal;
             totalQuantity: number | null;
             soldCount: number;

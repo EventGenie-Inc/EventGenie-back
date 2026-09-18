@@ -1,3 +1,4 @@
+import { type EventPassTier, type SubscriptionTier } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { guestRepository } from '../guest/guest.repository.js';
@@ -5,6 +6,61 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import { isEventPassActive, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { EVENT_PASS_GUEST_CAP } from '../event-pass/event-pass-plans.config.js';
+
+export interface GuestLimitInfo {
+  limit: number | null; // effective limit for this event; null = unlimited
+  tenantTier: SubscriptionTier; // resolved via resolveEffectiveTier — never the raw stored tier
+  tenantLimit: number | null; // the tenant's own plan limit, before any pass; null = unlimited
+  passTier: EventPassTier | null; // this event's own pass tier, whether or not it's currently active
+  passActive: boolean;
+  passCap: number | null; // the pass's advertised cap; only set while the pass is active
+  boundByPass: boolean; // true when the pass cap, not the plan, is what's actually binding
+}
+
+// The single resolution point for "how many guests can this event have,
+// right now" — shared by assertGuestsCreatable (below) and
+// event.service.ts's getDetail (which surfaces it read-only to the
+// owning tenant). Deliberately one function: a second, independent
+// derivation would drift the moment a tier config changes, and the
+// disagreement would show up as "the UI said there was room, then the
+// write was refused."
+export const resolveGuestLimit = async (
+  event: EntitlementDerivableEvent & { id: string }
+): Promise<GuestLimitInfo> => {
+  const tenant = await tenantRepository.findById(event.tenantId);
+  if (!tenant) throw new HttpError(404, 'Tenant not found');
+
+  const tenantTier = resolveEffectiveTier(tenant);
+  const tenantConfig = await subscriptionTierConfigRepository.findByTier(tenantTier);
+  const tenantLimit = tenantConfig?.maxGuestsPerEvent ?? null; // null = unlimited
+
+  // Deliberately NOT resolveEventEntitlement here. That resolves the
+  // pass's GRANTED TIER — the feature mapping where Small and Standard
+  // both land on Celebrate — and reusing it for the guest count would
+  // keep the exact bug this exists to fix (Standard buying nothing over
+  // Small). Instead, the pass's own advertised guest number
+  // (EVENT_PASS_GUEST_CAP) stands on its own, alongside the tenant's
+  // plain effective-tier limit — the greater of the two wins, never a
+  // replacement, same shape as resolveEventEntitlement's max-of-two for
+  // features so the two rules stay in spirit even though this one reads
+  // its own dedicated number instead of a shared tier table.
+  const passTier = event.eventPass?.passTier ?? null;
+  const passActive = isEventPassActive(event);
+  const passCap = passActive ? EVENT_PASS_GUEST_CAP[event.eventPass!.passTier] : null;
+
+  // Unlimited on the tenant side alone already beats any pass cap — an
+  // Elevate tenant buying a Small pass for one event must not find that
+  // event suddenly capped at 50. Nothing below can turn a null back into
+  // a number, so this is the one and only unlimited exit.
+  if (tenantLimit === null) {
+    return { limit: null, tenantTier, tenantLimit: null, passTier, passActive, passCap, boundByPass: false };
+  }
+
+  const limit = passCap === null ? tenantLimit : Math.max(tenantLimit, passCap);
+  const boundByPass = passCap !== null && passCap >= tenantLimit;
+
+  return { limit, tenantTier, tenantLimit, passTier, passActive, passCap, boundByPass };
+};
 
 // Called before creating guest(s) on an event — both manual single-create
 // (additionalCount=1) and bulk import (additionalCount=validRows.length)
@@ -24,9 +80,6 @@ export const assertGuestsCreatable = async (
   event: EntitlementDerivableEvent & { id: string },
   additionalCount: number
 ): Promise<void> => {
-  const tenant = await tenantRepository.findById(event.tenantId);
-  if (!tenant) throw new HttpError(404, 'Tenant not found');
-
   // Creation-time (a NEW guest — organiser add, bulk import, or a
   // brand-new public self-registrant): correctly bound by the event's
   // CURRENT entitlement, including a lapsed-and-unpassed tenant. This
@@ -35,43 +88,20 @@ export const assertGuestsCreatable = async (
   // submit() only updates an existing Invite/Guest, no capacity check),
   // so "an existing invitation still resolves" is unaffected regardless
   // of what this returns.
-  //
-  // Deliberately NOT resolveEventEntitlement here. That resolves the
-  // pass's GRANTED TIER — the feature mapping where Small and Standard
-  // both land on Celebrate — and reusing it for the guest count would
-  // keep the exact bug this exists to fix (Standard buying nothing over
-  // Small). Instead, the pass's own advertised guest number
-  // (EVENT_PASS_GUEST_CAP) stands on its own, alongside the tenant's
-  // plain effective-tier limit — the greater of the two wins, never a
-  // replacement, same shape as resolveEventEntitlement's max-of-two for
-  // features so the two rules stay in spirit even though this one reads
-  // its own dedicated number instead of a shared tier table.
-  const tenantTier = resolveEffectiveTier(tenant);
-  const tenantConfig = await subscriptionTierConfigRepository.findByTier(tenantTier);
-  const tenantLimit = tenantConfig?.maxGuestsPerEvent ?? null; // null = unlimited
-
-  // Unlimited on the tenant side alone already beats any pass cap — an
-  // Elevate tenant buying a Small pass for one event must not find that
-  // event suddenly capped at 50. Nothing below can turn a null back into
-  // a number, so this is the one and only unlimited exit.
-  if (tenantLimit === null) return;
-
-  const passActive = isEventPassActive(event);
-  const passCap = passActive ? EVENT_PASS_GUEST_CAP[event.eventPass!.passTier] : null;
-  const effectiveLimit = passCap === null ? tenantLimit : Math.max(tenantLimit, passCap);
+  const resolved = await resolveGuestLimit(event);
+  if (resolved.limit === null) return;
 
   const existingCount = await guestRepository.countForEvent(event.id);
   const projected = existingCount + additionalCount;
 
-  if (projected > effectiveLimit) {
-    const over = projected - effectiveLimit;
+  if (projected > resolved.limit) {
+    const over = projected - resolved.limit;
     // Attribute the message to whichever side is actually binding, so
     // "upgrade" points at the thing that would actually raise the cap.
-    const boundByPass = passCap !== null && passCap >= tenantLimit;
-    const source = boundByPass
-      ? `This event's ${event.eventPass!.passTier} pass allows a maximum of ${effectiveLimit} guest(s) per event.`
-      : `The ${tenantTier} plan allows a maximum of ${effectiveLimit} guest(s) per event.`;
-    const upgradeHint = boundByPass ? 'upgrade the pass' : 'upgrade the plan';
+    const source = resolved.boundByPass
+      ? `This event's ${event.eventPass!.passTier} pass allows a maximum of ${resolved.limit} guest(s) per event.`
+      : `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} guest(s) per event.`;
+    const upgradeHint = resolved.boundByPass ? 'upgrade the pass' : 'upgrade the plan';
 
     throw new HttpError(
       403,

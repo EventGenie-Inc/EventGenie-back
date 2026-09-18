@@ -1,4 +1,5 @@
 import { type SubscriptionTier } from '@prisma/client';
+export declare const TIER_RANK: Record<SubscriptionTier, number>;
 export interface TenantSubscriptionState {
     subscriptionTier: SubscriptionTier;
     subscriptionCancelAtPeriodEnd: boolean;
