@@ -19,8 +19,8 @@ export declare const attendanceRepository: {
     } & {
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     })[]>;
     findById: (id: string) => Prisma.Prisma__AttendanceClient<({
         eventDay: {
@@ -58,20 +58,20 @@ export declare const attendanceRepository: {
     } & {
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     }) | null, null, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     create: (inviteId: string, eventDayId: string, db?: Db) => Prisma.Prisma__AttendanceClient<{
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
     delete: (id: string) => Prisma.Prisma__AttendanceClient<{
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, Prisma.PrismaClientOptions>;
 };
 export {};

@@ -53,6 +53,11 @@ export const inviteRepository = {
                     eventDays: { where: { isArchived: false } },
                     rsvpFields: { where: { isArchived: false }, orderBy: { order: 'asc' } },
                     tickets: { where: { isArchived: false, isAvailable: true } },
+                    // Event Pass batch — alongside eventDays, needed by
+                    // memory-hub.service.ts's guest-facing paths (which resolve
+                    // this invite's `.event` into event-scoped tier checks) to
+                    // resolve entitlement with no extra query.
+                    eventPass: true,
                 },
             },
         },

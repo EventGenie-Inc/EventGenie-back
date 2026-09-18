@@ -8,10 +8,10 @@ export declare const paymentLedgerService: {
         createdAt: Date;
         tenantId: string | null;
         payload: Prisma.JsonValue | null;
+        eventId: string | null;
         type: import("@prisma/client").$Enums.LedgerEntryType;
         amountCents: number;
         currency: string;
-        eventId: string | null;
         paystackReference: string | null;
         relatedType: string | null;
         relatedId: string | null;

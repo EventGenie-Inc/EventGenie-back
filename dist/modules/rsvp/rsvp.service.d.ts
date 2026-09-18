@@ -102,15 +102,15 @@ export declare const rsvpService: {
             status: import("@prisma/client").$Enums.TicketPurchaseStatus;
             inviteId: string;
             currency: string;
+            paymentRef: string | null;
             confirmedAt: Date | null;
+            purchasedAt: Date;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;
             ticketPriceCents: number;
             commissionCents: number;
-            paymentRef: string | null;
             holdExpiresAt: Date | null;
-            purchasedAt: Date;
         } | {
             id: string;
             ticketId: string;
@@ -158,15 +158,15 @@ export declare const rsvpService: {
             status: import("@prisma/client").$Enums.TicketPurchaseStatus;
             inviteId: string;
             currency: string;
+            paymentRef: string | null;
             confirmedAt: Date | null;
+            purchasedAt: Date;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;
             ticketPriceCents: number;
             commissionCents: number;
-            paymentRef: string | null;
             holdExpiresAt: Date | null;
-            purchasedAt: Date;
         } | {
             id: string;
             ticketId: string;
@@ -214,15 +214,15 @@ export declare const rsvpService: {
             status: import("@prisma/client").$Enums.TicketPurchaseStatus;
             inviteId: string;
             currency: string;
+            paymentRef: string | null;
             confirmedAt: Date | null;
+            purchasedAt: Date;
             ticketId: string;
             quantity: number;
             totalPaid: import("@prisma/client-runtime-utils").Decimal;
             ticketPriceCents: number;
             commissionCents: number;
-            paymentRef: string | null;
             holdExpiresAt: Date | null;
-            purchasedAt: Date;
         } | {
             id: string;
             ticketId: string;

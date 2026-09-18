@@ -3,13 +3,15 @@ import {} from './event.types.js';
 import {} from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
-import { assertTenantReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
+import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
 import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { guestRepository } from '../guest/guest.repository.js';
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
 // Cloudinary (it finished uploading before this backend ever learned
@@ -50,14 +52,35 @@ export const eventService = {
             throw new HttpError(404, 'Event not found');
         return withEffectiveStatus(event);
     },
-    // Detail-view read only — adds one extra count query on top of getById,
-    // so this is deliberately NOT what every internal ownership-gate call
+    // Detail-view read only — adds extra queries on top of getById, so
+    // this is deliberately NOT what every internal ownership-gate call
     // (guest/event-day/invite/attendance services all call plain getById)
     // pays on every request; only the actual GET /:id route uses this.
+    //
+    // guestLimit reuses resolveGuestLimit — the same resolution
+    // assertGuestsCreatable enforces at write time — so this can never
+    // tell an organiser they have room only for the write to then be
+    // refused. currentCount is guestRepository.countForEvent, the exact
+    // denominator that check compares against (organiser-added guests,
+    // excluding plus-ones), not acceptedGuestCount above, which counts a
+    // different thing (accepted invites, plus-ones included).
     getDetail: async (id, requestingRole, tenantId) => {
         const event = await eventService.getById(id, requestingRole, tenantId);
         const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
-        return { ...event, acceptedGuestCount };
+        const guestLimitInfo = await resolveGuestLimit(event);
+        const currentGuestCount = await guestRepository.countForEvent(id);
+        return {
+            ...event,
+            acceptedGuestCount,
+            guestLimit: {
+                limit: guestLimitInfo.limit, // null = unlimited; the object itself is always present
+                currentCount: currentGuestCount,
+                source: guestLimitInfo.boundByPass ? 'PASS' : 'PLAN',
+                tenantTier: guestLimitInfo.tenantTier,
+                passTier: guestLimitInfo.passTier,
+                passActive: guestLimitInfo.passActive,
+            },
+        };
     },
     create: async (tenantId, userId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
@@ -93,12 +116,12 @@ export const eventService = {
             // only a past deadline at CREATION time is rejected (see create()).
             assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
         }
-        await assertEventUpdatable(event.tenantId, {
+        await assertEventUpdatable(event, {
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
         });
         if (data.ticketing === 'PAID') {
-            await assertTenantReadyToSellTickets(event.tenantId);
+            await assertEventReadyToSellTickets(event);
         }
         await eventRepository.update(id, userId, data);
         // Cover REPLACED (including cleared to null) — delete the now-orphaned
@@ -215,7 +238,7 @@ export const eventService = {
         // event was created and when it's published (a rejected bank-detail
         // update attempt) — see payment-account-readiness.util.ts.
         if (event.ticketing === 'PAID') {
-            await assertTenantReadyToSellTickets(event.tenantId);
+            await assertEventReadyToSellTickets(event);
         }
         await eventRepository.updateStatus(id, userId, 'PUBLISHED');
         return eventService.getById(id, requestingRole, tenantId);

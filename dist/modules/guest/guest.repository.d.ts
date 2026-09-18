@@ -78,8 +78,8 @@ export declare const guestRepository: {
             attendances: {
                 id: string;
                 inviteId: string;
-                eventDayId: string;
                 confirmedAt: Date;
+                eventDayId: string;
             }[];
             rsvpResponses: {
                 id: string;

@@ -17,8 +17,8 @@ export declare const attendanceService: {
     } & {
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     })[]>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         eventDay: {
@@ -56,20 +56,20 @@ export declare const attendanceService: {
     } & {
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     }>;
     create: (inviteId: string, eventDayId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     }>;
     delete: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         inviteId: string;
-        eventDayId: string;
         confirmedAt: Date;
+        eventDayId: string;
     }>;
 };
 //# sourceMappingURL=attendance.service.d.ts.map

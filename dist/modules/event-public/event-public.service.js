@@ -178,7 +178,7 @@ export const eventPublicService = {
         // talks about upgrading; caught and replaced here with wording
         // aimed at the actual reader.
         try {
-            await assertGuestsCreatable(event.id, event.tenantId, 1);
+            await assertGuestsCreatable(event, 1);
         }
         catch (err) {
             if (err instanceof HttpError && err.statusCode === 403) {

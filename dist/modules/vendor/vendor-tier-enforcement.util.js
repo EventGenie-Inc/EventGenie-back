@@ -3,6 +3,7 @@ import { subscriptionTierConfigRepository } from '../subscription-tier-config/su
 import { vendorRepository } from './vendor.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
+import { resolveEventEntitlement } from '../event-pass/event-entitlement.util.js';
 // Called before creating a new vendor space (POST /api/vendors).
 //
 // tenantId is null for a SUPER_ADMIN-managed, tenant-less vendor space
@@ -54,6 +55,24 @@ export const assertVendorMarketplaceAccessible = async (tenantId) => {
     // Organiser browsing for their own event planning — not guest-facing,
     // so a lapsed tenant losing search access breaks nothing already live.
     const effectiveTier = resolveEffectiveTier(tenant);
+    const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
+    if (!config?.vendorMarketplace) {
+        throw new HttpError(403, `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`);
+    }
+};
+// Called before EVENT-SCOPED discovery (vendor.service.ts's
+// getNearbyVendorsForEvent) — "uses the event's own coordinates," per
+// the batch prompt's own classification, unlike the plain
+// tenant-scoped assertVendorMarketplaceAccessible above (general
+// browse / nearby search with no event involved). Takes the full
+// fetched event, not a bare tenantId, so a missed call site falls back
+// to the wrong (tenant-only) function rather than silently resolving
+// entitlement incorrectly through this one.
+export const assertEventVendorMarketplaceAccessible = async (event) => {
+    const tenant = await tenantRepository.findById(event.tenantId);
+    if (!tenant)
+        throw new HttpError(404, 'Tenant not found');
+    const effectiveTier = resolveEventEntitlement(tenant, event);
     const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.vendorMarketplace) {
         throw new HttpError(403, `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`);
