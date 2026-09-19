@@ -27,7 +27,7 @@ export declare const eventDraftService: {
         currentStep: number;
         payload: import("@prisma/client/runtime/client").JsonValue;
     }>;
-    materialize: (tenantId: string, userId: string) => Promise<({
+    materialize: (tenantId: string, userId: string) => Promise<(Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -147,6 +147,9 @@ export declare const eventDraftService: {
         ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
     }) | null>;
 };
 //# sourceMappingURL=event-draft.service.d.ts.map

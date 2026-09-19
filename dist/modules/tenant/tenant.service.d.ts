@@ -14,7 +14,7 @@ export declare const tenantService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    getEvents: (id: string) => Promise<({
+    getEvents: (id: string) => Promise<(Omit<{
         eventDays: {
             id: string;
             isArchived: boolean;
@@ -55,6 +55,9 @@ export declare const tenantService: {
         ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
     })[]>;
     suspend: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;
     reactivate: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;
