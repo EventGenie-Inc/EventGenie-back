@@ -2,21 +2,28 @@ import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
+import { withPlainCoordinates } from './event-coordinates.util.js';
 
 export const eventRepository = {
 
-  findAll: (tenantId?: string, includeArchived = false) =>
-    prisma.event.findMany({
-      where: {
-        ...(includeArchived ? {} : { isArchived: false }),
-        ...(tenantId ? { tenantId } : {}),
-      },
-      include: { eventDays: { where: { isArchived: false } } },
-      orderBy: { createdAt: 'desc' },
-    }),
+  // Every method below that returns an Event row passes it through
+  // withPlainCoordinates (event-coordinates.util.ts — see its header for
+  // why): Decimal columns must not reach a caller or a JSON response.
 
-  findById: (id: string, includeArchived = false, tenantId?: string) =>
-    prisma.event.findFirst({
+  findAll: async (tenantId?: string, includeArchived = false) =>
+    (
+      await prisma.event.findMany({
+        where: {
+          ...(includeArchived ? {} : { isArchived: false }),
+          ...(tenantId ? { tenantId } : {}),
+        },
+        include: { eventDays: { where: { isArchived: false } } },
+        orderBy: { createdAt: 'desc' },
+      })
+    ).map(withPlainCoordinates),
+
+  findById: async (id: string, includeArchived = false, tenantId?: string) => {
+    const event = await prisma.event.findFirst({
       where: {
         id,
         ...(includeArchived ? {} : { isArchived: false }),
@@ -38,7 +45,9 @@ export const eventRepository = {
         // EntitlementDerivableEvent) with no extra query.
         eventPass: true,
       },
-    }),
+    });
+    return event ? withPlainCoordinates(event) : null;
+  },
 
   // Event Pass batch: `eventPass: null` excludes any event that has EVER
   // held a pass, permanently — not just while a pass is currently
@@ -54,14 +63,16 @@ export const eventRepository = {
   // involved. eventDays included so resolveEffectiveStatus can be
   // computed before anything goes out to a guest's browser, exactly
   // like memoryHubRepository.findByShareToken's equivalent include.
-  findByShareToken: (shareToken: string) =>
-    prisma.event.findFirst({
+  findByShareToken: async (shareToken: string) => {
+    const event = await prisma.event.findFirst({
       where: { shareToken, isArchived: false },
       // eventPass included alongside eventDays — event-public.service.ts's
       // register() calls assertGuestsCreatable, which is event-scoped
       // (Event Pass batch) and needs both to resolve entitlement.
       include: { eventDays: { where: { isArchived: false } }, eventPass: true },
-    }),
+    });
+    return event ? withPlainCoordinates(event) : null;
+  },
 
   // Generates (or regenerates, overwriting whatever was there) the
   // public share token — 32 random bytes hex, matching invite/Memory
@@ -69,10 +80,12 @@ export const eventRepository = {
   // by construction: the column is overwritten, so the previous value
   // simply stops matching anything.
   generateShareToken: (id: string, userId: string) =>
-    prisma.event.update({
-      where: { id },
-      data: { shareToken: crypto.randomBytes(32).toString('hex'), updatedBy: userId },
-    }),
+    prisma.event
+      .update({
+        where: { id },
+        data: { shareToken: crypto.randomBytes(32).toString('hex'), updatedBy: userId },
+      })
+      .then(withPlainCoordinates),
 
   // Accepted invites ≈ accepted guests: createWithInvite/bulkCreateWithInvites
   // (guest.repository.ts) create exactly one Invite per Guest, and
@@ -134,7 +147,7 @@ export const eventRepository = {
         },
       });
 
-      return event;
+      return withPlainCoordinates(event);
     }),
 
   update: (id: string, userId: string, data: UpdateEventDto) =>
@@ -160,21 +173,25 @@ export const eventRepository = {
         ...(data.ticketsRefundable !== undefined && { ticketsRefundable: data.ticketsRefundable }),
         updatedBy: userId,
       },
-    }),
+    }).then(withPlainCoordinates),
 
   archive: (id: string, userId: string) =>
-    prisma.event.update({
-      where: { id },
-      data: { isArchived: true, updatedBy: userId },
-    }),
+    prisma.event
+      .update({
+        where: { id },
+        data: { isArchived: true, updatedBy: userId },
+      })
+      .then(withPlainCoordinates),
 
   // SUPER_ADMIN support action — mirrors user.repository.ts/tenant.repository.ts's
   // reactivate exactly.
   reactivate: (id: string, userId: string) =>
-    prisma.event.update({
-      where: { id },
-      data: { isArchived: false, updatedBy: userId },
-    }),
+    prisma.event
+      .update({
+        where: { id },
+        data: { isArchived: false, updatedBy: userId },
+      })
+      .then(withPlainCoordinates),
 
   // The only writer of Event.status — publish() and cancel() in
   // event.service.ts are the sole callers. Kept separate from the
@@ -182,8 +199,10 @@ export const eventRepository = {
   // all) so a status transition can never be smuggled through a plain
   // PUT /api/events/:id alongside unrelated field edits.
   updateStatus: (id: string, userId: string, status: EventStatus) =>
-    prisma.event.update({
-      where: { id },
-      data: { status, updatedBy: userId },
-    }),
+    prisma.event
+      .update({
+        where: { id },
+        data: { status, updatedBy: userId },
+      })
+      .then(withPlainCoordinates),
 };
