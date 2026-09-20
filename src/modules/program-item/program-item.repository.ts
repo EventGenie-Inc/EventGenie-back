@@ -1,5 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateProgramItemDto, type UpdateProgramItemDto } from './program-item.types.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 export const programItemRepository = {
 
@@ -20,7 +21,7 @@ export const programItemRepository = {
         programId,
         title: data.title,
         description: data.description ?? null,
-        startTime: new Date(data.startTime),
+        startTime: parseClientDateTime(data.startTime),
         durationMins: data.durationMins ?? null,
         order: data.order,
         isArchived: false,
@@ -35,7 +36,7 @@ export const programItemRepository = {
       data: {
         ...(data.title !== undefined && { title: data.title }),
         ...(data.description !== undefined && { description: data.description ?? null }),
-        ...(data.startTime !== undefined && { startTime: new Date(data.startTime) }),
+        ...(data.startTime !== undefined && { startTime: parseClientDateTime(data.startTime) }),
         ...(data.durationMins !== undefined && { durationMins: data.durationMins ?? null }),
         ...(data.order !== undefined && { order: data.order }),
         updatedBy: userId,

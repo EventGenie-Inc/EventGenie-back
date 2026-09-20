@@ -140,6 +140,32 @@ locally, read the code from the `OtpRecord` table in the dev database.
 The seed script refuses to run unless `NODE_ENV !== 'production'` **and**
 the resolved database URL contains `eventgenie_dev`.
 
+**Tier configs are created, never overwritten.** Re-running the seed leaves
+an existing `SubscriptionTierConfig` alone, so limits a SUPER_ADMIN has
+edited survive. If a row differs from the seed values the run says so. To
+deliberately overwrite all three with the values in `prisma/seed.ts` — for
+example after adding a tier column that existing rows need populated:
+
+```bash
+npm run seed -- --reset-tier-configs
+```
+
+Each field it changes is printed as `old → new`.
+
+**Tenants and users follow the same rule.** The seed creates the two seed
+tenants and four accounts when they are missing and otherwise leaves them
+alone — so a tenant you moved to Celebrate for a test, or a user whose role
+you changed, stays that way across re-seeds. A row that differs from the
+seed values is reported (`differs from the seed values, left as is (…)`).
+Reset them on purpose, separately:
+
+```bash
+npm run seed -- --reset-tenants   # name, email, subscriptionTier, subscriptionStatus
+npm run seed -- --reset-users     # email, username, role, tenantId, isActive, isArchived
+```
+
+An unrecognised flag is refused before anything is touched.
+
 ---
 
 ## Environment variables

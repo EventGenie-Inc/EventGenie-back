@@ -10,6 +10,7 @@ import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage } from '../event/event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 export const eventDraftService = {
 
@@ -67,10 +68,10 @@ export const eventDraftService = {
     const capacity = p.capacity !== undefined && p.capacity !== null ? Number(p.capacity) : undefined;
     assertValidCapacity(capacity);
 
-    const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? new Date(p.rsvpDeadline as string) : undefined;
+    const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseClientDateTime(p.rsvpDeadline as string) : undefined;
     const draftEventDays = days.map((day) => ({
-      date: new Date(day.date as string),
-      endTime: day.endTime ? new Date(day.endTime as string) : null,
+      date: parseClientDateTime(day.date as string),
+      endTime: day.endTime ? parseClientDateTime(day.endTime as string) : null,
     }));
     assertValidRsvpDeadline(rsvpDeadline ?? null, draftEventDays, { rejectPast: true });
 
@@ -131,9 +132,9 @@ export const eventDraftService = {
           data: {
             eventId: event.id,
             label: day.label as string,
-            date: new Date(day.date as string),
-            startTime: day.startTime ? new Date(day.startTime as string) : null,
-            endTime: day.endTime ? new Date(day.endTime as string) : null,
+            date: parseClientDateTime(day.date as string),
+            startTime: day.startTime ? parseClientDateTime(day.startTime as string) : null,
+            endTime: day.endTime ? parseClientDateTime(day.endTime as string) : null,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,
@@ -195,7 +196,7 @@ export const eventDraftService = {
               programId: eventProgram.id,
               title: item.title as string,
               description: (item.description as string) ?? null,
-              startTime: new Date(item.startTime as string),
+              startTime: parseClientDateTime(item.startTime as string),
               durationMins: (item.durationMins as number) ?? null,
               order: index,
               isArchived: false,
@@ -214,7 +215,7 @@ export const eventDraftService = {
           title: null,
           description: null,
           isPublic: false,
-          opensAt: memoryHub?.opensAt ? new Date(memoryHub.opensAt as string) : null,
+          opensAt: memoryHub?.opensAt ? parseClientDateTime(memoryHub.opensAt as string) : null,
           isArchived: false,
           createdBy: userId,
           updatedBy: userId,

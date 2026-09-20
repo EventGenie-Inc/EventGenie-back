@@ -2,6 +2,45 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // ═══════════════════════════════════════════════════════════
+//  FLAGS
+//
+//  --reset-tier-configs   Overwrite the three SubscriptionTierConfig rows
+//                         with the values in TIER_CONFIGS below, replacing
+//                         anything a SUPER_ADMIN has edited. Without it the
+//                         seed only ever CREATES a missing tier config and
+//                         leaves an existing one untouched.
+//
+//  --reset-tenants        Same, for the seed tenants (TENANTS below): put
+//                         name, email, subscriptionTier and
+//                         subscriptionStatus back to the seed values.
+//                         Without it an existing tenant is left alone — a
+//                         tenant deliberately moved to Celebrate for a test
+//                         stays there.
+//
+//  --reset-users          Same, for the seed accounts (ACCOUNTS below):
+//                         put email, username, role, tenantId, isActive and
+//                         isArchived back to the seed values. Without it an
+//                         existing user is left alone.
+//
+//  Each is separate on purpose: restoring a tenant's tier should not also
+//  demote a user, or vice versa.
+//
+//  Parsed before the safety guards and strict on purpose: a mistyped flag
+//  that was silently ignored would leave someone believing a reset had
+//  happened when it had not.
+// ═══════════════════════════════════════════════════════════
+
+const KNOWN_FLAGS = ['--reset-tier-configs', '--reset-tenants', '--reset-users'];
+const unknownFlags = process.argv.slice(2).filter((arg) => !KNOWN_FLAGS.includes(arg));
+if (unknownFlags.length) {
+  console.error(`✖ Unknown argument(s): ${unknownFlags.join(', ')}. Known: ${KNOWN_FLAGS.join(', ')}.`);
+  process.exit(1);
+}
+const RESET_TIER_CONFIGS = process.argv.includes('--reset-tier-configs');
+const RESET_TENANTS = process.argv.includes('--reset-tenants');
+const RESET_USERS = process.argv.includes('--reset-users');
+
+// ═══════════════════════════════════════════════════════════
 //  SAFETY GUARDS
 //
 //  This script creates real Firebase Auth users and real
@@ -82,6 +121,18 @@ assertSafeToRun();
 
 const SEED_TEST_PASSWORD = process.env.SEED_TEST_PASSWORD ?? 'EventGenieDev#2026';
 
+// ── ADDING A TIER COLUMN? THE MIGRATION NEEDS A PER-TIER UPDATE. ─────────
+// `null` on a numeric limit means UNLIMITED (see STEERING.md "Tier
+// enforcement"). A migration that only does ADD COLUMN therefore leaves every
+// existing row unlimited — it fails OPEN. This file cannot fix that for you:
+// the seed never runs against a database it isn't pointed at, and it no
+// longer overwrites existing tier configs. maxVendorSpaces and
+// maxMemoryHubBytesPerEvent were both added exactly that way: correct here,
+// but on any database the seed never touched they are null, i.e. unlimited.
+// So the migration itself must also carry, per tier, something like:
+//   UPDATE "SubscriptionTierConfig" SET "newLimit" = <value> WHERE "tier" = 'CELEBRATE';
+// and this array must be updated to match. To push new seed values onto an
+// existing dev database afterwards, use --reset-tier-configs.
 const TIER_CONFIGS = [
   {
     tier: 'SPARK' as const,
@@ -172,6 +223,14 @@ const ACCOUNTS: SeedAccount[] = [
 //  MAIN
 // ═══════════════════════════════════════════════════════════
 
+// Field-by-field "key: old → new" for every seed value the existing row does
+// not already hold — so a reset is never silent and a leftover difference is
+// always visible. Shared by the tier configs, tenants and users.
+const differencesFrom = (existing: object, seed: Record<string, unknown>): string[] =>
+  Object.keys(seed)
+    .filter((key) => (existing as Record<string, unknown>)[key] !== seed[key])
+    .map((key) => `${key}: ${JSON.stringify((existing as Record<string, unknown>)[key])} → ${JSON.stringify(seed[key])}`);
+
 async function main() {
   // Loaded here, after the guards above have already passed —
   // this is the earliest point any DB/Firebase client exists.
@@ -183,43 +242,85 @@ async function main() {
 
   try {
     // ── SubscriptionTierConfig ──────────────────────────────
+    // Create when absent, leave alone when present — a SUPER_ADMIN's edits
+    // through the UI must survive a re-seed. A tier config is live pricing
+    // policy, not fixture data. See --reset-tier-configs above for the one
+    // deliberate way to overwrite, e.g. to populate a column added since.
     console.log('── Subscription Tier Configs ──');
     for (const config of TIER_CONFIGS) {
       const existing = await prisma.subscriptionTierConfig.findUnique({ where: { tier: config.tier } });
-      await prisma.subscriptionTierConfig.upsert({
-        where: { tier: config.tier },
-        create: config,
-        update: config,
-      });
-      console.log(`  ${existing ? '↷ updated' : '✔ created'} ${config.tier}`);
+
+      if (!existing) {
+        await prisma.subscriptionTierConfig.create({ data: config });
+        console.log(`  ✔ created ${config.tier}`);
+        continue;
+      }
+
+      const differences = differencesFrom(existing, config);
+
+      if (RESET_TIER_CONFIGS) {
+        await prisma.subscriptionTierConfig.update({ where: { tier: config.tier }, data: config });
+        console.log(
+          differences.length
+            ? `  ↻ reset ${config.tier} — ${differences.join('; ')}`
+            : `  ↻ reset ${config.tier} — already matched the seed values`
+        );
+      } else if (differences.length) {
+        console.log(`  ↷ already exists ${config.tier} — differs from the seed values, left as is (${differences.join('; ')})`);
+      } else {
+        console.log(`  ↷ already exists ${config.tier}`);
+      }
+    }
+    if (!RESET_TIER_CONFIGS) {
+      console.log('  (existing tier configs are never modified — pass --reset-tier-configs to overwrite them with the seed values)');
     }
 
     // ── Tenants ──────────────────────────────────────────────
+    // Create when absent, leave alone when present — same rule as the tier
+    // configs above. This used to be an upsert whose update branch reset
+    // name, email, subscriptionTier and subscriptionStatus on every run, so
+    // a tenant put on Celebrate (or SUSPENDED) for a test quietly went back
+    // to its seed values the next time anyone seeded. See --reset-tenants.
     console.log('\n── Tenants ──');
-    type TenantRow = Awaited<ReturnType<typeof prisma.tenant.upsert>>;
+    type TenantRow = NonNullable<Awaited<ReturnType<typeof prisma.tenant.findUnique>>>;
     const tenantRows = {} as Record<keyof typeof TENANTS, TenantRow>;
     for (const key of Object.keys(TENANTS) as (keyof typeof TENANTS)[]) {
       const t = TENANTS[key];
+      const seedValues = {
+        name: t.name,
+        email: t.email,
+        subscriptionTier: t.subscriptionTier,
+        subscriptionStatus: 'ACTIVE' as const,
+      };
       const existing = await prisma.tenant.findUnique({ where: { slug: t.slug } });
-      const tenant = await prisma.tenant.upsert({
-        where: { slug: t.slug },
-        create: {
-          name: t.name,
-          slug: t.slug,
-          email: t.email,
-          subscriptionTier: t.subscriptionTier,
-          subscriptionStatus: 'ACTIVE',
-          isArchived: false,
-        },
-        update: {
-          name: t.name,
-          email: t.email,
-          subscriptionTier: t.subscriptionTier,
-          subscriptionStatus: 'ACTIVE',
-        },
-      });
-      tenantRows[key] = tenant;
-      console.log(`  ${existing ? '↷ already exists' : '✔ created'} "${t.name}" (${t.slug}) — ${tenant.id}`);
+
+      if (!existing) {
+        tenantRows[key] = await prisma.tenant.create({
+          data: { ...seedValues, slug: t.slug, isArchived: false },
+        });
+        console.log(`  ✔ created "${t.name}" (${t.slug}) — ${tenantRows[key].id}`);
+        continue;
+      }
+
+      const differences = differencesFrom(existing, seedValues);
+      if (RESET_TENANTS) {
+        tenantRows[key] = await prisma.tenant.update({ where: { slug: t.slug }, data: seedValues });
+        console.log(
+          differences.length
+            ? `  ↻ reset "${t.name}" (${t.slug}) — ${differences.join('; ')}`
+            : `  ↻ reset "${t.name}" (${t.slug}) — already matched the seed values`
+        );
+      } else {
+        tenantRows[key] = existing;
+        console.log(
+          differences.length
+            ? `  ↷ already exists "${t.name}" (${t.slug}) — differs from the seed values, left as is (${differences.join('; ')})`
+            : `  ↷ already exists "${t.name}" (${t.slug}) — ${existing.id}`
+        );
+      }
+    }
+    if (!RESET_TENANTS) {
+      console.log('  (existing tenants are never modified — pass --reset-tenants to overwrite them with the seed values)');
     }
 
     // ── Firebase Auth users + matching Postgres User rows ────
@@ -244,31 +345,43 @@ async function main() {
         firebaseStatus = 'firebase: created';
       }
 
+      const seedValues = {
+        email: account.email,
+        username: account.username,
+        role: account.role,
+        tenantId,
+        isActive: true,
+        isArchived: false,
+      };
       const existingUser = await prisma.user.findUnique({ where: { firebaseUid: firebaseUser.uid } });
-      await prisma.user.upsert({
-        where: { firebaseUid: firebaseUser.uid },
-        create: {
-          firebaseUid: firebaseUser.uid,
-          email: account.email,
-          username: account.username,
-          role: account.role,
-          tenantId,
-          isActive: true,
-          isArchived: false,
-        },
-        update: {
-          email: account.email,
-          username: account.username,
-          role: account.role,
-          tenantId,
-          isActive: true,
-          isArchived: false,
-        },
-      });
 
-      console.log(
-        `  ${account.email} — ${firebaseStatus}, postgres: ${existingUser ? 'already exists' : 'created'} (${account.role})`
-      );
+      // Create when absent, leave alone when present — this used to be an
+      // upsert whose update branch reset email, username, role, tenantId,
+      // isActive and isArchived on every run, silently demoting a user whose
+      // role was changed, re-activating one who was deactivated, and
+      // un-archiving one who was archived. See --reset-users.
+      let userNote: string;
+      if (!existingUser) {
+        await prisma.user.create({ data: { firebaseUid: firebaseUser.uid, ...seedValues } });
+        userNote = 'postgres: created';
+      } else {
+        const differences = differencesFrom(existingUser, seedValues);
+        if (RESET_USERS) {
+          await prisma.user.update({ where: { firebaseUid: firebaseUser.uid }, data: seedValues });
+          userNote = differences.length
+            ? `postgres: ↻ reset — ${differences.join('; ')}`
+            : 'postgres: ↻ reset — already matched the seed values';
+        } else {
+          userNote = differences.length
+            ? `postgres: already exists — differs from the seed values, left as is (${differences.join('; ')})`
+            : 'postgres: already exists';
+        }
+      }
+
+      console.log(`  ${account.email} — ${firebaseStatus}, ${userNote} (${account.role})`);
+    }
+    if (!RESET_USERS) {
+      console.log('  (existing users are never modified — pass --reset-users to overwrite them with the seed values)');
     }
 
     // ── Sample event under "Test Events Co" ──────────────────

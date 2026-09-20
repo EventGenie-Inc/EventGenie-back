@@ -118,17 +118,25 @@ separate times**. Assume it is missing until you have read the code.
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Four documented exceptions: `Attendance` (a fact record — it happened or
-it did not), `EventDraft` (transient wizard state, deleted on
-materialisation), `PaymentLedgerEntry` (Payments Foundation — an
-append-only money ledger, never soft-deleted OR edited: no `isArchived`,
-no `updatedAt`, and deliberately no update/delete method anywhere in
-`payment-ledger.repository.ts`), and the append-only send logs
-`SmsSendLog` and `InviteReminderLog` (a message was sent, or failed to
-be — recorded once, never edited or archived). `EventDraft` is a record
-that stopped mattering once consumed; the others record something that
-happened, which does not stop having happened.
-A correction is a NEW entry, never an edit to an old one. What a tenant
+Five documented exceptions:
+
+- `Attendance` — a guest's **RSVP answer per day** ("will attend"), NOT
+  arrival. RSVP submit rebuilds these wholesale on every edit, which is why
+  they are hard-deleted rather than archived. Do not record who turned up
+  here.
+- `CheckIn` — a fact record: this person arrived on this event day, or they
+  did not. Undoing a wrong tap is a delete of the row.
+- `EventDraft` — transient wizard state, deleted on materialisation.
+- `PaymentLedgerEntry` (Payments Foundation) — an append-only money ledger,
+  never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
+  deliberately no update/delete method anywhere in
+  `payment-ledger.repository.ts`.
+- The append-only send logs `SmsSendLog` and `InviteReminderLog` — a message
+  was sent, or failed to be, recorded once and never edited or archived.
+
+`EventDraft` is a record that stopped mattering once consumed;
+`PaymentLedgerEntry` and the logs record something that happened, which does
+not stop having happened. A correction is a NEW entry, never an edit to an old one. What a tenant
 has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
 `isArchived` on, and none should be added.
@@ -180,6 +188,18 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 
 Enforcement points differ: `maxGuestsPerEvent` is checked at **import
 time**; `maxSmsPerMonth` at **send time**, all-or-nothing.
+
+**A new tier column needs a per-tier `UPDATE` in its migration.** `null` on a
+numeric limit means unlimited, so a migration that only does `ADD COLUMN`
+leaves every existing row unlimited — it fails **open**. Follow the `ADD
+COLUMN` with an `UPDATE "SubscriptionTierConfig" SET … WHERE "tier" = …` for
+each tier, and update `TIER_CONFIGS` in `prisma/seed.ts` to match. The seed
+cannot cover for you: it never touches a database it isn't pointed at, and it
+does not overwrite existing tier configs. `maxVendorSpaces` and
+`maxMemoryHubBytesPerEvent` were both added without one, so on any database
+the seed has never run against they are `null`, i.e. unlimited. There is no
+production database yet, so nothing is broken today — the first one must be
+populated by hand.
 
 **Role gates hide. Tier gates show, with an upgrade path.** A role
 mismatch (an `EVENT_ADMIN` opening User Management) is an authorization
@@ -320,6 +340,34 @@ and released if the send fails, so overlapping requests cannot double-send
 and a failed send never starts it. Every attempt, failures included, is
 written to `InviteReminderLog`.
 
+### Check-in
+
+Recorded **per event day**, never as one "arrived" flag on the guest: someone
+invited to both days of a wedding can be there on Saturday and absent on
+Sunday (`CheckIn`, one row per invite + day). It is not `Attendance` — that
+is the guest's RSVP answer, and a guest editing their RSVP must never touch
+who has been checked in.
+
+The day list shows **everyone invited to that day**, RSVP status per row, so
+walk-ins and non-responders can be found, checked in and undone; "expected"
+in the counts is only those who said **yes** to that day. Plus-ones are
+listed and checked in like anyone else (they have an `Invite`). Check-in and
+undo are **idempotent**, and refused only on a draft or cancelled event — a
+completed event still accepts corrections. Done by a Tenant Admin or Event
+Admin; there is no door-staff role.
+
+### Dates
+
+Every guest-facing date is formatted in **UTC**, through
+`shared/utils/guest-date.util.ts` — never `toLocaleDateString`, `getDate()`
+and friends on a stored date, which read the *server's* timezone. Every
+client date string becomes a `Date` through `parseClientDateTime`
+(`shared/utils/date-input.util.ts`), never `new Date(string)`: an offset-less
+`2026-09-19T23:59:59` means literal UTC, matching what the frontend assumes,
+whereas plain `new Date` reads it in the server's zone. The organiser picks
+calendar dates; UTC is the identity that prints back the date they picked.
+Events have no timezone of their own (see Known gaps).
+
 ### Terminology
 
 | Term | Applies to | Means |
@@ -377,6 +425,9 @@ Emails at `@eventgenie.test` cannot receive mail — read the OTP from the
 
 **Always clean up fixtures**, then re-run `npm run seed` and confirm it
 reports everything already exists.
+The seed **never overwrites** an existing tier config, tenant or user — a
+tenant you put on Celebrate for a test stays there. To reset on purpose:
+`--reset-tier-configs`, `--reset-tenants`, `--reset-users` (see the README).
 
 Test against the real dev database. It has caught bugs that pass locally
 — a Prisma transaction timeout at 50 rows, for one, that would never
@@ -411,6 +462,17 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   pipeline once payments exist.
 - **Automated test coverage is thin.** Backend has none; frontend has
   interceptor regression tests only.
+- **Events have no timezone.** Every event is implicitly UTC: "23:59:59"
+  on a deadline means 23:59:59 UTC for a guest anywhere, so for a UTC+2
+  audience it passes at 01:59 the next morning, and for a UTC−8 audience
+  mid-afternoon on the stated day. Guest-facing dates are correct (they are
+  the calendar dates the organiser picked); only the *instant* a deadline
+  passes is off. An `Event.timezone` would fix that and would not change how
+  stored dates read back.
+- **Check-in by QR is not built.** The check-in endpoint already accepts an
+  `inviteToken` in place of a `guestId`, so a scanner is a second input, not a
+  second feature — but nothing renders a code yet, and a plus-one's invite
+  token is never given to anyone.
 - **Twilio SMS is blocked** pending compliance approval. Everything
   except real delivery is testable.
 - A deferred technical debt register tracks tenant-isolation and
