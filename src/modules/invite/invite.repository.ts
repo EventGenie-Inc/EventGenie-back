@@ -1,6 +1,7 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
 import crypto from 'crypto';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 export const inviteRepository = {
 
@@ -150,7 +151,7 @@ export const inviteRepository = {
           used: false,
           deliveryMethod: data.deliveryMethod,
           // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
-          expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+          expiresAt: data.expiresAt ? parseClientDateTime(data.expiresAt) : null,
           isArchived: false,
           createdBy: userId,
           updatedBy: userId,
@@ -175,7 +176,7 @@ export const inviteRepository = {
         ...(data.deliveryMethod !== undefined && { deliveryMethod: data.deliveryMethod }),
         // For nullable DateTime: explicitly set null or the Date value
         ...(data.expiresAt !== undefined && {
-          expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+          expiresAt: data.expiresAt ? parseClientDateTime(data.expiresAt) : null,
         }),
         updatedBy: userId,
       },

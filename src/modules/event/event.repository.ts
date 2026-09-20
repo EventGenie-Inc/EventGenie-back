@@ -3,6 +3,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { withPlainCoordinates } from './event-coordinates.util.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 export const eventRepository = {
 
@@ -125,7 +126,7 @@ export const eventRepository = {
           invitationTemplate: data.invitationTemplate ?? null,
           invitationConfig: data.invitationConfig ?? null,
           hostName: data.hostName ?? null,
-          rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null,
+          rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null,
           capacity: data.capacity ?? null,
           ticketsRefundable: data.ticketsRefundable ?? false,
           isArchived: false,
@@ -168,7 +169,7 @@ export const eventRepository = {
         ...(data.invitationTemplate !== undefined && { invitationTemplate: data.invitationTemplate ?? null }),
         ...(data.invitationConfig !== undefined && { invitationConfig: data.invitationConfig ?? null }),
         ...(data.hostName !== undefined && { hostName: data.hostName ?? null }),
-        ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null }),
+        ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null }),
         ...(data.capacity !== undefined && { capacity: data.capacity ?? null }),
         ...(data.ticketsRefundable !== undefined && { ticketsRefundable: data.ticketsRefundable }),
         updatedBy: userId,

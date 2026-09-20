@@ -1,7 +1,7 @@
 import { renderBrandEmailShell } from '../../shared/messaging/email.engine.js';
 import { normalizeSmsPunctuation } from '../../shared/messaging/sms-segments.util.js';
 import { escapeHtml } from '../../shared/utils/html.util.js';
-import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
+import { formatGuestDate, formatGuestDateShort } from '../../shared/utils/guest-date.util.js';
 
 // Domain-aware content builders — this is where "invite"/"event"/"RSVP
 // link" concepts live, as opposed to the domain-ignorant engines. No
@@ -108,12 +108,6 @@ export const buildReminderEmailHtml = (
 // normalised, and the event name is capped so a very long one cannot push
 // the message past two segments.
 const MAX_SMS_EVENT_NAME_LENGTH = 40;
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
-
-// "20 Sep" — no year (a reminder is about the coming weeks) and no
-// zero-padding, which en-ZA's own short format would add. Read in the same
-// timezone formatGuestDate uses, so the SMS and the RSVP page agree.
-const formatSmsDate = (date: Date): string => `${date.getDate()} ${MONTHS[date.getMonth()]}`;
 
 export const buildReminderSmsBody = (eventName: string, rsvpLink: string, rsvpDeadline: Date | null): string => {
   const name = normalizeSmsPunctuation(eventName).trim();
@@ -124,6 +118,6 @@ export const buildReminderSmsBody = (eventName: string, rsvpLink: string, rsvpDe
   // which decides which side of the 160 limit typical names (~20-25
   // characters) land on — measured, not guessed, against the invitation SMS.
   return rsvpDeadline
-    ? `Reminder: RSVP to ${shortName} by ${formatSmsDate(rsvpDeadline)}. ${rsvpLink}`
+    ? `Reminder: RSVP to ${shortName} by ${formatGuestDateShort(rsvpDeadline)}. ${rsvpLink}`
     : `Reminder: please RSVP to ${shortName}. ${rsvpLink}`;
 };

@@ -18,6 +18,43 @@ publicly released yet.
 
 ---
 
+## Check-in & Guest Dates — September 2026
+
+### Added
+- Day-of check-in, per event day (`/api/events/:eventId/check-in/days/:dayId`):
+  the door list — everyone invited to that day with their RSVP status and
+  whether they have arrived — plus expected-vs-arrived counts, check in, and
+  undo. Plus-ones are checkable; walk-ins and non-responders too. Repeat
+  check-in and repeat undo are idempotent. Also accepts an invitation token in
+  place of a guest id, so QR can later be a second input rather than a second
+  feature
+- `CheckIn` table — one row per invite + day, hard-deleted on undo. Separate
+  from `Attendance`, which turned out to be each guest's per-day RSVP *answer*
+  (written by RSVP submit, rebuilt on every edit), not arrival
+
+### Fixed
+- Guests were told the wrong date on any server not running in UTC. Every
+  guest-facing date is now formatted in UTC through one shared util — a
+  19 September deadline printed as "20 September" in reminder SMS/email and
+  RSVP messages on a UTC+2 server, and on a server west of UTC an
+  invitation's event date printed a day early
+- Client date strings are now parsed as UTC when they carry no offset
+  (`parseClientDateTime`), as the frontend already assumes; `new Date(string)`
+  read them in the server's timezone, so the stored instant depended on where
+  the server ran
+- The dev seed no longer reverts tenants and users on every run. It used to
+  reset a tenant's `name`, `email`, `subscriptionTier`, `subscriptionStatus`
+  and a user's `email`, `username`, `role`, `tenantId`, `isActive`,
+  `isArchived`. Creates when absent, leaves alone when present;
+  `--reset-tenants` / `--reset-users` reset on purpose
+
+### Docs
+- STEERING: a new tier column's migration needs a per-tier `UPDATE` (a bare
+  `ADD COLUMN` leaves every row unlimited); `Attendance` documented as the RSVP
+  answer; check-in, dates and the missing event timezone recorded
+
+---
+
 ## Reminders — September 2026
 
 ### Added
@@ -29,6 +66,12 @@ publicly released yet.
 - `InviteReminderLog` — every reminder attempt, failures included
 
 ### Changed
+- The dev seed no longer overwrites `SubscriptionTierConfig` rows. It
+  used to upsert all three on every run, silently reverting any limit a
+  SUPER_ADMIN had edited. It now creates a missing row and leaves an
+  existing one alone (reporting any difference from the seed values);
+  `npm run seed -- --reset-tier-configs` overwrites them on purpose,
+  printing each change
 - Tier gates for a signed-in tenant go to `/subscription` (after a
   confirmation) or, for event-scoped features, the event's Control
   Center — the public Pricing page is for logged-out visitors only.

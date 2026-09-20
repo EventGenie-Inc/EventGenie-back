@@ -499,6 +499,7 @@ model EventDay {
   event          Event            @relation(fields: [eventId], references: [id])
   inviteEventDay InviteEventDay[]
   attendances    Attendance[]
+  checkIns       CheckIn[]
 
   @@unique([eventId, label])
 }
@@ -579,6 +580,7 @@ model Invite {
   guest           Guest               @relation(fields: [guestId], references: [id])
   inviteEventDay  InviteEventDay[]
   attendances     Attendance[]
+  checkIns        CheckIn[]
   rsvpResponses   RsvpResponse[]
   ticketPurchases TicketPurchase[]
   smsSendLogs     SmsSendLog[]
@@ -605,6 +607,22 @@ model InviteEventDay {
 //  ATTENDANCE
 // ─────────────────────────────────────────
 
+// ─────────────────────────────────────────
+//  ATTENDANCE — a guest's RSVP ANSWER, per day. NOT an arrival record.
+//
+//  Despite the name, a row here means "this invite said YES to this day".
+//  rsvp.service.ts's submit() writes one per day the guest ticks (and one
+//  per day for each plus-one they bring), wipes and rebuilds them all on
+//  every RSVP edit, and hands them back to the RSVP form as attendingDayIds;
+//  the guest export reads them as its per-day "Yes" column. That rebuild is
+//  why it hard-deletes rather than archives.
+//
+//  Whether someone actually TURNED UP is a different fact, on a different
+//  table: CheckIn, below. Do not record arrivals here — a check-in would
+//  read as an RSVP, an undo would erase the guest's own answer, and the
+//  guest editing their RSVP afterwards would wipe the check-in.
+// ─────────────────────────────────────────
+
 model Attendance {
   id          String   @id @default(cuid())
   inviteId    String
@@ -615,6 +633,38 @@ model Attendance {
   eventDay EventDay @relation(fields: [eventDayId], references: [id])
 
   @@unique([inviteId, eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  CHECK-IN — someone physically arrived on a given day.
+//
+//  One row per (invite, event day): a guest invited to both days of a
+//  wedding can be present on Saturday and absent on Sunday, and those are
+//  two separate facts, so there is deliberately no single "arrived" flag on
+//  Guest or Invite. A plus-one has an Invite of their own, so they check in
+//  exactly like anyone else.
+//
+//  A fact record, and one of the documented hard-delete exceptions (see
+//  STEERING.md): either the person arrived that day or they did not, and
+//  undoing a wrong tap is a delete of the row — there is no "un-arrived"
+//  state worth keeping. No isArchived, no updatedAt. Independent of
+//  Attendance (the RSVP answer), so a guest editing their RSVP never
+//  touches who has been checked in. checkedBy is a User.id with no
+//  relation, like createdBy elsewhere.
+// ─────────────────────────────────────────
+
+model CheckIn {
+  id          String   @id @default(cuid())
+  inviteId    String
+  eventDayId  String
+  checkedInAt DateTime @default(now())
+  checkedBy   String
+
+  invite   Invite   @relation(fields: [inviteId], references: [id])
+  eventDay EventDay @relation(fields: [eventDayId], references: [id])
+
+  @@unique([inviteId, eventDayId])
+  @@index([eventDayId])
 }
 
 // ─────────────────────────────────────────

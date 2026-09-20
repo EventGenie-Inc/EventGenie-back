@@ -27,6 +27,7 @@ import {
   type ReminderSkipReason,
 } from './invite-reminder.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { formatEarliestDay } from '../../shared/utils/guest-date.util.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
 
 // Bulk invite orchestrator — knows guests/invites/tiers and routes each
@@ -117,12 +118,6 @@ const assertEventAcceptsInvites = (visibility: string): void => {
   }
 };
 
-const earliestDayLabel = (eventDays: { date: Date }[]): string | null => {
-  if (!eventDays.length) return null;
-  const earliest = eventDays.reduce((a, b) => (a.date < b.date ? a : b));
-  return earliest.date.toLocaleDateString('en-ZA', { year: 'numeric', month: 'long', day: 'numeric' });
-};
-
 type DispatchKind = 'INVITE' | 'REMINDER';
 
 interface DispatchContext {
@@ -146,7 +141,7 @@ const buildDispatchContext = (event: {
   tenantId: event.tenantId,
   eventName: event.name,
   location: event.location,
-  dateLabel: earliestDayLabel(event.eventDays),
+  dateLabel: formatEarliestDay(event.eventDays),
   rsvpDeadline: event.rsvpDeadline,
 });
 

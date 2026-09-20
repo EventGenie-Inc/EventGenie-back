@@ -12,6 +12,7 @@ import { isCoverImageTooLarge, coverImageTooLargeMessage } from './event-cover-i
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -95,7 +96,7 @@ export const eventService = {
     // No event days exist yet on this path (direct POST never creates
     // them — see event-day.router.ts), so there's nothing to compare the
     // deadline against beyond "not in the past".
-    assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, [], { rejectPast: true });
+    assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, [], { rejectPast: true });
     await assertEventCreatable(tenantId, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -122,7 +123,7 @@ export const eventService = {
       // rejectPast: false — an organiser deliberately closing RSVPs early
       // by setting the deadline to "now" on a live event is legitimate;
       // only a past deadline at CREATION time is rejected (see create()).
-      assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
+      assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
     }
 
     await assertEventUpdatable(event, {
