@@ -2,6 +2,14 @@
 
 Conventions every contributor and AI coding agent must follow.
 
+> **This file exists in two repos** — `EventGenie-back` (canonical) and the
+> frontend repo — and the two copies must be **byte-identical**. Change
+> the backend copy first, then copy it over unchanged; never edit only
+> one. Check with `diff` or `shasum` on the two files: no difference
+> means in sync. A frontend-only agent cannot read the backend repo,
+> which is why the copy exists; if you find the two differ, say so
+> before relying on either.
+
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
 prompt wins for that task only — flag the contradiction rather than
@@ -110,15 +118,16 @@ separate times**. Assume it is missing until you have read the code.
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Three documented exceptions: `Attendance` (a fact record — it happened or
+Four documented exceptions: `Attendance` (a fact record — it happened or
 it did not), `EventDraft` (transient wizard state, deleted on
-materialisation), and `PaymentLedgerEntry` (Payments Foundation — an
+materialisation), `PaymentLedgerEntry` (Payments Foundation — an
 append-only money ledger, never soft-deleted OR edited: no `isArchived`,
 no `updatedAt`, and deliberately no update/delete method anywhere in
-`payment-ledger.repository.ts`). The first two are about records that
-either never existed as durable facts or stopped mattering once
-consumed; `PaymentLedgerEntry` is the opposite case — a record of
-something that happened to money, which does not stop having happened.
+`payment-ledger.repository.ts`), and the append-only send logs
+`SmsSendLog` and `InviteReminderLog` (a message was sent, or failed to
+be — recorded once, never edited or archived). `EventDraft` is a record
+that stopped mattering once consumed; the others record something that
+happened, which does not stop having happened.
 A correction is a NEW entry, never an edit to an old one. What a tenant
 has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
@@ -171,6 +180,35 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 
 Enforcement points differ: `maxGuestsPerEvent` is checked at **import
 time**; `maxSmsPerMonth` at **send time**, all-or-nothing.
+
+**Role gates hide. Tier gates show, with an upgrade path.** A role
+mismatch (an `EVENT_ADMIN` opening User Management) is an authorization
+boundary — they will never have access, so hide it entirely. A tier
+mismatch (a Spark tenant opening Vendor Space) is a sales opportunity —
+show the feature locked, badge the plan it requires, and let them act on
+it. Nobody upgrades into something they never knew existed. This applies
+to nav items, routes, and buttons alike; a tier-gated route must never
+404 on a direct hit.
+
+Where "act on it" leads depends on who is asking and what is gated — and
+it is **never the public Pricing page for someone who is signed in**:
+
+- **Signed-in tenant, tenant-scoped feature** (Vendor Space, Vendor
+  Discovery). A locked click, or a direct URL hit, raises a confirmation
+  — nobody is moved somewhere unannounced — and confirming goes to
+  `/subscription`, carrying the reason as `feature` and `requiredTier`
+  query params. A direct hit lands on the dashboard with that
+  confirmation open. (`TierGateService`, `tierGuard`.)
+- **Signed-in tenant, event-scoped feature** (Memory Hub, which an Event
+  Pass on that event also unlocks). No confirmation: the user goes to the
+  event's Control Center with `?upgrade=<feature>`, which opens a
+  two-option prompt — subscribe (`/subscription`), or unlock just this
+  event with an Event Pass. (`eventTierGuard`.)
+- **Logged-out visitor.** The public `/pricing` page is a marketing
+  surface for them, and only them.
+
+Exception: registration-time tier selection is not an upsell surface —
+nobody is upgrading before they have an account.
 
 ### Session and tokens
 
@@ -260,6 +298,27 @@ across two events is two unrelated records.
 
 Phone numbers are E.164 (`+27...`). Reject with a specific message
 naming the fix, not a generic "invalid".
+
+### Reminders
+
+Manual only — the organiser presses a button; this codebase has no
+scheduler by deliberate choice. They go through the same dispatch path as
+invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
+the same pool an SMS invitation does: the event's pass bundle if it has
+an active pass, otherwise the tenant's monthly quota — never both, and
+all-or-nothing on a shortfall.
+
+A guest is reminded only if their invitation was **delivered**
+(`Invite.deliveredAt`), they have **not responded** (`PENDING`), the
+invite has not expired, and they were not reminded in the last 24 hours
+(`REMINDER_COOLDOWN_HOURS`). Archived guests, archived invites and
+plus-ones are excluded at query level. Refused outright when the event is
+not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
+
+The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`)
+and released if the send fails, so overlapping requests cannot double-send
+and a failed send never starts it. Every attempt, failures included, is
+written to `InviteReminderLog`.
 
 ### Terminology
 

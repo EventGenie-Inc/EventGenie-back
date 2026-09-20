@@ -18,6 +18,31 @@ publicly released yet.
 
 ---
 
+## Reminders — September 2026
+
+### Added
+- Manual reminders for guests who were sent an invitation and haven't
+  responded — `POST /api/events/:eventId/invites/remind`, all
+  non-responders or a chosen selection. Same dispatch path, SMS pools
+  and all-or-nothing quota rule as invitations; a 24-hour per-guest
+  cooldown, claimed atomically so a double-click cannot double-send
+- `InviteReminderLog` — every reminder attempt, failures included
+
+### Changed
+- Tier gates for a signed-in tenant go to `/subscription` (after a
+  confirmation) or, for event-scoped features, the event's Control
+  Center — the public Pricing page is for logged-out visitors only.
+  Supersedes the "redirecting to Pricing" entry under Tenant Shell.
+  STEERING.md corrected, and its two copies made identical
+
+### Security
+- Removed a hardcoded `adminToken` from the frontend environment files.
+  It gated the original prototype's `/api/admin` routes, deleted from
+  the backend on 2026-06-27 — nothing has checked it since. It remains
+  in the frontend repos' git history
+
+---
+
 ## Vendor Marketplace — September 2026
 
 ### Added

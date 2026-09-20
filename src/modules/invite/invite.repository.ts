@@ -46,6 +46,58 @@ export const inviteRepository = {
   markDelivered: (id: string) =>
     prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
 
+  // Reminder candidates — STRUCTURAL filter only: this event, live invite,
+  // live guest, and never a plus-one (hostGuestId: null — a plus-one has
+  // no contact and cannot be reminded, so they are excluded here rather
+  // than left to fail at send time). Every live invite of each matching
+  // guest is returned, deliberately NOT narrowed to status PENDING /
+  // delivered: whether a guest "has responded" must be judged across all
+  // of their live invites (one ACCEPTED invite means answered, even if an
+  // older duplicate is still PENDING), and that cannot be seen once the
+  // answered one has been filtered out. invite-reminder.util.ts's
+  // classifyGuestForReminder applies the state rules to the result.
+  // guestIds omitted = every guest on the event.
+  findReminderCandidates: (eventId: string, guestIds?: string[]) =>
+    prisma.invite.findMany({
+      where: {
+        eventId,
+        isArchived: false,
+        guest: { isArchived: false, hostGuestId: null },
+        ...(guestIds ? { guestId: { in: guestIds } } : {}),
+      },
+      include: { guest: true },
+      orderBy: { createdAt: 'desc' },
+    }),
+
+  // Atomically claims the right to remind this invite's guest. The single
+  // UPDATE re-checks, at the moment of the write, everything that must
+  // still be true — still live, still un-responded, not reminded since
+  // `cutoff` — so of two overlapping "remind" requests exactly one wins
+  // and the guest is texted once. A read-then-send check could not give
+  // that guarantee. Returns false when the claim is lost, whatever the
+  // reason (already reminded, or the guest just answered).
+  claimReminder: async (id: string, cutoff: Date, claimedAt: Date): Promise<boolean> => {
+    const { count } = await prisma.invite.updateMany({
+      where: {
+        id,
+        isArchived: false,
+        status: 'PENDING',
+        OR: [{ lastRemindedAt: null }, { lastRemindedAt: { lte: cutoff } }],
+      },
+      data: { lastRemindedAt: claimedAt },
+    });
+    return count === 1;
+  },
+
+  // Undoes a claim after a failed send so a guest who never received the
+  // reminder isn't locked out of the next attempt. Matches on claimedAt so
+  // it can only ever undo THIS claim, never a later one.
+  releaseReminderClaim: (id: string, claimedAt: Date, previous: Date | null) =>
+    prisma.invite.updateMany({
+      where: { id, lastRemindedAt: claimedAt },
+      data: { lastRemindedAt: previous },
+    }),
+
   // guest.plusOnes, attendances, rsvpResponses, and ticketPurchases are
   // included so rsvp.service.ts's validate() can hand an edit form
   // everything it needs to prefill a guest's previous answer — validate()

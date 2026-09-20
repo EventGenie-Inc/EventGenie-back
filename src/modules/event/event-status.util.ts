@@ -67,17 +67,20 @@ export const withEffectiveStatus = <T extends StatusDerivableEvent>(event: T): T
 // ─────────────────────────────────────────
 
 const OUTBOUND_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
-  DRAFT: 'This event is still a draft. Publish it before sending invitations.',
   COMPLETED: 'This event has already taken place.',
   CANCELLED: 'This event has been cancelled.',
 };
 
 // Expects an already-effective status (i.e. event.status as returned
 // by eventService.getById/getAll, which apply withEffectiveStatus).
-export const assertEventIsPublished = (effectiveStatus: EventStatus): void => {
+// `action` only completes the draft message ("Publish it before ___") —
+// the other blocked statuses read the same whatever was being attempted.
+export const assertEventIsPublished = (effectiveStatus: EventStatus, action = 'sending invitations'): void => {
   if (effectiveStatus === 'PUBLISHED') return;
   throw new HttpError(
     409,
-    OUTBOUND_BLOCK_MESSAGES[effectiveStatus] ?? `This event is not published (current status: ${effectiveStatus}).`
+    effectiveStatus === 'DRAFT'
+      ? `This event is still a draft. Publish it before ${action}.`
+      : OUTBOUND_BLOCK_MESSAGES[effectiveStatus] ?? `This event is not published (current status: ${effectiveStatus}).`
   );
 };
