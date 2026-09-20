@@ -330,6 +330,7 @@ model Tenant {
   vendorSpaces            VendorSpace[]
   eventDrafts             EventDraft[]
   smsSendLogs             SmsSendLog[]
+  inviteReminderLogs      InviteReminderLog[]
   paymentLedgerEntries    PaymentLedgerEntry[]
   eventPasses             EventPass[]
   eventPassPurchases      EventPassPurchase[]
@@ -468,6 +469,7 @@ model Event {
   eventPassPurchases      EventPassPurchase[]
   eventSmsBundlePurchases EventSmsBundlePurchase[]
   smsSendLogs             SmsSendLog[]
+  inviteReminderLogs      InviteReminderLog[]
 }
 
 // ─────────────────────────────────────────
@@ -557,19 +559,30 @@ model Invite {
   editTokenExpiresAt DateTime?
   deliveryMethod     DeliveryMethod
   deliveredAt        DateTime?
+  // Reminder cooldown marker — when this invite's guest was last sent (or
+  // is mid-way through being sent) a reminder. It is CLAIMED atomically
+  // BEFORE the send (invite.repository.ts's claimReminder) and restored
+  // if the send fails, so two overlapping "remind" requests can never
+  // both pass the cooldown and text the same guest twice. It is the
+  // enforcement mechanism only: the history of what was actually sent
+  // (and what failed) lives in InviteReminderLog. Deliberately separate
+  // from deliveredAt, which stays "when the original invitation reached
+  // them" and is what makes a guest reminder-eligible in the first place.
+  lastRemindedAt     DateTime?
   isArchived         Boolean        @default(false)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   createdBy          String
   updatedBy          String
 
-  event           Event            @relation(fields: [eventId], references: [id])
-  guest           Guest            @relation(fields: [guestId], references: [id])
+  event           Event               @relation(fields: [eventId], references: [id])
+  guest           Guest               @relation(fields: [guestId], references: [id])
   inviteEventDay  InviteEventDay[]
   attendances     Attendance[]
   rsvpResponses   RsvpResponse[]
   ticketPurchases TicketPurchase[]
   smsSendLogs     SmsSendLog[]
+  reminderLogs    InviteReminderLog[]
 }
 
 // ─────────────────────────────────────────
@@ -994,6 +1007,42 @@ model SmsSendLog {
 
   @@index([tenantId, sentAt])
   @@index([eventId, source])
+}
+
+// ─────────────────────────────────────────
+//  INVITE REMINDER LOG
+//
+//  One row per reminder ATTEMPT — successes AND failures. This is an
+//  append-only record of something that happened (or failed to), so like
+//  SmsSendLog and PaymentLedgerEntry it has no isArchived and no
+//  updatedAt, and nothing edits or removes a row. SmsSendLog stays the
+//  SMS-quota ledger (it only ever records successful sends, and is what
+//  assertSmsSendable counts); this table is the organiser-facing audit
+//  of who was chased, when, by which channel, and who could not be
+//  reached and why. `succeeded` is what cooldown history is read from; a
+//  failed attempt never blocks the next one.
+// ─────────────────────────────────────────
+
+model InviteReminderLog {
+  id             String         @id @default(cuid())
+  tenantId       String
+  eventId        String
+  inviteId       String
+  deliveryMethod DeliveryMethod
+  succeeded      Boolean
+  failureReason  String?
+  // The organiser who pressed the button — a User.id (no relation: the
+  // log must outlive any change to the user row, same as createdBy on
+  // every other table).
+  sentBy         String
+  createdAt      DateTime       @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  event  Event  @relation(fields: [eventId], references: [id])
+  invite Invite @relation(fields: [inviteId], references: [id])
+
+  @@index([inviteId, createdAt])
+  @@index([eventId, createdAt])
 }
 
 // ─────────────────────────────────────────
