@@ -33,6 +33,19 @@ const assertCoverImageWithinSizeLimit = (data: { coverImageBytes?: number; cover
   throw new HttpError(400, coverImageTooLargeMessage(data.coverImageBytes));
 };
 
+// WHO may look up an event, decided once for getById and the lean lookups
+// below: SUPER_ADMIN is unscoped (that is the role's purpose); everyone else
+// is scoped to their own tenant.
+//
+// Kept exactly as getById always behaved — including that a non-SUPER_ADMIN
+// whose tenantId is null becomes UNSCOPED here (`null ?? undefined`). Every
+// organiser route sits behind requireEventAdmin, whose roles all carry a
+// tenantId in practice, so it is not reachable today; it is flagged in the
+// lean-gate task report as fail-open rather than changed here, because this
+// task must not alter what the gate refuses.
+const tenantScopeFor = (requestingRole: PlatformRole, tenantId: string | null): string | undefined =>
+  requestingRole === 'SUPER_ADMIN' ? undefined : tenantId ?? undefined;
+
 export const eventService = {
 
   // Both list and detail flow through the SAME withEffectiveStatus
@@ -49,10 +62,43 @@ export const eventService = {
   // (reactivate below, and tenantService.getEvents) — every other call
   // site relies on the default so an archived event stays a 404 for
   // everyone else, cross-tenant-access included.
+  //
+  // THE FULL EVENT — eight queries (the event plus seven relations). Use it
+  // only where the relations are actually read or returned: guest export
+  // (rsvpFields), the write endpoints that return the event in their
+  // response (update/publish/cancel/reactivate), and getDetail. Every other
+  // caller wants getScoped or getScopedWithPass below.
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = requestingRole === 'SUPER_ADMIN'
-      ? await eventRepository.findById(id, includeArchived)
-      : await eventRepository.findById(id, includeArchived, tenantId ?? undefined);
+    const event = await eventRepository.findById(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+
+    if (!event) throw new HttpError(404, 'Event not found');
+    return withEffectiveStatus(event);
+  },
+
+  // THE LEAN OWNERSHIP GATE — the event row plus its live days, two queries
+  // instead of getById's eight. Refuses exactly what getById refuses (same
+  // scope helper, same repository filter): another tenant's event, an
+  // archived event and a missing one are all the same 404, and `status` is
+  // the EFFECTIVE status (a finished event reads COMPLETED) because eventDays
+  // — everything resolveEffectiveStatus needs — are loaded.
+  //
+  // The return type has NO eventPass, tickets, rsvpFields, program or
+  // memoryHub, so a caller that reads one fails to compile rather than
+  // silently getting undefined: moving a caller here is checked by tsc.
+  // A caller that needs the Event Pass (any tier/entitlement check) uses
+  // getScopedWithPass; one that needs the other relations, or returns the
+  // event to a client, stays on getById.
+  getScoped: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+    const event = await eventRepository.findScoped(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+
+    if (!event) throw new HttpError(404, 'Event not found');
+    return withEffectiveStatus(event);
+  },
+
+  // getScoped plus the Event Pass — three queries. What every tier check
+  // needs (EntitlementDerivableEvent = tenantId + eventPass + eventDays).
+  getScopedWithPass: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+    const event = await eventRepository.findScopedWithPass(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
