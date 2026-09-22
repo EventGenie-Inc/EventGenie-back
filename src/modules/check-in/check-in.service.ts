@@ -116,7 +116,12 @@ const countRows = (rows: DayRosterRow[]): DayRosterCounts => {
 
 // Resolves the tenant gate AND the day in one place, for all three methods.
 const loadEventAndDay = async (eventId: string, dayId: string, role: PlatformRole, tenantId: string | null) => {
-  const event = await eventService.getById(eventId, role, tenantId); // 404 for another tenant's event
+  // The LEAN gate: this needs only ownership, the effective status
+  // (assertCheckInOpen) and the event's days (the day lookup just below) —
+  // never the tickets, RSVP fields, program, Memory Hub or Event Pass that
+  // getById also loads. On the door screen, where latency is felt most, that
+  // was six wasted queries per call.
+  const event = await eventService.getScoped(eventId, role, tenantId); // 404 for another tenant's event
   // The day must belong to THIS event: a day id from anywhere else is the
   // same 404 as one that doesn't exist.
   const day = event.eventDays.find((d) => d.id === dayId);
