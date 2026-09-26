@@ -364,6 +364,7 @@ model User {
   memoryItems      MemoryItem[]      @relation("MemoryItemUploadedByUser")
   otpRecords       OtpRecord[]
   eventDrafts      EventDraft[]
+  deviceTokens     DeviceToken[]
 }
 
 // ─────────────────────────────────────────
@@ -383,6 +384,48 @@ model OtpRecord {
   createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id])
+}
+
+// ─────────────────────────────────────────
+//  DEVICE TOKEN
+//
+//  Trusted Devices batch — the second factor a device already passed,
+//  so a returning page load can mint a session from (Firebase ID token +
+//  this) instead of a fresh OTP. See device-token.util.ts for issuance/
+//  validation and auth.service.ts's exchangeSession for the read side.
+//
+//  tokenHash, not the raw value — this is a long-lived (30 day),
+//  account-wide authentication credential, a materially different risk
+//  than the plaintext-stored invite/share tokens elsewhere (those grant
+//  scoped access to one event/invite, not "sign in as this user"). SHA-256
+//  is enough: the raw value is 256 random bits, so a fast hash's own
+//  speed is irrelevant — nothing about it is guessable to begin with,
+//  unlike a password, which is why bcrypt-style slow hashing exists
+//  elsewhere and doesn't need to here. Never rotated on use (see
+//  device-token.util.ts) — the same value up to expiry or revocation.
+//
+//  revokedAt, not a hard delete or isArchived, matching OtpRecord's own
+//  usedAt convention immediately above: an auth artifact worth keeping
+//  for audit ("this device was trusted, then revoked, because X") even
+//  after it stops granting anything. revokedReason records why —
+//  PASSWORD_RESET / USER_SUSPENDED / LOGOUT today; not an enum, so a
+//  future reason (e.g. an eventual "sign out everywhere") doesn't need a
+//  migration.
+// ─────────────────────────────────────────
+
+model DeviceToken {
+  id            String    @id @default(cuid())
+  userId        String
+  tokenHash     String    @unique
+  createdAt     DateTime  @default(now())
+  expiresAt     DateTime
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }
 
 // ─────────────────────────────────────────

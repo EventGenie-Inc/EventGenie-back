@@ -6,6 +6,7 @@ import {
   suspendFirebaseAccount,
   reactivateFirebaseAccount,
 } from '../../shared/firebase/firebase-account-status.util.js';
+import { revokeAllDeviceTokensForUser, REVOKE_REASON } from '../auth/device-token.util.js';
 
 const ROLES_ASSIGNABLE_BY_TENANT_ADMIN: PlatformRole[] = ['TENANT_ADMIN', 'EVENT_ADMIN', 'EVENT_VENDOR'];
 
@@ -117,6 +118,15 @@ export const userService = {
     const user = await userService.getById(id, requestingRole, tenantId);
     const archived = await userRepository.archive(id);
     await suspendFirebaseAccount(user.firebaseUid);
+    // Trusted Devices — exchangeSession's own isActive/isArchived check
+    // already blocks a suspended user regardless of device-token state,
+    // so this isn't what makes suspension effective immediately. It
+    // matters for what happens AFTER: without this, a device trusted
+    // before the suspension would silently still be trusted the moment
+    // the user is reactivated — no fresh 2FA, no record anything
+    // happened in between. Revoking here means reactivation always
+    // starts from zero trusted devices.
+    await revokeAllDeviceTokensForUser(id, REVOKE_REASON.USER_SUSPENDED);
     return archived;
   },
 

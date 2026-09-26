@@ -15,7 +15,10 @@ router.get('/me', authenticate, async (req: Request, res: Response, next: NextFu
       res.status(400).json({ status: 'error', message: 'User has no associated tenant' });
       return;
     }
-    const tenant = await tenantService.getById(auth.user.tenantId);
+    // getDetail, not getById — a tenant's own read of itself needs
+    // vendorSpaceLimit (see tenant.service.ts's own comment on why this
+    // is a separate method from the bare getById internal callers use).
+    const tenant = await tenantService.getDetail(auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: tenant });
   } catch (err) { next(err); }
 });
