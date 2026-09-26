@@ -232,12 +232,129 @@ nobody is upgrading before they have an account.
 
 ### Session and tokens
 
-Session JWTs live in memory, plus `sessionStorage` when the user opts
-into "keep me signed in". **Never `localStorage`.**
+**The second factor (the emailed OTP) is once per device, not once per
+session.** Passing an OTP on a device issues a *device token*; from then
+on that device mints sessions without a code. This is deliberate. On a
+phone, closing a tab is not something the user does: Android discards
+backgrounded tabs whenever it wants the memory. Anything that ends
+sign-in when a tab goes away signs people out at random, mid-task —
+that is what caused the OTP bugs this design replaced.
 
-All storage access is isolated inside `AuthService`. No guard,
-interceptor, or component touches it directly — that boundary is what
-made removing an earlier bad implementation a single-file change.
+**The session JWT is never persisted — not in `localStorage`, not in
+`sessionStorage`, not anywhere.** It lives in `AuthService`'s memory
+only, and is minted fresh on every page load by `POST
+/api/auth/exchange-session`: a Firebase ID token (proves who, i.e. the
+password) plus the device token (proves this device passed an OTP).
+Neither alone is enough. Every tab exchanges independently on its own
+load; that is expected. A reload is therefore not a logout and needs no
+code.
+
+**The device token is the one durable client-side credential, and it
+lives in `localStorage` DELIBERATELY** (key `eg.device`). It has to
+survive reloads, closed tabs and discarded tabs — that is its whole
+purpose. The XSS exposure this implies is an **accepted risk** until
+httpOnly cookies land in the production work; it is not an oversight
+to be "fixed" by moving it to `sessionStorage` (which dies with the
+tab and brings back the Android bug) or into memory (which dies on
+reload). Do not move it without replacing the design.
+
+**Only `AuthService` reads or writes credentials** — the device token,
+the in-memory JWT, and the OTP-step record (`sessionStorage`, an email
+and an expiry, no secret). No guard, interceptor, or component touches
+them directly; that boundary is what made removing an earlier bad
+implementation a single-file change. (The shared last-activity
+timestamp, `eg.last-activity`, is not a credential and belongs to
+`SessionActivityService`.)
+
+**Server side:** only a SHA-256 hash of the device token is stored; the
+raw value is sent to the client exactly once, in the `verify-otp`
+response. Tokens last 30 days from issue and are **not rotated on use**
+— every tab exchanges the same token concurrently on load, and rotating
+it would make all but the first exchange fail with a 401 and discard
+the device (a multi-tab race).
+
+**What revokes a device token:** an explicit logout (`POST
+/api/auth/logout`, that one device), a password reset *request* (every
+device of that user — revoked when the link is generated, because the
+backend never learns whether the reset was completed), and suspending
+the user or their tenant (every device). **An idle timeout does NOT
+revoke it.**
+
+> **Under review — revoking on password-reset REQUEST.** Anyone who
+> knows a user's email can request a reset, so anyone can currently
+> force every one of that user's devices back to an OTP. Whoever changes
+> that backend behaviour (`forgotPassword` in `auth.service.ts`) must
+> update this paragraph in the same change.
+
+**Idle logout** signs out of Firebase (and drops the session) but
+**keeps the device token**. With no Firebase identity the next load
+cannot exchange, so the user really is signed out — but the device is
+still trusted, so signing back in asks for the password and **not** an
+OTP. That is the intended trade-off: an idle logout protects an
+unattended screen; it is not a revocation. An explicit logout does
+revoke, so the next sign-in asks for both.
+
+**Idle is measured from activity, not from the token.** Two clocks,
+kept apart (`SessionTimeoutService`):
+
+- **The idle deadline = last activity + the idle limit.** "Last
+  activity" is the newest interaction in *any* tab. The warning (60 s
+  before) and the idle logout key off this deadline and nothing else.
+  It is computed in exactly one place, `SessionTimeoutService`'s
+  `idleDeadline()`.
+- **The token** is a short-lived JWT that has to be renewed while the
+  session lasts. Its expiry only decides *when a new token is needed*:
+  near expiry, if the deadline lies beyond it, it is renewed
+  (`refresh-session` while still valid, the device-token exchange once
+  lapsed). **A renewal or re-mint renews the token without extending
+  the deadline** — otherwise a tab that wakes and re-mints would hand an
+  unattended screen a fresh idle allowance. Answering the warning
+  ("Stay signed in") *is* activity, so it does move the deadline; a
+  stray click on the warning's backdrop does not. If the deadline
+  arrives with the warning showing and unanswered, the tab logs out —
+  unless another tab saw activity after the warning appeared, which
+  releases the warning and moves the deadline.
+
+**The idle limit is the session token's own lifetime** (its `exp −
+iat`), not a second number kept in the frontend. That couples it to the
+backend's session JWT TTL (`SESSION_TOKEN_TTL` in the backend
+`auth.service.ts`, 15 minutes): **changing that TTL for any reason
+changes the idle timeout too.** Anyone shortening the TTL for security,
+or lengthening it for convenience, is also moving the idle logout.
+
+**Idle detection is shared across tabs.** Firebase sign-in is shared by
+every tab on the origin, so one tab's idle logout signs out all of
+them; "idle" must therefore mean idle in *every* tab, and a tab may only
+idle-log-out if no tab was active within the idle limit. Activity is
+broadcast between tabs (`BroadcastChannel`) and also written to
+`localStorage` (`eg.last-activity`), because a frozen background tab
+receives no broadcasts and must read the stored timestamp when it
+wakes. Both cross-tab signals are leading-edge throttled to one per
+5 seconds; each tab's own in-memory timestamp updates on every
+interaction.
+
+**A 401 from the exchange gets one retry.** The endpoint answers the
+same 401 for a bad Firebase ID token as for an unrecognised device, and
+the device token is the expensive credential to lose (it costs an
+emailed code). So a 401 triggers one forced Firebase refresh
+(`getIdToken(true)`) and exactly one retry; only a second 401 discards
+the device token and sends the user to the OTP step. Never a loop. This
+applies everywhere the exchange is called (bootstrap, after the
+password step, and a woken tab's re-mint — all through
+`AuthService.resumeSession()`).
+
+**A network failure never signs anyone out** — not a dropped
+connection, a timeout, a 429 or a 5xx, at bootstrap or mid-session.
+Only a server *verdict* ends a session (see `session-failure.util.ts`);
+an unanswered request is unknown state, and the client keeps the device
+token and Firebase sign-in and retries. This lesson has been learned
+twice already.
+
+**The "keep me signed in" toggle is gone on purpose. Do not reintroduce
+it.** It offered a catastrophic default as a choice: unticked meant
+"sign me out whenever Android reclaims the tab's memory", which nobody
+would pick deliberately. Staying signed in is simply how the
+application works.
 
 ### TypeScript
 
@@ -460,8 +577,17 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   guests.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
-- **Automated test coverage is thin.** Backend has none; frontend has
-  interceptor regression tests only.
+- **Automated test coverage is thin.** The backend has none. The
+  frontend has Vitest unit/integration specs (`ng test`, jsdom, HTTP via
+  `HttpTestingController`, Firebase stubbed): thorough on auth and
+  session handling — the interceptor, trusted-device bootstrap and
+  exchange, logout, the idle timeout and cross-tab activity, the auth
+  modal, role and tier guards — plus tier gating, check-in, reminders,
+  the control center's send/upgrade paths, the Event Pass panel,
+  tenant navigation/routes and the vendor space list. Most screens and
+  services have no spec, and nothing runs in a real browser: the
+  cross-tab, tab-freezing and Android behaviours in particular are
+  verified only by a manual browser run.
 - **Events have no timezone.** Every event is implicitly UTC: "23:59:59"
   on a deadline means 23:59:59 UTC for a guest anywhere, so for a UTC+2
   audience it passes at 01:59 the next morning, and for a UTC−8 audience

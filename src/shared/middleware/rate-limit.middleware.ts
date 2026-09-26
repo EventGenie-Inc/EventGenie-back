@@ -73,6 +73,65 @@ export const verifyOtpLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITERS — TRUSTED DEVICES (exchange-session / logout)
+//
+//  exchange-session is public (no session token exists yet — that's the
+//  entire point) and, by design, called on every ordinary page load, not
+//  just at login — closer in call pattern to a hot read endpoint than to
+//  request-otp/verify-otp above. The device token itself is 256 random
+//  bits (device-token.util.ts) — brute-forcing the VALUE is infeasible
+//  regardless of any rate limit reachable here — so these two limiters
+//  guard against different, more realistic costs instead: hammering the
+//  endpoint's own Firebase Admin SDK call (verifyIdToken with
+//  checkRevoked is a real round trip to Google, a genuine per-request
+//  cost, not free like checking a JWT signature locally), and bounding
+//  how many attempts one specific device-token VALUE gets regardless of
+//  how many different IPs try it (the IP limiter alone wouldn't catch a
+//  credential — stolen or merely guessed — being hammered from many
+//  sources).
+// ─────────────────────────────────────────
+export const exchangeSessionLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many session requests. Please wait a few minutes and try again.',
+  },
+});
+
+export const exchangeSessionDeviceLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `device:${(req.body?.deviceToken ?? 'unknown') as string}`,
+  message: {
+    status: 'error',
+    message: 'Too many session requests for this device. Please wait a few minutes and try again.',
+  },
+});
+
+// Logout — low legitimate volume (one explicit click), low risk (it can
+// only ever revoke a token the caller already possesses — see
+// auth.service.ts's logout). Generous ceiling exists purely as a basic
+// backstop against a scripted loop, not because the action itself is
+// sensitive.
+export const logoutLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — GEOCODING AUTOSUGGEST
 //
 //  Fires per keystroke while an organiser types an address (debounced

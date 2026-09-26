@@ -1,12 +1,21 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { authService } from './auth.service.js';
-import { type RegisterDto, type VerifyOtpDto, type ForgotPasswordDto } from './auth.types.js';
+import {
+  type RegisterDto,
+  type VerifyOtpDto,
+  type ForgotPasswordDto,
+  type ExchangeSessionDto,
+  type LogoutDto,
+} from './auth.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {
   forgotPasswordLimiter,
   forgotPasswordEmailLimiter,
   requestOtpLimiter,
   verifyOtpLimiter,
+  exchangeSessionLimiter,
+  exchangeSessionDeviceLimiter,
+  logoutLimiter,
 } from '../../shared/middleware/rate-limit.middleware.js';
 
 const router = Router();
@@ -105,6 +114,58 @@ router.post('/refresh-session', async (req: Request, res: Response, next: NextFu
     }
 
     const result = await authService.refreshSession(firebaseToken, currentSessionToken);
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────
+//  POST /api/auth/exchange-session
+//  Headers: Authorization: Bearer <firebase_token>
+//  Body: { deviceToken: string }
+//  Trusted Devices — mints a session JWT from a Firebase ID token plus a
+//  device token that already passed an OTP on THIS device. No OTP here;
+//  see auth.service.ts's exchangeSession for why a Firebase token alone
+//  is never enough.
+// ─────────────────────────────────────────
+router.post('/exchange-session', exchangeSessionLimiter, exchangeSessionDeviceLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const firebaseToken = extractBearerToken(req);
+    const body = req.body as ExchangeSessionDto;
+
+    if (!body.deviceToken) {
+      res.status(400).json({
+        status: 'error',
+        message: 'deviceToken is required',
+      });
+      return;
+    }
+
+    const result = await authService.exchangeSession(firebaseToken, body);
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────
+//  POST /api/auth/logout
+//  Body: { deviceToken: string }
+//  Explicit, voluntary sign-out — revokes the device token, so this
+//  device needs a fresh OTP next time. No Authorization header required:
+//  this must work even if the Firebase/session state on the client is
+//  already unusable. Always 200 — see auth.service.ts's logout.
+// ─────────────────────────────────────────
+router.post('/logout', logoutLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body as LogoutDto;
+
+    if (!body.deviceToken) {
+      res.status(400).json({
+        status: 'error',
+        message: 'deviceToken is required',
+      });
+      return;
+    }
+
+    const result = await authService.logout(body);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
