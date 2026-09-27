@@ -29,13 +29,20 @@ const router = Router();
 //  since not all users exist in Postgres yet.
 // ─────────────────────────────────────────
 
-const extractBearerToken = (req: Request): string => {
+// code is optional, backward compatible — every existing call site
+// (register/request-otp/verify-otp/refresh-session/logout) omits it and
+// keeps getting a plain, uncoded 401, exactly as before. Only
+// exchange-session passes 'FIREBASE_TOKEN_INVALID' (Part 2 of the
+// Trusted Devices Hardening batch — see auth.service.ts's exchangeSession
+// for why that one endpoint needs the client to tell this apart from a
+// bad device token).
+const extractBearerToken = (req: Request, code?: string): string => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    throw new HttpError(401, 'Missing or malformed Authorization header');
+    throw new HttpError(401, 'Missing or malformed Authorization header', code);
   }
   const token = authHeader.split(' ')[1];
-  if (!token) throw new HttpError(401, 'No token provided');
+  if (!token) throw new HttpError(401, 'No token provided', code);
   return token;
 };
 
@@ -93,7 +100,11 @@ router.post('/verify-otp', verifyOtpLimiter, async (req: Request, res: Response,
       return;
     }
 
-    const result = await authService.verifyOtp(firebaseToken, body);
+    // Captured for the new device token's userAgent column (Part 6) —
+    // req/res is exactly what a router is for; the service takes the
+    // already-extracted string, never touches req itself.
+    const userAgent = req.headers['user-agent'] ?? null;
+    const result = await authService.verifyOtp(firebaseToken, body, userAgent);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
@@ -129,7 +140,7 @@ router.post('/refresh-session', async (req: Request, res: Response, next: NextFu
 // ─────────────────────────────────────────
 router.post('/exchange-session', exchangeSessionLimiter, exchangeSessionDeviceLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const firebaseToken = extractBearerToken(req);
+    const firebaseToken = extractBearerToken(req, 'FIREBASE_TOKEN_INVALID');
     const body = req.body as ExchangeSessionDto;
 
     if (!body.deviceToken) {

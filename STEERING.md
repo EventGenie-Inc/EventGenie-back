@@ -176,6 +176,31 @@ not "Invalid state transition."
 Cross-tenant access returns **404, not 403**. Confirming a record exists
 in another tenant is itself a leak.
 
+**Machine-readable codes.** `HttpError(status, message, code?)` — a
+third, optional argument, backward compatible: every call site that
+omits it keeps returning a plain response with no `code` field, exactly
+as before. The global handler includes it only when present:
+`{ status: 'error', message, code? }`. Add a code when — and only
+when — a client needs to tell two same-status failures apart to decide
+what to do next, not as a matter of course on every `HttpError`. Two
+established pairs: `SESSION_EXPIRED`/`SESSION_INVALID` (`authenticate`
+middleware and `POST /api/auth/refresh-session`, decide whether a
+silent retry is worth attempting) and `FIREBASE_TOKEN_INVALID`/
+`DEVICE_NOT_RECOGNISED` (`POST /api/auth/exchange-session`, Trusted
+Devices — decide whether to refresh the Firebase token and retry, or
+discard the stored device token and fall back to a fresh OTP — today's
+client can't tell these apart, forces a Firebase refresh on every 401,
+and sometimes discards a valid device token for nothing).
+
+A code must never subdivide a case that is already deliberately generic
+for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
+wrong-user, revoked, **and** expired device tokens — one code, matching
+the one message already used for all of them — because splitting those
+apart is exactly the oracle the single message exists to avoid.
+`FIREBASE_TOKEN_INVALID` is safe to keep as its own code precisely
+because whoever holds a Firebase ID token can already check its
+validity directly with Firebase; there's nothing to leak.
+
 ### Tier enforcement
 
 Subscription limits are enforced **server-side**. Frontend gating is UX,
@@ -274,17 +299,19 @@ it would make all but the first exchange fail with a 401 and discard
 the device (a multi-tab race).
 
 **What revokes a device token:** an explicit logout (`POST
-/api/auth/logout`, that one device), a password reset *request* (every
-device of that user — revoked when the link is generated, because the
-backend never learns whether the reset was completed), and suspending
-the user or their tenant (every device). **An idle timeout does NOT
-revoke it.**
-
-> **Under review — revoking on password-reset REQUEST.** Anyone who
-> knows a user's email can request a reset, so anyone can currently
-> force every one of that user's devices back to an OTP. Whoever changes
-> that backend behaviour (`forgotPassword` in `auth.service.ts`) must
-> update this paragraph in the same change.
+/api/auth/logout`, that one device), and suspending the user or their
+tenant (every device). **An idle timeout does NOT revoke it, and nor
+does merely requesting a password reset.** Anyone who knows a user's
+email can request a reset, so revoking every device on the request
+alone cost real users' devices — and, once SMS delivery is live, real
+money — for no security gain: a **completed** reset already ends every
+existing sign-in on its own. Firebase invalidates the account's
+existing tokens the moment the password changes, and both
+`exchangeSession` and `refreshSession` verify with `checkRevoked` (see
+`verifyFirebaseTokenStrict` in `auth.service.ts`), so a device token
+paired with the OLD password's Firebase session simply stops working
+the instant the reset completes — nothing in this backend has to notice
+or act.
 
 **Idle logout** signs out of Firebase (and drops the session) but
 **keeps the device token**. With no Firebase identity the next load
@@ -342,6 +369,20 @@ the device token and sends the user to the OTP step. Never a loop. This
 applies everywhere the exchange is called (bootstrap, after the
 password step, and a woken tab's re-mint — all through
 `AuthService.resumeSession()`).
+
+**Rate limits on `/exchange-session` and its per-device limiter count
+only FAILED attempts** (`skipSuccessfulRequests`). Guessing is failures
+by definition, and a successful exchange is the endpoint working as
+designed on a path every ordinary page load takes — counting it too
+meant legitimate multi-tab use could exhaust the per-device budget on
+its own, and, sharper still, South African mobile networks put many
+unrelated users behind one shared carrier-grade NAT IP, so counting
+successes against the IP limiter could throttle unrelated real users
+the moment that shared IP's routine traffic passed the ceiling, nothing
+to do with abuse. The per-device limiter keys on the SHA-256 hash of
+the submitted device token, never the raw value — a rate limiter's own
+in-memory store must not hold a live credential as a literal key any
+more than the database should.
 
 **A network failure never signs anyone out** — not a dropped
 connection, a timeout, a 429 or a 5xx, at bootstrap or mid-session.
@@ -577,8 +618,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   guests.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
-- **Automated test coverage is thin.** The backend has none. The
-  frontend has Vitest unit/integration specs (`ng test`, jsdom, HTTP via
+- **Automated test coverage is thin.** The backend has a Vitest suite
+  (`npm test`), but it covers auth only — `tests/`, HTTP-level via
+  `supertest` against the real Express app, real Postgres on a separate
+  `DATABASE_URL_TEST` database (never the shared dev/prod one — see
+  `resolve-database-url.util.ts`'s isolation guard), Firebase Admin
+  stubbed at exactly `verifyIdToken`. Covers: `exchange-session` and
+  `logout` (valid/garbage/wrong-user/expired device tokens, the
+  `FIREBASE_TOKEN_INVALID`/`DEVICE_NOT_RECOGNISED` codes, a suspended
+  user refused cleanly rather than a masked 500), `refresh-session`'s
+  strict Firebase verify, `forgotPassword` no longer revoking on
+  request, both rate limiters (`skipSuccessfulRequests`, hash-keying),
+  `DeviceToken.userAgent`, and that only the token's hash is ever
+  stored. Does not cover anything outside auth — every other module
+  (events, guests, invites, tickets, payments, vendor spaces, tier
+  enforcement, ...) has no backend test at all. The frontend has Vitest
+  unit/integration specs (`ng test`, jsdom, HTTP via
   `HttpTestingController`, Firebase stubbed): thorough on auth and
   session handling — the interceptor, trusted-device bootstrap and
   exchange, logout, the idle timeout and cross-tab activity, the auth

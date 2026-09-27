@@ -1,4 +1,5 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { hashToken } from '../../modules/auth/device-token.util.js';
 
 // ─────────────────────────────────────────
 //  RATE LIMITERS — AUTH ENDPOINTS
@@ -89,12 +90,32 @@ export const verifyOtpLimiter = rateLimit({
 //  how many different IPs try it (the IP limiter alone wouldn't catch a
 //  credential — stolen or merely guessed — being hammered from many
 //  sources).
+//
+//  Both count ONLY FAILED attempts (skipSuccessfulRequests) — Trusted
+//  Devices Hardening batch. The job of both limiters is stopping
+//  guessing/abuse, and guessing is failures by definition; a successful
+//  exchange is exactly the endpoint working as designed, on a path every
+//  ordinary page load takes. Counting successes against the SAME budget
+//  as failures meant legitimate multi-tab use (several tabs re-minting
+//  around the same time) could exhaust exchangeSessionDeviceLimiter's
+//  budget on its own, and — the sharper problem — South African mobile
+//  networks put many unrelated users behind one shared carrier-grade NAT
+//  IP, so exchangeSessionLimiter's 30/5min counting successes could
+//  throttle unrelated real users the moment routine traffic from that
+//  shared IP passed 30 successful exchanges in five minutes, nothing to
+//  do with abuse. With only failures counted, ordinary successful use —
+//  the overwhelming majority of real traffic on this endpoint — never
+//  touches the budget at all, on both limiters; 30/5min is kept as the
+//  number precisely because it now only has to be generous against a
+//  burst of FAILURES, a rarer and more attack-indicative signal, not
+//  against however much legitimate volume a shared IP produces.
 // ─────────────────────────────────────────
 export const exchangeSessionLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
   message: {
     status: 'error',
@@ -102,12 +123,22 @@ export const exchangeSessionLimiter = rateLimit({
   },
 });
 
+// Keyed by the SHA-256 hash of the submitted device token, never the raw
+// value — the same hash device-token.util.ts stores in the database,
+// via the same exported hashToken, so this in-memory bucket never holds
+// a live credential as a literal key for the length of the rate-limit
+// window. Extracted as its own named export (rather than inlined in the
+// rateLimit() call below) so a test can call it directly and assert it
+// never contains the raw token — see tests/auth/rate-limit.test.ts.
+export const deviceLimiterKey = (rawDeviceToken: string): string => `device:${hashToken(rawDeviceToken)}`;
+
 export const exchangeSessionDeviceLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `device:${(req.body?.deviceToken ?? 'unknown') as string}`,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => deviceLimiterKey((req.body?.deviceToken ?? 'unknown') as string),
   message: {
     status: 'error',
     message: 'Too many session requests for this device. Please wait a few minutes and try again.',
