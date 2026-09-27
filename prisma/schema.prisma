@@ -422,6 +422,13 @@ model DeviceToken {
   lastUsedAt    DateTime?
   revokedAt     DateTime?
   revokedReason String?
+  // Captured at issuance from the request's User-Agent header, truncated
+  // to 512 characters — see device-token.util.ts's issueDeviceToken.
+  // Trusted Devices Hardening batch, Part 6: for a future device
+  // management screen ("Chrome on a Mac", "Safari on an iPhone"),
+  // nothing reads it yet. Nullable — a caller with no header (or that
+  // predates this column) simply has none.
+  userAgent     String?
 
   user User @relation(fields: [userId], references: [id])
 

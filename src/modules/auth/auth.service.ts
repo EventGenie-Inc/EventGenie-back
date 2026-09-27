@@ -9,7 +9,6 @@ import {
   issueDeviceToken,
   assertDeviceTokenUsable,
   revokeDeviceTokenByValue,
-  revokeAllDeviceTokensForUser,
   REVOKE_REASON,
 } from './device-token.util.js';
 import {
@@ -49,16 +48,15 @@ const verifyFirebaseToken = async (token: string) =>
   getAuth(firebaseAdmin).verifyIdToken(token);
 
 // Stricter variant — also checks Firebase's revocation list (checkRevoked),
-// not just the token's own signature and expiry. Used only by
-// exchangeSession: that is the one endpoint where a Firebase ID token
-// ALONE (this request carries no OTP) is enough to mint a session, so it
-// must catch a token minted before revokeRefreshTokens() ran (e.g.
-// suspendFirebaseAccount) that has not yet naturally expired — the exact
-// reasoning auth.middleware.ts's own identical call already documents.
-// Every other Firebase verification in this file (register, request/
-// verify-otp, refreshSession) is unchanged — flagged as a candidate for
-// the same upgrade in the report, not changed here, out of scope for
-// this batch.
+// not just the token's own signature and expiry. Used by exchangeSession
+// (a Firebase ID token ALONE, no OTP that request, is enough to mint a
+// session there) and, since the Trusted Devices Hardening batch's Part 5,
+// by refreshSession too — an already-open session must stop refreshing
+// the moment a password reset revokes the underlying Firebase refresh
+// token, or removing forgotPassword's own device-token revocation would
+// leave a real gap. register and request/verify-otp remain on the
+// lenient verifyFirebaseToken — evaluated for the same upgrade and left
+// alone; see the batch report for the per-endpoint reasoning.
 const verifyFirebaseTokenStrict = async (token: string) =>
   getAuth(firebaseAdmin).verifyIdToken(token, true);
 
@@ -171,7 +169,7 @@ export const authService = {
     };
   },
 
-  verifyOtp: async (firebaseToken: string, data: VerifyOtpDto) => {
+  verifyOtp: async (firebaseToken: string, data: VerifyOtpDto, userAgent: string | null = null) => {
     const decoded = await verifyFirebaseToken(firebaseToken);
 
     const user = await authRepository.findUserByFirebaseUid(decoded.uid);
@@ -203,7 +201,7 @@ export const authService = {
     // Every subsequent page load on THIS device can mint a session
     // through exchangeSession below without another OTP, until this
     // token is revoked or its own 30 days pass — see device-token.util.ts.
-    const deviceToken = await issueDeviceToken(user.id);
+    const deviceToken = await issueDeviceToken(user.id, userAgent);
 
     return {
       sessionToken,
@@ -245,7 +243,7 @@ export const authService = {
         err.code === 'auth/argument-error' ||
         err.code === 'auth/id-token-revoked'
       ) {
-        throw new HttpError(401, 'Firebase token is invalid or has expired');
+        throw new HttpError(401, 'Firebase token is invalid or has expired', 'FIREBASE_TOKEN_INVALID');
       }
       if (err.code === 'auth/user-disabled') {
         throw new HttpError(403, 'Account is inactive or has been archived');
@@ -260,9 +258,16 @@ export const authService = {
       throw new HttpError(403, 'Account is inactive or has been archived');
     }
 
-    // Throws (generic 401) if missing, revoked, expired, or bound to a
-    // different user — see assertDeviceTokenUsable's own comment on why
-    // those four cases share one message.
+    // Throws (generic 401, code DEVICE_NOT_RECOGNISED) if missing,
+    // revoked, expired, or bound to a different user — see
+    // assertDeviceTokenUsable's own comment on why those four cases
+    // share one message AND one code. Distinguishing THIS from
+    // FIREBASE_TOKEN_INVALID above is deliberately safe: whoever holds a
+    // Firebase token can already check its own validity directly with
+    // Firebase, so telling them "that part was fine" reveals nothing an
+    // attacker couldn't already know. Distinguishing WITHIN the device
+    // side (revoked vs. expired vs. wrong-user) would be the oracle —
+    // assertDeviceTokenUsable never does that.
     await assertDeviceTokenUsable(data.deviceToken, user.id);
 
     const payload: SessionTokenPayload = {
@@ -305,7 +310,15 @@ export const authService = {
 
     let decoded;
     try {
-      decoded = await verifyFirebaseToken(firebaseToken);
+      // Strict (checkRevoked) — Trusted Devices Hardening batch, Part 5.
+      // Needed for forgotPassword's own revocation removal to actually
+      // be true everywhere: an already-open session refreshing itself
+      // must stop working once a password reset revokes the underlying
+      // Firebase refresh token, or it could just keep refreshing every
+      // 15 minutes past the reset until it idles out on its own,
+      // regardless of the new password. See verifyFirebaseTokenStrict's
+      // own comment — this is now its second call site.
+      decoded = await verifyFirebaseTokenStrict(firebaseToken);
     } catch (error) {
       // Firebase Admin errors carry the reason in `.code` (e.g. 'auth/id-token-expired'),
       // not in `.message` — the human-readable message never contains these strings.
@@ -316,6 +329,13 @@ export const authService = {
         err.code === 'auth/id-token-revoked'
       ) {
         throw new HttpError(401, 'Firebase token is invalid or has expired');
+      }
+      // auth/user-disabled — same fix as exchangeSession (Part 4/the
+      // identical auth.middleware.ts fix): checkRevoked can now surface
+      // it here too, and it must map to the same clean 403 every other
+      // suspended-account check in this file uses, not an uncaught throw.
+      if (err.code === 'auth/user-disabled') {
+        throw new HttpError(403, 'Account is inactive or has been archived');
       }
       throw error;
     }
@@ -373,21 +393,19 @@ export const authService = {
 
       const resetLink = await getAuth(firebaseAdmin).generatePasswordResetLink(email, actionCodeSettings);
 
-      // Trusted Devices — revoke every device this user's second factor
-      // was previously attached to. See the batch report's "Password
-      // reset revokes it" section for why this fires HERE (a real reset
-      // link was just generated) rather than on completion: Firebase's
-      // confirmPasswordReset runs client-side, directly against Firebase,
-      // and this backend is never told when — or whether — the user
-      // actually goes on to set a new password. Generating the link is
-      // the closest backend-observable event there is. The cost of
-      // revoking on a request that's never completed is a harmless extra
-      // OTP next time; the cost of NOT revoking on a request that WAS
-      // completed — e.g. because the account was compromised — is a
-      // stale device token outliving the very password it was trusted
-      // alongside.
-      await revokeAllDeviceTokensForUser(user.id, REVOKE_REASON.PASSWORD_RESET);
-
+      // Trusted Devices Hardening batch, Part 5 — deliberately NOT
+      // revoking device tokens here anymore. Requesting a reset link
+      // needs nothing but a known email, so it was a free way for
+      // anyone to force every one of a stranger's devices back to an
+      // OTP (a real cost once SMS delivery is live) for essentially no
+      // security gain: a COMPLETED reset already ends every existing
+      // sign-in via Firebase's own token revocation on password change,
+      // and exchangeSession's checkRevoked verification (see
+      // verifyFirebaseTokenStrict) — now also refreshSession's, see that
+      // function's own comment — means a device token paired with the
+      // OLD password's Firebase session stops working the moment the
+      // reset completes, with no action needed here. See STEERING.md's
+      // revocation paragraph for the full argument.
       const fromEmail = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
 
       await resend.emails.send({

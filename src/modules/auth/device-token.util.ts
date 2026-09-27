@@ -19,23 +19,48 @@ const DEVICE_TOKEN_TTL_MS = DEVICE_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;
 // exact-match query, but the raw 256-bit token itself is never at rest in
 // the database (see the model's own schema comment for why this is a
 // different bar than the plaintext invite/share tokens elsewhere).
-const hashToken = (rawToken: string): string =>
+//
+// Exported — rate-limit.middleware.ts's exchangeSessionDeviceLimiter
+// keys its in-memory bucket by this same hash, never the raw token,
+// for the identical reason: a raw credential must not sit anywhere in
+// server memory as a literal object key for the length of a rate-limit
+// window, any more than it sits in the database.
+export const hashToken = (rawToken: string): string =>
   crypto.createHash('sha256').update(rawToken).digest('hex');
 
+// PASSWORD_RESET was removed as a trigger here (Trusted Devices
+// Hardening batch, Part 5 — see auth.service.ts's forgotPassword and
+// STEERING.md's revocation paragraph for why); deliberately not kept as
+// a dead reason value.
 export const REVOKE_REASON = {
   LOGOUT: 'LOGOUT',
-  PASSWORD_RESET: 'PASSWORD_RESET',
   USER_SUSPENDED: 'USER_SUSPENDED',
 } as const;
+
+// User-Agent strings are unbounded in principle (a handful of browsers
+// pad theirs with extra tokens) — truncated defensively so one oddly
+// long header can never become an oversized column value. 512 is
+// generous against every real-world User-Agent this codebase has seen.
+const USER_AGENT_MAX_LENGTH = 512;
 
 // Called once per successful OTP verification (auth.service.ts's
 // verifyOtp) — never on the exchange path, which only ever CONSUMES an
 // existing device token, never mints one. Returns the raw value once;
 // only its hash is ever persisted or seen again.
-export const issueDeviceToken = async (userId: string): Promise<{ token: string; expiresAt: Date }> => {
+//
+// userAgent is captured for a future device-management screen only —
+// Trusted Devices Hardening batch, Part 6. Nothing reads it yet, and
+// nothing in assertDeviceTokenUsable/exchangeSession depends on it in
+// any way; a caller with no header (or a device token issued before
+// this column existed) simply has null here.
+export const issueDeviceToken = async (
+  userId: string,
+  userAgent: string | null = null
+): Promise<{ token: string; expiresAt: Date }> => {
   const token = generateSecureToken();
   const expiresAt = new Date(Date.now() + DEVICE_TOKEN_TTL_MS);
-  await deviceTokenRepository.create(userId, hashToken(token), expiresAt);
+  const truncatedUserAgent = userAgent ? userAgent.slice(0, USER_AGENT_MAX_LENGTH) : null;
+  await deviceTokenRepository.create(userId, hashToken(token), expiresAt, truncatedUserAgent);
   return { token, expiresAt };
 };
 
@@ -58,7 +83,15 @@ export const assertDeviceTokenUsable = async (rawToken: string, userId: string):
     record.expiresAt.getTime() > Date.now();
 
   if (!usable) {
-    throw new HttpError(401, 'This device is not recognised. Please sign in with your password and verify with a new code.');
+    // DEVICE_NOT_RECOGNISED — deliberately the SAME code for all four
+    // underlying cases (missing/wrong-user/revoked/expired). Splitting it
+    // further is exactly the oracle this function's own header comment
+    // already refuses to create.
+    throw new HttpError(
+      401,
+      'This device is not recognised. Please sign in with your password and verify with a new code.',
+      'DEVICE_NOT_RECOGNISED'
+    );
   }
 
   await deviceTokenRepository.touchLastUsed(record!.id);

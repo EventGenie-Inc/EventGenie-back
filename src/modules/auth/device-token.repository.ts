@@ -6,9 +6,9 @@ import prisma from '../../shared/prisma/prisma.client.js';
 // usable" (revoked? expired? right user?) gets decided.
 export const deviceTokenRepository = {
 
-  create: (userId: string, tokenHash: string, expiresAt: Date) =>
+  create: (userId: string, tokenHash: string, expiresAt: Date, userAgent: string | null) =>
     prisma.deviceToken.create({
-      data: { userId, tokenHash, expiresAt },
+      data: { userId, tokenHash, expiresAt, userAgent },
     }),
 
   findByHash: (tokenHash: string) =>
