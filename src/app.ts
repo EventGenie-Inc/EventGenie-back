@@ -100,7 +100,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({
     status: 'ok',
-    service: 'EventGenie API',
+    service: 'e-velope API',
     timestamp: new Date().toISOString(),
   });
 });

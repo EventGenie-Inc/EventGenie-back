@@ -7,8 +7,20 @@ import {
   reactivateFirebaseAccount,
 } from '../../shared/firebase/firebase-account-status.util.js';
 import { revokeAllDeviceTokensForUser, REVOKE_REASON } from '../auth/device-token.util.js';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 
 const ROLES_ASSIGNABLE_BY_TENANT_ADMIN: PlatformRole[] = ['TENANT_ADMIN', 'EVENT_ADMIN', 'EVENT_VENDOR'];
+
+// TENANT_ADMIN and EVENT_ADMIN are operationally tenant-scoped everywhere
+// (requireTenantAdmin/requireEventAdmin, and now tenant-scope.util.ts's
+// resolveTenantScope) — a user with either role and no tenantId is
+// exactly the "should never exist" state Security Sweep Before G3's Fix 1
+// made getById/getAll fail closed against. SUPER_ADMIN is deliberately
+// platform-wide (no tenant of its own); EVENT_VENDOR is deliberately
+// scoped by VendorSpaceUser membership, not tenantId (a platform-level
+// vendor space has none either — see vendor.service.ts's header comment).
+// Neither belongs in this list.
+const ROLES_REQUIRING_TENANT: PlatformRole[] = ['TENANT_ADMIN', 'EVENT_ADMIN'];
 
 // Shared by create() and update() — the only two places a role gets
 // assigned — so the rule set lives in exactly one place.
@@ -58,6 +70,10 @@ export const userService = {
     // Admin must always be able to see and restore suspended entities.
     // Other roles are unaffected: tenant-scoped, active users only.
     if (requestingRole === 'SUPER_ADMIN') return userRepository.findAll(undefined, true);
+    // A non-SUPER_ADMIN with no tenantId should never exist — fail closed
+    // with an empty list rather than an unscoped, every-tenant query. See
+    // tenant-scope.util.ts.
+    if (isTenantScopeEmptyForList(requestingRole, tenantId)) return Promise.resolve([]);
     return userRepository.findAll(tenantId ?? undefined);
   },
 
@@ -66,9 +82,8 @@ export const userService = {
   // eventService.getById. Thrown as HttpError so cross-tenant access
   // surfaces as 404, not a generic 500.
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const user = requestingRole === 'SUPER_ADMIN'
-      ? await userRepository.findById(id, includeArchived)
-      : await userRepository.findById(id, includeArchived, tenantId ?? undefined);
+    const scope = resolveTenantScope(requestingRole, tenantId, 'User not found');
+    const user = await userRepository.findById(id, includeArchived, scope);
 
     if (!user) throw new HttpError(404, 'User not found');
     return user;
@@ -82,6 +97,17 @@ export const userService = {
     // after validation. SUPER_ADMIN: may specify any tenantId (or none,
     // for the SUPER_ADMIN shape).
     const resolvedTenantId = requestingRole === 'SUPER_ADMIN' ? data.tenantId : (requesterTenantId ?? undefined);
+
+    // Valid shape (a real role, a real requester), unsatisfied
+    // precondition (that role needs a tenant and none was given) — 422,
+    // per STEERING's status table, not 400. A TENANT_ADMIN creating one
+    // of these always supplies requesterTenantId (their own), so this
+    // fires only for a misconfigured requester or a SUPER_ADMIN who
+    // omitted tenantId — exactly the state Fix 1 made getById/getAll
+    // fail closed against; this stops it being created in the first place.
+    if (ROLES_REQUIRING_TENANT.includes(data.role) && !resolvedTenantId) {
+      throw new HttpError(422, `A ${data.role} must belong to a tenant — specify tenantId.`);
+    }
 
     // EVENT_VENDOR users are no longer linked to a space at creation —
     // vendor-space membership is many-to-many now (VendorSpaceUser) and

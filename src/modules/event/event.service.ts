@@ -13,6 +13,7 @@ import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -35,16 +36,17 @@ const assertCoverImageWithinSizeLimit = (data: { coverImageBytes?: number; cover
 
 // WHO may look up an event, decided once for getById and the lean lookups
 // below: SUPER_ADMIN is unscoped (that is the role's purpose); everyone else
-// is scoped to their own tenant.
-//
-// Kept exactly as getById always behaved — including that a non-SUPER_ADMIN
-// whose tenantId is null becomes UNSCOPED here (`null ?? undefined`). Every
-// organiser route sits behind requireEventAdmin, whose roles all carry a
-// tenantId in practice, so it is not reachable today; it is flagged in the
-// lean-gate task report as fail-open rather than changed here, because this
-// task must not alter what the gate refuses.
+// is scoped to their own tenant. A non-SUPER_ADMIN with no tenantId now
+// fails CLOSED (resolveTenantScope throws 404) instead of falling through
+// to an unscoped lookup — see tenant-scope.util.ts for why. Security sweep
+// before G3: this used to convert null to undefined and silently widen the
+// query to every tenant; not reachable through the ordinary self-service
+// signup/create paths, but reachable the moment a SUPER_ADMIN creates an
+// EVENT_ADMIN or TENANT_ADMIN without a tenantId (POST /api/users lets a
+// SUPER_ADMIN omit it), and that role sits behind requireEventAdmin on
+// nearly every organiser route.
 const tenantScopeFor = (requestingRole: PlatformRole, tenantId: string | null): string | undefined =>
-  requestingRole === 'SUPER_ADMIN' ? undefined : tenantId ?? undefined;
+  resolveTenantScope(requestingRole, tenantId, 'Event not found');
 
 export const eventService = {
 
@@ -52,6 +54,7 @@ export const eventService = {
   // presenter, so they can never disagree about a given event's
   // status — there is no separate code path either could drift from.
   getAll: async (requestingRole: PlatformRole, tenantId: string | null) => {
+    if (isTenantScopeEmptyForList(requestingRole, tenantId)) return [];
     const events = requestingRole === 'SUPER_ADMIN'
       ? await eventRepository.findAll()
       : await eventRepository.findAll(tenantId ?? undefined);
