@@ -255,6 +255,13 @@ it is **never the public Pricing page for someone who is signed in**:
 Exception: registration-time tier selection is not an upsell surface —
 nobody is upgrading before they have an account.
 
+### Migrations and the shared database
+
+Dev and prod share one database until the Frankfurt migration. Agents
+never apply migrations to it. The human does that at deploy. Agents
+apply migrations only to the test database, and only through the
+harness behind the refusal guard.
+
 ### Session and tokens
 
 **The second factor (the emailed OTP) is once per device, not once per
@@ -360,15 +367,49 @@ wakes. Both cross-tab signals are leading-edge throttled to one per
 5 seconds; each tab's own in-memory timestamp updates on every
 interaction.
 
-**A 401 from the exchange gets one retry.** The endpoint answers the
-same 401 for a bad Firebase ID token as for an unrecognised device, and
-the device token is the expensive credential to lose (it costs an
-emailed code). So a 401 triggers one forced Firebase refresh
-(`getIdToken(true)`) and exactly one retry; only a second 401 discards
-the device token and sends the user to the OTP step. Never a loop. This
-applies everywhere the exchange is called (bootstrap, after the
+**A 401 from the exchange is acted on by its code.** The endpoint says
+which credential it refused (see "Machine-readable codes" under
+Errors), and the device token is the expensive credential to lose (it
+costs an emailed code), so the client never discards it on a guess.
+This applies everywhere the exchange is called (bootstrap, after the
 password step, and a woken tab's re-mint — all through
-`AuthService.resumeSession()`).
+`AuthService.resumeSession()`):
+
+- `DEVICE_NOT_RECOGNISED` — discard the device token and go straight
+  to the OTP step. No Firebase refresh, no retry: a fresh ID token
+  cannot change that answer.
+- `FIREBASE_TOKEN_INVALID` — one forced Firebase refresh
+  (`getIdToken(true)`) and exactly one retry. Success keeps the device
+  token. A second `FIREBASE_TOKEN_INVALID`, or Firebase itself refusing
+  the refresh (`auth/user-token-expired`, `auth/invalid-user-token`),
+  means the Firebase identity is gone — most likely a password reset
+  completed elsewhere: sign out of Firebase, **keep** the device token,
+  and show the password screen with a calm "Please sign in again". The
+  device is still trusted, so no OTP follows. `DEVICE_NOT_RECOGNISED`
+  on the retry is handled as above; a refresh that fails on the network
+  is unknown state, and nothing is cleared.
+- **No code, or a code this client does not know** — the pre-code
+  behaviour: one forced refresh and one retry, and only a second 401
+  discards the device token. Kept deliberately so the frontend stays
+  correct against an older backend during a deploy. Do not remove it.
+
+Never a loop: at most one retry, on any path.
+
+**A refresh after a completed password reset ends the session the
+same way.** `refresh-session` verifies with `checkRevoked`, so once a
+reset completes elsewhere, an open session's next refresh is refused
+with a **401 that carries no code** ("Firebase token is invalid or has
+expired"). That endpoint's only coded 401s are `SESSION_EXPIRED` and
+`SESSION_INVALID` (the session JWT itself failed); any other 401 on the
+refresh request — the revoked token, a uid mismatch, a user gone — is a
+verdict on the Firebase side, and ends the session as above: Firebase
+signed out, device token kept, the password screen with "Please sign in
+again". It is never treated as a network failure (retried), and never
+clears the device token. A 403 from `refresh-session` (suspended
+mid-session) shows the inactive-account message and forgets the
+device, exactly as at bootstrap. Both are decided on the refresh
+request itself, in the interceptor, because the proactive refresh and
+the idle timer swallow a failed refresh.
 
 **Rate limits on `/exchange-session` and its per-device limiter count
 only FAILED attempts** (`skipSuccessfulRequests`). Guessing is failures
@@ -643,6 +684,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   services have no spec, and nothing runs in a real browser: the
   cross-tab, tab-freezing and Android behaviours in particular are
   verified only by a manual browser run.
+- **`npm test` against Neon can hang on dropped connections.** Run test
+  files individually until the suite moves to local Postgres.
 - **Events have no timezone.** Every event is implicitly UTC: "23:59:59"
   on a deadline means 23:59:59 UTC for a guest anywhere, so for a UTC+2
   audience it passes at 01:59 the next morning, and for a UTC−8 audience
