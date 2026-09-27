@@ -114,6 +114,69 @@ the already-scoped `eventService.getById()`. See `src/modules/event-day/`.
 Cross-tenant access has been found and fixed in this codebase **five
 separate times**. Assume it is missing until you have read the code.
 
+**Fails closed.** A non-`SUPER_ADMIN` caller with no `tenantId` must never
+reach the unscoped branch above — `tenantId ?? undefined` looks harmless
+but is exactly how it happens: `null` becomes `undefined`, and an optional
+param quietly matches every tenant instead of none. Route it through
+`resolveTenantScope` / `isTenantScopeEmptyForList`
+(`shared/utils/tenant-scope.util.ts`) instead: a by-id lookup gets the same
+404 a real cross-tenant record would, a list gets an empty array. This
+state is not only theoretical — a platform-level `EVENT_VENDOR` (assigned
+to a `tenantId: null` `VendorSpace` by design, see `vendor.service.ts`)
+reaches exactly this path today. Found and fixed once already (Security
+Sweep Before G3); it now lives in one shared helper so it can't happen a
+second time.
+
+**Refused at creation, for the two roles that must always have one.**
+`userService.create` rejects a `TENANT_ADMIN` or `EVENT_ADMIN` with no
+resolved `tenantId` — 422, not merely tolerated and caught later by the
+fail-closed reads above. Both roles are operationally tenant-scoped
+everywhere (`requireTenantAdmin`/`requireEventAdmin`, and every
+`resolveTenantScope` call), so a row without one is the same "should never
+exist" state, stopped one step earlier. `SUPER_ADMIN` (platform-wide by
+design) and `EVENT_VENDOR` (scoped by `VendorSpaceUser` membership, not
+`tenantId`) are exempt on purpose — see `ROLES_REQUIRING_TENANT`'s own
+comment. Existing rows are never touched by this; it only gates new ones.
+
+**Vendor space visibility, intended design:** a vendor sees a space if
+they are a member of it, OR if it is in their tenant and has no members
+at all (unassigned spaces are visible to every vendor in the tenant).
+Anything else is a 404. **KNOWN DEBT:** the code currently enforces
+membership only (`getSpaceForViewer`) and applies the same gap to
+services and products. Resolved by the user management feature, which
+assigns users to vendor spaces.
+
+### Guest-facing responses
+
+An unauthenticated or token-authenticated endpoint (RSVP, public event
+registration, Memory Hub guest routes, ticket purchase callbacks — any
+route without `authenticate`) never returns a raw Prisma row or an
+`include` wider than what the page shows. Project an explicit shape by
+hand, the way `rsvp.service.ts`'s `validate()` and
+`event-public.service.ts`'s `toPublicView` already do. A raw
+`Invite`/`TicketPurchase`/`MemoryItem` row carries fields a guest must
+never see — `editToken`, `createdBy`/`updatedBy`,
+`commissionCents`/`ticketPriceCents`/`paymentRef` — and a field added to
+the model later leaks automatically unless the projection is an explicit
+allowlist, not a spread of the row. Found leaking on `rsvp.service.ts`'s
+`submit()` and `memory-hub.service.ts`'s `createGuestItem()` (Security
+Sweep Before G3) — both returned the just-written row directly.
+
+### Email HTML
+
+Every user-supplied value interpolated into an email HTML body —
+organiser-typed (event name, venue, custom messages) or guest-typed (a
+name captured at RSVP) — goes through `escapeHtml`
+(`shared/utils/html.util.ts`) before reaching `renderBrandEmailShell`. An
+event named `<script>...</script>` must not become live markup in a
+guest's inbox, sent under EventGenie's own address. A URL placed in an
+`href` needs attribute-context escaping too, unless it is server-built
+from config and a random token rather than free text — document that
+exemption inline where you rely on it, the way `invite-message.util.ts`
+does for `rsvpLink`. Found missing on `buildInviteEmailHtml` (Security
+Sweep Before G3) — `buildReminderEmailHtml` already did this correctly,
+which is how the gap was spotted.
+
 ### Soft delete
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.

@@ -18,6 +18,7 @@ import {
   type LogoutDto,
   type SessionTokenPayload,
 } from './auth.types.js';
+import { escapeHtml } from '../../shared/utils/html.util.js';
 
 // Never reveal whether an email exists in the system — every branch
 // of forgotPassword() (unknown email, suspended account, send failure)
@@ -140,7 +141,7 @@ export const authService = {
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
           <h2 style="color: #1A1A2E;">EventGenie Verification</h2>
-          <p>Hello ${user.username},</p>
+          <p>Hello ${escapeHtml(user.username)},</p>
           <p>Your verification code is:</p>
           <div style="
             font-size: 36px;
@@ -415,7 +416,7 @@ export const authService = {
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
             <h2 style="color: #1A1A2E;">Reset your EventGenie password</h2>
-            <p>Hello ${user.username},</p>
+            <p>Hello ${escapeHtml(user.username)},</p>
             <p>We received a request to reset your password. Click the button below to choose a new one:</p>
             <div style="text-align: center; margin: 24px 0;">
               <a href="${resetLink}" style="

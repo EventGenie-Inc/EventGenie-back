@@ -448,7 +448,7 @@ export const memoryHubService = {
 
     await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId);
 
-    return memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
+    const item = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
       mediaUrl: data.mediaUrl,
       cloudinaryPublicId: data.cloudinaryPublicId,
       mediaType: data.mediaType,
@@ -457,5 +457,18 @@ export const memoryHubService = {
       status: 'PENDING',
       uploadedByGuestId: invite.guestId,
     });
+
+    // Explicit shape, not the raw MemoryItem row — no memoryHubId,
+    // cloudinaryPublicId, uploadedByGuestId, isArchived, createdBy/
+    // updatedBy. Enough for the guest's browser to confirm the upload
+    // and show it awaiting approval, same allowlist spirit as
+    // toPublicItem/toCuratedItem above.
+    return {
+      id: item.id,
+      mediaUrl: item.mediaUrl,
+      mediaType: item.mediaType,
+      caption: item.caption,
+      status: item.status,
+    };
   },
 };

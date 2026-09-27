@@ -18,6 +18,7 @@ import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
 import { buildGuestExportWorkbook } from './guest-export.util.js';
 import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
@@ -44,13 +45,16 @@ export const guestService = {
 
   getAll: (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     if (requestingRole === 'SUPER_ADMIN') return guestRepository.findAll(undefined, includeArchived);
+    // A non-SUPER_ADMIN with no tenantId should never exist — fail closed
+    // with an empty list rather than an unscoped, every-tenant query. See
+    // tenant-scope.util.ts.
+    if (isTenantScopeEmptyForList(requestingRole, tenantId)) return Promise.resolve([]);
     return guestRepository.findAll(tenantId ?? undefined, includeArchived);
   },
 
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const guest = requestingRole === 'SUPER_ADMIN'
-      ? await guestRepository.findById(id, includeArchived)
-      : await guestRepository.findById(id, includeArchived, tenantId ?? undefined);
+    const scope = resolveTenantScope(requestingRole, tenantId, 'Guest not found');
+    const guest = await guestRepository.findById(id, includeArchived, scope);
 
     if (!guest) throw new HttpError(404, 'Guest not found');
     return guest;

@@ -10,6 +10,20 @@ import { formatGuestDate, formatGuestDateShort } from '../../shared/utils/guest-
 // path is a best-guess placeholder, matching the only prior convention
 // found in git history (an old, removed WhatsApp-integration commit used
 // `/rsvp?token=...`). Flagged as unconfirmed in the final report.
+//
+// HTML ESCAPING — every organiser-typed value interpolated into an HTML
+// email body below (eventName, location) goes through escapeHtml
+// (shared/utils/html.util.ts) before reaching renderBrandEmailShell: an
+// event named `<script>...` or containing `"` must not become live markup
+// or break out of a style attribute in a guest's inbox, sent under
+// EventGenie's own From address. dateLabel is NOT escaped — it is derived
+// from EventDay.date (guest-date.util.ts), never free text a user types.
+// rsvpLink is NOT escaped either — it is server-built from
+// FRONTEND_BASE_URL (env config) and a crypto.randomBytes(32) hex token
+// (invite.repository.ts), never user input, so it can't carry HTML or
+// attribute-breaking characters by construction. Both exemptions are
+// deliberate, not oversights — re-check them if either value's source
+// ever changes to accept free text.
 export const buildInviteRsvpLink = (token: string): string =>
   `${process.env.FRONTEND_BASE_URL}/rsvp?token=${token}`;
 
@@ -25,9 +39,9 @@ export const buildInviteEmailHtml = (
   renderBrandEmailShell(
     "You're invited!",
     `
-      <p>You've been invited to <strong>${eventName}</strong>.</p>
+      <p>You've been invited to <strong>${escapeHtml(eventName)}</strong>.</p>
       ${dateLabel ? `<p style="color: #1A1A2E;"><strong>Date:</strong> ${dateLabel}</p>` : ''}
-      <p style="color: #1A1A2E;"><strong>Venue:</strong> ${location}</p>
+      <p style="color: #1A1A2E;"><strong>Venue:</strong> ${escapeHtml(location)}</p>
       <div style="text-align: center; margin: 24px 0;">
         <a href="${rsvpLink}" style="
           display: inline-block;
@@ -62,7 +76,7 @@ export const buildInviteSmsBody = (eventName: string, rsvpLink: string): string 
 export const buildReminderEmailSubject = (eventName: string): string =>
   `Reminder: please RSVP to ${eventName}`;
 
-// Unlike buildInviteEmailHtml, organiser-typed values are HTML-escaped here.
+// Same escaping as buildInviteEmailHtml above — see this file's header.
 export const buildReminderEmailHtml = (
   eventName: string,
   location: string,
