@@ -7,8 +7,21 @@ import { vi, beforeEach } from 'vitest';
 //  prisma.config.ts both key off this to route to DATABASE_URL_TEST —
 //  see prisma.client.ts's own comment on why that separation is
 //  load-bearing (dev and prod share one Neon endpoint today).
+//
+//  PRISMA_TEST_ADAPTER=pg — the ONLY place this repo ever sets it.
+//  prisma.client.ts checks for exactly this value (alongside
+//  NODE_ENV === 'test') to route to a plain TCP connection
+//  (@prisma/adapter-pg) instead of Neon's WebSocket driver for the
+//  reasons explained there — a WebSocket that this environment
+//  occasionally drops mid-query, and a suspend-after-idle Free-tier
+//  Neon branch. Nothing else in this repo — not .env, not
+//  prisma.config.ts, not package.json's scripts — ever sets this
+//  variable, which is what makes `npm run dev`/`npm start`/production
+//  provably unable to reach the pg branch: the flag they'd need is
+//  simply never defined in their process.
 // ─────────────────────────────────────────
 process.env.NODE_ENV = 'test';
+process.env.PRISMA_TEST_ADAPTER = 'pg';
 
 // ─────────────────────────────────────────
 //  FIREBASE ADMIN — stubbed at ONE boundary: verifyIdToken.
