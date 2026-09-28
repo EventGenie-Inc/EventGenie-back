@@ -4,6 +4,7 @@ export interface CreateProgramItemDto {
     startTime: string;
     durationMins?: number;
     order: number;
+    eventDayId?: string | null;
 }
 export interface UpdateProgramItemDto {
     title?: string;
@@ -11,5 +12,6 @@ export interface UpdateProgramItemDto {
     startTime?: string;
     durationMins?: number;
     order?: number;
+    eventDayId?: string | null;
 }
 //# sourceMappingURL=program-item.types.d.ts.map

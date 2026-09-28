@@ -153,6 +153,17 @@ export const memoryHubRepository = {
       orderBy: { createdAt: 'desc' },
     }),
 
+  // Contract B (guest-view) — myPendingItems. Filters by uploadedByGuestId
+  // directly at the query level rather than fetching every pending item
+  // and filtering in the service: a guest's request should never even
+  // transit another guest's pending upload over the network, let alone
+  // risk it leaking through a later refactor of the filter step.
+  findPendingItemsByGuest: (memoryHubId: string, guestId: string) =>
+    prisma.memoryItem.findMany({
+      where: { memoryHubId, uploadedByGuestId: guestId, status: 'PENDING', isArchived: false },
+      orderBy: { createdAt: 'desc' },
+    }),
+
   findItemById: (id: string, includeArchived = false) =>
     prisma.memoryItem.findFirst({
       where: { id, ...(includeArchived ? {} : { isArchived: false }) },

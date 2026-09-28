@@ -1,4 +1,5 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { hashToken } from '../../modules/auth/device-token.util.js';
 // ─────────────────────────────────────────
 //  RATE LIMITERS — AUTH ENDPOINTS
 //
@@ -64,6 +65,91 @@ export const verifyOtpLimiter = rateLimit({
     message: {
         status: 'error',
         message: 'Too many verification attempts. Please request a new code.',
+    },
+});
+// ─────────────────────────────────────────
+//  RATE LIMITERS — TRUSTED DEVICES (exchange-session / logout)
+//
+//  exchange-session is public (no session token exists yet — that's the
+//  entire point) and, by design, called on every ordinary page load, not
+//  just at login — closer in call pattern to a hot read endpoint than to
+//  request-otp/verify-otp above. The device token itself is 256 random
+//  bits (device-token.util.ts) — brute-forcing the VALUE is infeasible
+//  regardless of any rate limit reachable here — so these two limiters
+//  guard against different, more realistic costs instead: hammering the
+//  endpoint's own Firebase Admin SDK call (verifyIdToken with
+//  checkRevoked is a real round trip to Google, a genuine per-request
+//  cost, not free like checking a JWT signature locally), and bounding
+//  how many attempts one specific device-token VALUE gets regardless of
+//  how many different IPs try it (the IP limiter alone wouldn't catch a
+//  credential — stolen or merely guessed — being hammered from many
+//  sources).
+//
+//  Both count ONLY FAILED attempts (skipSuccessfulRequests) — Trusted
+//  Devices Hardening batch. The job of both limiters is stopping
+//  guessing/abuse, and guessing is failures by definition; a successful
+//  exchange is exactly the endpoint working as designed, on a path every
+//  ordinary page load takes. Counting successes against the SAME budget
+//  as failures meant legitimate multi-tab use (several tabs re-minting
+//  around the same time) could exhaust exchangeSessionDeviceLimiter's
+//  budget on its own, and — the sharper problem — South African mobile
+//  networks put many unrelated users behind one shared carrier-grade NAT
+//  IP, so exchangeSessionLimiter's 30/5min counting successes could
+//  throttle unrelated real users the moment routine traffic from that
+//  shared IP passed 30 successful exchanges in five minutes, nothing to
+//  do with abuse. With only failures counted, ordinary successful use —
+//  the overwhelming majority of real traffic on this endpoint — never
+//  touches the budget at all, on both limiters; 30/5min is kept as the
+//  number precisely because it now only has to be generous against a
+//  burst of FAILURES, a rarer and more attack-indicative signal, not
+//  against however much legitimate volume a shared IP produces.
+// ─────────────────────────────────────────
+export const exchangeSessionLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many session requests. Please wait a few minutes and try again.',
+    },
+});
+// Keyed by the SHA-256 hash of the submitted device token, never the raw
+// value — the same hash device-token.util.ts stores in the database,
+// via the same exported hashToken, so this in-memory bucket never holds
+// a live credential as a literal key for the length of the rate-limit
+// window. Extracted as its own named export (rather than inlined in the
+// rateLimit() call below) so a test can call it directly and assert it
+// never contains the raw token — see tests/auth/rate-limit.test.ts.
+export const deviceLimiterKey = (rawDeviceToken) => `device:${hashToken(rawDeviceToken)}`;
+export const exchangeSessionDeviceLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => deviceLimiterKey((req.body?.deviceToken ?? 'unknown')),
+    message: {
+        status: 'error',
+        message: 'Too many session requests for this device. Please wait a few minutes and try again.',
+    },
+});
+// Logout — low legitimate volume (one explicit click), low risk (it can
+// only ever revoke a token the caller already possesses — see
+// auth.service.ts's logout). Generous ceiling exists purely as a basic
+// backstop against a scripted loop, not because the action itself is
+// sensitive.
+export const logoutLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many requests. Please wait a few minutes and try again.',
     },
 });
 // ─────────────────────────────────────────
@@ -159,6 +245,48 @@ export const memoryHubGuestUploadLimiter = rateLimit({
     message: {
         status: 'error',
         message: 'Too many upload requests. Please wait a few minutes and try again.',
+    },
+});
+// ─────────────────────────────────────────
+//  RATE LIMITER — GUEST PROGRAM VIEW (POST /api/rsvp/program)
+//
+//  Unauthenticated, token-only — same exposure profile as
+//  ticketQuoteLimiter (an invite token, not a session), but this fires
+//  once per page load/tab-open rather than per keystroke/quantity
+//  change. Deliberately its own limiter, not shared with any upload
+//  budget — this is a pure read. Keyed by IP. 60/5min mirrors
+//  memoryHubGalleryLimiter/publicEventViewLimiter's "page load" budget.
+// ─────────────────────────────────────────
+export const rsvpProgramLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many requests. Please wait a few minutes and try again.',
+    },
+});
+// ─────────────────────────────────────────
+//  RATE LIMITER — MEMORY HUB GUEST VIEW (POST /api/memory-hub/guest-view)
+//
+//  Unauthenticated, token-only, fired once per page load to decide
+//  whether to show the Memory Hub tab at all — a pure read, unlike
+//  memoryHubGuestUploadLimiter (every response there is an upload
+//  grant). Deliberately separate from that 20-per-5-minute upload
+//  budget so opening the page never eats into it. Keyed by IP; same
+//  60/5min "page load" budget as memoryHubGalleryLimiter.
+// ─────────────────────────────────────────
+export const memoryHubGuestViewLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many requests. Please wait a few minutes and try again.',
     },
 });
 // Ticket quotes are public-token reads that fire when a guest changes

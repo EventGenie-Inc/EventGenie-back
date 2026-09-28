@@ -8,6 +8,7 @@ import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest/guest-validation.util.js';
+import { centsToDecimalString } from '../../shared/payments/money.util.js';
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
 // that reader specifically: what happened, and what they can do about
@@ -617,6 +618,10 @@ export const rsvpService = {
                         ticketId: ticket.id,
                         inviteId: invite.id,
                         quantity,
+                        // Same Decimal<->cents boundary as everywhere else in payments
+                        // code (money.util.ts) — freshReservation only carries cents.
+                        totalPaid: centsToDecimalString(freshReservation.totalChargeCents),
+                        currency: ticket.currency,
                         status: 'PENDING',
                     };
                 }
@@ -674,10 +679,40 @@ export const rsvpService = {
             maxWait: 10000,
         });
         const { freshReservation, guestEmailForReservation, ...rest } = result;
+        // Explicit guest-facing shape — never the raw Invite/TicketPurchase
+        // rows the transaction above worked with. `rest.invite` is
+        // tx.invite.update()'s full row (eventId, guestId, deliveryMethod,
+        // editToken, createdBy/updatedBy, ...); `rest.ticketPurchase`, when it
+        // reflects an EXISTING purchase (the no-op-resubmission branch above),
+        // is the full TicketPurchase row (commissionCents, ticketPriceCents,
+        // paymentRef — EventGenie's margin and a Paystack transaction id, never
+        // guest-facing). attendances/rsvpResponses are already hand-built
+        // {inviteId, ...} objects with nothing extra, same allowlist spirit as
+        // validate()'s own projection above — kept as-is.
+        const guestResult = {
+            invite: {
+                id: rest.invite.id,
+                status: rest.invite.status,
+                used: rest.invite.used,
+                usedAt: rest.invite.usedAt,
+            },
+            attendances: rest.attendances,
+            rsvpResponses: rest.rsvpResponses,
+            ticketPurchase: rest.ticketPurchase
+                ? {
+                    ticketId: rest.ticketPurchase.ticketId,
+                    quantity: rest.ticketPurchase.quantity,
+                    totalPaid: rest.ticketPurchase.totalPaid,
+                    currency: rest.ticketPurchase.currency,
+                    status: rest.ticketPurchase.status,
+                }
+                : null,
+            refundNotice: rest.refundNotice,
+        };
         // No ticket reservation happened this call — the common case
         // (declining, or a no-op resubmission of an existing purchase).
         if (!freshReservation) {
-            return { ...rest, paymentAction: null };
+            return { ...guestResult, paymentAction: null };
         }
         // The one external network call in this whole flow — deliberately
         // AFTER the transaction above has already committed. Failure here
@@ -699,9 +734,9 @@ export const rsvpService = {
             callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(data.token)}`,
         });
         if ('failed' in checkout) {
-            return { ...rest, paymentAction: { type: 'retry_needed', reason: checkout.reason } };
+            return { ...guestResult, paymentAction: { type: 'retry_needed', reason: checkout.reason } };
         }
-        return { ...rest, paymentAction: { type: 'redirect', authorizationUrl: checkout.authorizationUrl } };
+        return { ...guestResult, paymentAction: { type: 'redirect', authorizationUrl: checkout.authorizationUrl } };
     },
     // ── RETRY — guest-facing, token-scoped. Re-initiates payment for an
     // existing FAILED/EXPIRED purchase on this invite without touching

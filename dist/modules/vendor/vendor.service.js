@@ -5,6 +5,7 @@ import { assertVendorSpaceCreatable, assertVendorMarketplaceAccessible, assertEv
 import { HttpError } from '../../shared/errors/http-error.js';
 import {} from './vendor.types.js';
 import {} from '@prisma/client';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 // ─────────────────────────────────────────
 //  VENDOR SERVICE
 //
@@ -32,20 +33,59 @@ import {} from '@prisma/client';
 // ─────────────────────────────────────────
 export const vendorService = {
     // ── Vendor Space ──────────────────────────
+    // NOTE — an EVENT_VENDOR managing a platform-level space (tenantId
+    // null on both the space and the user, see the header comment) reaches
+    // here with tenantId=null too. That is a real, reachable case, not
+    // just a misconfigured admin — it used to fall through to `tenantId ??
+    // undefined` and get every tenant's spaces back. It now gets an empty
+    // list/404 from these two like anyone else without a tenant; their own
+    // spaces are unaffected — those come from getMySpaces below (GET
+    // /api/vendors/mine), scoped by VendorSpaceUser membership, not tenantId.
     getAllSpaces: (requestingRole, tenantId, includeArchived = false) => {
         if (requestingRole === 'SUPER_ADMIN')
             return vendorRepository.findAllSpaces(undefined, includeArchived);
+        if (isTenantScopeEmptyForList(requestingRole, tenantId))
+            return Promise.resolve([]);
         return vendorRepository.findAllSpaces(tenantId ?? undefined, includeArchived);
     },
     // includeArchived is true only for the restore flow below (and a
     // tenant admin explicitly browsing their own archived spaces via
     // getAllSpaces) — every other call site relies on the default so an
     // archived space stays a 404, cross-tenant-access included.
+    //
+    // Unchanged for every role, including EVENT_VENDOR — this is the
+    // shared gate every write and every service/product lookup below
+    // still goes through. An EVENT_VENDOR reading THEIR OWN space by
+    // membership (not tenantId) is handled by getSpaceForViewer below
+    // instead, deliberately kept separate so this function's existing
+    // callers (createService, updateSpace, ...) can't regress.
     getSpaceById: async (id, requestingRole, tenantId, includeArchived = false) => {
-        const space = requestingRole === 'SUPER_ADMIN'
-            ? await vendorRepository.findSpaceById(id, includeArchived)
-            : await vendorRepository.findSpaceById(id, includeArchived, tenantId ?? undefined);
+        const scope = resolveTenantScope(requestingRole, tenantId, 'Vendor space not found');
+        const space = await vendorRepository.findSpaceById(id, includeArchived, scope);
         if (!space)
+            throw new HttpError(404, 'Vendor space not found');
+        return space;
+    },
+    // READ, single-record — used ONLY by GET /api/vendors/:id. SUPER_ADMIN/
+    // TENANT_ADMIN/EVENT_ADMIN behave EXACTLY as getSpaceById above (this
+    // just delegates). EVENT_VENDOR is the one case that differs: their
+    // scope is VendorSpaceUser membership, not tenantId, which is what lets
+    // a platform-level vendor (tenantId null on both the user and a
+    // SUPER_ADMIN-managed space — see this file's header comment) read
+    // their own space, while any space they are NOT a member of — including
+    // one merely sharing their tenantId — still 404s. Archived spaces 404
+    // for them too, same as every other role. Kept as its own method
+    // (rather than changing getSpaceById itself) so getServiceById/
+    // createService/updateSpace/... — every OTHER caller of getSpaceById —
+    // are untouched; membership-based reads for services/products are not
+    // part of this fix.
+    getSpaceForViewer: async (id, requestingRole, tenantId, userId) => {
+        if (requestingRole !== 'EVENT_VENDOR') {
+            return vendorService.getSpaceById(id, requestingRole, tenantId);
+        }
+        const space = await vendorRepository.findSpaceById(id, false);
+        const membership = space ? await vendorRepository.findMembership(id, userId) : null;
+        if (!space || !membership)
             throw new HttpError(404, 'Vendor space not found');
         return space;
     },

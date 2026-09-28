@@ -10,6 +10,7 @@ import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage } from '../event/event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 export const eventDraftService = {
     getCurrentDraft: (tenantId, userId) => eventDraftRepository.findByTenantAndUser(tenantId, userId),
     saveDraft: (tenantId, userId, data) => eventDraftRepository.upsert(tenantId, userId, data),
@@ -55,10 +56,10 @@ export const eventDraftService = {
         // deadline/capacity feature unreachable from real event creation.
         const capacity = p.capacity !== undefined && p.capacity !== null ? Number(p.capacity) : undefined;
         assertValidCapacity(capacity);
-        const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? new Date(p.rsvpDeadline) : undefined;
+        const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseClientDateTime(p.rsvpDeadline) : undefined;
         const draftEventDays = days.map((day) => ({
-            date: new Date(day.date),
-            endTime: day.endTime ? new Date(day.endTime) : null,
+            date: parseClientDateTime(day.date),
+            endTime: day.endTime ? parseClientDateTime(day.endTime) : null,
         }));
         assertValidRsvpDeadline(rsvpDeadline ?? null, draftEventDays, { rejectPast: true });
         // Same size-limit + cleanup-of-the-already-uploaded-file treatment as
@@ -115,9 +116,9 @@ export const eventDraftService = {
                     data: {
                         eventId: event.id,
                         label: day.label,
-                        date: new Date(day.date),
-                        startTime: day.startTime ? new Date(day.startTime) : null,
-                        endTime: day.endTime ? new Date(day.endTime) : null,
+                        date: parseClientDateTime(day.date),
+                        startTime: day.startTime ? parseClientDateTime(day.startTime) : null,
+                        endTime: day.endTime ? parseClientDateTime(day.endTime) : null,
                         isArchived: false,
                         createdBy: userId,
                         updatedBy: userId,
@@ -175,7 +176,7 @@ export const eventDraftService = {
                             programId: eventProgram.id,
                             title: item.title,
                             description: item.description ?? null,
-                            startTime: new Date(item.startTime),
+                            startTime: parseClientDateTime(item.startTime),
                             durationMins: item.durationMins ?? null,
                             order: index,
                             isArchived: false,
@@ -193,7 +194,7 @@ export const eventDraftService = {
                     title: null,
                     description: null,
                     isPublic: false,
-                    opensAt: memoryHub?.opensAt ? new Date(memoryHub.opensAt) : null,
+                    opensAt: memoryHub?.opensAt ? parseClientDateTime(memoryHub.opensAt) : null,
                     isArchived: false,
                     createdBy: userId,
                     updatedBy: userId,

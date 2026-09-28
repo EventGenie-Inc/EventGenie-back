@@ -261,6 +261,50 @@ export const memoryHubGuestUploadLimiter = rateLimit({
   },
 });
 
+// ─────────────────────────────────────────
+//  RATE LIMITER — GUEST PROGRAM VIEW (POST /api/rsvp/program)
+//
+//  Unauthenticated, token-only — same exposure profile as
+//  ticketQuoteLimiter (an invite token, not a session), but this fires
+//  once per page load/tab-open rather than per keystroke/quantity
+//  change. Deliberately its own limiter, not shared with any upload
+//  budget — this is a pure read. Keyed by IP. 60/5min mirrors
+//  memoryHubGalleryLimiter/publicEventViewLimiter's "page load" budget.
+// ─────────────────────────────────────────
+export const rsvpProgramLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — MEMORY HUB GUEST VIEW (POST /api/memory-hub/guest-view)
+//
+//  Unauthenticated, token-only, fired once per page load to decide
+//  whether to show the Memory Hub tab at all — a pure read, unlike
+//  memoryHubGuestUploadLimiter (every response there is an upload
+//  grant). Deliberately separate from that 20-per-5-minute upload
+//  budget so opening the page never eats into it. Keyed by IP; same
+//  60/5min "page load" budget as memoryHubGalleryLimiter.
+// ─────────────────────────────────────────
+export const memoryHubGuestViewLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
 // Ticket quotes are public-token reads that fire when a guest changes
 // quantity. Thirty a minute leaves room for a mobile UI's debounced
 // adjustments and a shared venue Wi-Fi, while preventing a leaked invite

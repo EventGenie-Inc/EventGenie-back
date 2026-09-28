@@ -12,6 +12,7 @@ export declare const programItemRepository: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }[]>;
     findById: (id: string) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
@@ -26,6 +27,7 @@ export declare const programItemRepository: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     create: (programId: string, userId: string, data: CreateProgramItemDto) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
@@ -40,6 +42,7 @@ export declare const programItemRepository: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     update: (id: string, userId: string, data: UpdateProgramItemDto) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
@@ -54,6 +57,7 @@ export declare const programItemRepository: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
     archive: (id: string, userId: string) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
@@ -68,6 +72,7 @@ export declare const programItemRepository: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
 };

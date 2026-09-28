@@ -51,6 +51,7 @@ export declare const eventDraftService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -58,12 +59,12 @@ export declare const eventDraftService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -71,7 +72,6 @@ export declare const eventDraftService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -90,6 +90,7 @@ export declare const eventDraftService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {

@@ -71,22 +71,9 @@ export declare const rsvpService: {
         paymentAction: null;
         invite: {
             id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
             status: import("@prisma/client").$Enums.InviteStatus;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            expiresAt: Date | null;
-            usedAt: Date | null;
-            guestId: string;
-            token: string;
             used: boolean;
-            editToken: string | null;
-            editTokenExpiresAt: Date | null;
-            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
-            deliveredAt: Date | null;
+            usedAt: Date | null;
         };
         attendances: {
             inviteId: string;
@@ -98,24 +85,10 @@ export declare const rsvpService: {
             value: string;
         }[];
         ticketPurchase: {
-            id: string;
-            status: import("@prisma/client").$Enums.TicketPurchaseStatus;
-            inviteId: string;
+            ticketId: string;
+            quantity: number;
+            totalPaid: string | import("@prisma/client-runtime-utils").Decimal;
             currency: string;
-            paymentRef: string | null;
-            confirmedAt: Date | null;
-            purchasedAt: Date;
-            ticketId: string;
-            quantity: number;
-            totalPaid: import("@prisma/client-runtime-utils").Decimal;
-            ticketPriceCents: number;
-            commissionCents: number;
-            holdExpiresAt: Date | null;
-        } | {
-            id: string;
-            ticketId: string;
-            inviteId: string;
-            quantity: number;
             status: string;
         } | null;
         refundNotice: string | null;
@@ -127,22 +100,9 @@ export declare const rsvpService: {
         };
         invite: {
             id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
             status: import("@prisma/client").$Enums.InviteStatus;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            expiresAt: Date | null;
-            usedAt: Date | null;
-            guestId: string;
-            token: string;
             used: boolean;
-            editToken: string | null;
-            editTokenExpiresAt: Date | null;
-            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
-            deliveredAt: Date | null;
+            usedAt: Date | null;
         };
         attendances: {
             inviteId: string;
@@ -154,24 +114,10 @@ export declare const rsvpService: {
             value: string;
         }[];
         ticketPurchase: {
-            id: string;
-            status: import("@prisma/client").$Enums.TicketPurchaseStatus;
-            inviteId: string;
+            ticketId: string;
+            quantity: number;
+            totalPaid: string | import("@prisma/client-runtime-utils").Decimal;
             currency: string;
-            paymentRef: string | null;
-            confirmedAt: Date | null;
-            purchasedAt: Date;
-            ticketId: string;
-            quantity: number;
-            totalPaid: import("@prisma/client-runtime-utils").Decimal;
-            ticketPriceCents: number;
-            commissionCents: number;
-            holdExpiresAt: Date | null;
-        } | {
-            id: string;
-            ticketId: string;
-            inviteId: string;
-            quantity: number;
             status: string;
         } | null;
         refundNotice: string | null;
@@ -183,22 +129,9 @@ export declare const rsvpService: {
         };
         invite: {
             id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
             status: import("@prisma/client").$Enums.InviteStatus;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            expiresAt: Date | null;
-            usedAt: Date | null;
-            guestId: string;
-            token: string;
             used: boolean;
-            editToken: string | null;
-            editTokenExpiresAt: Date | null;
-            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
-            deliveredAt: Date | null;
+            usedAt: Date | null;
         };
         attendances: {
             inviteId: string;
@@ -210,24 +143,10 @@ export declare const rsvpService: {
             value: string;
         }[];
         ticketPurchase: {
-            id: string;
-            status: import("@prisma/client").$Enums.TicketPurchaseStatus;
-            inviteId: string;
+            ticketId: string;
+            quantity: number;
+            totalPaid: string | import("@prisma/client-runtime-utils").Decimal;
             currency: string;
-            paymentRef: string | null;
-            confirmedAt: Date | null;
-            purchasedAt: Date;
-            ticketId: string;
-            quantity: number;
-            totalPaid: import("@prisma/client-runtime-utils").Decimal;
-            ticketPriceCents: number;
-            commissionCents: number;
-            holdExpiresAt: Date | null;
-        } | {
-            id: string;
-            ticketId: string;
-            inviteId: string;
-            quantity: number;
             status: string;
         } | null;
         refundNotice: string | null;

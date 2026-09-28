@@ -9,6 +9,12 @@ export interface VerifyOtpDto {
 export interface ForgotPasswordDto {
     email: string;
 }
+export interface ExchangeSessionDto {
+    deviceToken: string;
+}
+export interface LogoutDto {
+    deviceToken: string;
+}
 export interface AuthUserResponse {
     user: {
         id: string;

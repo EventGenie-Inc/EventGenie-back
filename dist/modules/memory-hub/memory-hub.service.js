@@ -8,9 +8,10 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { signMemoryItemUpload } from '../upload/upload.service.js';
-import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable, getMemoryHubQuotaBytes } from './memory-hub-tier-enforcement.util.js';
+import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable, getMemoryHubQuotaBytes, isMemoryHubTierEnabled, } from './memory-hub-tier-enforcement.util.js';
 import {} from '../event-pass/event-entitlement.util.js';
 import { isMemoryItemTooLarge, memoryItemTooLargeMessage } from './memory-item-limits.util.js';
+import { MEMORY_ITEM_IMAGE_MAX_BYTES, MEMORY_ITEM_VIDEO_MAX_BYTES } from '../upload/upload-constants.js';
 // Guest-originated writes have no platform userId — Invite.updatedBy is
 // a plain String (not an FK), same convention as rsvp.service.ts's
 // GUEST_ACTOR.
@@ -22,7 +23,7 @@ const GUEST_ACTOR = 'guest-memory-upload';
 // unknowable until now. An oversized or over-quota upload is destroyed
 // from Cloudinary immediately rather than left as an orphan nobody
 // ever references — same reasoning as event-cover-image.util.ts.
-const assertItemAcceptableOrDestroy = async (event, mediaType, bytes, cloudinaryPublicId) => {
+const assertItemAcceptableOrDestroy = async (event, mediaType, bytes, cloudinaryPublicId, audience = 'organiser') => {
     const resourceType = mediaType === 'VIDEO' ? 'video' : 'image';
     if (isMemoryItemTooLarge(mediaType, bytes)) {
         void destroyAsset(cloudinaryPublicId, resourceType).then((result) => {
@@ -39,7 +40,11 @@ const assertItemAcceptableOrDestroy = async (event, mediaType, bytes, cloudinary
                 if (!result.ok)
                     console.error('[cloudinary cleanup] failed to delete over-quota memory item:', result.reason);
             });
-            throw new HttpError(403, `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`);
+            // Guest-safe wording (Contract C) — no plan/tier name, no
+            // "upgrade". Organiser wording is unchanged.
+            throw new HttpError(403, audience === 'guest'
+                ? "This event's photo album is full, so new photos can't be added right now."
+                : `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`);
         }
     }
 };
@@ -337,9 +342,66 @@ export const memoryHubService = {
         if (hub.opensAt && hub.opensAt > new Date()) {
             throw new HttpError(403, `The Memory Hub for this event opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
         }
-        await assertMemoryHubAccessible(invite.event);
-        await assertMemoryHubQuotaAvailable(invite.event);
+        await assertMemoryHubAccessible(invite.event, 'guest');
+        await assertMemoryHubQuotaAvailable(invite.event, 'guest');
         return signMemoryItemUpload(invite.event.tenantId, invite.eventId, mediaType);
+    },
+    // ── GUEST availability + view (Contract B) — authenticated by invite
+    // token only, never platform auth. Same "return flags, don't throw"
+    // design as getProgramForInvite/validate(): answers "does this event
+    // even have a Memory Hub a guest can see" for the page's tab decision,
+    // with NO upload signature required just to render (unlike
+    // requestGuestUploadSignature above, which is a grant and stays
+    // rate-limited/quota-checked separately). Invalid/unknown token is the
+    // one genuinely error-throwing case, same as every other guest path.
+    getGuestView: async (token) => {
+        if (typeof token !== 'string' || !token) {
+            throw new HttpError(400, 'token is required');
+        }
+        const invite = await inviteRepository.findByToken(token);
+        if (!invite) {
+            throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+        }
+        if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
+            return { available: false };
+        }
+        // findByEventId defaults to includeArchived: false, so an archived
+        // hub folds into "no hub" here — same bucket, same response.
+        const hub = await memoryHubRepository.findByEventId(invite.eventId);
+        if (!hub) {
+            return { available: false };
+        }
+        if (hub.opensAt && hub.opensAt > new Date()) {
+            return { available: false };
+        }
+        if (!(await isMemoryHubTierEnabled(invite.event))) {
+            return { available: false };
+        }
+        const [approvedItems, pendingItems] = await Promise.all([
+            memoryHubRepository.findAllItems(hub.id, 'APPROVED'),
+            memoryHubRepository.findPendingItemsByGuest(hub.id, invite.guestId),
+        ]);
+        return {
+            available: true,
+            title: hub.title,
+            description: hub.description,
+            // Static — every guest upload lands PENDING regardless of hub/tier
+            // (see createGuestItem below); there is no per-hub/per-tier toggle
+            // to read this from.
+            requiresApproval: true,
+            items: approvedItems.map(toPublicItem),
+            myPendingItems: pendingItems.map((item) => ({
+                id: item.id,
+                mediaUrl: item.mediaUrl,
+                mediaType: item.mediaType,
+                caption: item.caption,
+                createdAt: item.createdAt,
+            })),
+            limits: {
+                imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES,
+                videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES,
+            },
+        };
     },
     // GUEST upload persist — items land PENDING (require organiser
     // approval): a guest uploading something inappropriate to a wedding
@@ -376,8 +438,8 @@ export const memoryHubService = {
         if (hub.opensAt && hub.opensAt > new Date()) {
             throw new HttpError(403, `The Memory Hub for this event opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
         }
-        await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId);
-        return memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
+        await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, 'guest');
+        const item = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
             mediaUrl: data.mediaUrl,
             cloudinaryPublicId: data.cloudinaryPublicId,
             mediaType: data.mediaType,
@@ -386,6 +448,18 @@ export const memoryHubService = {
             status: 'PENDING',
             uploadedByGuestId: invite.guestId,
         });
+        // Explicit shape, not the raw MemoryItem row — no memoryHubId,
+        // cloudinaryPublicId, uploadedByGuestId, isArchived, createdBy/
+        // updatedBy. Enough for the guest's browser to confirm the upload
+        // and show it awaiting approval, same allowlist spirit as
+        // toPublicItem/toCuratedItem above.
+        return {
+            id: item.id,
+            mediaUrl: item.mediaUrl,
+            mediaType: item.mediaType,
+            caption: item.caption,
+            status: item.status,
+        };
     },
 };
 //# sourceMappingURL=memory-hub.service.js.map

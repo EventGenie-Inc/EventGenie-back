@@ -12,7 +12,7 @@ export declare const userService: {
         username: string;
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
-    }[]>;
+    }[]> | Promise<never[]>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<{
         id: string;
         email: string;

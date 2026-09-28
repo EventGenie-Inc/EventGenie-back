@@ -32,15 +32,38 @@ import { resolveEventEntitlement } from '../event-pass/event-entitlement.util.js
 // other capability check; flagged here rather than fixed, since a
 // correct fix needs a new "was this feature genuinely provisioned"
 // fact on the hub itself, which is a schema decision beyond this ticket.
-export const assertMemoryHubAccessible = async (event) => {
+// `audience` picks the message only — the check itself is identical for
+// both callers. 'guest' is used by the guest-upload-signature route
+// (memory-hub.service.ts's requestGuestUploadSignature): STEERING's
+// Contract C rule says tier/plan/upgrade language must never reach a
+// guest, so that one call site swaps in wording with no plan name, no
+// tier name, no "upgrade". Every organiser call site keeps the default
+// and is unaffected.
+export const assertMemoryHubAccessible = async (event, audience = 'organiser') => {
     const tenant = await tenantRepository.findById(event.tenantId);
     if (!tenant)
         throw new HttpError(404, 'Tenant not found');
     const effectiveTier = resolveEventEntitlement(tenant, event);
     const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.memoryHubEnabled) {
-        throw new HttpError(403, `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`);
+        throw new HttpError(403, audience === 'guest'
+            ? "This event doesn't have a Memory Hub available."
+            : `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`);
     }
+};
+// Non-throwing variant of the check above — used by
+// memory-hub.service.ts's getGuestView (Contract B), which decides
+// whether to show the Memory Hub tab at all and must return `available:
+// false` with NO reason (STEERING: guest-facing responses), not a 403
+// with a message nobody reads. Any lookup failure (tenant genuinely
+// missing) reads as "not available" here too — the same fail-safe
+// default as every other flag that function returns.
+export const isMemoryHubTierEnabled = async (event) => {
+    const tenant = await tenantRepository.findById(event.tenantId);
+    if (!tenant)
+        return false;
+    const config = await subscriptionTierConfigRepository.findByTier(resolveEventEntitlement(tenant, event));
+    return !!config?.memoryHubEnabled;
 };
 // null = unlimited, same convention as every other max* column. Used
 // for the BYTE QUOTA, which — unlike assertMemoryHubAccessible above —
@@ -72,12 +95,17 @@ export const getMemoryHubQuotaBytes = async (event) => {
 //  memory-hub.service.ts's persist step re-checks with the real byte
 //  count and destroys+rejects that one if needed. See the batch report.
 // ─────────────────────────────────────────
-export const assertMemoryHubQuotaAvailable = async (event) => {
+export const assertMemoryHubQuotaAvailable = async (event, audience = 'organiser') => {
     const maxBytes = await getMemoryHubQuotaBytes(event);
     if (maxBytes == null)
         return;
     const usedBytes = await memoryHubRepository.sumBytesForEvent(event.id);
     if (usedBytes >= maxBytes) {
+        // Guest-safe wording (Contract C) — no MB figure, no plan/tier name,
+        // no "upgrade". Same audience convention as assertMemoryHubAccessible.
+        if (audience === 'guest') {
+            throw new HttpError(403, "This event's photo album is full, so new photos can't be added right now.");
+        }
         const tenant = await tenantRepository.findById(event.tenantId);
         const effectiveTier = tenant ? resolveEventEntitlement(tenant, event) : 'current';
         throw new HttpError(403, `This event's Memory Hub has reached its ${Math.round(maxBytes / (1024 * 1024))}MB storage limit for the ${effectiveTier} plan. Remove items or upgrade the plan to add more.`);

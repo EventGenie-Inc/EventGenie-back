@@ -8,7 +8,8 @@ const router = Router({ mergeParams: true });
 router.use(authenticate, requireEventAdmin);
 router.get('/', async (req, res, next) => {
     try {
-        const items = await programItemService.getAll(req.params['programId']);
+        const auth = req;
+        const items = await programItemService.getAll(req.params['eventId'], req.params['programId'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: items });
     }
     catch (err) {
@@ -17,7 +18,8 @@ router.get('/', async (req, res, next) => {
 });
 router.get('/:id', async (req, res, next) => {
     try {
-        const item = await programItemService.getById(req.params['id']);
+        const auth = req;
+        const item = await programItemService.getById(req.params['id'], req.params['eventId'], req.params['programId'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: item });
     }
     catch (err) {
@@ -27,7 +29,7 @@ router.get('/:id', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
     try {
         const auth = req;
-        const item = await programItemService.create(req.params['programId'], auth.user.id, req.body);
+        const item = await programItemService.create(req.params['eventId'], req.params['programId'], auth.user.id, auth.user.role, auth.user.tenantId, req.body);
         res.status(201).json({ status: 'ok', data: item });
     }
     catch (err) {
@@ -37,7 +39,7 @@ router.post('/', async (req, res, next) => {
 router.put('/:id', async (req, res, next) => {
     try {
         const auth = req;
-        const item = await programItemService.update(req.params['id'], auth.user.id, req.body);
+        const item = await programItemService.update(req.params['id'], req.params['eventId'], req.params['programId'], auth.user.id, auth.user.role, auth.user.tenantId, req.body);
         res.status(200).json({ status: 'ok', data: item });
     }
     catch (err) {
@@ -47,7 +49,7 @@ router.put('/:id', async (req, res, next) => {
 router.delete('/:id', async (req, res, next) => {
     try {
         const auth = req;
-        await programItemService.archive(req.params['id'], auth.user.id);
+        await programItemService.archive(req.params['id'], req.params['eventId'], req.params['programId'], auth.user.id, auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', message: 'Program item archived' });
     }
     catch (err) {

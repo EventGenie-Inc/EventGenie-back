@@ -10,14 +10,16 @@ router.use(authenticate, requireEventAdmin);
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const program = await eventProgramService.getByEventId(req.params['eventId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const program = await eventProgramService.getByEventId(req.params['eventId'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: program });
   } catch (err) { next(err); }
 });
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const program = await eventProgramService.getById(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const program = await eventProgramService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: program });
   } catch (err) { next(err); }
 });
@@ -25,7 +27,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const program = await eventProgramService.create(req.params['eventId'] as string, auth.user.id, req.body);
+    const program = await eventProgramService.create(req.params['eventId'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(201).json({ status: 'ok', data: program });
   } catch (err) { next(err); }
 });
@@ -33,7 +35,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const program = await eventProgramService.update(req.params['id'] as string, auth.user.id, req.body);
+    const program = await eventProgramService.update(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(200).json({ status: 'ok', data: program });
   } catch (err) { next(err); }
 });
@@ -41,7 +43,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await eventProgramService.archive(req.params['id'] as string, auth.user.id);
+    await eventProgramService.archive(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'Program archived' });
   } catch (err) { next(err); }
 });
