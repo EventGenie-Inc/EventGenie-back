@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { memoryHubService } from './memory-hub.service.js';
-import { memoryHubGalleryLimiter, memoryHubGuestUploadLimiter, memoryHubGuestViewLimiter, } from '../../shared/middleware/rate-limit.middleware.js';
+import { memoryHubGalleryLimiter, memoryHubGuestUploadLimiter, memoryHubGuestUploadIpLimiter, memoryHubGuestViewLimiter, } from '../../shared/middleware/rate-limit.middleware.js';
 // Fully public/token-only surface — a guest holds either a gallery
 // shareToken or an invite token, never platform credentials, so nothing
 // here uses `authenticate`. Mounted separately from the admin-gated
@@ -9,8 +9,13 @@ const router = Router();
 // POST /api/memory-hub/guest-upload-signature
 // { token, mediaType } — authenticated by invite token only, exactly
 // like the RSVP endpoints. Rejects if the invite is invalid, the event
-// is cancelled, or the hub isn't open yet — see memory-hub.service.ts.
-router.post('/guest-upload-signature', memoryHubGuestUploadLimiter, async (req, res, next) => {
+// is cancelled, or the album isn't open yet — see memory-hub.service.ts.
+// Two limiters stacked — the per-invite budget (the real ceiling) and
+// the per-IP abuse backstop (failures only) — see
+// rate-limit.middleware.ts's header comment on why a single IP-keyed
+// limiter unfairly shared one budget across an entire shared-WiFi/NAT
+// event.
+router.post('/guest-upload-signature', memoryHubGuestUploadIpLimiter, memoryHubGuestUploadLimiter, async (req, res, next) => {
     try {
         const result = await memoryHubService.requestGuestUploadSignature(req.body?.token, req.body?.mediaType);
         res.status(200).json({ status: 'ok', data: result });
@@ -21,8 +26,9 @@ router.post('/guest-upload-signature', memoryHubGuestUploadLimiter, async (req, 
 });
 // POST /api/memory-hub/guest-items
 // { token, mediaUrl, cloudinaryPublicId, mediaType, bytes, caption? }
-// Persists a guest's already-uploaded item as PENDING.
-router.post('/guest-items', memoryHubGuestUploadLimiter, async (req, res, next) => {
+// Persists a guest's already-uploaded item as PENDING. Same two
+// stacked limiters as guest-upload-signature above.
+router.post('/guest-items', memoryHubGuestUploadIpLimiter, memoryHubGuestUploadLimiter, async (req, res, next) => {
     try {
         const item = await memoryHubService.createGuestItem(req.body);
         res.status(201).json({ status: 'ok', data: item });
@@ -33,10 +39,10 @@ router.post('/guest-items', memoryHubGuestUploadLimiter, async (req, res, next) 
 });
 // POST /api/memory-hub/guest-view
 // { token } — Contract B. Tells the guest's page whether to show a
-// Memory Hub tab at all, plus the approved gallery and the guest's own
+// photo album tab at all, plus the approved gallery and the guest's own
 // pending uploads, with no upload signature required to render. Its own
-// limiter — sized for page loads, never shares memoryHubGuestUploadLimiter's
-// 20-per-5-minute upload-grant budget. See memory-hub.service.ts's getGuestView.
+// limiter — sized for page loads, never shares the upload limiters'
+// budgets. See memory-hub.service.ts's getGuestView.
 router.post('/guest-view', memoryHubGuestViewLimiter, async (req, res, next) => {
     try {
         const result = await memoryHubService.getGuestView(req.body?.token);

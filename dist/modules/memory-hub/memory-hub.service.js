@@ -11,7 +11,7 @@ import { signMemoryItemUpload } from '../upload/upload.service.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable, getMemoryHubQuotaBytes, isMemoryHubTierEnabled, } from './memory-hub-tier-enforcement.util.js';
 import {} from '../event-pass/event-entitlement.util.js';
 import { isMemoryItemTooLarge, memoryItemTooLargeMessage } from './memory-item-limits.util.js';
-import { MEMORY_ITEM_IMAGE_MAX_BYTES, MEMORY_ITEM_VIDEO_MAX_BYTES } from '../upload/upload-constants.js';
+import { MEMORY_ITEM_IMAGE_MAX_BYTES, MEMORY_ITEM_VIDEO_MAX_BYTES, MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN, } from '../upload/upload-constants.js';
 // Guest-originated writes have no platform userId — Invite.updatedBy is
 // a plain String (not an FK), same convention as rsvp.service.ts's
 // GUEST_ACTOR.
@@ -337,10 +337,11 @@ export const memoryHubService = {
             throw new HttpError(403, 'This event has been cancelled.');
         }
         const hub = await memoryHubRepository.findByEventId(invite.eventId);
+        // Guest-safe wording (Contract C) — "photo album", never "Memory Hub".
         if (!hub)
-            throw new HttpError(404, 'This event does not have a Memory Hub yet.');
+            throw new HttpError(404, "This event doesn't have a photo album yet.");
         if (hub.opensAt && hub.opensAt > new Date()) {
-            throw new HttpError(403, `The Memory Hub for this event opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
+            throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
         }
         await assertMemoryHubAccessible(invite.event, 'guest');
         await assertMemoryHubQuotaAvailable(invite.event, 'guest');
@@ -400,6 +401,10 @@ export const memoryHubService = {
             limits: {
                 imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES,
                 videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES,
+                // The real per-invite upload budget (memoryHubGuestUploadLimiter,
+                // rate-limit.middleware.ts) — reported here so the frontend reads
+                // the actual enforced number instead of hardcoding its own copy.
+                uploadRequestsPer5Min: MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
             },
         };
     },
@@ -433,10 +438,11 @@ export const memoryHubService = {
             throw new HttpError(403, 'This event has been cancelled.');
         }
         const hub = await memoryHubRepository.findByEventId(invite.eventId);
+        // Guest-safe wording (Contract C) — "photo album", never "Memory Hub".
         if (!hub)
-            throw new HttpError(404, 'This event does not have a Memory Hub yet.');
+            throw new HttpError(404, "This event doesn't have a photo album yet.");
         if (hub.opensAt && hub.opensAt > new Date()) {
-            throw new HttpError(403, `The Memory Hub for this event opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
+            throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
         }
         await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, 'guest');
         const item = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {

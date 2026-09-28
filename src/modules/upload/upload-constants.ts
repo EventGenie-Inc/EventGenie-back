@@ -37,3 +37,11 @@ export const MEMORY_ITEM_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
 
 export const MEMORY_ITEM_IMAGE_ALLOWED_FORMATS = 'jpg,png,webp,heic';
 export const MEMORY_ITEM_VIDEO_ALLOWED_FORMATS = 'mp4,mov,webm';
+
+// The per-invite guest upload budget — same number as
+// memoryHubGuestUploadLimiter's `max` (rate-limit.middleware.ts), which
+// imports this rather than the reverse: memory-hub.service.ts's
+// getGuestView reports it in limits.uploadRequestsPer5Min so the
+// frontend reads the real budget instead of hardcoding it, and a
+// service file has no business importing from shared/middleware.
+export const MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN = 60;

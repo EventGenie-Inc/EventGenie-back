@@ -178,6 +178,36 @@ instead of naming a plan and its MB ceiling. A guest-facing
 `{ available: false }` covers every blocked state (cancelled event, no
 program/hub, unpublished, not yet open, tier without the feature)
 identically, so the response itself can never leak which one applies.
+The product's own internal name for a feature is billing/organiser
+vocabulary too, same as a tier name — a guest sees "photo album", never
+"Memory Hub" (`memory-hub.service.ts`'s `requestGuestUploadSignature`/
+`createGuestItem`, `memory-hub-tier-enforcement.util.ts`'s
+`assertMemoryHubAccessible`); the organiser-facing branch of the same
+functions keeps saying "Memory Hub".
+
+**Guest rate limits are keyed by credential, not by IP, whenever the
+credential is available.** The Memory Hub guest upload endpoints
+(`guest-upload-signature`, `guest-items`) used to be keyed purely by
+IP — wrong for the identical reason `/exchange-session`'s limiters
+are not (see "Session and tokens" below): guests at one venue's WiFi,
+or on South African mobile networks behind one shared carrier-grade
+NAT IP, all present as ONE IP, so an entire event shared a single
+~10-photos-per-5-minute budget, nothing to do with abuse.
+`memoryHubGuestUploadLimiter` is now keyed by the SHA-256 hash of the
+invite **token** from the request body (never the raw token, same "a
+rate limiter's own in-memory store must not hold a live credential as
+a literal key" rule as the device-token limiter) — 60 requests / 5
+minutes **per invite**, so one guest's budget is never affected by how
+many others share their network. `memoryHubGuestUploadIpLimiter` sits
+alongside it as the abuse backstop a per-credential limiter alone can't
+provide (a script minting a fresh token per request would get a fresh
+per-invite budget every time) — 100 **failed** requests / 5 minutes per
+IP, `skipSuccessfulRequests`, generous enough that real multi-guest
+traffic on a shared IP never approaches it. The budget itself is never
+hardcoded on the frontend — `POST /api/memory-hub/guest-view`'s
+`limits.uploadRequestsPer5Min` reports the same constant the limiter
+enforces (`upload-constants.ts`'s
+`MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`).
 
 ### Email HTML
 
