@@ -9,7 +9,7 @@ import { resolveEventEntitlement, isEventPassActive } from '../event-pass/event-
 // falling back to tenant-only (quota-only) resolution. Both the
 // bulk-send endpoint and resend share this one check, mirroring
 // assertGuestsCreatable's shape.
-export const assertSmsSendable = async (event, batchSmsCount) => {
+export const assertSmsSendable = async (event, batchSmsCount, kind = 'invite') => {
     if (batchSmsCount === 0)
         return { source: 'QUOTA' };
     const tenant = await tenantRepository.findById(event.tenantId);
@@ -28,9 +28,13 @@ export const assertSmsSendable = async (event, batchSmsCount) => {
     const effectiveTier = resolveEventEntitlement(tenant, event);
     const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.smsEnabled) {
-        throw new HttpError(403, `The ${effectiveTier} plan does not include SMS invites. ` +
-            `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
-            `invited by SMS. Add an email address for these guests, or upgrade the plan to enable SMS.`);
+        throw new HttpError(403, kind === 'invite'
+            ? `The ${effectiveTier} plan does not include SMS invites. ` +
+                `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
+                `invited by SMS. Add an email address for these guests, or upgrade the plan to enable SMS.`
+            : `The ${effectiveTier} plan does not include SMS. ` +
+                `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
+                `reminded by SMS. Nothing was sent. Add an email address for these guests, or upgrade the plan to enable SMS.`);
     }
     if (isEventPassActive(event)) {
         // BUNDLE pool — this event has an active pass. Never reads
@@ -52,9 +56,13 @@ export const assertSmsSendable = async (event, batchSmsCount) => {
         const usedThisMonth = await smsSendLogRepository.countForTenantThisMonth(event.tenantId);
         const remaining = config.maxSmsPerMonth - usedThisMonth;
         if (batchSmsCount > remaining) {
-            throw new HttpError(403, `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
-                `${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
-                `— this batch needs ${batchSmsCount}. Reduce the batch, wait until next month, or upgrade the plan.`);
+            throw new HttpError(403, kind === 'invite'
+                ? `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
+                    `${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
+                    `— this batch needs ${batchSmsCount}. Reduce the batch, wait until next month, or upgrade the plan.`
+                : `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS message(s) per month, shared by invitations and ` +
+                    `reminders. ${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
+                    `— this batch needs ${batchSmsCount}. Nothing was sent. Remind fewer guests, wait until next month, or upgrade the plan.`);
         }
     }
     return { source: 'QUOTA' };

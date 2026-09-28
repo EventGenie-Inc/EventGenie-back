@@ -1,6 +1,7 @@
+import { type PlatformRole } from '@prisma/client';
 import { type CreateEventProgramDto, type UpdateEventProgramDto } from './event-program.types.js';
 export declare const eventProgramService: {
-    getByEventId: (eventId: string) => Promise<{
+    getByEventId: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         programItems: {
             id: string;
             isArchived: boolean;
@@ -13,6 +14,7 @@ export declare const eventProgramService: {
             order: number;
             title: string;
             programId: string;
+            eventDayId: string | null;
             durationMins: number | null;
         }[];
     } & {
@@ -26,7 +28,7 @@ export declare const eventProgramService: {
         title: string | null;
         isPublished: boolean;
     }>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         programItems: {
             id: string;
             isArchived: boolean;
@@ -39,6 +41,7 @@ export declare const eventProgramService: {
             order: number;
             title: string;
             programId: string;
+            eventDayId: string | null;
             durationMins: number | null;
         }[];
     } & {
@@ -52,7 +55,7 @@ export declare const eventProgramService: {
         title: string | null;
         isPublished: boolean;
     }>;
-    create: (eventId: string, userId: string, data: CreateEventProgramDto) => Promise<{
+    create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateEventProgramDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -63,7 +66,7 @@ export declare const eventProgramService: {
         title: string | null;
         isPublished: boolean;
     }>;
-    update: (id: string, userId: string, data: UpdateEventProgramDto) => Promise<{
+    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventProgramDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -74,7 +77,7 @@ export declare const eventProgramService: {
         title: string | null;
         isPublished: boolean;
     }>;
-    archive: (id: string, userId: string) => Promise<{
+    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -84,6 +87,26 @@ export declare const eventProgramService: {
         eventId: string;
         title: string | null;
         isPublished: boolean;
+    }>;
+    getProgramForInvite: (token: unknown) => Promise<{
+        available: false;
+        title?: never;
+        days?: never;
+    } | {
+        available: true;
+        title: string | null;
+        days: {
+            eventDayId: string;
+            label: string;
+            date: Date;
+            items: {
+                id: string;
+                title: string;
+                description: string | null;
+                startTime: Date;
+                durationMins: number | null;
+            }[];
+        }[];
     }>;
 };
 //# sourceMappingURL=event-program.service.d.ts.map

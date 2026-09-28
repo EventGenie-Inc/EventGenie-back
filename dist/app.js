@@ -14,6 +14,7 @@ import guestRouter from './modules/guest/guest.router.js';
 import guestEventRouter from './modules/guest/guest-event.router.js';
 import inviteRouter from './modules/invite/invite.router.js';
 import attendanceRouter from './modules/attendance/attendance.router.js';
+import checkInRouter from './modules/check-in/check-in.router.js';
 import authRouter from './modules/auth/auth.router.js';
 import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
 import memoryHubPublicRouter from './modules/memory-hub/memory-hub-public.router.js';
@@ -93,7 +94,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get('/health', (_req, res) => {
     res.status(200).json({
         status: 'ok',
-        service: 'EventGenie API',
+        service: 'e-velope API',
         timestamp: new Date().toISOString(),
     });
 });
@@ -112,6 +113,7 @@ app.get('/health', (_req, res) => {
 //  /api/events/:eventId/days
 //  /api/events/:eventId/guests
 //  /api/events/:eventId/invites
+//  /api/events/:eventId/check-in (day-of check-in — per event day)
 //  /api/events/:eventId/rsvp-fields
 //  /api/events/:eventId/program
 //  /api/events/:eventId/program/:programId/items
@@ -139,6 +141,7 @@ app.use('/api/events', eventRouter);
 app.use('/api/events/:eventId/days', eventDayRouter);
 app.use('/api/events/:eventId/guests', guestEventRouter);
 app.use('/api/events/:eventId/invites', inviteRouter);
+app.use('/api/events/:eventId/check-in', checkInRouter);
 app.use('/api/events/:eventId/rsvp-fields', rsvpFieldRouter);
 app.use('/api/events/:eventId/program', eventProgramRouter);
 app.use('/api/events/:eventId/program/:programId/items', programItemRouter);

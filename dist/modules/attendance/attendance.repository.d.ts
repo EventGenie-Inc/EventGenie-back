@@ -4,6 +4,7 @@ type Db = Prisma.TransactionClient | typeof prisma;
 export declare const attendanceRepository: {
     findAll: (inviteId: string) => Prisma.PrismaPromise<({
         eventDay: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -11,7 +12,6 @@ export declare const attendanceRepository: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
@@ -24,6 +24,7 @@ export declare const attendanceRepository: {
     })[]>;
     findById: (id: string) => Prisma.Prisma__AttendanceClient<({
         eventDay: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -31,7 +32,6 @@ export declare const attendanceRepository: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
@@ -45,6 +45,7 @@ export declare const attendanceRepository: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
+            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
             expiresAt: Date | null;
             usedAt: Date | null;
             guestId: string;
@@ -52,8 +53,8 @@ export declare const attendanceRepository: {
             used: boolean;
             editToken: string | null;
             editTokenExpiresAt: Date | null;
-            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
             deliveredAt: Date | null;
+            lastRemindedAt: Date | null;
         };
     } & {
         id: string;

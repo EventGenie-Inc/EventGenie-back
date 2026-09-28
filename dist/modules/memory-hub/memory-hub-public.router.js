@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { memoryHubService } from './memory-hub.service.js';
-import { memoryHubGalleryLimiter, memoryHubGuestUploadLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import { memoryHubGalleryLimiter, memoryHubGuestUploadLimiter, memoryHubGuestViewLimiter, } from '../../shared/middleware/rate-limit.middleware.js';
 // Fully public/token-only surface — a guest holds either a gallery
 // shareToken or an invite token, never platform credentials, so nothing
 // here uses `authenticate`. Mounted separately from the admin-gated
@@ -26,6 +26,21 @@ router.post('/guest-items', memoryHubGuestUploadLimiter, async (req, res, next) 
     try {
         const item = await memoryHubService.createGuestItem(req.body);
         res.status(201).json({ status: 'ok', data: item });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// POST /api/memory-hub/guest-view
+// { token } — Contract B. Tells the guest's page whether to show a
+// Memory Hub tab at all, plus the approved gallery and the guest's own
+// pending uploads, with no upload signature required to render. Its own
+// limiter — sized for page loads, never shares memoryHubGuestUploadLimiter's
+// 20-per-5-minute upload-grant budget. See memory-hub.service.ts's getGuestView.
+router.post('/guest-view', memoryHubGuestViewLimiter, async (req, res, next) => {
+    try {
+        const result = await memoryHubService.getGuestView(req.body?.token);
+        res.status(200).json({ status: 'ok', data: result });
     }
     catch (err) {
         next(err);

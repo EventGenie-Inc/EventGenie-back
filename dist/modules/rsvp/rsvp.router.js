@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { rsvpService } from './rsvp.service.js';
-import { ticketQuoteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import { eventProgramService } from '../event-program/event-program.service.js';
+import { ticketQuoteLimiter, rsvpProgramLimiter } from '../../shared/middleware/rate-limit.middleware.js';
 // Fully public surface — a guest only has a bare invite token, never a
 // platform session. No auth middleware anywhere in this file.
 const router = Router();
@@ -20,6 +21,21 @@ router.post('/ticket-quote', ticketQuoteLimiter, async (req, res, next) => {
     try {
         const quote = await rsvpService.quoteTicket(req.body);
         res.status(200).json({ status: 'ok', data: quote });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// POST /api/rsvp/program
+// { token } — Contract A. Tells the guest's page whether to show a
+// Program tab and, if so, this invite's days with the items scheduled
+// on each (day-scoped items plus every item with no day set). Its own
+// limiter, not shared with any upload budget. See
+// event-program.service.ts's getProgramForInvite.
+router.post('/program', rsvpProgramLimiter, async (req, res, next) => {
+    try {
+        const result = await eventProgramService.getProgramForInvite(req.body?.token);
+        res.status(200).json({ status: 'ok', data: result });
     }
     catch (err) {
         next(err);

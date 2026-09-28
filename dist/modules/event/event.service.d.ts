@@ -3,6 +3,7 @@ import { type PlatformRole } from '@prisma/client';
 export declare const eventService: {
     getAll: (requestingRole: PlatformRole, tenantId: string | null) => Promise<(Omit<{
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -10,7 +11,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
@@ -70,6 +70,7 @@ export declare const eventService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -77,12 +78,12 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -90,7 +91,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -109,6 +109,7 @@ export declare const eventService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {
@@ -138,6 +139,104 @@ export declare const eventService: {
             soldCount: number;
             heldCount: number;
             isAvailable: boolean;
+        }[];
+    } & {
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        hostName: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        shareToken: string | null;
+        ticketsRefundable: boolean;
+        createdBy: string;
+        updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
+    }>;
+    getScoped: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<{
+        eventDays: {
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }[];
+    } & {
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        invitationTemplate: string | null;
+        invitationConfig: string | null;
+        hostName: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        shareToken: string | null;
+        ticketsRefundable: boolean;
+        createdBy: string;
+        updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
+    }>;
+    getScopedWithPass: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
+        eventDays: {
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
         }[];
     } & {
         name: string;
@@ -227,6 +326,7 @@ export declare const eventService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -234,12 +334,12 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -247,7 +347,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -266,6 +365,7 @@ export declare const eventService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {
@@ -354,6 +454,7 @@ export declare const eventService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -361,12 +462,12 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -374,7 +475,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -393,6 +493,7 @@ export declare const eventService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {
@@ -509,6 +610,7 @@ export declare const eventService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -516,12 +618,12 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -529,7 +631,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -548,6 +649,7 @@ export declare const eventService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {
@@ -639,6 +741,7 @@ export declare const eventService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -646,12 +749,12 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -659,7 +762,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -678,6 +780,7 @@ export declare const eventService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {
@@ -763,6 +866,7 @@ export declare const eventService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -770,12 +874,12 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -783,7 +887,6 @@ export declare const eventService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -802,6 +905,7 @@ export declare const eventService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {

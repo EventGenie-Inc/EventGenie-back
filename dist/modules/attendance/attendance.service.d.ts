@@ -2,6 +2,7 @@ import { type PlatformRole } from '@prisma/client';
 export declare const attendanceService: {
     getAll: (inviteId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<({
         eventDay: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -9,7 +10,6 @@ export declare const attendanceService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
@@ -22,6 +22,7 @@ export declare const attendanceService: {
     })[]>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         eventDay: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -29,7 +30,6 @@ export declare const attendanceService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
@@ -43,6 +43,7 @@ export declare const attendanceService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
+            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
             expiresAt: Date | null;
             usedAt: Date | null;
             guestId: string;
@@ -50,8 +51,8 @@ export declare const attendanceService: {
             used: boolean;
             editToken: string | null;
             editTokenExpiresAt: Date | null;
-            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
             deliveredAt: Date | null;
+            lastRemindedAt: Date | null;
         };
     } & {
         id: string;

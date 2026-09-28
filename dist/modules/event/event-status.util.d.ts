@@ -10,5 +10,5 @@ export interface StatusDerivableEvent {
 export declare const endOfDayUtc: (date: Date) => Date;
 export declare const resolveEffectiveStatus: (event: StatusDerivableEvent) => EventStatus;
 export declare const withEffectiveStatus: <T extends StatusDerivableEvent>(event: T) => T;
-export declare const assertEventIsPublished: (effectiveStatus: EventStatus) => void;
+export declare const assertEventIsPublished: (effectiveStatus: EventStatus, action?: string) => void;
 //# sourceMappingURL=event-status.util.d.ts.map

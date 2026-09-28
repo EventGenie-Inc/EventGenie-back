@@ -162,6 +162,23 @@ allowlist, not a spread of the row. Found leaking on `rsvp.service.ts`'s
 `submit()` and `memory-hub.service.ts`'s `createGuestItem()` (Security
 Sweep Before G3) — both returned the just-written row directly.
 
+**Tier and plan language never reaches guests.** A guest route (no
+`authenticate`) never surfaces a subscription tier name, "plan",
+"upgrade", or a storage/limit figure derived from billing — that
+language only means something to an organiser looking at a pricing
+page. Where an organiser-facing error names the plan
+(`memory-hub-tier-enforcement.util.ts`'s `assertMemoryHubAccessible`/
+`assertMemoryHubQuotaAvailable`, `memory-hub.service.ts`'s
+`assertItemAcceptableOrDestroy`), the guest-facing call site passes
+`audience: 'guest'` for wording with none of that in it — e.g. "This
+event's photo album is full, so new photos can't be added right now."
+instead of naming a plan and its MB ceiling. A guest-facing
+**availability** endpoint (POST `/api/rsvp/program`, POST
+`/api/memory-hub/guest-view`) goes further and gives no reason at all —
+`{ available: false }` covers every blocked state (cancelled event, no
+program/hub, unpublished, not yet open, tier without the feature)
+identically, so the response itself can never leak which one applies.
+
 ### Email HTML
 
 Every user-supplied value interpolated into an email HTML body —
@@ -580,6 +597,34 @@ across two events is two unrelated records.
 
 Phone numbers are E.164 (`+27...`). Reject with a specific message
 naming the fix, not a generic "invalid".
+
+### Event program
+
+`ProgramItem.eventDayId` is nullable — `NULL` does not mean "no day
+assigned" or an error state, and it is **not** unconditionally "every
+day" either. A day-scoped item (`eventDayId` set) shows only under that
+one day, unchanged. A `NULL` item is guest-facing-rendered
+(`POST /api/rsvp/program`, `eventProgramService.getProgramForInvite`)
+by matching its `startTime`'s **UTC calendar date** against the
+event's own `EventDay.date`s: if exactly one (or more, if two days
+somehow share a date) of the event's days has that date, the item shows
+under that day only, same as if `eventDayId` had been set explicitly.
+Only when the item's date matches **none** of the event's days does it
+fall back to the old "standing item" behaviour — shown under every one
+of the **guest's invited** days (never every day on the event; a guest
+sees only their own invited days regardless). Date matching happens
+against the full event, but display scope always stays the guest's
+invited days. Within a day, items are sorted by `startTime` then
+`order`. `eventDayId`, when provided on create/update, must belong to
+the same event as the program itself — 422 otherwise.
+
+**KNOWN DEBT:** the organiser program UI has no day picker yet — the
+frontend can't yet set `eventDayId` on a program item. Date-matching
+above exists specifically because of this gap: an organiser-created
+item's `startTime` date usually lands on the day it belongs to, so most
+items resolve to the correct single day without a picker; only an item
+whose date doesn't correspond to any real event day falls back to
+showing everywhere.
 
 ### Reminders
 

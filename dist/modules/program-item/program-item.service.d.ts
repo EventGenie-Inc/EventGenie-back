@@ -1,6 +1,7 @@
+import { type PlatformRole } from '@prisma/client';
 import { type CreateProgramItemDto, type UpdateProgramItemDto } from './program-item.types.js';
 export declare const programItemService: {
-    getAll: (programId: string) => import("@prisma/client").Prisma.PrismaPromise<{
+    getAll: (eventId: string, programId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -12,9 +13,10 @@ export declare const programItemService: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, eventId: string, programId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -26,9 +28,10 @@ export declare const programItemService: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }>;
-    create: (programId: string, userId: string, data: CreateProgramItemDto) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
+    create: (eventId: string, programId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateProgramItemDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -40,23 +43,10 @@ export declare const programItemService: {
         order: number;
         title: string;
         programId: string;
-        durationMins: number | null;
-    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    update: (id: string, userId: string, data: UpdateProgramItemDto) => Promise<{
-        id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        description: string | null;
-        createdBy: string;
-        updatedBy: string;
-        startTime: Date;
-        order: number;
-        title: string;
-        programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }>;
-    archive: (id: string, userId: string) => Promise<{
+    update: (id: string, eventId: string, programId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateProgramItemDto) => Promise<{
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -68,6 +58,22 @@ export declare const programItemService: {
         order: number;
         title: string;
         programId: string;
+        eventDayId: string | null;
+        durationMins: number | null;
+    }>;
+    archive: (id: string, eventId: string, programId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        startTime: Date;
+        order: number;
+        title: string;
+        programId: string;
+        eventDayId: string | null;
         durationMins: number | null;
     }>;
 };

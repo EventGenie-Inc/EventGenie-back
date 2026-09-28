@@ -126,6 +126,7 @@ export declare const ticketPurchaseRepository: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
+            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
             expiresAt: Date | null;
             usedAt: Date | null;
             guestId: string;
@@ -133,8 +134,8 @@ export declare const ticketPurchaseRepository: {
             used: boolean;
             editToken: string | null;
             editTokenExpiresAt: Date | null;
-            deliveryMethod: import("@prisma/client").$Enums.DeliveryMethod;
             deliveredAt: Date | null;
+            lastRemindedAt: Date | null;
         };
         ticket: {
             name: string;

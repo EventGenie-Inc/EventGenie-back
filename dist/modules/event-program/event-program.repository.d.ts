@@ -13,6 +13,7 @@ export declare const eventProgramRepository: {
             order: number;
             title: string;
             programId: string;
+            eventDayId: string | null;
             durationMins: number | null;
         }[];
     } & {
@@ -39,6 +40,7 @@ export declare const eventProgramRepository: {
             order: number;
             title: string;
             programId: string;
+            eventDayId: string | null;
             durationMins: number | null;
         }[];
     } & {

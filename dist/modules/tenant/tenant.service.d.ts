@@ -1,7 +1,8 @@
-import { type ClientTenantDto } from './tenant.types.js';
+import { type ClientTenantDto, type ClientTenantDetailDto } from './tenant.types.js';
 export declare const tenantService: {
     getAll: () => Promise<ClientTenantDto[]>;
     getById: (id: string, includeArchived?: boolean) => Promise<ClientTenantDto>;
+    getDetail: (id: string, includeArchived?: boolean) => Promise<ClientTenantDetailDto>;
     getUsers: (id: string) => Promise<{
         id: string;
         email: string;
@@ -16,6 +17,7 @@ export declare const tenantService: {
     }[]>;
     getEvents: (id: string) => Promise<(Omit<{
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -23,7 +25,6 @@ export declare const tenantService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;

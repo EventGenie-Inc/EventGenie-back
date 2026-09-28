@@ -3,6 +3,18 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import {} from '@prisma/client';
 import {} from './event.types.js';
 import { withPlainCoordinates } from './event-coordinates.util.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+// The ownership + archive filter for a lookup of ONE event by id. Every
+// by-id read below — the full findById AND the lean variants — builds its
+// `where` here, so what a lookup REFUSES (another tenant's event, an archived
+// one) is decided in exactly one place and cannot drift between them. This is
+// the tenant-isolation boundary for nearly every organiser endpoint; do not
+// inline a second copy of it.
+const scopedWhere = (id, includeArchived, tenantId) => ({
+    id,
+    ...(includeArchived ? {} : { isArchived: false }),
+    ...(tenantId ? { tenantId } : {}),
+});
 export const eventRepository = {
     // Every method below that returns an Event row passes it through
     // withPlainCoordinates (event-coordinates.util.ts — see its header for
@@ -17,11 +29,7 @@ export const eventRepository = {
     })).map(withPlainCoordinates),
     findById: async (id, includeArchived = false, tenantId) => {
         const event = await prisma.event.findFirst({
-            where: {
-                id,
-                ...(includeArchived ? {} : { isArchived: false }),
-                ...(tenantId ? { tenantId } : {}),
-            },
+            where: scopedWhere(id, includeArchived, tenantId),
             include: {
                 eventDays: { where: { isArchived: false } },
                 memoryHub: true,
@@ -38,6 +46,36 @@ export const eventRepository = {
                 // EntitlementDerivableEvent) with no extra query.
                 eventPass: true,
             },
+        });
+        return event ? withPlainCoordinates(event) : null;
+    },
+    // LEAN ownership lookup — the same row and the same `scopedWhere` as
+    // findById, with only the relations the ownership gate itself needs:
+    // eventDays, because the effective status (COMPLETED is derived from the
+    // last day, see event-status.util.ts) cannot be resolved without them.
+    // findById above pulls six more relations (memoryHub, tickets, rsvpFields,
+    // program, programItems, eventPass — each its own query) that most callers
+    // never read. See eventService.getScoped for which callers may use this.
+    //
+    // Deliberately `include`, not a column `select`: the event row is ONE query
+    // whichever columns it carries, so trimming columns would save bytes, not
+    // round trips, and would force every caller that reads a scalar
+    // (visibility, name, rsvpDeadline, ...) onto the heavy variant. What the
+    // lean variant drops is the RELATIONS — that is where the cost is.
+    findScoped: async (id, includeArchived = false, tenantId) => {
+        const event = await prisma.event.findFirst({
+            where: scopedWhere(id, includeArchived, tenantId),
+            include: { eventDays: { where: { isArchived: false } } },
+        });
+        return event ? withPlainCoordinates(event) : null;
+    },
+    // findScoped plus the Event Pass — what resolveEventEntitlement needs
+    // (EntitlementDerivableEvent = tenantId + eventPass + eventDays), so a tier
+    // check can run without the other relations.
+    findScopedWithPass: async (id, includeArchived = false, tenantId) => {
+        const event = await prisma.event.findFirst({
+            where: scopedWhere(id, includeArchived, tenantId),
+            include: { eventDays: { where: { isArchived: false } }, eventPass: true },
         });
         return event ? withPlainCoordinates(event) : null;
     },
@@ -109,7 +147,7 @@ export const eventRepository = {
                 invitationTemplate: data.invitationTemplate ?? null,
                 invitationConfig: data.invitationConfig ?? null,
                 hostName: data.hostName ?? null,
-                rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null,
+                rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null,
                 capacity: data.capacity ?? null,
                 ticketsRefundable: data.ticketsRefundable ?? false,
                 isArchived: false,
@@ -148,7 +186,7 @@ export const eventRepository = {
             ...(data.invitationTemplate !== undefined && { invitationTemplate: data.invitationTemplate ?? null }),
             ...(data.invitationConfig !== undefined && { invitationConfig: data.invitationConfig ?? null }),
             ...(data.hostName !== undefined && { hostName: data.hostName ?? null }),
-            ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? new Date(data.rsvpDeadline) : null }),
+            ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null }),
             ...(data.capacity !== undefined && { capacity: data.capacity ?? null }),
             ...(data.ticketsRefundable !== undefined && { ticketsRefundable: data.ticketsRefundable }),
             updatedBy: userId,
