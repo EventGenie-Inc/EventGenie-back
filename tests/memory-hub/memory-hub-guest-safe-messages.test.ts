@@ -14,12 +14,13 @@ import {
 } from '../helpers/fixtures.js';
 
 // ─────────────────────────────────────────
-//  G3 PREREQUISITES — PART 5
+//  G3 PREREQUISITES — PART 5 + GUEST UPLOAD LIMITS AND WORDING
 //
 //  Contract C: on guest-upload-signature and guest-items ONLY, tier/
 //  plan/upgrade/storage-figure language is replaced with guest-safe
-//  wording. Organiser routes keep their current messages — asserted
-//  here as a regression guard, not just "the guest message changed".
+//  wording, and "Memory Hub" itself is replaced with "photo album".
+//  Organiser routes keep their current messages — asserted here as a
+//  regression guard, not just "the guest message changed".
 // ─────────────────────────────────────────
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -30,10 +31,10 @@ afterEach(async () => {
   }
 });
 
-// Tier names that must never reach a guest response, per the prompt's
-// own test instruction ("no guest-route response contains 'plan',
-// 'upgrade' or a tier name").
-const FORBIDDEN_IN_GUEST_MESSAGE = /plan|upgrade|SPARK|CELEBRATE|ELEVATE/i;
+// Tier names, billing language, and the product's internal name that
+// must never reach a guest response — "Memory Hub" is organiser/support
+// vocabulary; a guest only ever sees "photo album".
+const FORBIDDEN_IN_GUEST_MESSAGE = /plan|upgrade|SPARK|CELEBRATE|ELEVATE|Memory Hub/i;
 
 const upsertTierConfig = (tier: 'SPARK' | 'CELEBRATE', memoryHubEnabled: boolean, maxMemoryHubBytesPerEvent: number | null = null) =>
   prisma.subscriptionTierConfig.upsert({
@@ -75,7 +76,7 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
 
     const err = await memoryHubService.requestGuestUploadSignature(invite.token, 'IMAGE').catch((e) => e);
     expect(err).toMatchObject({ statusCode: 403 });
-    expect(err.message).toBe("This event doesn't have a Memory Hub available.");
+    expect(err.message).toBe("This event doesn't have a photo album available.");
     expect(err.message).not.toMatch(FORBIDDEN_IN_GUEST_MESSAGE);
   });
 
@@ -156,6 +157,77 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
     },
     30000
   );
+
+  it('requestGuestUploadSignature — archived (missing) album: guest-safe message, no "Memory Hub"', async () => {
+    const tenant = await createTestTenant();
+    const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
+    const event = await createTestEvent(tenant.id, user.id);
+    const hub = await memoryHubRepository.findByEventId(event.id);
+    await memoryHubService.archive(hub!.id, user.id, user.role, tenant.id);
+    const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
+
+    cleanup.push(
+      () => deleteTestGuest(guest.id),
+      () => deleteTestEvent(event.id),
+      () => deleteTestUserRow(user.id),
+      () => deleteTestTenant(tenant.id)
+    );
+
+    const err = await memoryHubService.requestGuestUploadSignature(invite.token, 'IMAGE').catch((e) => e);
+    expect(err).toMatchObject({ statusCode: 404 });
+    expect(err.message).toBe("This event doesn't have a photo album yet.");
+    expect(err.message).not.toMatch(FORBIDDEN_IN_GUEST_MESSAGE);
+  });
+
+  it('createGuestItem — archived (missing) album: guest-safe message, no "Memory Hub"', async () => {
+    const tenant = await createTestTenant();
+    const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
+    const event = await createTestEvent(tenant.id, user.id);
+    const hub = await memoryHubRepository.findByEventId(event.id);
+    await memoryHubService.archive(hub!.id, user.id, user.role, tenant.id);
+    const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
+
+    cleanup.push(
+      () => deleteTestGuest(guest.id),
+      () => deleteTestEvent(event.id),
+      () => deleteTestUserRow(user.id),
+      () => deleteTestTenant(tenant.id)
+    );
+
+    const err = await memoryHubService
+      .createGuestItem({
+        token: invite.token,
+        mediaUrl: 'https://example.test/new.jpg',
+        cloudinaryPublicId: 'archived-hub-pub-id',
+        mediaType: 'IMAGE',
+        bytes: 1000,
+      })
+      .catch((e) => e);
+    expect(err).toMatchObject({ statusCode: 404 });
+    expect(err.message).toBe("This event doesn't have a photo album yet.");
+    expect(err.message).not.toMatch(FORBIDDEN_IN_GUEST_MESSAGE);
+  });
+
+  it('requestGuestUploadSignature — album not yet open: guest-safe message, no "Memory Hub"', async () => {
+    const tenant = await createTestTenant();
+    const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
+    const event = await createTestEvent(tenant.id, user.id);
+    const hub = await memoryHubRepository.findByEventId(event.id);
+    await memoryHubService.update(hub!.id, user.id, user.role, tenant.id, { opensAt: '2099-01-01T00:00:00' });
+    const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
+
+    cleanup.push(
+      () => deleteTestGuest(guest.id),
+      () => deleteTestEvent(event.id),
+      () => deleteTestUserRow(user.id),
+      () => deleteTestTenant(tenant.id)
+    );
+
+    const err = await memoryHubService.requestGuestUploadSignature(invite.token, 'IMAGE').catch((e) => e);
+    expect(err).toMatchObject({ statusCode: 403 });
+    expect(err.message).toContain("This event's photo album opens on");
+    expect(err.message).not.toMatch(FORBIDDEN_IN_GUEST_MESSAGE);
+  });
 
   it('regression guard — organiser routes keep their plan-naming messages unchanged', async () => {
     await upsertTierConfig('SPARK', false);

@@ -47,7 +47,7 @@ export const assertMemoryHubAccessible = async (event, audience = 'organiser') =
     const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
     if (!config?.memoryHubEnabled) {
         throw new HttpError(403, audience === 'guest'
-            ? "This event doesn't have a Memory Hub available."
+            ? "This event doesn't have a photo album available."
             : `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`);
     }
 };

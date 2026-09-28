@@ -9,7 +9,9 @@ export declare const logoutLimiter: import("express-rate-limit").RateLimitReques
 export declare const addressAutosuggestLimiter: import("express-rate-limit").RateLimitRequestHandler;
 export declare const uploadSignatureLimiter: import("express-rate-limit").RateLimitRequestHandler;
 export declare const memoryHubGalleryLimiter: import("express-rate-limit").RateLimitRequestHandler;
+export declare const memoryHubGuestUploadTokenKey: (rawToken: string) => string;
 export declare const memoryHubGuestUploadLimiter: import("express-rate-limit").RateLimitRequestHandler;
+export declare const memoryHubGuestUploadIpLimiter: import("express-rate-limit").RateLimitRequestHandler;
 export declare const rsvpProgramLimiter: import("express-rate-limit").RateLimitRequestHandler;
 export declare const memoryHubGuestViewLimiter: import("express-rate-limit").RateLimitRequestHandler;
 export declare const ticketQuoteLimiter: import("express-rate-limit").RateLimitRequestHandler;

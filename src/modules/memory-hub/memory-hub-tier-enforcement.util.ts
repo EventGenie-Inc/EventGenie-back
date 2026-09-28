@@ -53,7 +53,7 @@ export const assertMemoryHubAccessible = async (
     throw new HttpError(
       403,
       audience === 'guest'
-        ? "This event doesn't have a Memory Hub available."
+        ? "This event doesn't have a photo album available."
         : `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`
     );
   }

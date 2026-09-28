@@ -397,6 +397,7 @@ export declare const memoryHubService: {
         limits: {
             imageMaxBytes: number;
             videoMaxBytes: number;
+            uploadRequestsPer5Min: number;
         };
     }>;
     createGuestItem: (data: CreateGuestMemoryItemDto) => Promise<{

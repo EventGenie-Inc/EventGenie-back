@@ -1,5 +1,6 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { hashToken } from '../../modules/auth/device-token.util.js';
+import { MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN } from '../../modules/upload/upload-constants.js';
 // ─────────────────────────────────────────
 //  RATE LIMITERS — AUTH ENDPOINTS
 //
@@ -226,25 +227,69 @@ export const memoryHubGalleryLimiter = rateLimit({
     },
 });
 // ─────────────────────────────────────────
-//  RATE LIMITER — MEMORY HUB GUEST UPLOAD SIGNATURE
+//  RATE LIMITER — MEMORY HUB GUEST UPLOAD SIGNATURE / GUEST ITEMS
 //
-//  Not explicitly requested by the batch prompt (only the public
-//  gallery view was) but added for the same reason uploadSignatureLimiter
-//  exists: every response is an upload grant, and this endpoint is
-//  reachable with nothing but a valid invite token — no session, no
-//  role check. Keyed by IP. 20 requests / 5 minutes comfortably covers
-//  a guest uploading several photos/videos in one sitting while
-//  bounding a script that has a leaked token and mints grants with it.
+//  Every response is an upload grant, and this endpoint is reachable
+//  with nothing but a valid invite token — no session, no role check.
+//
+//  Originally keyed purely by IP, which is wrong for exactly the reason
+//  the auth rate limiters above are not: guests at the same venue WiFi,
+//  or on South African mobile networks behind one shared carrier-grade
+//  NAT IP, all present as ONE IP — an entire wedding shared a single
+//  ~10-photos-per-5-minutes budget under the old 20/5min-per-IP scheme,
+//  nothing to do with abuse.
+//
+//  Two limiters now, stacked, each guarding a different shape of abuse:
+//
+//  memoryHubGuestUploadLimiter — the real per-guest-invite budget.
+//  Keyed by the SHA-256 hash of the invite TOKEN from the request body
+//  (memoryHubGuestUploadTokenKey, exported so a test can assert the raw
+//  token never appears as a key — same reasoning as deviceLimiterKey
+//  above: a rate limiter's own in-memory store must not hold a live
+//  credential as a literal object key). 60 requests / 5 minutes per
+//  invite comfortably covers one guest uploading many photos/videos in
+//  a single sitting, and — because it is per INVITE, not per IP — is
+//  completely unaffected by how many other guests share the same
+//  network.
+//
+//  memoryHubGuestUploadIpLimiter — the abuse backstop the per-invite
+//  limiter alone can't provide (a script that mints a fresh/guessed
+//  token per request would get a fresh per-invite budget every time).
+//  Counts ONLY FAILED attempts (skipSuccessfulRequests — same
+//  reasoning as exchangeSessionLimiter: a real, successful upload from
+//  a busy shared IP must never count against this). 100 failed
+//  requests / 5 minutes per IP is deliberately generous — even a large
+//  venue with dozens of guests hitting occasional real errors
+//  (an expired link, a duplicate tap) at once should never approach it,
+//  while a script hammering invalid/guessed tokens from one IP still
+//  hits a real ceiling.
+//
+//  guest-view's `limits.uploadRequestsPer5Min` (memory-hub.service.ts's
+//  getGuestView) reports this limiter's own `max` so the frontend never
+//  hardcodes the number and reads whatever this file actually enforces.
 // ─────────────────────────────────────────
+export const memoryHubGuestUploadTokenKey = (rawToken) => `memory-hub-invite:${hashToken(rawToken)}`;
 export const memoryHubGuestUploadLimiter = rateLimit({
     windowMs: 5 * 60 * 1000,
-    max: 20,
+    max: MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    keyGenerator: (req) => memoryHubGuestUploadTokenKey((req.body?.token ?? 'unknown')),
     message: {
         status: 'error',
         message: 'Too many upload requests. Please wait a few minutes and try again.',
+    },
+});
+export const memoryHubGuestUploadIpLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+    message: {
+        status: 'error',
+        message: 'Too many requests from this network. Please wait a few minutes and try again.',
     },
 });
 // ─────────────────────────────────────────
@@ -274,9 +319,9 @@ export const rsvpProgramLimiter = rateLimit({
 //  Unauthenticated, token-only, fired once per page load to decide
 //  whether to show the Memory Hub tab at all — a pure read, unlike
 //  memoryHubGuestUploadLimiter (every response there is an upload
-//  grant). Deliberately separate from that 20-per-5-minute upload
-//  budget so opening the page never eats into it. Keyed by IP; same
-//  60/5min "page load" budget as memoryHubGalleryLimiter.
+//  grant). Deliberately separate from that per-invite upload budget so
+//  opening the page never eats into it. Keyed by IP; same 60/5min
+//  "page load" budget as memoryHubGalleryLimiter.
 // ─────────────────────────────────────────
 export const memoryHubGuestViewLimiter = rateLimit({
     windowMs: 5 * 60 * 1000,

@@ -2,7 +2,11 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { memoryHubService } from '../../src/modules/memory-hub/memory-hub.service.js';
 import { memoryHubRepository } from '../../src/modules/memory-hub/memory-hub.repository.js';
 import { eventRepository } from '../../src/modules/event/event.repository.js';
-import { MEMORY_ITEM_IMAGE_MAX_BYTES, MEMORY_ITEM_VIDEO_MAX_BYTES } from '../../src/modules/upload/upload-constants.js';
+import {
+  MEMORY_ITEM_IMAGE_MAX_BYTES,
+  MEMORY_ITEM_VIDEO_MAX_BYTES,
+  MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
+} from '../../src/modules/upload/upload-constants.js';
 import {
   createTestTenant,
   deleteTestTenant,
@@ -213,7 +217,11 @@ describe('POST /api/memory-hub/guest-view — memoryHubService.getGuestView (Con
       expect(result.title).toBe('Our Gallery');
       expect(result.description).toBe('Share your photos!');
       expect(result.requiresApproval).toBe(true);
-      expect(result.limits).toEqual({ imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES, videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES });
+      expect(result.limits).toEqual({
+        imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES,
+        videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES,
+        uploadRequestsPer5Min: MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
+      });
 
       // Approved-only, public projection (same shape as the share-token
       // gallery) — no rejected item, no pending items of either guest.
