@@ -272,6 +272,24 @@ export declare const inviteRepository: {
                 heldCount: number;
                 isAvailable: boolean;
             }[];
+            invitationDesigns: {
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                createdBy: string;
+                updatedBy: string;
+                eventId: string;
+                cloudinaryPublicId: string | null;
+                kind: import("@prisma/client").$Enums.InvitationDesignKind;
+                templateId: string | null;
+                templateVersion: number | null;
+                overrides: import("@prisma/client/runtime/client").JsonValue | null;
+                imageUrl: string | null;
+                width: number | null;
+                height: number | null;
+                altText: string | null;
+            }[];
         } & {
             name: string;
             id: string;

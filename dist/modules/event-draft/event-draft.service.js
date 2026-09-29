@@ -8,7 +8,7 @@ import { assertEventCreatable } from '../subscription-tier-config/event-tier-enf
 import { assertValidCoordinates } from '../event/event-coordinates.util.js';
 import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
-import { isCoverImageTooLarge, coverImageTooLargeMessage } from '../event/event-cover-image.util.js';
+import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 export const eventDraftService = {
@@ -68,6 +68,9 @@ export const eventDraftService = {
         // reported the file's size back to the frontend.
         const coverImagePublicId = typeof p.coverImagePublicId === 'string' ? p.coverImagePublicId : undefined;
         const coverImageBytes = typeof p.coverImageBytes === 'number' ? p.coverImageBytes : undefined;
+        // Ownership first: the size rejection below destroys the asset, and the
+        // id is stored on the new event (see assertCoverPublicIdOwned).
+        assertCoverPublicIdOwned(tenantId, coverImagePublicId);
         if (isCoverImageTooLarge(coverImageBytes)) {
             if (coverImagePublicId) {
                 void destroyAsset(coverImagePublicId).then((result) => {

@@ -8,7 +8,7 @@ import { withEffectiveStatus, assertEventIsPublished } from './event-status.util
 import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
-import { isCoverImageTooLarge, coverImageTooLargeMessage } from './event-cover-image.util.js';
+import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
@@ -132,6 +132,8 @@ export const eventService = {
     create: async (tenantId, userId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
         assertValidCapacity(data.capacity);
+        // Ownership first: the size check below destroys the asset on rejection.
+        assertCoverPublicIdOwned(tenantId, data.coverImagePublicId);
         assertCoverImageWithinSizeLimit(data);
         // No event days exist yet on this path (direct POST never creates
         // them — see event-day.router.ts), so there's nothing to compare the
@@ -151,12 +153,19 @@ export const eventService = {
     update: async (id, userId, requestingRole, tenantId, data) => {
         assertValidCoordinates(data.latitude, data.longitude);
         assertValidCapacity(data.capacity);
-        assertCoverImageWithinSizeLimit(data);
         // Tier rules are evaluated against the EVENT's owning tenant, not the
         // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
         // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
         // their own to fall back on.
         const event = await eventService.getById(id, requestingRole, tenantId);
+        // Cover ownership is checked against the EVENT's tenant (right for a
+        // SUPER_ADMIN too), so it needs the event first; and it must run before
+        // the size check, which destroys the asset on rejection. The id already
+        // stored on this event is not re-checked (see assertCoverPublicIdOwned).
+        if (data.coverImagePublicId !== event.coverImagePublicId) {
+            assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
+        }
+        assertCoverImageWithinSizeLimit(data);
         if (data.rsvpDeadline !== undefined) {
             // rejectPast: false — an organiser deliberately closing RSVPs early
             // by setting the deadline to "now" on a live event is legitimate;

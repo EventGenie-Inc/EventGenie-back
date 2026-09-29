@@ -1,4 +1,25 @@
 import { EVENT_COVER_MAX_BYTES } from '../upload/upload-constants.js';
+import { coverFolder, isSignedPublicIdInFolder } from '../upload/upload-folders.js';
+import { HttpError } from '../../shared/errors/http-error.js';
+
+// A client-reported coverImagePublicId must be one this server signed for
+// THIS tenant's cover folder (upload-folders.ts's header explains why), or
+// it is refused with a 422 and nothing is destroyed. Checked BEFORE the
+// size check below, whose rejection path destroys the asset: an unchecked
+// id there let any organiser have this server delete another tenant's
+// image. It is also what gets destroyed later when the cover is replaced,
+// so it must be checked before it is ever stored.
+//
+// null/undefined (no Cloudinary cover, or a pasted external link) is not a
+// publicId and passes. The caller skips the check when the id is the one
+// already stored on the event, so re-saving an event with an older,
+// pre-existing cover never starts failing.
+export const assertCoverPublicIdOwned = (tenantId: string, publicId: string | null | undefined): void => {
+  if (publicId === undefined || publicId === null) return;
+  if (!isSignedPublicIdInFolder(publicId, coverFolder(tenantId))) {
+    throw new HttpError(422, "This cover image wasn't uploaded for your account. Upload it again from the event form.");
+  }
+};
 
 // coverImageBytes is a transient, request-only field — Cloudinary
 // reports it directly in the browser's OWN upload response, and the

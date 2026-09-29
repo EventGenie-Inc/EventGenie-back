@@ -108,7 +108,13 @@ export const inviteRepository = {
       where: { token },
       include: {
         guest: { include: { plusOnes: { where: { isArchived: false } } } },
-        inviteEventDay: { include: { eventDay: true } },
+        // Guest-facing: an ARCHIVED event day is no longer part of the
+        // event, so it is filtered out here rather than in each caller
+        // (rsvp.service.ts's validate() and event-program.service.ts's
+        // getProgramForInvite both read this list). Archiving a day only
+        // flips its flag; the InviteEventDay row survives, which is why
+        // this filter is needed at all.
+        inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } },
         attendances: true,
         rsvpResponses: true,
         ticketPurchases: true,
@@ -122,6 +128,10 @@ export const inviteRepository = {
             // this invite's `.event` into event-scoped tier checks) to
             // resolve entitlement with no extra query.
             eventPass: true,
+            // The active invitation design (at most one non-archived row,
+            // enforced by a partial unique index) for rsvp.service.ts's
+            // validate(), which projects it through toGuestDesign.
+            invitationDesigns: { where: { isArchived: false }, take: 1 },
           },
         },
       },

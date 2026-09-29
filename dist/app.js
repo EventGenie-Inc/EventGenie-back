@@ -36,6 +36,7 @@ import subscriptionRouter from './modules/subscription/subscription.router.js';
 import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.js';
 import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
+import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
 const app = express();
 // ─────────────────────────────────────────
 //  TRUST PROXY
@@ -147,6 +148,7 @@ app.use('/api/events/:eventId/program', eventProgramRouter);
 app.use('/api/events/:eventId/program/:programId/items', programItemRouter);
 app.use('/api/events/:eventId/tickets', ticketRouter);
 app.use('/api/events/:eventId/pass', eventPassRouter);
+app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
@@ -211,11 +213,20 @@ app.use((_req, res) => {
 });
 // ─────────────────────────────────────────
 //  GLOBAL ERROR HANDLER
-//  Shows full error in dev, hides in prod.
+//
+//  An HttpError's message was written for the person reading it and is
+//  sent as-is. ANYTHING else (a Prisma error, a TypeError, a bare Error)
+//  gets one generic message in every environment: its text can carry
+//  model and column names, query arguments, connection details or stack
+//  fragments. This used to depend on NODE_ENV === 'production', which
+//  leaked the raw text wherever NODE_ENV was anything else (dev, test,
+//  or simply unset). The full error, stack included, is logged here,
+//  server-side only.
 // ─────────────────────────────────────────
+export const GENERIC_ERROR_MESSAGE = 'Something went wrong on our side. Please try again in a moment.';
 app.use((err, _req, res, _next) => {
-    console.error(`[ERROR] ${err.message}`);
     if (err instanceof HttpError) {
+        console.error(`[ERROR] ${err.message}`);
         res.status(err.statusCode).json({
             status: 'error',
             message: err.message,
@@ -223,11 +234,10 @@ app.use((err, _req, res, _next) => {
         });
         return;
     }
+    console.error('[ERROR] unhandled', err);
     res.status(500).json({
         status: 'error',
-        message: process.env.NODE_ENV === 'production'
-            ? 'An unexpected error occurred'
-            : err.message,
+        message: GENERIC_ERROR_MESSAGE,
     });
 });
 export default app;

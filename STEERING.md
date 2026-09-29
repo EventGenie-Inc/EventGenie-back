@@ -35,8 +35,9 @@ agreeable; do not manufacture findings to seem thorough. "This area is
 genuinely fine" is a valid, valuable finding.
 
 **A passing build is not a passing test.** `npm run build` proves types
-line up. It proves nothing about behaviour. Test against the real dev
-database with real seed accounts.
+line up. It proves nothing about behaviour. Automated tests run against
+the test database; manual smoke runs use the dev database with real seed
+accounts (see §6).
 
 **Prove your tests bite.** When adding a regression test, temporarily
 revert the fix, confirm the test fails, restore it, confirm it passes.
@@ -209,6 +210,26 @@ hardcoded on the frontend — `POST /api/memory-hub/guest-view`'s
 enforces (`upload-constants.ts`'s
 `MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`).
 
+### Client-supplied Cloudinary assets
+
+**A client-supplied Cloudinary publicId is checked with
+`isSignedPublicIdInFolder` before it is stored or deleted.** Every upload
+is signed into a folder that names its owner, with a server-chosen
+`<uuid>` public_id (`src/modules/upload/upload-folders.ts` builds every
+folder, for signing and checking alike). The browser then reports the
+publicId back, and it is just a string: this server holds the API secret,
+so an unchecked publicId handed to `destroyAsset` deletes whatever asset
+it names, other events' and other tenants' included. PublicIds are
+readable in any Cloudinary URL, which every guest sees. Check against the
+folder for the exact owner (this event, this tenant) and 422 otherwise,
+**before** any path that could destroy it. The URL stored beside it gets
+the same treatment: `isCloudinaryDeliveryUrlFor` ties it to exactly the
+checked publicId, so a vetted id can't sit next to a URL pointing
+anywhere else. Found missing on Memory Hub guest and organiser uploads,
+event covers (create, update, wizard materialize) and Memory Hub
+`mediaUrl`; invitation designs were built with both checks. An id
+already stored on a record is not re-checked when re-sent unchanged.
+
 ### Email HTML
 
 Every user-supplied value interpolated into an email HTML body —
@@ -269,7 +290,9 @@ to restore it, the feature is broken even though every method works.
 
 Throw `HttpError(status, message)`, never a bare `Error`. The global
 handler only maps `HttpError` to a real status code — everything else
-becomes a masked 500 and the real reason is lost in production.
+becomes a 500 with one generic message in **every** environment (its raw
+text can carry Prisma model names, query arguments and SQL), and the real
+reason survives only in the server log.
 
 | Status | Use for |
 |---|---|
@@ -693,6 +716,41 @@ undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
 
+### Invitation designs
+
+An event has at most one active `InvitationDesign` (a partial unique
+index in its migration, since Prisma can't express one): a **TEMPLATE**
+(a frontend-defined template, `templateId` + `templateVersion`, plus the
+organiser's `overrides`) or an **UPLOAD** (an image in the event's own
+Cloudinary folder). Switching kind rewrites the same row. Guests get it
+as `design` on `GET /api/rsvp/validate/:token`, through the explicit
+projection in `invitation-design-guest.util.ts`.
+
+**The font allowlist exists in both repos and must always change
+together.** The backend copy is `INVITATION_FONT_ALLOWLIST`
+(`src/modules/invitation-design/invitation-design-fonts.ts`, canonical);
+the frontend holds an exact copy. Change the backend first, then the
+frontend, in the same piece of work. A font the frontend offers but the
+backend lacks is a 422 on save; one the backend allows but the frontend
+never loads falls back to a system font on a guest's card. Every entry
+must be a Google Fonts family, spelled as Google spells it. A template
+that uses a new font adds it here first. Removing a font breaks re-saving
+every design that already uses it.
+
+**No free-form CSS, ever.** An override is
+`{ elements: { [elementId]: { color?, backgroundColor?, fontFamily?,
+fontSize?, text? } } }` and nothing else: colours `#rrggbb` only, fonts
+from the allowlist, `fontSize` a number within the global range, `text`
+plain and bounded. Every unknown key, at any level, is a 422 and never
+silently dropped. A new styleable property is a new named, validated
+key, never a pass-through string.
+
+**Template versions never change once saved.** A saved design pins
+`templateId` + `templateVersion`; the frontend must keep rendering every
+version it has ever shipped exactly as it was, because saved overrides
+name element ids and assume that version's layout. A changed layout is a
+new version number, never an edit to an existing one.
+
 ### Dates
 
 Every guest-facing date is formatted in **UTC**, through
@@ -754,21 +812,30 @@ Required fields are marked with an asterisk.
 
 ## 6. Testing
 
-Seed accounts (`npm run seed`) exist specifically so authenticated and
-cross-tenant flows are testable. Two tenants exist deliberately.
+**Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
+only** — a separate Neon database, never the shared dev/prod one. The
+isolation guard (`resolve-database-url.util.ts`) refuses to run
+otherwise. New migrations reach it through the guarded harness
+(`npm run test:db:reset`, or `NODE_ENV=test npx prisma migrate deploy`);
+see "Migrations and the shared database". Fixtures are created and
+hard-deleted by the tests themselves (`tests/helpers/`). The test database
+is still a real remote Postgres, which is what catches round-trip bugs
+like the Prisma transaction timeout at 50 rows that a fast local database
+or a 5-row fixture would never show.
+
+**Manual smoke runs use the dev database** with the seed accounts
+(`npm run seed`). They exist specifically so authenticated and
+cross-tenant flows can be clicked through, and two tenants exist
+deliberately. Nothing automated ever points at dev.
 
 Emails at `@eventgenie.test` cannot receive mail — read the OTP from the
 `OtpRecord` table in the dev database.
 
-**Always clean up fixtures**, then re-run `npm run seed` and confirm it
-reports everything already exists.
+**Always clean up smoke-run fixtures**, then re-run `npm run seed` and
+confirm it reports everything already exists.
 The seed **never overwrites** an existing tier config, tenant or user — a
 tenant you put on Celebrate for a test stays there. To reset on purpose:
 `--reset-tier-configs`, `--reset-tenants`, `--reset-users` (see the README).
-
-Test against the real dev database. It has caught bugs that pass locally
-— a Prisma transaction timeout at 50 rows, for one, that would never
-appear against a fast local database or a 5-row fixture.
 
 ---
 
@@ -798,20 +865,43 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
 - **Automated test coverage is thin.** The backend has a Vitest suite
-  (`npm test`), but it covers auth only — `tests/`, HTTP-level via
-  `supertest` against the real Express app, real Postgres on a separate
+  (`npm test`, `tests/`) on real Postgres in a separate
   `DATABASE_URL_TEST` database (never the shared dev/prod one — see
   `resolve-database-url.util.ts`'s isolation guard), Firebase Admin
-  stubbed at exactly `verifyIdToken`. Covers: `exchange-session` and
-  `logout` (valid/garbage/wrong-user/expired device tokens, the
-  `FIREBASE_TOKEN_INVALID`/`DEVICE_NOT_RECOGNISED` codes, a suspended
-  user refused cleanly rather than a masked 500), `refresh-session`'s
-  strict Firebase verify, `forgotPassword` no longer revoking on
-  request, both rate limiters (`skipSuccessfulRequests`, hash-keying),
-  `DeviceToken.userAgent`, and that only the token's hash is ever
-  stored. Does not cover anything outside auth — every other module
-  (events, guests, invites, tickets, payments, vendor spaces, tier
-  enforcement, ...) has no backend test at all. The frontend has Vitest
+  stubbed at exactly `verifyIdToken`. Tests are HTTP-level (`supertest`
+  against the real Express app) or call a service directly, and cover
+  targeted guarantees rather than whole modules:
+  - **Auth** (`tests/auth/`): `exchange-session` and `logout`
+    (valid/garbage/wrong-user/expired device tokens, the
+    `FIREBASE_TOKEN_INVALID`/`DEVICE_NOT_RECOGNISED` codes, a suspended
+    user refused cleanly rather than a masked 500), `refresh-session`'s
+    strict Firebase verify, `forgotPassword` no longer revoking on
+    request, both rate limiters (`skipSuccessfulRequests`, hash-keying),
+    `DeviceToken.userAgent`, only the token's hash ever stored, the
+    `authenticate` middleware, the test-database isolation guard, and
+    username escaping in auth emails.
+  - **Tenant scoping** (`tests/tenant-scope/`): fail-closed lookups for
+    a caller with no tenant, event program and program items across
+    tenants, vendor-space membership, and `TENANT_ADMIN`/`EVENT_ADMIN`
+    refused without a tenant at creation.
+  - **Guest-facing responses**: RSVP `submit()`'s exact response shape,
+    the guest program contract, archived event days hidden from guests
+    and refused at submit (`tests/rsvp/`); Memory Hub guest view,
+    guest-safe wording and the per-invite upload rate limit
+    (`tests/memory-hub/`); invite email escaping (`tests/invite/`).
+  - **Invitation designs** (`tests/invitation-design/`): cross-tenant
+    404, cancelled-event 409, every 422 validation, create/replace/switch
+    kind, and the guest projection's exact keys.
+  - **Client-supplied Cloudinary assets** (`tests/cloudinary/`): foreign
+    publicIds and mismatched URLs refused with nothing destroyed, on
+    Memory Hub uploads and event covers.
+  - **The global error handler** (`tests/errors/`): no raw Prisma text
+    in a response.
+
+  Everything else has no backend test: event CRUD and lifecycle, guests
+  and import, invite sending and reminders, check-in, tickets and
+  payments, subscriptions and Event Pass, vendor spaces beyond
+  membership, and tier enforcement. The frontend has Vitest
   unit/integration specs (`ng test`, jsdom, HTTP via
   `HttpTestingController`, Firebase stubbed): thorough on auth and
   session handling — the interceptor, trusted-device bootstrap and
