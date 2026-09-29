@@ -69,6 +69,13 @@ enum EventTicketing {
   PAID
 }
 
+// See InvitationDesign. A future design engine adds kinds here; existing
+// rows keep the kind they were saved with.
+enum InvitationDesignKind {
+  TEMPLATE
+  UPLOAD
+}
+
 enum RsvpFieldType {
   TEXT
   NUMBER
@@ -520,6 +527,11 @@ model Event {
   eventSmsBundlePurchases EventSmsBundlePurchase[]
   smsSendLogs             SmsSendLog[]
   inviteReminderLogs      InviteReminderLog[]
+  // A list only because Prisma cannot express "unique among non-archived":
+  // at most ONE non-archived row per event, enforced by the partial unique
+  // index in the invitation_design migration. Read it through
+  // invitationDesignRepository.findActiveByEventId, never as a list.
+  invitationDesigns       InvitationDesign[]
 }
 
 // ─────────────────────────────────────────
@@ -1151,6 +1163,56 @@ model InviteReminderLog {
 
   @@index([inviteId, createdAt])
   @@index([eventId, createdAt])
+}
+
+// ─────────────────────────────────────────
+//  INVITATION DESIGN (v1)
+//
+//  What a guest's invitation card looks like: EITHER a template defined in
+//  the frontend plus the organiser's overrides, OR an image the organiser
+//  designed elsewhere and uploaded. v1 of a future design engine — the
+//  engine grows by adding kinds and new top-level keys inside `overrides`,
+//  never by reinterpreting what is already stored.
+//
+//  At most ONE non-archived row per event — a partial unique index in the
+//  invitation_design migration, which Prisma cannot express (so `eventId`
+//  carries only a plain index here). Switching between TEMPLATE and UPLOAD
+//  rewrites this SAME row and nulls the other kind's columns; a CHECK
+//  constraint in the same migration keeps the two column sets consistent
+//  with `kind`.
+//
+//  TEMPLATE: templateId is the frontend's slug; templateVersion pins the
+//  exact template revision the overrides were written against (a saved
+//  version never changes meaning — see STEERING's invitation-design
+//  rules). overrides is { elements: { [elementId]: {...} } }, validated
+//  key-by-key in invitation-design-validation.util.ts — never free CSS.
+//
+//  UPLOAD: an image in this event's own Cloudinary folder. A replaced or
+//  switched-away-from upload is NOT destroyed in Cloudinary (no hard
+//  delete); it stays findable by folder.
+// ─────────────────────────────────────────
+
+model InvitationDesign {
+  id                 String               @id @default(cuid())
+  eventId            String
+  kind               InvitationDesignKind
+  templateId         String?
+  templateVersion    Int?
+  overrides          Json?
+  imageUrl           String?
+  cloudinaryPublicId String?
+  width              Int?
+  height             Int?
+  altText            String?
+  isArchived         Boolean              @default(false)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  createdBy          String
+  updatedBy          String
+
+  event Event @relation(fields: [eventId], references: [id])
+
+  @@index([eventId])
 }
 
 // ─────────────────────────────────────────

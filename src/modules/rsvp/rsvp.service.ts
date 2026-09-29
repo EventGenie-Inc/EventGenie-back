@@ -9,6 +9,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest/guest-validation.util.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
+import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
@@ -256,6 +257,13 @@ export const rsvpService = {
           hostName: invite.event.hostName,
           location: invite.event.location,
           address: invite.event.address,
+          // Venue coordinates for a map link on the invitation, or null
+          // when the organiser never geocoded the address. Plain numbers:
+          // the columns are Decimal, which JSON renders as strings (see
+          // event-coordinates.util.ts). findByToken does not go through
+          // eventRepository, so the conversion happens here.
+          latitude: invite.event.latitude === null ? null : Number(invite.event.latitude),
+          longitude: invite.event.longitude === null ? null : Number(invite.event.longitude),
           coverImageUrl: invite.event.coverImageUrl,
           rsvpDeadline: invite.event.rsvpDeadline,
           // Reported as the EFFECTIVE status, consistent with every other
@@ -289,6 +297,10 @@ export const rsvpService = {
           })),
         },
       },
+      // The invitation card's design: null, a template + overrides, or an
+      // uploaded image. Guest-safe projection (toGuestDesign): no ids,
+      // audit fields or Cloudinary publicId.
+      design: toGuestDesign(invite.event.invitationDesigns[0]),
       isExpired,
       isUsed: invite.used,
       // Flag, not a throw — same "return flags, don't throw" design as
@@ -299,7 +311,12 @@ export const rsvpService = {
       // their link (isUsed: true, deadline not passed) needs to see what
       // they said last time, not a blank form. Additive only; nothing
       // above this line changed shape.
-      attendingDayIds: invite.attendances.map((a) => a.eventDayId),
+      // Only days still on the invitation: a prefilled answer for an
+      // archived (hidden) day would ride along on the guest's next submit
+      // and be refused there.
+      attendingDayIds: invite.attendances
+        .map((a) => a.eventDayId)
+        .filter((id) => invite.inviteEventDay.some((d) => d.eventDayId === id)),
       rsvpResponses: invite.rsvpResponses.map((r) => ({ rsvpFieldId: r.rsvpFieldId, value: r.value })),
       plusOneNames: invite.guest.plusOnes.map((p) => p.firstName),
       ticketPurchase: ticketPurchase
@@ -492,9 +509,18 @@ export const rsvpService = {
       const attendances = [];
       if (data.attending) {
         const invitedDayIds = new Set(invite.inviteEventDay.map((d) => d.eventDayId));
+        // event.eventDays is loaded with isArchived: false, so a day the
+        // organiser archived after inviting this guest is missing here.
+        const liveEventDayIds = new Set(invite.event.eventDays.map((d) => d.id));
         const attendingDayIds = data.attendingDayIds ?? [];
 
         for (const eventDayId of attendingDayIds) {
+          if (invitedDayIds.has(eventDayId) && !liveEventDayIds.has(eventDayId)) {
+            // 422 — a day this guest WAS invited to, since removed by the
+            // organiser. Checked before the generic 400 below so the guest
+            // is told what actually happened.
+            throw new HttpError(422, "One of the days you selected is no longer part of this event. Please refresh the page and choose again.");
+          }
           if (!invitedDayIds.has(eventDayId)) {
             // 400 — malformed submission: the day ids in `invitedDayIds`
             // are never guest-visible, so this can't name the offending

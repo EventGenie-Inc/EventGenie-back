@@ -30,6 +30,8 @@ export declare const rsvpService: {
                 hostName: string | null;
                 location: string;
                 address: string | null;
+                latitude: number | null;
+                longitude: number | null;
                 coverImageUrl: string | null;
                 rsvpDeadline: Date | null;
                 status: import("@prisma/client").$Enums.EventStatus;
@@ -50,6 +52,7 @@ export declare const rsvpService: {
                 }[];
             };
         };
+        design: import("../invitation-design/invitation-design.types.js").GuestInvitationDesign | null;
         isExpired: boolean;
         isUsed: boolean;
         isRsvpDeadlinePassed: boolean;

@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { randomUUID } from 'crypto';
 import { memoryHubService } from '../../src/modules/memory-hub/memory-hub.service.js';
+import { memoryHubFolder } from '../../src/modules/upload/upload-folders.js';
+import { requireCloudinaryConfig } from '../../src/shared/cloudinary/cloudinary.client.js';
 import { memoryHubRepository } from '../../src/modules/memory-hub/memory-hub.repository.js';
 import {
   createTestTenant,
@@ -140,11 +143,15 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
 
       // A single upload (1000 bytes) already exceeds the 100-byte quota
       // on its own — no pre-existing usage needed.
+      const publicId = `${memoryHubFolder(tenant.id, event.id)}/${randomUUID()}`;
       const err = await memoryHubService
         .createGuestItem({
           token: invite.token,
-          mediaUrl: 'https://example.test/new.jpg',
-          cloudinaryPublicId: 'new-pub-id-that-does-not-exist',
+          // In this event's own signed folder, with the matching delivery
+          // URL, as a real upload's would be: anything else is now refused
+          // (422) before the quota is checked.
+          mediaUrl: `https://res.cloudinary.com/${requireCloudinaryConfig().cloudName}/image/upload/v1/${publicId}.jpg`,
+          cloudinaryPublicId: publicId,
           mediaType: 'IMAGE',
           bytes: 1000,
         })

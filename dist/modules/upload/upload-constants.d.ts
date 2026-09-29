@@ -1,5 +1,7 @@
 export declare const EVENT_COVER_MAX_BYTES: number;
 export declare const EVENT_COVER_ALLOWED_FORMATS = "jpg,png,webp";
+export declare const INVITATION_DESIGN_MAX_BYTES: number;
+export declare const INVITATION_DESIGN_ALLOWED_FORMATS = "jpg,png,webp";
 export declare const MEMORY_ITEM_IMAGE_MAX_BYTES: number;
 export declare const MEMORY_ITEM_VIDEO_MAX_BYTES: number;
 export declare const MEMORY_ITEM_IMAGE_ALLOWED_FORMATS = "jpg,png,webp,heic";

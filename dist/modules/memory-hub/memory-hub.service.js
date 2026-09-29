@@ -6,12 +6,13 @@ import { inviteRepository } from '../invite/invite.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
-import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { destroyAsset, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
+import { isCloudinaryDeliveryUrlFor, isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
 import { signMemoryItemUpload } from '../upload/upload.service.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable, getMemoryHubQuotaBytes, isMemoryHubTierEnabled, } from './memory-hub-tier-enforcement.util.js';
 import {} from '../event-pass/event-entitlement.util.js';
 import { isMemoryItemTooLarge, memoryItemTooLargeMessage } from './memory-item-limits.util.js';
-import { MEMORY_ITEM_IMAGE_MAX_BYTES, MEMORY_ITEM_VIDEO_MAX_BYTES, MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN, } from '../upload/upload-constants.js';
+import { MEMORY_ITEM_IMAGE_MAX_BYTES, MEMORY_ITEM_VIDEO_MAX_BYTES, MEMORY_ITEM_IMAGE_ALLOWED_FORMATS, MEMORY_ITEM_VIDEO_ALLOWED_FORMATS, MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN, } from '../upload/upload-constants.js';
 // Guest-originated writes have no platform userId — Invite.updatedBy is
 // a plain String (not an FK), same convention as rsvp.service.ts's
 // GUEST_ACTOR.
@@ -23,8 +24,42 @@ const GUEST_ACTOR = 'guest-memory-upload';
 // unknowable until now. An oversized or over-quota upload is destroyed
 // from Cloudinary immediately rather than left as an orphan nobody
 // ever references — same reasoning as event-cover-image.util.ts.
-const assertItemAcceptableOrDestroy = async (event, mediaType, bytes, cloudinaryPublicId, audience = 'organiser') => {
+// The formats each upload was signed for (upload-constants.ts), plus
+// "jpeg": Cloudinary files a .jpeg upload as jpg, but accepting the long
+// spelling costs nothing.
+const MEMORY_ITEM_URL_EXTENSIONS = {
+    IMAGE: [...MEMORY_ITEM_IMAGE_ALLOWED_FORMATS.split(','), 'jpeg'],
+    VIDEO: MEMORY_ITEM_VIDEO_ALLOWED_FORMATS.split(','),
+};
+const assertItemAcceptableOrDestroy = async (event, mediaType, bytes, cloudinaryPublicId, mediaUrl, audience = 'organiser') => {
+    // The publicId is client-supplied, and both rejection branches below
+    // DESTROY it with our API secret; an accepted one is stored and shown.
+    // It must be one this server signed for THIS event's Memory Hub folder
+    // (upload-folders.ts), or it is a 422 and nothing is destroyed. Before
+    // this check, any guest holding an invite token could have the server
+    // delete any asset whose publicId they could read off a Cloudinary URL,
+    // other events' and other tenants' included.
+    if (!isSignedPublicIdInFolder(cloudinaryPublicId, memoryHubFolder(event.tenantId, event.id))) {
+        throw new HttpError(422, audience === 'guest'
+            ? "This photo or video wasn't uploaded for this event. Please try uploading it again."
+            : "This file wasn't uploaded for this event's Memory Hub. Upload it again from this event.");
+    }
     const resourceType = mediaType === 'VIDEO' ? 'video' : 'image';
+    // mediaUrl is what every gallery viewer actually loads. It must be our
+    // delivery URL for exactly the publicId just checked; otherwise a vetted
+    // publicId could sit beside a URL pointing anywhere, off Cloudinary
+    // included. Also before either destroy below: a mismatched pair is a 422
+    // with nothing destroyed, like a foreign publicId.
+    if (!isCloudinaryDeliveryUrlFor(mediaUrl, {
+        cloudName: requireCloudinaryConfig().cloudName,
+        resourceType,
+        publicId: cloudinaryPublicId,
+        extensions: MEMORY_ITEM_URL_EXTENSIONS[mediaType],
+    })) {
+        throw new HttpError(422, audience === 'guest'
+            ? "This photo or video's link doesn't match what was uploaded. Please try uploading it again."
+            : "This file's link must be the one EventGenie's uploader returned for it. Upload it again from this event.");
+    }
     if (isMemoryItemTooLarge(mediaType, bytes)) {
         void destroyAsset(cloudinaryPublicId, resourceType).then((result) => {
             if (!result.ok)
@@ -259,7 +294,7 @@ export const memoryHubService = {
         }
         const hub = await memoryHubService.getById(hubId, requestingRole, tenantId);
         const event = await eventService.getById(hub.eventId, requestingRole, tenantId);
-        await assertItemAcceptableOrDestroy(event, data.mediaType, data.bytes, data.cloudinaryPublicId);
+        await assertItemAcceptableOrDestroy(event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl);
         return memoryHubRepository.createItem(hubId, userId, {
             mediaUrl: data.mediaUrl,
             cloudinaryPublicId: data.cloudinaryPublicId,
@@ -444,7 +479,7 @@ export const memoryHubService = {
         if (hub.opensAt && hub.opensAt > new Date()) {
             throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
         }
-        await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, 'guest');
+        await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl, 'guest');
         const item = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
             mediaUrl: data.mediaUrl,
             cloudinaryPublicId: data.cloudinaryPublicId,
