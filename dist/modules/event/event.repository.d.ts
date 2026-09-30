@@ -33,8 +33,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -158,8 +156,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -203,8 +199,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -256,8 +250,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -310,8 +302,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -341,8 +331,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -373,8 +361,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -404,8 +390,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -435,8 +419,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -466,8 +448,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -497,8 +477,6 @@ export declare const eventRepository: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;

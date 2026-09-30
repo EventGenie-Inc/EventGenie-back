@@ -36,8 +36,9 @@ export interface PutUploadDesignDto {
   // Transient, never stored — Cloudinary's upload response reports the
   // file's real size to the browser, which passes it through here, the
   // same way coverImageBytes works for covers (event-cover-image.util.ts):
-  // Cloudinary's signed upload cannot carry a byte limit.
-  bytes: number;
+  // Cloudinary's signed upload cannot carry a byte limit. Optional only
+  // when re-saving the stored upload's own publicId.
+  bytes?: number;
 }
 
 export type PutInvitationDesignDto = PutTemplateDesignDto | PutUploadDesignDto;

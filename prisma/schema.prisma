@@ -467,8 +467,6 @@ model Event {
   status             EventStatus     @default(DRAFT)
   visibility         EventVisibility @default(PRIVATE)
   ticketing          EventTicketing  @default(FREE)
-  invitationTemplate String?
-  invitationConfig   String?
   // Organiser-typed display name shown to guests on the invitation/RSVP
   // page and the public Memory Hub gallery — e.g. "The Mashilo Family" or
   // "Sarah & Tom". Deliberately separate from Tenant.name (a workspace

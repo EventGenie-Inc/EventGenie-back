@@ -46,9 +46,14 @@ export const invitationDesignService = {
     const cloudName = body && typeof body === 'object' && (body as { kind?: unknown }).kind === 'UPLOAD'
       ? requireCloudinaryConfig().cloudName
       : '';
-    const data = assertValidDesignInput(body, { cloudName, tenantId: event.tenantId, eventId });
-
     const existing = await invitationDesignRepository.findActiveByEventId(eventId);
+    const data = assertValidDesignInput(body, {
+      cloudName,
+      tenantId: event.tenantId,
+      eventId,
+      storedUploadPublicId: existing?.kind === 'UPLOAD' ? existing.cloudinaryPublicId : null,
+    });
+
     if (existing) return invitationDesignRepository.update(existing.id, userId, data);
 
     try {

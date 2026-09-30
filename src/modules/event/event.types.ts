@@ -17,8 +17,6 @@ export interface CreateEventDto {
   coverImageBytes?: number;
   visibility?: EventVisibility;
   ticketing?: EventTicketing;
-  invitationTemplate?: string;
-  invitationConfig?: string;
   // Organiser-typed, shown to guests on the invitation/RSVP page and the
   // public Memory Hub gallery — see schema.prisma's comment on why this
   // is never derived from Tenant.name.
@@ -42,8 +40,6 @@ export interface UpdateEventDto {
   coverImageBytes?: number;
   visibility?: EventVisibility;
   ticketing?: EventTicketing;
-  invitationTemplate?: string;
-  invitationConfig?: string;
   hostName?: string | null;
   rsvpDeadline?: string | null;
   capacity?: number | null;

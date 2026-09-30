@@ -121,7 +121,8 @@ export const eventDraftService = {
           status: 'DRAFT',
           visibility: (p.visibility as EventVisibility) ?? 'PRIVATE',
           ticketing: (p.ticketing as EventTicketing) ?? 'FREE',
-          invitationTemplate: (p.invitationTemplate as string) ?? null,
+          // Shown to guests as the host line; an empty one means no host line.
+          hostName: typeof p.hostName === 'string' && p.hostName.trim() ? p.hostName.trim() : null,
           rsvpDeadline: rsvpDeadline ?? null,
           capacity: capacity ?? null,
           isArchived: false,
