@@ -892,6 +892,9 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   - **Invitation designs** (`tests/invitation-design/`): cross-tenant
     404, cancelled-event 409, every 422 validation, create/replace/switch
     kind, and the guest projection's exact keys.
+  - **Wizard draft conversion** (`tests/event-draft/`): `hostName`
+    carried through (null when absent or blank), and a legacy
+    `invitationTemplate` in an old draft ignored.
   - **Client-supplied Cloudinary assets** (`tests/cloudinary/`): foreign
     publicIds and mismatched URLs refused with nothing destroyed, on
     Memory Hub uploads and event covers.

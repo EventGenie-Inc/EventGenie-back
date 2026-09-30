@@ -179,7 +179,9 @@ const assertDimension = (value: unknown, name: string): number => {
 
 export const assertValidDesignInput = (
   body: unknown,
-  ctx: { cloudName: string; tenantId: string; eventId: string }
+  // storedUploadPublicId: the event's current design's publicId when that
+  // design is an UPLOAD, else null.
+  ctx: { cloudName: string; tenantId: string; eventId: string; storedUploadPublicId: string | null }
 ): PutInvitationDesignDto => {
   if (!isPlainObject(body)) {
     throw invalid("Send the design as { kind: 'TEMPLATE', ... } or { kind: 'UPLOAD', ... }.");
@@ -206,11 +208,17 @@ export const assertValidDesignInput = (
     const width = assertDimension(body['width'], 'width');
     const height = assertDimension(body['height'], 'height');
 
+    // bytes is only known right after an upload, and is never stored. Re-saving
+    // the stored upload (same publicId, e.g. only the alt text changed) may
+    // omit it: that image's size was checked when it was first saved. A new
+    // publicId always needs it. Sent anyway, it is checked as usual.
     const bytes = body['bytes'];
-    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    const isStoredUpload = ctx.storedUploadPublicId != null && body['cloudinaryPublicId'] === ctx.storedUploadPublicId;
+    if (bytes === undefined && isStoredUpload) {
+      // nothing to check
+    } else if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
       throw invalid("The image's file size is missing. Upload it again from this event's design page.");
-    }
-    if (bytes > INVITATION_DESIGN_MAX_BYTES) {
+    } else if (bytes > INVITATION_DESIGN_MAX_BYTES) {
       throw invalid(
         `This image is too large (${(bytes / (1024 * 1024)).toFixed(1)}MB). Invitation designs must be ` +
         `${INVITATION_DESIGN_MAX_BYTES / (1024 * 1024)}MB or smaller. Try exporting it as a JPG, or at a smaller size.`
@@ -235,7 +243,7 @@ export const assertValidDesignInput = (
       width,
       height,
       altText,
-      bytes,
+      ...(bytes !== undefined && { bytes }),
     };
   }
 

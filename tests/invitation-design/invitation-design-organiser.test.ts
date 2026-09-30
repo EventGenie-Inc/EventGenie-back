@@ -306,3 +306,50 @@ describe('invitation design — create, replace, switch kind', () => {
     expect(existing.isArchived).toBe(false);
   });
 });
+
+describe('invitation design — re-saving the stored upload without bytes', () => {
+  const put = (body: unknown) => request(app).put(url(eventId)).set(headersFor(owner)).send(body as object);
+
+  it('same publicId as the stored UPLOAD: bytes may be omitted, so the alt text can change on its own', async () => {
+    const upload = uploadBodyFor(eventId, ownerTenantId);
+    const first = await put(upload);
+    expect(first.status).toBe(200);
+
+    const { bytes: _omitted, ...withoutBytes } = upload;
+    const resaved = await put({ ...withoutBytes, altText: 'Sarah & Tom, 12 June' });
+    expect(resaved.status).toBe(200);
+    expect(resaved.body.data).toMatchObject({
+      id: first.body.data.id,
+      kind: 'UPLOAD',
+      cloudinaryPublicId: upload.cloudinaryPublicId,
+      imageUrl: upload.imageUrl,
+      altText: 'Sarah & Tom, 12 June',
+    });
+
+    // Sent anyway, bytes is still checked.
+    const tooLarge = await put({ ...upload, bytes: 10 * 1024 * 1024 + 1 });
+    expect(tooLarge.status).toBe(422);
+  }, 30000);
+
+  it('a new publicId still requires bytes: 422, stored design unchanged', async () => {
+    const before = await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } });
+    expect(before.kind).toBe('UPLOAD');
+
+    const { bytes: _omitted, ...replacement } = uploadBodyFor(eventId, ownerTenantId);
+    const res = await put(replacement);
+    expect(res.status).toBe(422);
+    expect(res.body.message).toMatch(/file size is missing/);
+
+    const after = await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } });
+    expect(after.cloudinaryPublicId).toBe(before.cloudinaryPublicId);
+    expect(after.altText).toBe('Sarah & Tom, 12 June');
+  }, 30000);
+
+  it('a stored TEMPLATE has no publicId to match: an upload without bytes is a 422', async () => {
+    expect((await put(TEMPLATE_BODY)).status).toBe(200);
+    const { bytes: _omitted, ...upload } = uploadBodyFor(eventId, ownerTenantId);
+    const res = await put(upload);
+    expect(res.status).toBe(422);
+    expect(res.body.message).toMatch(/file size is missing/);
+  }, 30000);
+});
