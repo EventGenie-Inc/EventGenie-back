@@ -5,7 +5,6 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
-import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
@@ -45,6 +44,16 @@ const assertCoverImageWithinSizeLimit = (data: { coverImageBytes?: number; cover
 // EVENT_ADMIN or TENANT_ADMIN without a tenantId (POST /api/users lets a
 // SUPER_ADMIN omit it), and that role sits behind requireEventAdmin on
 // nearly every organiser route.
+// The one required organiser field on the event row itself (the venue is
+// per day now, event-day-venue.util.ts). 422 with a message an organiser
+// can act on — previously a missing name reached Prisma and came back as a
+// generic 500, and a blank one was saved.
+const assertEventName = (name: unknown): void => {
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new HttpError(422, 'Your event needs a name.');
+  }
+};
+
 const tenantScopeFor = (requestingRole: PlatformRole, tenantId: string | null): string | undefined =>
   resolveTenantScope(requestingRole, tenantId, 'Event not found');
 
@@ -139,7 +148,7 @@ export const eventService = {
   },
 
   create: async (tenantId: string, userId: string, data: CreateEventDto) => {
-    assertValidCoordinates(data.latitude, data.longitude);
+    assertEventName(data.name);
     assertValidCapacity(data.capacity);
     // Ownership first: the size check below destroys the asset on rejection.
     assertCoverPublicIdOwned(tenantId, data.coverImagePublicId);
@@ -161,7 +170,7 @@ export const eventService = {
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
-    assertValidCoordinates(data.latitude, data.longitude);
+    if (data.name !== undefined) assertEventName(data.name);
     assertValidCapacity(data.capacity);
     // Tier rules are evaluated against the EVENT's owning tenant, not the
     // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
@@ -306,8 +315,15 @@ export const eventService = {
 
     const missing: string[] = [];
     if (!event.name?.trim()) missing.push('a name');
-    if (!event.location?.trim()) missing.push('a location');
     if (!event.eventDays.length) missing.push('at least one event day');
+    // The venue belongs to each day. A day can only be SAVED with one now,
+    // but a day that came through the venue migration from an event that
+    // had none still exists without one — and guests must not be invited
+    // to a day with nowhere to go.
+    const daysWithoutVenue = event.eventDays.filter((d) => !d.location?.trim() || !d.address?.trim());
+    if (daysWithoutVenue.length) {
+      missing.push(`a venue for ${daysWithoutVenue.map((d) => `'${d.label}'`).join(', ')}`);
+    }
     if (missing.length) {
       throw new HttpError(422, `This event isn't ready to publish yet — it's missing: ${missing.join(', ')}.`);
     }

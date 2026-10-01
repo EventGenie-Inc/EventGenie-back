@@ -15,6 +15,7 @@ import {
   buildReminderEmailSubject,
   buildReminderEmailHtml,
   buildReminderSmsBody,
+  type InviteDayLine,
 } from './invite-message.util.js';
 import {
   REMINDER_COOLDOWN_HOURS,
@@ -94,7 +95,19 @@ type DispatchableInvite = {
   token: string;
   deliveryMethod: DeliveryMethod;
   guest: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; hostGuestId: string | null };
+  // This guest's own invited days, with each day's venue — what the
+  // email's "when and where" is built from (invite-message.util.ts).
+  inviteEventDay: { eventDay: InviteDayLine & { isArchived: boolean } }[];
 };
+
+// Live days only (an archived day is no longer part of the event), earliest
+// first. The repository already filters archived days on the bulk paths;
+// resend loads through inviteService.getById, which does not.
+const invitedDaysFor = (invite: DispatchableInvite): InviteDayLine[] =>
+  invite.inviteEventDay
+    .map((d) => d.eventDay)
+    .filter((d) => !d.isArchived)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
 
 const guestDisplayName = (guest: { firstName: string | null; surname: string | null }): string =>
   [guest.firstName, guest.surname].filter(Boolean).join(' ').trim() || 'Guest';
@@ -124,7 +137,7 @@ interface DispatchContext {
   eventId: string;
   tenantId: string;
   eventName: string;
-  location: string;
+  // Fallback only — used when a guest has no live invited day left.
   dateLabel: string | null;
   rsvpDeadline: Date | null;
 }
@@ -133,28 +146,26 @@ const buildDispatchContext = (event: {
   id: string;
   tenantId: string;
   name: string;
-  location: string;
   rsvpDeadline: Date | null;
   eventDays: { date: Date }[];
 }): DispatchContext => ({
   eventId: event.id,
   tenantId: event.tenantId,
   eventName: event.name,
-  location: event.location,
   dateLabel: formatEarliestDay(event.eventDays),
   rsvpDeadline: event.rsvpDeadline,
 });
 
-const buildMessage = (kind: DispatchKind, ctx: DispatchContext, rsvpLink: string) =>
+const buildMessage = (kind: DispatchKind, ctx: DispatchContext, days: InviteDayLine[], rsvpLink: string) =>
   kind === 'INVITE'
     ? {
         emailSubject: buildInviteEmailSubject(ctx.eventName),
-        emailHtml: buildInviteEmailHtml(ctx.eventName, ctx.location, ctx.dateLabel, rsvpLink),
+        emailHtml: buildInviteEmailHtml(ctx.eventName, days, ctx.dateLabel, rsvpLink),
         smsBody: buildInviteSmsBody(ctx.eventName, rsvpLink),
       }
     : {
         emailSubject: buildReminderEmailSubject(ctx.eventName),
-        emailHtml: buildReminderEmailHtml(ctx.eventName, ctx.location, ctx.dateLabel, ctx.rsvpDeadline, rsvpLink),
+        emailHtml: buildReminderEmailHtml(ctx.eventName, days, ctx.dateLabel, ctx.rsvpDeadline, rsvpLink),
         smsBody: buildReminderSmsBody(ctx.eventName, rsvpLink, ctx.rsvpDeadline),
       };
 
@@ -169,7 +180,7 @@ const dispatchOne = async (
   smsSource: SmsSendPool,
   kind: DispatchKind = 'INVITE'
 ): Promise<{ ok: true } | { ok: false; reason: string }> => {
-  const message = buildMessage(kind, ctx, buildInviteRsvpLink(invite.token));
+  const message = buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token));
 
   const result = invite.deliveryMethod === 'EMAIL'
     ? await sendEmail(invite.guest.email ?? '', message.emailSubject, message.emailHtml)

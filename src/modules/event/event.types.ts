@@ -3,10 +3,10 @@ import { type EventVisibility, type EventTicketing } from '@prisma/client';
 export interface CreateEventDto {
   name: string;
   description?: string;
-  location: string;
-  address?: string;
-  latitude?: number;
-  longitude?: number;
+  // No venue fields: the venue belongs to each EventDay now
+  // (event-day-venue.util.ts). A `location`/`address`/`latitude`/
+  // `longitude` still sent by an older frontend is ignored, not refused,
+  // so the deployed frontend keeps working through the rollout.
   coverImageUrl?: string;
   // Present only when coverImageUrl came from the signed-upload flow
   // (src/modules/upload/), not a pasted external link — see
@@ -31,10 +31,6 @@ export interface CreateEventDto {
 export interface UpdateEventDto {
   name?: string;
   description?: string;
-  location?: string;
-  address?: string;
-  latitude?: number;
-  longitude?: number;
   coverImageUrl?: string | null;
   coverImagePublicId?: string | null;
   coverImageBytes?: number;

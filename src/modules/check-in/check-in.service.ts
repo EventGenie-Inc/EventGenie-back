@@ -152,7 +152,13 @@ export const checkInService = {
     const { day } = await loadEventAndDay(eventId, dayId, requestingRole, tenantId);
     const invites = await checkInRepository.findRoster(eventId, dayId);
     const guests = sortForDoor(onePerGuest(invites).map(toRow));
-    return { day: { id: day.id, label: day.label, date: day.date }, counts: countRows(guests), guests };
+    // The day's own venue — the venue belongs to the day, and a door screen
+    // for a multi-venue event should say which door it is.
+    return {
+      day: { id: day.id, label: day.label, date: day.date, location: day.location, address: day.address },
+      counts: countRows(guests),
+      guests,
+    };
   },
 
   // Idempotent: checking in someone already checked in for this day is a

@@ -12,7 +12,8 @@ import { formatGuestDate, formatGuestDateShort } from '../../shared/utils/guest-
 // `/rsvp?token=...`). Flagged as unconfirmed in the final report.
 //
 // HTML ESCAPING — every organiser-typed value interpolated into an HTML
-// email body below (eventName, location) goes through escapeHtml
+// email body below (eventName, and each day's label, venue name and
+// address) goes through escapeHtml
 // (shared/utils/html.util.ts) before reaching renderBrandEmailShell: an
 // event named `<script>...` or containing `"` must not become live markup
 // or break out of a style attribute in a guest's inbox, sent under
@@ -27,21 +28,64 @@ import { formatGuestDate, formatGuestDateShort } from '../../shared/utils/guest-
 export const buildInviteRsvpLink = (token: string): string =>
   `${process.env.FRONTEND_BASE_URL}/rsvp?token=${token}`;
 
+// ─────────────────────────────────────────
+//  WHEN AND WHERE — per guest, from THEIR invited days
+//
+//  The venue belongs to each event day, and a guest may be invited to a
+//  subset of an event's days, so the "when and where" of an invitation or
+//  reminder is built per guest from their own days (invite-dispatch.service.ts
+//  passes them in, archived days already excluded):
+//    - one invited day  → a Date line and a Venue line
+//    - several          → one line per day: label, date, venue
+//    - none (defensive: every invite is created with at least one day, but
+//      its only day could since have been archived) → the event's earliest
+//      date, if there is one, and no venue line rather than a wrong one.
+// ─────────────────────────────────────────
+export interface InviteDayLine {
+  label: string;
+  date: Date;
+  location: string | null;
+  address: string | null;
+}
+
+const venueText = (day: InviteDayLine): string | null => {
+  const parts = [day.location?.trim(), day.address?.trim()].filter((p): p is string => !!p);
+  return parts.length ? escapeHtml(parts.join(', ')) : null;
+};
+
+const LINE = 'style="color: #1A1A2E;"';
+
+export const buildWhenAndWhereHtml = (days: InviteDayLine[], fallbackDateLabel: string | null): string => {
+  if (days.length === 0) {
+    return fallbackDateLabel ? `<p ${LINE}><strong>Date:</strong> ${fallbackDateLabel}</p>` : '';
+  }
+  if (days.length === 1) {
+    const day = days[0]!;
+    const venue = venueText(day);
+    return `<p ${LINE}><strong>Date:</strong> ${formatGuestDate(day.date)}</p>` +
+      (venue ? `<p ${LINE}><strong>Venue:</strong> ${venue}</p>` : '');
+  }
+  const lines = days.map((day) => {
+    const venue = venueText(day);
+    return `<p ${LINE}><strong>${escapeHtml(day.label)}</strong> — ${formatGuestDate(day.date)}${venue ? ` — ${venue}` : ''}</p>`;
+  });
+  return `<p ${LINE}><strong>Your days:</strong></p>${lines.join('')}`;
+};
+
 export const buildInviteEmailSubject = (eventName: string): string =>
   `You're invited to ${eventName}!`;
 
 export const buildInviteEmailHtml = (
   eventName: string,
-  location: string,
-  dateLabel: string | null,
+  days: InviteDayLine[],
+  fallbackDateLabel: string | null,
   rsvpLink: string
 ): string =>
   renderBrandEmailShell(
     "You're invited!",
     `
       <p>You've been invited to <strong>${escapeHtml(eventName)}</strong>.</p>
-      ${dateLabel ? `<p style="color: #1A1A2E;"><strong>Date:</strong> ${dateLabel}</p>` : ''}
-      <p style="color: #1A1A2E;"><strong>Venue:</strong> ${escapeHtml(location)}</p>
+      ${buildWhenAndWhereHtml(days, fallbackDateLabel)}
       <div style="text-align: center; margin: 24px 0;">
         <a href="${rsvpLink}" style="
           display: inline-block;
@@ -79,8 +123,8 @@ export const buildReminderEmailSubject = (eventName: string): string =>
 // Same escaping as buildInviteEmailHtml above — see this file's header.
 export const buildReminderEmailHtml = (
   eventName: string,
-  location: string,
-  dateLabel: string | null,
+  days: InviteDayLine[],
+  fallbackDateLabel: string | null,
   rsvpDeadline: Date | null,
   rsvpLink: string
 ): string =>
@@ -91,8 +135,7 @@ export const buildReminderEmailHtml = (
       ${rsvpDeadline
         ? `<p style="color: #1A1A2E;"><strong>Please respond by ${formatGuestDate(rsvpDeadline)}</strong> — RSVPs close after that.</p>`
         : '<p style="color: #1A1A2E;">Please let us know whether you can make it.</p>'}
-      ${dateLabel ? `<p style="color: #1A1A2E;"><strong>Date:</strong> ${dateLabel}</p>` : ''}
-      <p style="color: #1A1A2E;"><strong>Venue:</strong> ${escapeHtml(location)}</p>
+      ${buildWhenAndWhereHtml(days, fallbackDateLabel)}
       <div style="text-align: center; margin: 24px 0;">
         <a href="${rsvpLink}" style="
           display: inline-block;

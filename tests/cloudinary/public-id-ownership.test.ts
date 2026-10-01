@@ -202,7 +202,7 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
     const before = await prisma.event.count({ where: { tenantId: s.tenantA.id } });
     const err = await eventService
       .create(s.tenantA.id, s.userA.id, {
-        name: 'Cover attack', location: 'Somewhere',
+        name: 'Cover attack',
         coverImageUrl: 'https://example.test/c.jpg',
         coverImagePublicId: `${coverFolder(s.tenantB.id)}/${randomUUID()}`,
         coverImageBytes: OVERSIZED,
@@ -247,8 +247,10 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
     await eventDraftRepository.upsert(s.tenantA.id, s.userA.id, {
       currentStep: 4,
       payload: {
-        name: 'Draft attack', location: 'Somewhere',
-        days: [{ label: 'Day 1', date: '2030-01-01T00:00:00' }],
+        name: 'Draft attack',
+        // A complete day (venue included), so the 422 below can only come
+        // from the cover ownership check, not a missing required field.
+        days: [{ label: 'Day 1', date: '2030-01-01T00:00:00', location: 'Somewhere', address: '1 Test Road' }],
         coverImageUrl: 'https://example.test/c.jpg',
         coverImagePublicId: `${coverFolder(s.tenantB.id)}/${randomUUID()}`,
         coverImageBytes: OVERSIZED,
@@ -256,6 +258,7 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
     });
     const err = await eventDraftService.materialize(s.tenantA.id, s.userA.id).catch((e) => e);
     expect(err).toMatchObject({ statusCode: 422 });
+    expect(err.message).not.toMatch(/venue/);
     expect(mockDestroyAsset).not.toHaveBeenCalled();
   }, 60000);
 });

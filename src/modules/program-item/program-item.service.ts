@@ -5,6 +5,7 @@ import { eventProgramRepository } from '../event-program/event-program.repositor
 import { eventDayRepository } from '../event-day/event-day.repository.js';
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { requireItemTitle, requireItemStartTime, assertValidItemOrder } from './program-item-validation.util.js';
 
 // ProgramItem has no tenantId of its own — ownership is transitive
 // through programId -> EventProgram.eventId -> Event.tenantId, two hops.
@@ -76,10 +77,14 @@ export const programItemService = {
     data: CreateProgramItemDto
   ) => {
     await assertProgramInScope(eventId, programId, requestingRole, tenantId);
+    const title = requireItemTitle(data.title);
+    requireItemStartTime(data.startTime, title);
+    assertValidItemOrder(data.order);
     if (data.eventDayId) {
       await assertEventDayInScope(eventId, data.eventDayId);
     }
-    return programItemRepository.create(programId, userId, data);
+    const order = data.order ?? (await programItemRepository.nextOrder(programId));
+    return programItemRepository.create(programId, userId, { ...data, title, order });
   },
 
   update: async (
@@ -91,11 +96,14 @@ export const programItemService = {
     tenantId: string | null,
     data: UpdateProgramItemDto
   ) => {
-    await programItemService.getById(id, eventId, programId, requestingRole, tenantId);
+    const item = await programItemService.getById(id, eventId, programId, requestingRole, tenantId);
+    const title = data.title !== undefined ? requireItemTitle(data.title) : undefined;
+    if (data.startTime !== undefined) requireItemStartTime(data.startTime, title ?? item.title);
+    assertValidItemOrder(data.order);
     if (data.eventDayId !== undefined && data.eventDayId !== null) {
       await assertEventDayInScope(eventId, data.eventDayId);
     }
-    return programItemRepository.update(id, userId, data);
+    return programItemRepository.update(id, userId, { ...data, ...(title !== undefined && { title }) });
   },
 
   archive: async (

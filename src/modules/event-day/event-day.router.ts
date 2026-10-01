@@ -18,7 +18,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const day = await eventDayService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    const day = await eventDayService.getById(req.params['id'] as string, req.params['eventId'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: day });
   } catch (err) { next(err); }
 });
@@ -34,7 +34,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const day = await eventDayService.update(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
+    const day = await eventDayService.update(req.params['id'] as string, req.params['eventId'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(200).json({ status: 'ok', data: day });
   } catch (err) { next(err); }
 });
@@ -42,7 +42,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await eventDayService.archive(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    await eventDayService.archive(req.params['id'] as string, req.params['eventId'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'Event day archived' });
   } catch (err) { next(err); }
 });

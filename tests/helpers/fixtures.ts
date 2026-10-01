@@ -67,7 +67,6 @@ export const deleteTestUserRow = async (id: string): Promise<void> => {
 export const createTestEvent = async (tenantId: string, userId: string) => {
   const event = await eventRepository.create(tenantId, userId, {
     name: `Security Sweep Event ${randomUUID()}`,
-    location: 'Test Venue',
   });
   await eventRepository.updateStatus(event.id, userId, 'PUBLISHED');
   return event;
@@ -84,6 +83,8 @@ export const createTestEventDay = (eventId: string, userId: string, label = 'Day
       eventId,
       label,
       date: new Date('2027-01-01'),
+      location: 'Test Venue',
+      address: '1 Test Road, Cape Town',
       isArchived: false,
       createdBy: userId,
       updatedBy: userId,
