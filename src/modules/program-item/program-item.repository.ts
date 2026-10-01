@@ -10,12 +10,22 @@ export const programItemRepository = {
       orderBy: { order: 'asc' },
     }),
 
+  // The order value that puts a new item at the END of this program's
+  // live list: one past the highest order in use, or 0 for the first item.
+  nextOrder: async (programId: string): Promise<number> => {
+    const { _max } = await prisma.programItem.aggregate({
+      where: { programId, isArchived: false },
+      _max: { order: true },
+    });
+    return _max.order === null ? 0 : _max.order + 1;
+  },
+
   findById: (id: string) =>
     prisma.programItem.findFirst({
       where: { id, isArchived: false },
     }),
 
-  create: (programId: string, userId: string, data: CreateProgramItemDto) =>
+  create: (programId: string, userId: string, data: CreateProgramItemDto & { order: number }) =>
     prisma.programItem.create({
       data: {
         programId,

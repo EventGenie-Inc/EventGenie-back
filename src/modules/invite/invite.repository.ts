@@ -41,7 +41,9 @@ export const inviteRepository = {
         isArchived: false,
         guest: { isArchived: false, hostGuestId: null },
       },
-      include: { guest: true },
+      // Invited days with their venues — the email names this guest's
+      // own days and where each is (invite-dispatch.service.ts).
+      include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
     }),
 
   markDelivered: (id: string) =>
@@ -66,7 +68,7 @@ export const inviteRepository = {
         guest: { isArchived: false, hostGuestId: null },
         ...(guestIds ? { guestId: { in: guestIds } } : {}),
       },
-      include: { guest: true },
+      include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
       orderBy: { createdAt: 'desc' },
     }),
 

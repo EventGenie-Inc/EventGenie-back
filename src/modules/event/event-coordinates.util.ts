@@ -65,10 +65,32 @@ export const assertValidCoordinates = (
 //  vendor.repository.ts uses; 7 decimal places are well inside a double's
 //  precision.
 // ─────────────────────────────────────────
-export const withPlainCoordinates = <T extends { latitude: Prisma.Decimal | null; longitude: Prisma.Decimal | null }>(
-  event: T
-): Omit<T, 'latitude' | 'longitude'> & { latitude: number | null; longitude: number | null } => ({
-  ...event,
-  latitude: event.latitude === null ? null : Number(event.latitude),
-  longitude: event.longitude === null ? null : Number(event.longitude),
+type DecimalCoordinates = { latitude: Prisma.Decimal | null; longitude: Prisma.Decimal | null };
+type PlainCoordinates<T extends DecimalCoordinates> = Omit<T, 'latitude' | 'longitude'> & {
+  latitude: number | null;
+  longitude: number | null;
+};
+
+// One row — an EventDay (which carries its own venue coordinates since the
+// venue moved to the day) or anything else with the same two columns.
+export const withPlainDayCoordinates = <T extends DecimalCoordinates>(row: T): PlainCoordinates<T> => ({
+  ...row,
+  latitude: row.latitude === null ? null : Number(row.latitude),
+  longitude: row.longitude === null ? null : Number(row.longitude),
 });
+
+type PlainEvent<T extends DecimalCoordinates> = Omit<PlainCoordinates<T>, 'eventDays'> &
+  (T extends { eventDays: (infer D)[] }
+    ? { eventDays: D extends DecimalCoordinates ? PlainCoordinates<D>[] : D[] }
+    : unknown);
+
+// An Event row, and its eventDays when they were included — the day venue
+// columns are Decimal too, and every event response that carries days
+// would otherwise leak them as strings exactly as described above.
+export const withPlainCoordinates = <T extends DecimalCoordinates>(event: T): PlainEvent<T> => {
+  const days = (event as { eventDays?: DecimalCoordinates[] }).eventDays;
+  return {
+    ...withPlainDayCoordinates(event),
+    ...(days ? { eventDays: days.map(withPlainDayCoordinates) } : {}),
+  } as unknown as PlainEvent<T>;
+};

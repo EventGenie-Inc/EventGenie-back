@@ -452,7 +452,13 @@ model Event {
   createdByUserId    String
   name               String
   description        String?
-  location           String
+  // RETIRED — the venue belongs to each EventDay (see EventDay.location).
+  // Nothing in this backend reads or writes these four columns any more;
+  // they are kept only so the frontend deployed before the day-venue
+  // rollout keeps working (STEERING Known gaps). `location` became
+  // nullable so a new event can be created without it. Drop all four in a
+  // later migration once the frontend has deployed.
+  location           String?
   address            String?
   latitude           Decimal?        @db.Decimal(10, 7)
   longitude          Decimal?        @db.Decimal(10, 7)
@@ -550,6 +556,17 @@ model EventDay {
   date       DateTime  @db.Date
   startTime  DateTime?
   endTime    DateTime?
+  // The venue — per day, not per event: a wedding's ceremony and its
+  // brunch the next morning are often in different places. Nullable here
+  // only so the migration that introduced them could backfill old events
+  // that had no venue to copy; the API requires location and address on
+  // every create and update (event-day-venue.util.ts). Coordinates come
+  // from the frontend's HERE lookup, both-or-neither, exactly as the
+  // event-level ones did.
+  location   String?
+  address    String?
+  latitude   Decimal?  @db.Decimal(10, 7)
+  longitude  Decimal?  @db.Decimal(10, 7)
   isArchived Boolean   @default(false)
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -949,7 +966,9 @@ model EventProgram {
   id          String   @id @default(cuid())
   eventId     String   @unique
   title       String?
-  isPublished Boolean  @default(false)
+  // Guests see a program by default (true); false hides it. Both create
+  // paths set it explicitly; the default matches them.
+  isPublished Boolean  @default(true)
   isArchived  Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

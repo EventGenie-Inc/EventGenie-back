@@ -112,8 +112,22 @@ findById: (id: string, tenantId?: string) =>
 days, invites, attendance) scope through their parent event by gating on
 the already-scoped `eventService.getById()`. See `src/modules/event-day/`.
 
-Cross-tenant access has been found and fixed in this codebase **five
-separate times**. Assume it is missing until you have read the code.
+Cross-tenant access has been found and fixed in this codebase **six
+separate times** — most recently tickets and custom RSVP fields, which did
+no scoping at all. Assume it is missing until you have read the code.
+
+**A sub-resource must belong to the event in its URL, not merely to the
+caller's tenant.** Gate on the URL's `:eventId` first, then 404 unless the
+record's own `eventId` matches it — the same tenant's other event is as
+much a 404 as another tenant's. `program-item.service.ts`,
+`event-day.service.ts`, `ticket.service.ts` and `rsvp-field.service.ts`
+all follow this; a by-id lookup that only checks the record's OWN event is
+the gap to look for.
+
+**Tickets are organiser-only on `/api/events/:eventId/tickets`.** Guests
+read tickets only through their invite token (`/rsvp/validate`'s
+projection, `POST /api/rsvp/ticket-quote`); the public event page shows
+none. Do not reopen these reads to the public.
 
 **Fails closed.** A non-`SUPER_ADMIN` caller with no `tenantId` must never
 reach the unscoped branch above — `tenantId ?? undefined` looks harmless
@@ -651,7 +665,38 @@ across two events is two unrelated records.
 Phone numbers are E.164 (`+27...`). Reject with a specific message
 naming the fix, not a generic "invalid".
 
+**A guest may update their own contact at RSVP** (`POST /api/rsvp/submit`,
+`email`/`phoneNumber`): a value sets it (normalised by the same functions
+guest import uses, 422 with import's specific message when invalid),
+`null` removes it, omitted or blank leaves it alone. A guest can never
+remove their only contact (422). Dispatch reads the guest's contact at
+send time, so a changed number reaches future invites and reminders by
+itself; removing the channel the invite goes out on moves
+`Invite.deliveryMethod` to the one they kept.
+
+### Venue
+
+**The venue belongs to the event day, not the event.** Every `EventDay`
+has its own `location` (venue name), `address`, `latitude`, `longitude`.
+The columns are nullable only so the migration that introduced them could
+backfill old events; the API requires a non-blank location and address on
+every day create and update (422), judged on the day an update leaves
+behind (`event-day-venue.util.ts`, shared with the wizard's materialize).
+Coordinates come from the frontend's HERE address lookup, both-or-neither,
+and are cleared when the address changes without new ones — this backend
+never calls HERE on save. Anywhere a venue is shown reads it from the day:
+`/rsvp/validate` and `/rsvp/program` per day, invitation and reminder
+emails from the guest's own invited days (one line per day when several),
+the check-in roster's day, vendor proximity and organiser lists from the
+first day by date. Publishing refuses an event with a day that has no
+venue. Event create and update take no venue at all (an older client
+still sending one is ignored, not refused).
+
 ### Event program
+
+A program is **visible to guests by default** (`isPublished` true on
+creation); `isPublished: false` hides it. A program item created without
+`order` goes to the end of its program's list.
 
 `ProgramItem.eventDayId` is nullable — `NULL` does not mean "no day
 assigned" or an error state, and it is **not** unconditionally "every
@@ -671,13 +716,14 @@ invited days. Within a day, items are sorted by `startTime` then
 `order`. `eventDayId`, when provided on create/update, must belong to
 the same event as the program itself — 422 otherwise.
 
-**KNOWN DEBT:** the organiser program UI has no day picker yet — the
-frontend can't yet set `eventDayId` on a program item. Date-matching
-above exists specifically because of this gap: an organiser-created
-item's `startTime` date usually lands on the day it belongs to, so most
-items resolve to the correct single day without a picker; only an item
-whose date doesn't correspond to any real event day falls back to
-showing everywhere.
+The organiser program UI sets `eventDayId` through a day picker on every
+item, required when the event has more than one day and hidden on a
+single-day event (where an item is left `NULL` and date-matching above
+places it). Items created before the picker, and any left `NULL`, still
+resolve by date as described. The wizard's materialize takes no item day
+(the days have no ids until it runs) and always creates the program
+visible, so the frontend sets each item's day — and hides the program
+when the organiser asked — with follow-up calls straight after it.
 
 ### Reminders
 
@@ -882,8 +928,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     username escaping in auth emails.
   - **Tenant scoping** (`tests/tenant-scope/`): fail-closed lookups for
     a caller with no tenant, event program and program items across
-    tenants, vendor-space membership, and `TENANT_ADMIN`/`EVENT_ADMIN`
-    refused without a tenant at creation.
+    tenants, vendor-space membership, `TENANT_ADMIN`/`EVENT_ADMIN`
+    refused without a tenant at creation, tickets and custom RSVP fields
+    across tenants and under the wrong event (plus the SPARK custom-field
+    gate and organiser-only ticket reads), and event days under the wrong
+    event.
+  - **Program defaults** (`tests/event-program/`): visible by default on
+    both creation paths and still hideable, the publish migration, and a
+    program item's `order` defaulting to the end of the list.
   - **Guest-facing responses**: RSVP `submit()`'s exact response shape,
     the guest program contract, archived event days hidden from guests
     and refused at submit (`tests/rsvp/`); Memory Hub guest view,
@@ -892,6 +944,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   - **Invitation designs** (`tests/invitation-design/`): cross-tenant
     404, cancelled-event 409, every 422 validation, create/replace/switch
     kind, and the guest projection's exact keys.
+  - **Day venues** (`tests/event-day/`): a day without a venue is 422
+    on create and update, stale coordinates cleared, cross-tenant day
+    update 404, the event no longer taking a venue, `hostName` trimmed and
+    blank stored as null, publish refusing a venue-less day, and the venue
+    migration's data copy. Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
+    per-day venues on `/rsvp/validate`, `/rsvp/program` and the sent emails.
+  - **RSVP contact update** (`tests/rsvp/rsvp-contact-update.test.ts`).
+  - **Required fields** (`tests/validation/`): 422 on blanks for program
+    items, tickets, custom RSVP fields, guests, the wizard's materialize,
+    and RSVP submit (attending, name, required custom questions).
   - **Wizard draft conversion** (`tests/event-draft/`): `hostName`
     carried through (null when absent or blank), and a legacy
     `invitationTemplate` in an old draft ignored.
@@ -911,7 +973,9 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   exchange, logout, the idle timeout and cross-tab activity, the auth
   modal, role and tier guards — plus tier gating, check-in, reminders,
   the control center's send/upgrade paths, the Event Pass panel,
-  tenant navigation/routes and the vendor space list. Most screens and
+  tenant navigation/routes and the vendor space list, and the event
+  wizard's day venues, program item days and required fields, program
+  visibility, guest-facing day venues, and RSVP contact editing. Most screens and
   services have no spec, and nothing runs in a real browser: the
   cross-tab, tab-freezing and Android behaviours in particular are
   verified only by a manual browser run.
@@ -924,6 +988,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   the calendar dates the organiser picked); only the *instant* a deadline
   passes is off. An `Event.timezone` would fix that and would not change how
   stored dates read back.
+- **The event-level venue columns are debt.** `Event.location`,
+  `address`, `latitude`, `longitude` are retired — nothing reads or writes
+  them (see "Venue") — but are kept, `location` made nullable, so the
+  frontend deployed before the day-venue change keeps working during the
+  rollout. `/rsvp/validate`'s and the public event view's `event.location`
+  /`address` (and validate's coordinates) are likewise kept only for that
+  frontend, and are filled from the first day's venue, never from the
+  columns. The current frontend reads and sends none of them (every venue
+  comes from a day). Once it has deployed, remove those compatibility keys
+  and drop the four columns in a new migration.
 - **Check-in by QR is not built.** The check-in endpoint already accepts an
   `inviteToken` in place of a `guestId`, so a scanner is a second input, not a
   second feature — but nothing renders a code yet, and a plus-one's invite

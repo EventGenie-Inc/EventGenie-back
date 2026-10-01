@@ -40,8 +40,12 @@ const deleteTestProgram = async (programId: string): Promise<void> => {
 
 const createDay = (eventId: string, userId: string, label: string, date: string) =>
   prisma.eventDay.create({
-    data: { eventId, label, date: new Date(date), isArchived: false, createdBy: userId, updatedBy: userId },
+    // Each day has its own venue (the venue belongs to the day) — named
+    // after the day so the contract below can tell them apart.
+    data: { eventId, label, date: new Date(date), ...venueFor(label), isArchived: false, createdBy: userId, updatedBy: userId },
   });
+
+const venueFor = (label: string) => ({ location: `${label} Venue`, address: `1 ${label} Rd`, latitude: null, longitude: null });
 
 describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Contract A)', () => {
   it('unknown token: 404, not 500', async () => {
@@ -91,7 +95,7 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
     expect(result).toEqual({ available: false });
   });
 
-  it('unpublished program: { available: false }', async () => {
+  it('hidden (unpublished) program: { available: false }', async () => {
     const tenant = await createTestTenant();
     const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
     const event = await createTestEvent(tenant.id, user.id);
@@ -114,8 +118,9 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
       () => deleteTestTenant(tenant.id)
     );
 
-    // program.isPublished is false by construction (repository.create
-    // hardcodes it) — never explicitly published here.
+    // Programs are visible by default now; an organiser hiding one is
+    // the remaining way it becomes unavailable.
+    await eventProgramService.update(program.id, user.id, user.role, tenant.id, { isPublished: false });
     const result = await eventProgramService.getProgramForInvite(invite.token);
     expect(result).toEqual({ available: false });
   });
@@ -241,6 +246,7 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
             eventDayId: day1.id,
             label: 'Ceremony Day',
             date: day1.date,
+            ...venueFor('Ceremony Day'),
             items: [
               { id: itemNoDateMatch.id, title: 'Bring cash for the bar', description: null, startTime: new Date('2027-05-15T08:00:00Z'), durationMins: null },
               { id: itemDateMatchedDay1.id, title: 'Welcome coffee', description: null, startTime: new Date('2027-06-01T09:00:00Z'), durationMins: null },
@@ -252,6 +258,7 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
             eventDayId: day2.id,
             label: 'Reception Day',
             date: day2.date,
+            ...venueFor('Reception Day'),
             items: [
               { id: itemNoDateMatch.id, title: 'Bring cash for the bar', description: null, startTime: new Date('2027-05-15T08:00:00Z'), durationMins: null },
               { id: itemDay2.id, title: 'Reception dinner', description: null, startTime: new Date('2027-06-02T18:00:00Z'), durationMins: 120 },

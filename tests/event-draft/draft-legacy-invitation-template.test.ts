@@ -49,8 +49,7 @@ describe('eventDraftService.materialize — legacy invitation fields', () => {
       currentStep: 4,
       payload: {
         name: 'Legacy draft',
-        location: 'Somewhere',
-        days: [{ label: 'Day 1', date: '2030-01-01T00:00:00' }],
+        days: [{ label: 'Day 1', date: '2030-01-01T00:00:00', location: 'Somewhere', address: '1 Test Road' }],
         invitationTemplate: 'classic-gold',
         invitationConfig: '{"accent":"#c9a227"}',
       },
@@ -58,7 +57,8 @@ describe('eventDraftService.materialize — legacy invitation fields', () => {
 
     const event = await eventDraftService.materialize(tenant.id, user.id);
 
-    expect(event).toMatchObject({ name: 'Legacy draft', location: 'Somewhere', status: 'DRAFT' });
+    expect(event).toMatchObject({ name: 'Legacy draft', status: 'DRAFT' });
+    expect(event!.eventDays[0]).toMatchObject({ location: 'Somewhere', address: '1 Test Road' });
     expect(event).not.toHaveProperty('invitationTemplate');
     expect(event).not.toHaveProperty('invitationConfig');
     expect(await prisma.eventDay.count({ where: { eventId: event!.id } })).toBe(1);

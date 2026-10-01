@@ -46,7 +46,7 @@ describe('eventDraftService.materialize — hostName', () => {
     const convert = async (extra: Record<string, unknown>) => {
       await eventDraftRepository.upsert(tenant.id, user.id, {
         currentStep: 4,
-        payload: { name: 'Host test', location: 'Somewhere', days: [{ label: 'Day 1', date: '2030-01-01T00:00:00' }], ...extra },
+        payload: { name: 'Host test', days: [{ label: 'Day 1', date: '2030-01-01T00:00:00', location: 'Somewhere', address: '1 Test Road' }], ...extra },
       });
       const event = await eventDraftService.materialize(tenant.id, user.id);
       return prisma.event.findUniqueOrThrow({ where: { id: event!.id } });

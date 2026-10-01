@@ -42,7 +42,7 @@ export interface DayRosterCounts {
 }
 
 export interface DayRoster {
-  day: { id: string; label: string; date: Date };
+  day: { id: string; label: string; date: Date; location: string | null; address: string | null };
   counts: DayRosterCounts;
   guests: DayRosterRow[];
 }
