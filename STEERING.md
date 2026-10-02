@@ -852,7 +852,54 @@ happened, here is why"; the other says "here is what happened". Style
 them distinctly, and preserve the user's selection on rejection so they
 can adjust and retry.
 
-Required fields are marked with an asterisk.
+Required fields are marked with an asterisk — only fields the server
+requires.
+
+### Form validation
+
+Every frontend form (vendor forms excepted, for now) validates through
+one shared layer, `src/app/shared/forms/`. No form builds its own.
+Signals and explicit `(input)` handlers, as above; not the Forms API.
+
+- **Rules** (`rules.*`): required, email (the backend's own pattern),
+  phone (the backend's own check: same `libphonenumber-js` version, pinned
+  in both repos; a local `082…` number gets the backend's "missing a
+  country code, use +27…" message), whole number / number range,
+  maximum and minimum length, pattern, matches, date and time order
+  (`after`, `notAfter`, `notBefore`), and custom. A form is a list of
+  field checks (`field()` for a value it owns, `check()` for one held
+  elsewhere), each keyed by its control's DOM id.
+- **Rules mirror the backend.** Required fields come from its
+  required-field audit, formats and limits from its validation: the UI
+  never accepts what the server refuses, nor refuses what it accepts. A
+  rule the backend lacks is added only when a task asks for it, and is
+  listed for a backend follow-up — fix the backend, don't drift.
+- **Behaviour, identical in every form:** a field's error appears when it
+  is left (blur), not while it is first typed, and then updates live.
+  Save/Next *looks* disabled while the form is invalid, or in an edit
+  form while nothing has changed (`aria-disabled`, never the `disabled`
+  attribute), with a line beside it ("Complete the highlighted fields to
+  continue." / "No changes to save yet."). Tapping it saves nothing, marks
+  every field touched, shows every error and moves focus to the first.
+  While saving, the button shows progress and can't be pressed again.
+  A wizard's Next checks its own step only.
+- **Pieces:** `createForm()` (valid, dirty, submitting, first invalid
+  field; `begin()` at the top of every submit handler, `end()` when the
+  save settles), `FormFieldDirective` (`[egField]` on a native control:
+  `aria-invalid`, `aria-describedby` to `<id>-error`, touch on blur),
+  `FieldError` (`<app-field-error>`, the message under the field), and
+  `SubmitButton` (`<app-submit-button>`). A custom control (password,
+  address search, colour) takes `inputId`/`invalid`/`describedBy` inputs
+  and emits `blurred`.
+- **Server errors:** a 422/409 the backend ties to a field (its message
+  names the value) goes beside that field with `failField()`; anything
+  else stays in the form's banner.
+- **Messages** are short and plain: "Enter the venue name", "Use the
+  format +27 82 123 4567", "The end time must be after the start time" —
+  never "Invalid input" or "This field is required".
+- A numeric field where blank means something (unlimited) is a text input
+  with `inputmode="numeric"`, so a typo reaches the rule instead of the
+  browser silently turning it into blank.
 
 ---
 

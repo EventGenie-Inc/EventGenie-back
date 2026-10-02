@@ -54,7 +54,7 @@ const RESET_USERS = process.argv.includes('--reset-users');
 //  all if any guard fails, not merely "no queries are run".
 // ═══════════════════════════════════════════════════════════
 
-const DEV_DB_MARKER = 'eventgenie_dev';
+const DEV_DB_MARKER = 'evelope-dev';
 
 // Mirrors src/shared/prisma/prisma.client.ts's own URL resolution
 // exactly, so this guard checks the same URL the shared client
@@ -93,9 +93,9 @@ const assertSafeToRun = (): { host: string; database: string } => {
 
   const database = parsed.pathname.replace(/^\//, '');
 
-  if (!dbUrl.includes(DEV_DB_MARKER)) {
+  if (database !== DEV_DB_MARKER) {
     console.error(
-      `✖ Refusing to run: resolved database URL does not contain "${DEV_DB_MARKER}" ` +
+      `✖ Refusing to run: resolved database is not "${DEV_DB_MARKER}" ` +
       `(host="${parsed.hostname}", database="${database}"). This does not look like the dev database.`
     );
     process.exit(1);
@@ -103,7 +103,7 @@ const assertSafeToRun = (): { host: string; database: string } => {
 
   // Guard 3 — print exactly what's about to be written to, before any work happens.
   console.log('═══════════════════════════════════════════');
-  console.log('  EventGenie Dev Seed');
+  console.log('  Evelope Dev Seed');
   console.log('═══════════════════════════════════════════');
   console.log(`  About to seed:`);
   console.log(`    Host:     ${parsed.hostname}`);
@@ -119,7 +119,7 @@ assertSafeToRun();
 //  SEED DATA
 // ═══════════════════════════════════════════════════════════
 
-const SEED_TEST_PASSWORD = process.env.SEED_TEST_PASSWORD ?? 'EventGenieDev#2026';
+const SEED_TEST_PASSWORD = process.env.SEED_TEST_PASSWORD ?? 'EvelopeDev#2026';
 
 // ── ADDING A TIER COLUMN? THE MIGRATION NEEDS A PER-TIER UPDATE. ─────────
 // `null` on a numeric limit means UNLIMITED (see STEERING.md "Tier
@@ -194,13 +194,13 @@ const TENANTS = {
   testEventsCo: {
     name: 'Test Events Co',
     slug: 'test-events-co',
-    email: 'test-events-co@eventgenie.test',
+    email: 'test-events-co@evelope.test',
     subscriptionTier: 'CELEBRATE' as const,
   },
   sparkTenant: {
     name: 'Spark Tenant',
     slug: 'spark-tenant',
-    email: 'spark-tenant@eventgenie.test',
+    email: 'spark-tenant@evelope.test',
     subscriptionTier: 'SPARK' as const,
   },
 };
@@ -213,10 +213,10 @@ interface SeedAccount {
 }
 
 const ACCOUNTS: SeedAccount[] = [
-  { email: 'superadmin@eventgenie.test', username: 'Super Admin', role: 'SUPER_ADMIN', tenantSlug: null },
-  { email: 'tenantadmin@eventgenie.test', username: 'Tenant Admin', role: 'TENANT_ADMIN', tenantSlug: 'testEventsCo' },
-  { email: 'eventadmin@eventgenie.test', username: 'Event Admin', role: 'EVENT_ADMIN', tenantSlug: 'testEventsCo' },
-  { email: 'sparkadmin@eventgenie.test', username: 'Spark Admin', role: 'TENANT_ADMIN', tenantSlug: 'sparkTenant' },
+  { email: 'superadmin@evelope.test', username: 'Super Admin', role: 'SUPER_ADMIN', tenantSlug: null },
+  { email: 'tenantadmin@evelope.test', username: 'Tenant Admin', role: 'TENANT_ADMIN', tenantSlug: 'testEventsCo' },
+  { email: 'eventadmin@evelope.test', username: 'Event Admin', role: 'EVENT_ADMIN', tenantSlug: 'testEventsCo' },
+  { email: 'sparkadmin@evelope.test', username: 'Spark Admin', role: 'TENANT_ADMIN', tenantSlug: 'sparkTenant' },
 ];
 
 // ═══════════════════════════════════════════════════════════
@@ -386,10 +386,10 @@ async function main() {
 
     // ── Sample event under "Test Events Co" ──────────────────
     console.log('\n── Sample Event ──');
-    const eventName = 'EventGenie Sample Launch Party';
+    const eventName = 'Evelope Sample Launch Party';
     const testEventsCoTenant = tenantRows.testEventsCo;
-    const tenantAdminUser = await prisma.user.findUnique({ where: { email: 'tenantadmin@eventgenie.test' } });
-    if (!tenantAdminUser) throw new Error('tenantadmin@eventgenie.test was not seeded — cannot attach sample event');
+    const tenantAdminUser = await prisma.user.findUnique({ where: { email: 'tenantadmin@evelope.test' } });
+    if (!tenantAdminUser) throw new Error('tenantadmin@evelope.test was not seeded — cannot attach sample event');
 
     const existingEvent = await prisma.event.findFirst({
       where: { tenantId: testEventsCoTenant.id, name: eventName },

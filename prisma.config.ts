@@ -20,6 +20,10 @@ const getDatabaseUrl = (): string =>
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
+  // Prisma 7 reads the seed command from here, not package.json.
+  migrations: {
+    seed: 'tsx prisma/seed.ts',
+  },
   datasource: {
     url: getDatabaseUrl(),
   },
