@@ -5,13 +5,14 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
-import { assertValidCoordinates } from './event-coordinates.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
-import { isCoverImageTooLarge, coverImageTooLargeMessage } from './event-cover-image.util.js';
+import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -32,12 +33,37 @@ const assertCoverImageWithinSizeLimit = (data: { coverImageBytes?: number; cover
   throw new HttpError(400, coverImageTooLargeMessage(data.coverImageBytes));
 };
 
+// WHO may look up an event, decided once for getById and the lean lookups
+// below: SUPER_ADMIN is unscoped (that is the role's purpose); everyone else
+// is scoped to their own tenant. A non-SUPER_ADMIN with no tenantId now
+// fails CLOSED (resolveTenantScope throws 404) instead of falling through
+// to an unscoped lookup — see tenant-scope.util.ts for why. Security sweep
+// before G3: this used to convert null to undefined and silently widen the
+// query to every tenant; not reachable through the ordinary self-service
+// signup/create paths, but reachable the moment a SUPER_ADMIN creates an
+// EVENT_ADMIN or TENANT_ADMIN without a tenantId (POST /api/users lets a
+// SUPER_ADMIN omit it), and that role sits behind requireEventAdmin on
+// nearly every organiser route.
+// The one required organiser field on the event row itself (the venue is
+// per day now, event-day-venue.util.ts). 422 with a message an organiser
+// can act on — previously a missing name reached Prisma and came back as a
+// generic 500, and a blank one was saved.
+const assertEventName = (name: unknown): void => {
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new HttpError(422, 'Your event needs a name.');
+  }
+};
+
+const tenantScopeFor = (requestingRole: PlatformRole, tenantId: string | null): string | undefined =>
+  resolveTenantScope(requestingRole, tenantId, 'Event not found');
+
 export const eventService = {
 
   // Both list and detail flow through the SAME withEffectiveStatus
   // presenter, so they can never disagree about a given event's
   // status — there is no separate code path either could drift from.
   getAll: async (requestingRole: PlatformRole, tenantId: string | null) => {
+    if (isTenantScopeEmptyForList(requestingRole, tenantId)) return [];
     const events = requestingRole === 'SUPER_ADMIN'
       ? await eventRepository.findAll()
       : await eventRepository.findAll(tenantId ?? undefined);
@@ -48,10 +74,43 @@ export const eventService = {
   // (reactivate below, and tenantService.getEvents) — every other call
   // site relies on the default so an archived event stays a 404 for
   // everyone else, cross-tenant-access included.
+  //
+  // THE FULL EVENT — eight queries (the event plus seven relations). Use it
+  // only where the relations are actually read or returned: guest export
+  // (rsvpFields), the write endpoints that return the event in their
+  // response (update/publish/cancel/reactivate), and getDetail. Every other
+  // caller wants getScoped or getScopedWithPass below.
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = requestingRole === 'SUPER_ADMIN'
-      ? await eventRepository.findById(id, includeArchived)
-      : await eventRepository.findById(id, includeArchived, tenantId ?? undefined);
+    const event = await eventRepository.findById(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+
+    if (!event) throw new HttpError(404, 'Event not found');
+    return withEffectiveStatus(event);
+  },
+
+  // THE LEAN OWNERSHIP GATE — the event row plus its live days, two queries
+  // instead of getById's eight. Refuses exactly what getById refuses (same
+  // scope helper, same repository filter): another tenant's event, an
+  // archived event and a missing one are all the same 404, and `status` is
+  // the EFFECTIVE status (a finished event reads COMPLETED) because eventDays
+  // — everything resolveEffectiveStatus needs — are loaded.
+  //
+  // The return type has NO eventPass, tickets, rsvpFields, program or
+  // memoryHub, so a caller that reads one fails to compile rather than
+  // silently getting undefined: moving a caller here is checked by tsc.
+  // A caller that needs the Event Pass (any tier/entitlement check) uses
+  // getScopedWithPass; one that needs the other relations, or returns the
+  // event to a client, stays on getById.
+  getScoped: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+    const event = await eventRepository.findScoped(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+
+    if (!event) throw new HttpError(404, 'Event not found');
+    return withEffectiveStatus(event);
+  },
+
+  // getScoped plus the Event Pass — three queries. What every tier check
+  // needs (EntitlementDerivableEvent = tenantId + eventPass + eventDays).
+  getScopedWithPass: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+    const event = await eventRepository.findScopedWithPass(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -89,13 +148,15 @@ export const eventService = {
   },
 
   create: async (tenantId: string, userId: string, data: CreateEventDto) => {
-    assertValidCoordinates(data.latitude, data.longitude);
+    assertEventName(data.name);
     assertValidCapacity(data.capacity);
+    // Ownership first: the size check below destroys the asset on rejection.
+    assertCoverPublicIdOwned(tenantId, data.coverImagePublicId);
     assertCoverImageWithinSizeLimit(data);
     // No event days exist yet on this path (direct POST never creates
     // them — see event-day.router.ts), so there's nothing to compare the
     // deadline against beyond "not in the past".
-    assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, [], { rejectPast: true });
+    assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, [], { rejectPast: true });
     await assertEventCreatable(tenantId, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -109,20 +170,28 @@ export const eventService = {
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
-    assertValidCoordinates(data.latitude, data.longitude);
+    if (data.name !== undefined) assertEventName(data.name);
     assertValidCapacity(data.capacity);
-    assertCoverImageWithinSizeLimit(data);
     // Tier rules are evaluated against the EVENT's owning tenant, not the
     // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
     // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
     // their own to fall back on.
     const event = await eventService.getById(id, requestingRole, tenantId);
 
+    // Cover ownership is checked against the EVENT's tenant (right for a
+    // SUPER_ADMIN too), so it needs the event first; and it must run before
+    // the size check, which destroys the asset on rejection. The id already
+    // stored on this event is not re-checked (see assertCoverPublicIdOwned).
+    if (data.coverImagePublicId !== event.coverImagePublicId) {
+      assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
+    }
+    assertCoverImageWithinSizeLimit(data);
+
     if (data.rsvpDeadline !== undefined) {
       // rejectPast: false — an organiser deliberately closing RSVPs early
       // by setting the deadline to "now" on a live event is legitimate;
       // only a past deadline at CREATION time is rejected (see create()).
-      assertValidRsvpDeadline(data.rsvpDeadline ? new Date(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
+      assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
     }
 
     await assertEventUpdatable(event, {
@@ -246,8 +315,15 @@ export const eventService = {
 
     const missing: string[] = [];
     if (!event.name?.trim()) missing.push('a name');
-    if (!event.location?.trim()) missing.push('a location');
     if (!event.eventDays.length) missing.push('at least one event day');
+    // The venue belongs to each day. A day can only be SAVED with one now,
+    // but a day that came through the venue migration from an event that
+    // had none still exists without one — and guests must not be invited
+    // to a day with nowhere to go.
+    const daysWithoutVenue = event.eventDays.filter((d) => !d.location?.trim() || !d.address?.trim());
+    if (daysWithoutVenue.length) {
+      missing.push(`a venue for ${daysWithoutVenue.map((d) => `'${d.label}'`).join(', ')}`);
+    }
     if (missing.length) {
       throw new HttpError(422, `This event isn't ready to publish yet — it's missing: ${missing.join(', ')}.`);
     }

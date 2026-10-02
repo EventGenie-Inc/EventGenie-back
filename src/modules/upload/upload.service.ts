@@ -12,6 +12,7 @@ import {
   MEMORY_ITEM_VIDEO_ALLOWED_FORMATS,
   MEMORY_ITEM_VIDEO_MAX_BYTES,
 } from './upload-constants.js';
+import { coverFolder, memoryHubFolder } from './upload-folders.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable } from '../memory-hub/memory-hub-tier-enforcement.util.js';
 import { type RequestUploadSignatureDto, type UploadSignatureResponse } from './upload.types.js';
 
@@ -47,7 +48,7 @@ export const signMemoryItemUpload = (tenantId: string, eventId: string, mediaTyp
   // many, always belong to an existing event, and should sit in their
   // own per-event folder rather than pooling every tenant event's
   // memories together in one tenant-wide bucket.
-  const folder = `eventgenie/${tenantId}/memory-hub/${eventId}`;
+  const folder = memoryHubFolder(tenantId, eventId);
   const publicId = crypto.randomUUID();
   const resourceType = mediaType === 'VIDEO' ? 'video' : 'image';
   const allowedFormats = mediaType === 'VIDEO' ? MEMORY_ITEM_VIDEO_ALLOWED_FORMATS : MEMORY_ITEM_IMAGE_ALLOWED_FORMATS;
@@ -116,7 +117,7 @@ export const uploadService = {
 
     const { cloudName, apiKey, apiSecret } = requireCloudinaryConfig();
     const timestamp = Math.floor(Date.now() / 1000);
-    const folder = `eventgenie/${tenantId}/covers`;
+    const folder = coverFolder(tenantId);
     // Generated server-side, not client-chosen — signed alongside folder
     // so the client has no way to influence the destination path via a
     // crafted public_id (e.g. one containing '../') without invalidating

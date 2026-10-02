@@ -5,6 +5,13 @@ import { eventService } from '../event/event.service.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 
+// READ THIS BEFORE USING THIS MODULE FOR "WHO TURNED UP". An Attendance row
+// is a guest's RSVP ANSWER for one day ("will attend"), written by
+// rsvp.service.ts's submit() and rebuilt wholesale whenever they edit their
+// RSVP — it is NOT arrival. Recording or deleting one here edits what the
+// guest said they would do; it does not check anyone in. Day-of check-in is
+// the check-in module (CheckIn table, /api/events/:eventId/check-in).
+//
 // Attendance has no tenantId of its own, and no :eventId route param either
 // (this router is mounted flat at /api/attendance) — ownership is derived
 // from the body-supplied inviteId's parent event, then gated through

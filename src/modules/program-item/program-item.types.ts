@@ -3,7 +3,14 @@ export interface CreateProgramItemDto {
   description?: string;
   startTime: string;
   durationMins?: number;
-  order: number;
+  // Optional: omitted means "at the end of this program's list"
+  // (program-item.service.ts). Used to be required by type only, and a
+  // request without it reached Prisma as a generic 500.
+  order?: number;
+  // Which EventDay this item applies to. Omitted/null means "applies to
+  // every day" — see STEERING.md. Must belong to the same event as the
+  // program itself (422 if not) — checked in program-item.service.ts.
+  eventDayId?: string | null;
 }
 
 export interface UpdateProgramItemDto {
@@ -12,4 +19,5 @@ export interface UpdateProgramItemDto {
   startTime?: string;
   durationMins?: number;
   order?: number;
+  eventDayId?: string | null;
 }

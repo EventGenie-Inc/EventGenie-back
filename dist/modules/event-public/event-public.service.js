@@ -68,8 +68,7 @@ const assertEventAcceptsRegistration = (event) => {
 };
 // Deliberate, hand-picked projection — a guest sees only what belongs
 // on an invitation. No tenant id, no Event.id, no createdBy/updatedBy,
-// no coverImagePublicId, no capacity, no organiser-internal fields
-// (invitationTemplate/invitationConfig), no raw status. Built as an
+// no coverImagePublicId, no capacity, no raw status. Built as an
 // explicit allowlist (not a spread of the Prisma row) so this can never
 // silently start leaking a field added to Event later — the same
 // mistake already flagged on rsvp.service.ts's validate().

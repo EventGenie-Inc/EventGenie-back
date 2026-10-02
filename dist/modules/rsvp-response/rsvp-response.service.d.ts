@@ -1,6 +1,7 @@
 export declare const rsvpResponseService: {
     getAll: (inviteId: string) => import("@prisma/client").Prisma.PrismaPromise<({
         rsvpField: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -8,7 +9,6 @@ export declare const rsvpResponseService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -23,6 +23,7 @@ export declare const rsvpResponseService: {
     })[]>;
     getById: (id: string) => Promise<{
         rsvpField: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -30,7 +31,6 @@ export declare const rsvpResponseService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;

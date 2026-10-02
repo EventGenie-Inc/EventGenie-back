@@ -2,6 +2,14 @@
 
 Conventions every contributor and AI coding agent must follow.
 
+> **This file exists in two repos** — `EventGenie-back` (canonical) and the
+> frontend repo — and the two copies must be **byte-identical**. Change
+> the backend copy first, then copy it over unchanged; never edit only
+> one. Check with `diff` or `shasum` on the two files: no difference
+> means in sync. A frontend-only agent cannot read the backend repo,
+> which is why the copy exists; if you find the two differ, say so
+> before relying on either.
+
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
 prompt wins for that task only — flag the contradiction rather than
@@ -27,8 +35,9 @@ agreeable; do not manufacture findings to seem thorough. "This area is
 genuinely fine" is a valid, valuable finding.
 
 **A passing build is not a passing test.** `npm run build` proves types
-line up. It proves nothing about behaviour. Test against the real dev
-database with real seed accounts.
+line up. It proves nothing about behaviour. Automated tests run against
+the test database; manual smoke runs use the dev database with real seed
+accounts (see §6).
 
 **Prove your tests bite.** When adding a regression test, temporarily
 revert the fix, confirm the test fails, restore it, confirm it passes.
@@ -103,23 +112,176 @@ findById: (id: string, tenantId?: string) =>
 days, invites, attendance) scope through their parent event by gating on
 the already-scoped `eventService.getById()`. See `src/modules/event-day/`.
 
-Cross-tenant access has been found and fixed in this codebase **five
-separate times**. Assume it is missing until you have read the code.
+Cross-tenant access has been found and fixed in this codebase **six
+separate times** — most recently tickets and custom RSVP fields, which did
+no scoping at all. Assume it is missing until you have read the code.
+
+**A sub-resource must belong to the event in its URL, not merely to the
+caller's tenant.** Gate on the URL's `:eventId` first, then 404 unless the
+record's own `eventId` matches it — the same tenant's other event is as
+much a 404 as another tenant's. `program-item.service.ts`,
+`event-day.service.ts`, `ticket.service.ts` and `rsvp-field.service.ts`
+all follow this; a by-id lookup that only checks the record's OWN event is
+the gap to look for.
+
+**Tickets are organiser-only on `/api/events/:eventId/tickets`.** Guests
+read tickets only through their invite token (`/rsvp/validate`'s
+projection, `POST /api/rsvp/ticket-quote`); the public event page shows
+none. Do not reopen these reads to the public.
+
+**Fails closed.** A non-`SUPER_ADMIN` caller with no `tenantId` must never
+reach the unscoped branch above — `tenantId ?? undefined` looks harmless
+but is exactly how it happens: `null` becomes `undefined`, and an optional
+param quietly matches every tenant instead of none. Route it through
+`resolveTenantScope` / `isTenantScopeEmptyForList`
+(`shared/utils/tenant-scope.util.ts`) instead: a by-id lookup gets the same
+404 a real cross-tenant record would, a list gets an empty array. This
+state is not only theoretical — a platform-level `EVENT_VENDOR` (assigned
+to a `tenantId: null` `VendorSpace` by design, see `vendor.service.ts`)
+reaches exactly this path today. Found and fixed once already (Security
+Sweep Before G3); it now lives in one shared helper so it can't happen a
+second time.
+
+**Refused at creation, for the two roles that must always have one.**
+`userService.create` rejects a `TENANT_ADMIN` or `EVENT_ADMIN` with no
+resolved `tenantId` — 422, not merely tolerated and caught later by the
+fail-closed reads above. Both roles are operationally tenant-scoped
+everywhere (`requireTenantAdmin`/`requireEventAdmin`, and every
+`resolveTenantScope` call), so a row without one is the same "should never
+exist" state, stopped one step earlier. `SUPER_ADMIN` (platform-wide by
+design) and `EVENT_VENDOR` (scoped by `VendorSpaceUser` membership, not
+`tenantId`) are exempt on purpose — see `ROLES_REQUIRING_TENANT`'s own
+comment. Existing rows are never touched by this; it only gates new ones.
+
+**Vendor space visibility, intended design:** a vendor sees a space if
+they are a member of it, OR if it is in their tenant and has no members
+at all (unassigned spaces are visible to every vendor in the tenant).
+Anything else is a 404. **KNOWN DEBT:** the code currently enforces
+membership only (`getSpaceForViewer`) and applies the same gap to
+services and products. Resolved by the user management feature, which
+assigns users to vendor spaces.
+
+### Guest-facing responses
+
+An unauthenticated or token-authenticated endpoint (RSVP, public event
+registration, Memory Hub guest routes, ticket purchase callbacks — any
+route without `authenticate`) never returns a raw Prisma row or an
+`include` wider than what the page shows. Project an explicit shape by
+hand, the way `rsvp.service.ts`'s `validate()` and
+`event-public.service.ts`'s `toPublicView` already do. A raw
+`Invite`/`TicketPurchase`/`MemoryItem` row carries fields a guest must
+never see — `editToken`, `createdBy`/`updatedBy`,
+`commissionCents`/`ticketPriceCents`/`paymentRef` — and a field added to
+the model later leaks automatically unless the projection is an explicit
+allowlist, not a spread of the row. Found leaking on `rsvp.service.ts`'s
+`submit()` and `memory-hub.service.ts`'s `createGuestItem()` (Security
+Sweep Before G3) — both returned the just-written row directly.
+
+**Tier and plan language never reaches guests.** A guest route (no
+`authenticate`) never surfaces a subscription tier name, "plan",
+"upgrade", or a storage/limit figure derived from billing — that
+language only means something to an organiser looking at a pricing
+page. Where an organiser-facing error names the plan
+(`memory-hub-tier-enforcement.util.ts`'s `assertMemoryHubAccessible`/
+`assertMemoryHubQuotaAvailable`, `memory-hub.service.ts`'s
+`assertItemAcceptableOrDestroy`), the guest-facing call site passes
+`audience: 'guest'` for wording with none of that in it — e.g. "This
+event's photo album is full, so new photos can't be added right now."
+instead of naming a plan and its MB ceiling. A guest-facing
+**availability** endpoint (POST `/api/rsvp/program`, POST
+`/api/memory-hub/guest-view`) goes further and gives no reason at all —
+`{ available: false }` covers every blocked state (cancelled event, no
+program/hub, unpublished, not yet open, tier without the feature)
+identically, so the response itself can never leak which one applies.
+The product's own internal name for a feature is billing/organiser
+vocabulary too, same as a tier name — a guest sees "photo album", never
+"Memory Hub" (`memory-hub.service.ts`'s `requestGuestUploadSignature`/
+`createGuestItem`, `memory-hub-tier-enforcement.util.ts`'s
+`assertMemoryHubAccessible`); the organiser-facing branch of the same
+functions keeps saying "Memory Hub".
+
+**Guest rate limits are keyed by credential, not by IP, whenever the
+credential is available.** The Memory Hub guest upload endpoints
+(`guest-upload-signature`, `guest-items`) used to be keyed purely by
+IP — wrong for the identical reason `/exchange-session`'s limiters
+are not (see "Session and tokens" below): guests at one venue's WiFi,
+or on South African mobile networks behind one shared carrier-grade
+NAT IP, all present as ONE IP, so an entire event shared a single
+~10-photos-per-5-minute budget, nothing to do with abuse.
+`memoryHubGuestUploadLimiter` is now keyed by the SHA-256 hash of the
+invite **token** from the request body (never the raw token, same "a
+rate limiter's own in-memory store must not hold a live credential as
+a literal key" rule as the device-token limiter) — 60 requests / 5
+minutes **per invite**, so one guest's budget is never affected by how
+many others share their network. `memoryHubGuestUploadIpLimiter` sits
+alongside it as the abuse backstop a per-credential limiter alone can't
+provide (a script minting a fresh token per request would get a fresh
+per-invite budget every time) — 100 **failed** requests / 5 minutes per
+IP, `skipSuccessfulRequests`, generous enough that real multi-guest
+traffic on a shared IP never approaches it. The budget itself is never
+hardcoded on the frontend — `POST /api/memory-hub/guest-view`'s
+`limits.uploadRequestsPer5Min` reports the same constant the limiter
+enforces (`upload-constants.ts`'s
+`MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`).
+
+### Client-supplied Cloudinary assets
+
+**A client-supplied Cloudinary publicId is checked with
+`isSignedPublicIdInFolder` before it is stored or deleted.** Every upload
+is signed into a folder that names its owner, with a server-chosen
+`<uuid>` public_id (`src/modules/upload/upload-folders.ts` builds every
+folder, for signing and checking alike). The browser then reports the
+publicId back, and it is just a string: this server holds the API secret,
+so an unchecked publicId handed to `destroyAsset` deletes whatever asset
+it names, other events' and other tenants' included. PublicIds are
+readable in any Cloudinary URL, which every guest sees. Check against the
+folder for the exact owner (this event, this tenant) and 422 otherwise,
+**before** any path that could destroy it. The URL stored beside it gets
+the same treatment: `isCloudinaryDeliveryUrlFor` ties it to exactly the
+checked publicId, so a vetted id can't sit next to a URL pointing
+anywhere else. Found missing on Memory Hub guest and organiser uploads,
+event covers (create, update, wizard materialize) and Memory Hub
+`mediaUrl`; invitation designs were built with both checks. An id
+already stored on a record is not re-checked when re-sent unchanged.
+
+### Email HTML
+
+Every user-supplied value interpolated into an email HTML body —
+organiser-typed (event name, venue, custom messages) or guest-typed (a
+name captured at RSVP) — goes through `escapeHtml`
+(`shared/utils/html.util.ts`) before reaching `renderBrandEmailShell`. An
+event named `<script>...</script>` must not become live markup in a
+guest's inbox, sent under EventGenie's own address. A URL placed in an
+`href` needs attribute-context escaping too, unless it is server-built
+from config and a random token rather than free text — document that
+exemption inline where you rely on it, the way `invite-message.util.ts`
+does for `rsvpLink`. Found missing on `buildInviteEmailHtml` (Security
+Sweep Before G3) — `buildReminderEmailHtml` already did this correctly,
+which is how the gap was spotted.
 
 ### Soft delete
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Three documented exceptions: `Attendance` (a fact record — it happened or
-it did not), `EventDraft` (transient wizard state, deleted on
-materialisation), and `PaymentLedgerEntry` (Payments Foundation — an
-append-only money ledger, never soft-deleted OR edited: no `isArchived`,
-no `updatedAt`, and deliberately no update/delete method anywhere in
-`payment-ledger.repository.ts`). The first two are about records that
-either never existed as durable facts or stopped mattering once
-consumed; `PaymentLedgerEntry` is the opposite case — a record of
-something that happened to money, which does not stop having happened.
-A correction is a NEW entry, never an edit to an old one. What a tenant
+Five documented exceptions:
+
+- `Attendance` — a guest's **RSVP answer per day** ("will attend"), NOT
+  arrival. RSVP submit rebuilds these wholesale on every edit, which is why
+  they are hard-deleted rather than archived. Do not record who turned up
+  here.
+- `CheckIn` — a fact record: this person arrived on this event day, or they
+  did not. Undoing a wrong tap is a delete of the row.
+- `EventDraft` — transient wizard state, deleted on materialisation.
+- `PaymentLedgerEntry` (Payments Foundation) — an append-only money ledger,
+  never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
+  deliberately no update/delete method anywhere in
+  `payment-ledger.repository.ts`.
+- The append-only send logs `SmsSendLog` and `InviteReminderLog` — a message
+  was sent, or failed to be, recorded once and never edited or archived.
+
+`EventDraft` is a record that stopped mattering once consumed;
+`PaymentLedgerEntry` and the logs record something that happened, which does
+not stop having happened. A correction is a NEW entry, never an edit to an old one. What a tenant
 has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
 `isArchived` on, and none should be added.
@@ -142,7 +304,9 @@ to restore it, the feature is broken even though every method works.
 
 Throw `HttpError(status, message)`, never a bare `Error`. The global
 handler only maps `HttpError` to a real status code — everything else
-becomes a masked 500 and the real reason is lost in production.
+becomes a 500 with one generic message in **every** environment (its raw
+text can carry Prisma model names, query arguments and SQL), and the real
+reason survives only in the server log.
 
 | Status | Use for |
 |---|---|
@@ -159,6 +323,31 @@ not "Invalid state transition."
 Cross-tenant access returns **404, not 403**. Confirming a record exists
 in another tenant is itself a leak.
 
+**Machine-readable codes.** `HttpError(status, message, code?)` — a
+third, optional argument, backward compatible: every call site that
+omits it keeps returning a plain response with no `code` field, exactly
+as before. The global handler includes it only when present:
+`{ status: 'error', message, code? }`. Add a code when — and only
+when — a client needs to tell two same-status failures apart to decide
+what to do next, not as a matter of course on every `HttpError`. Two
+established pairs: `SESSION_EXPIRED`/`SESSION_INVALID` (`authenticate`
+middleware and `POST /api/auth/refresh-session`, decide whether a
+silent retry is worth attempting) and `FIREBASE_TOKEN_INVALID`/
+`DEVICE_NOT_RECOGNISED` (`POST /api/auth/exchange-session`, Trusted
+Devices — decide whether to refresh the Firebase token and retry, or
+discard the stored device token and fall back to a fresh OTP — today's
+client can't tell these apart, forces a Firebase refresh on every 401,
+and sometimes discards a valid device token for nothing).
+
+A code must never subdivide a case that is already deliberately generic
+for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
+wrong-user, revoked, **and** expired device tokens — one code, matching
+the one message already used for all of them — because splitting those
+apart is exactly the oracle the single message exists to avoid.
+`FIREBASE_TOKEN_INVALID` is safe to keep as its own code precisely
+because whoever holds a Firebase ID token can already check its
+validity directly with Firebase; there's nothing to leak.
+
 ### Tier enforcement
 
 Subscription limits are enforced **server-side**. Frontend gating is UX,
@@ -172,14 +361,229 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 Enforcement points differ: `maxGuestsPerEvent` is checked at **import
 time**; `maxSmsPerMonth` at **send time**, all-or-nothing.
 
+**A new tier column needs a per-tier `UPDATE` in its migration.** `null` on a
+numeric limit means unlimited, so a migration that only does `ADD COLUMN`
+leaves every existing row unlimited — it fails **open**. Follow the `ADD
+COLUMN` with an `UPDATE "SubscriptionTierConfig" SET … WHERE "tier" = …` for
+each tier, and update `TIER_CONFIGS` in `prisma/seed.ts` to match. The seed
+cannot cover for you: it never touches a database it isn't pointed at, and it
+does not overwrite existing tier configs. `maxVendorSpaces` and
+`maxMemoryHubBytesPerEvent` were both added without one, so on any database
+the seed has never run against they are `null`, i.e. unlimited. There is no
+production database yet, so nothing is broken today — the first one must be
+populated by hand.
+
+**Role gates hide. Tier gates show, with an upgrade path.** A role
+mismatch (an `EVENT_ADMIN` opening User Management) is an authorization
+boundary — they will never have access, so hide it entirely. A tier
+mismatch (a Spark tenant opening Vendor Space) is a sales opportunity —
+show the feature locked, badge the plan it requires, and let them act on
+it. Nobody upgrades into something they never knew existed. This applies
+to nav items, routes, and buttons alike; a tier-gated route must never
+404 on a direct hit.
+
+Where "act on it" leads depends on who is asking and what is gated — and
+it is **never the public Pricing page for someone who is signed in**:
+
+- **Signed-in tenant, tenant-scoped feature** (Vendor Space, Vendor
+  Discovery). A locked click, or a direct URL hit, raises a confirmation
+  — nobody is moved somewhere unannounced — and confirming goes to
+  `/subscription`, carrying the reason as `feature` and `requiredTier`
+  query params. A direct hit lands on the dashboard with that
+  confirmation open. (`TierGateService`, `tierGuard`.)
+- **Signed-in tenant, event-scoped feature** (Memory Hub, which an Event
+  Pass on that event also unlocks). No confirmation: the user goes to the
+  event's Control Center with `?upgrade=<feature>`, which opens a
+  two-option prompt — subscribe (`/subscription`), or unlock just this
+  event with an Event Pass. (`eventTierGuard`.)
+- **Logged-out visitor.** The public `/pricing` page is a marketing
+  surface for them, and only them.
+
+Exception: registration-time tier selection is not an upsell surface —
+nobody is upgrading before they have an account.
+
+### Migrations and the shared database
+
+Dev and prod share one database until the Frankfurt migration. Agents
+never apply migrations to it. The human does that at deploy. Agents
+apply migrations only to the test database, and only through the
+harness behind the refusal guard.
+
 ### Session and tokens
 
-Session JWTs live in memory, plus `sessionStorage` when the user opts
-into "keep me signed in". **Never `localStorage`.**
+**The second factor (the emailed OTP) is once per device, not once per
+session.** Passing an OTP on a device issues a *device token*; from then
+on that device mints sessions without a code. This is deliberate. On a
+phone, closing a tab is not something the user does: Android discards
+backgrounded tabs whenever it wants the memory. Anything that ends
+sign-in when a tab goes away signs people out at random, mid-task —
+that is what caused the OTP bugs this design replaced.
 
-All storage access is isolated inside `AuthService`. No guard,
-interceptor, or component touches it directly — that boundary is what
-made removing an earlier bad implementation a single-file change.
+**The session JWT is never persisted — not in `localStorage`, not in
+`sessionStorage`, not anywhere.** It lives in `AuthService`'s memory
+only, and is minted fresh on every page load by `POST
+/api/auth/exchange-session`: a Firebase ID token (proves who, i.e. the
+password) plus the device token (proves this device passed an OTP).
+Neither alone is enough. Every tab exchanges independently on its own
+load; that is expected. A reload is therefore not a logout and needs no
+code.
+
+**The device token is the one durable client-side credential, and it
+lives in `localStorage` DELIBERATELY** (key `eg.device`). It has to
+survive reloads, closed tabs and discarded tabs — that is its whole
+purpose. The XSS exposure this implies is an **accepted risk** until
+httpOnly cookies land in the production work; it is not an oversight
+to be "fixed" by moving it to `sessionStorage` (which dies with the
+tab and brings back the Android bug) or into memory (which dies on
+reload). Do not move it without replacing the design.
+
+**Only `AuthService` reads or writes credentials** — the device token,
+the in-memory JWT, and the OTP-step record (`sessionStorage`, an email
+and an expiry, no secret). No guard, interceptor, or component touches
+them directly; that boundary is what made removing an earlier bad
+implementation a single-file change. (The shared last-activity
+timestamp, `eg.last-activity`, is not a credential and belongs to
+`SessionActivityService`.)
+
+**Server side:** only a SHA-256 hash of the device token is stored; the
+raw value is sent to the client exactly once, in the `verify-otp`
+response. Tokens last 30 days from issue and are **not rotated on use**
+— every tab exchanges the same token concurrently on load, and rotating
+it would make all but the first exchange fail with a 401 and discard
+the device (a multi-tab race).
+
+**What revokes a device token:** an explicit logout (`POST
+/api/auth/logout`, that one device), and suspending the user or their
+tenant (every device). **An idle timeout does NOT revoke it, and nor
+does merely requesting a password reset.** Anyone who knows a user's
+email can request a reset, so revoking every device on the request
+alone cost real users' devices — and, once SMS delivery is live, real
+money — for no security gain: a **completed** reset already ends every
+existing sign-in on its own. Firebase invalidates the account's
+existing tokens the moment the password changes, and both
+`exchangeSession` and `refreshSession` verify with `checkRevoked` (see
+`verifyFirebaseTokenStrict` in `auth.service.ts`), so a device token
+paired with the OLD password's Firebase session simply stops working
+the instant the reset completes — nothing in this backend has to notice
+or act.
+
+**Idle logout** signs out of Firebase (and drops the session) but
+**keeps the device token**. With no Firebase identity the next load
+cannot exchange, so the user really is signed out — but the device is
+still trusted, so signing back in asks for the password and **not** an
+OTP. That is the intended trade-off: an idle logout protects an
+unattended screen; it is not a revocation. An explicit logout does
+revoke, so the next sign-in asks for both.
+
+**Idle is measured from activity, not from the token.** Two clocks,
+kept apart (`SessionTimeoutService`):
+
+- **The idle deadline = last activity + the idle limit.** "Last
+  activity" is the newest interaction in *any* tab. The warning (60 s
+  before) and the idle logout key off this deadline and nothing else.
+  It is computed in exactly one place, `SessionTimeoutService`'s
+  `idleDeadline()`.
+- **The token** is a short-lived JWT that has to be renewed while the
+  session lasts. Its expiry only decides *when a new token is needed*:
+  near expiry, if the deadline lies beyond it, it is renewed
+  (`refresh-session` while still valid, the device-token exchange once
+  lapsed). **A renewal or re-mint renews the token without extending
+  the deadline** — otherwise a tab that wakes and re-mints would hand an
+  unattended screen a fresh idle allowance. Answering the warning
+  ("Stay signed in") *is* activity, so it does move the deadline; a
+  stray click on the warning's backdrop does not. If the deadline
+  arrives with the warning showing and unanswered, the tab logs out —
+  unless another tab saw activity after the warning appeared, which
+  releases the warning and moves the deadline.
+
+**The idle limit is the session token's own lifetime** (its `exp −
+iat`), not a second number kept in the frontend. That couples it to the
+backend's session JWT TTL (`SESSION_TOKEN_TTL` in the backend
+`auth.service.ts`, 15 minutes): **changing that TTL for any reason
+changes the idle timeout too.** Anyone shortening the TTL for security,
+or lengthening it for convenience, is also moving the idle logout.
+
+**Idle detection is shared across tabs.** Firebase sign-in is shared by
+every tab on the origin, so one tab's idle logout signs out all of
+them; "idle" must therefore mean idle in *every* tab, and a tab may only
+idle-log-out if no tab was active within the idle limit. Activity is
+broadcast between tabs (`BroadcastChannel`) and also written to
+`localStorage` (`eg.last-activity`), because a frozen background tab
+receives no broadcasts and must read the stored timestamp when it
+wakes. Both cross-tab signals are leading-edge throttled to one per
+5 seconds; each tab's own in-memory timestamp updates on every
+interaction.
+
+**A 401 from the exchange is acted on by its code.** The endpoint says
+which credential it refused (see "Machine-readable codes" under
+Errors), and the device token is the expensive credential to lose (it
+costs an emailed code), so the client never discards it on a guess.
+This applies everywhere the exchange is called (bootstrap, after the
+password step, and a woken tab's re-mint — all through
+`AuthService.resumeSession()`):
+
+- `DEVICE_NOT_RECOGNISED` — discard the device token and go straight
+  to the OTP step. No Firebase refresh, no retry: a fresh ID token
+  cannot change that answer.
+- `FIREBASE_TOKEN_INVALID` — one forced Firebase refresh
+  (`getIdToken(true)`) and exactly one retry. Success keeps the device
+  token. A second `FIREBASE_TOKEN_INVALID`, or Firebase itself refusing
+  the refresh (`auth/user-token-expired`, `auth/invalid-user-token`),
+  means the Firebase identity is gone — most likely a password reset
+  completed elsewhere: sign out of Firebase, **keep** the device token,
+  and show the password screen with a calm "Please sign in again". The
+  device is still trusted, so no OTP follows. `DEVICE_NOT_RECOGNISED`
+  on the retry is handled as above; a refresh that fails on the network
+  is unknown state, and nothing is cleared.
+- **No code, or a code this client does not know** — the pre-code
+  behaviour: one forced refresh and one retry, and only a second 401
+  discards the device token. Kept deliberately so the frontend stays
+  correct against an older backend during a deploy. Do not remove it.
+
+Never a loop: at most one retry, on any path.
+
+**A refresh after a completed password reset ends the session the
+same way.** `refresh-session` verifies with `checkRevoked`, so once a
+reset completes elsewhere, an open session's next refresh is refused
+with a **401 that carries no code** ("Firebase token is invalid or has
+expired"). That endpoint's only coded 401s are `SESSION_EXPIRED` and
+`SESSION_INVALID` (the session JWT itself failed); any other 401 on the
+refresh request — the revoked token, a uid mismatch, a user gone — is a
+verdict on the Firebase side, and ends the session as above: Firebase
+signed out, device token kept, the password screen with "Please sign in
+again". It is never treated as a network failure (retried), and never
+clears the device token. A 403 from `refresh-session` (suspended
+mid-session) shows the inactive-account message and forgets the
+device, exactly as at bootstrap. Both are decided on the refresh
+request itself, in the interceptor, because the proactive refresh and
+the idle timer swallow a failed refresh.
+
+**Rate limits on `/exchange-session` and its per-device limiter count
+only FAILED attempts** (`skipSuccessfulRequests`). Guessing is failures
+by definition, and a successful exchange is the endpoint working as
+designed on a path every ordinary page load takes — counting it too
+meant legitimate multi-tab use could exhaust the per-device budget on
+its own, and, sharper still, South African mobile networks put many
+unrelated users behind one shared carrier-grade NAT IP, so counting
+successes against the IP limiter could throttle unrelated real users
+the moment that shared IP's routine traffic passed the ceiling, nothing
+to do with abuse. The per-device limiter keys on the SHA-256 hash of
+the submitted device token, never the raw value — a rate limiter's own
+in-memory store must not hold a live credential as a literal key any
+more than the database should.
+
+**A network failure never signs anyone out** — not a dropped
+connection, a timeout, a 429 or a 5xx, at bootstrap or mid-session.
+Only a server *verdict* ends a session (see `session-failure.util.ts`);
+an unanswered request is unknown state, and the client keeps the device
+token and Firebase sign-in and retries. This lesson has been learned
+twice already.
+
+**The "keep me signed in" toggle is gone on purpose. Do not reintroduce
+it.** It offered a catastrophic default as a choice: unticked meant
+"sign me out whenever Android reclaims the tab's memory", which nobody
+would pick deliberately. Staying signed in is simply how the
+application works.
 
 ### TypeScript
 
@@ -261,6 +665,150 @@ across two events is two unrelated records.
 Phone numbers are E.164 (`+27...`). Reject with a specific message
 naming the fix, not a generic "invalid".
 
+**A guest may update their own contact at RSVP** (`POST /api/rsvp/submit`,
+`email`/`phoneNumber`): a value sets it (normalised by the same functions
+guest import uses, 422 with import's specific message when invalid),
+`null` removes it, omitted or blank leaves it alone. A guest can never
+remove their only contact (422). Dispatch reads the guest's contact at
+send time, so a changed number reaches future invites and reminders by
+itself; removing the channel the invite goes out on moves
+`Invite.deliveryMethod` to the one they kept.
+
+### Venue
+
+**The venue belongs to the event day, not the event.** Every `EventDay`
+has its own `location` (venue name), `address`, `latitude`, `longitude`.
+The columns are nullable only so the migration that introduced them could
+backfill old events; the API requires a non-blank location and address on
+every day create and update (422), judged on the day an update leaves
+behind (`event-day-venue.util.ts`, shared with the wizard's materialize).
+Coordinates come from the frontend's HERE address lookup, both-or-neither,
+and are cleared when the address changes without new ones — this backend
+never calls HERE on save. Anywhere a venue is shown reads it from the day:
+`/rsvp/validate` and `/rsvp/program` per day, invitation and reminder
+emails from the guest's own invited days (one line per day when several),
+the check-in roster's day, vendor proximity and organiser lists from the
+first day by date. Publishing refuses an event with a day that has no
+venue. Event create and update take no venue at all (an older client
+still sending one is ignored, not refused).
+
+### Event program
+
+A program is **visible to guests by default** (`isPublished` true on
+creation); `isPublished: false` hides it. A program item created without
+`order` goes to the end of its program's list.
+
+`ProgramItem.eventDayId` is nullable — `NULL` does not mean "no day
+assigned" or an error state, and it is **not** unconditionally "every
+day" either. A day-scoped item (`eventDayId` set) shows only under that
+one day, unchanged. A `NULL` item is guest-facing-rendered
+(`POST /api/rsvp/program`, `eventProgramService.getProgramForInvite`)
+by matching its `startTime`'s **UTC calendar date** against the
+event's own `EventDay.date`s: if exactly one (or more, if two days
+somehow share a date) of the event's days has that date, the item shows
+under that day only, same as if `eventDayId` had been set explicitly.
+Only when the item's date matches **none** of the event's days does it
+fall back to the old "standing item" behaviour — shown under every one
+of the **guest's invited** days (never every day on the event; a guest
+sees only their own invited days regardless). Date matching happens
+against the full event, but display scope always stays the guest's
+invited days. Within a day, items are sorted by `startTime` then
+`order`. `eventDayId`, when provided on create/update, must belong to
+the same event as the program itself — 422 otherwise.
+
+The organiser program UI sets `eventDayId` through a day picker on every
+item, required when the event has more than one day and hidden on a
+single-day event (where an item is left `NULL` and date-matching above
+places it). Items created before the picker, and any left `NULL`, still
+resolve by date as described. The wizard's materialize takes no item day
+(the days have no ids until it runs) and always creates the program
+visible, so the frontend sets each item's day — and hides the program
+when the organiser asked — with follow-up calls straight after it.
+
+### Reminders
+
+Manual only — the organiser presses a button; this codebase has no
+scheduler by deliberate choice. They go through the same dispatch path as
+invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
+the same pool an SMS invitation does: the event's pass bundle if it has
+an active pass, otherwise the tenant's monthly quota — never both, and
+all-or-nothing on a shortfall.
+
+A guest is reminded only if their invitation was **delivered**
+(`Invite.deliveredAt`), they have **not responded** (`PENDING`), the
+invite has not expired, and they were not reminded in the last 24 hours
+(`REMINDER_COOLDOWN_HOURS`). Archived guests, archived invites and
+plus-ones are excluded at query level. Refused outright when the event is
+not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
+
+The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`)
+and released if the send fails, so overlapping requests cannot double-send
+and a failed send never starts it. Every attempt, failures included, is
+written to `InviteReminderLog`.
+
+### Check-in
+
+Recorded **per event day**, never as one "arrived" flag on the guest: someone
+invited to both days of a wedding can be there on Saturday and absent on
+Sunday (`CheckIn`, one row per invite + day). It is not `Attendance` — that
+is the guest's RSVP answer, and a guest editing their RSVP must never touch
+who has been checked in.
+
+The day list shows **everyone invited to that day**, RSVP status per row, so
+walk-ins and non-responders can be found, checked in and undone; "expected"
+in the counts is only those who said **yes** to that day. Plus-ones are
+listed and checked in like anyone else (they have an `Invite`). Check-in and
+undo are **idempotent**, and refused only on a draft or cancelled event — a
+completed event still accepts corrections. Done by a Tenant Admin or Event
+Admin; there is no door-staff role.
+
+### Invitation designs
+
+An event has at most one active `InvitationDesign` (a partial unique
+index in its migration, since Prisma can't express one): a **TEMPLATE**
+(a frontend-defined template, `templateId` + `templateVersion`, plus the
+organiser's `overrides`) or an **UPLOAD** (an image in the event's own
+Cloudinary folder). Switching kind rewrites the same row. Guests get it
+as `design` on `GET /api/rsvp/validate/:token`, through the explicit
+projection in `invitation-design-guest.util.ts`.
+
+**The font allowlist exists in both repos and must always change
+together.** The backend copy is `INVITATION_FONT_ALLOWLIST`
+(`src/modules/invitation-design/invitation-design-fonts.ts`, canonical);
+the frontend holds an exact copy. Change the backend first, then the
+frontend, in the same piece of work. A font the frontend offers but the
+backend lacks is a 422 on save; one the backend allows but the frontend
+never loads falls back to a system font on a guest's card. Every entry
+must be a Google Fonts family, spelled as Google spells it. A template
+that uses a new font adds it here first. Removing a font breaks re-saving
+every design that already uses it.
+
+**No free-form CSS, ever.** An override is
+`{ elements: { [elementId]: { color?, backgroundColor?, fontFamily?,
+fontSize?, text? } } }` and nothing else: colours `#rrggbb` only, fonts
+from the allowlist, `fontSize` a number within the global range, `text`
+plain and bounded. Every unknown key, at any level, is a 422 and never
+silently dropped. A new styleable property is a new named, validated
+key, never a pass-through string.
+
+**Template versions never change once saved.** A saved design pins
+`templateId` + `templateVersion`; the frontend must keep rendering every
+version it has ever shipped exactly as it was, because saved overrides
+name element ids and assume that version's layout. A changed layout is a
+new version number, never an edit to an existing one.
+
+### Dates
+
+Every guest-facing date is formatted in **UTC**, through
+`shared/utils/guest-date.util.ts` — never `toLocaleDateString`, `getDate()`
+and friends on a stored date, which read the *server's* timezone. Every
+client date string becomes a `Date` through `parseClientDateTime`
+(`shared/utils/date-input.util.ts`), never `new Date(string)`: an offset-less
+`2026-09-19T23:59:59` means literal UTC, matching what the frontend assumes,
+whereas plain `new Date` reads it in the server's zone. The organiser picks
+calendar dates; UTC is the identity that prints back the date they picked.
+Events have no timezone of their own (see Known gaps).
+
 ### Terminology
 
 | Term | Applies to | Means |
@@ -304,24 +852,83 @@ happened, here is why"; the other says "here is what happened". Style
 them distinctly, and preserve the user's selection on rejection so they
 can adjust and retry.
 
-Required fields are marked with an asterisk.
+Required fields are marked with an asterisk — only fields the server
+requires.
+
+### Form validation
+
+Every frontend form (vendor forms excepted, for now) validates through
+one shared layer, `src/app/shared/forms/`. No form builds its own.
+Signals and explicit `(input)` handlers, as above; not the Forms API.
+
+- **Rules** (`rules.*`): required, email (the backend's own pattern),
+  phone (the backend's own check: same `libphonenumber-js` version, pinned
+  in both repos; a local `082…` number gets the backend's "missing a
+  country code, use +27…" message), whole number / number range,
+  maximum and minimum length, pattern, matches, date and time order
+  (`after`, `notAfter`, `notBefore`), and custom. A form is a list of
+  field checks (`field()` for a value it owns, `check()` for one held
+  elsewhere), each keyed by its control's DOM id.
+- **Rules mirror the backend.** Required fields come from its
+  required-field audit, formats and limits from its validation: the UI
+  never accepts what the server refuses, nor refuses what it accepts. A
+  rule the backend lacks is added only when a task asks for it, and is
+  listed for a backend follow-up — fix the backend, don't drift.
+- **Behaviour, identical in every form:** a field's error appears when it
+  is left (blur), not while it is first typed, and then updates live.
+  Save/Next *looks* disabled while the form is invalid, or in an edit
+  form while nothing has changed (`aria-disabled`, never the `disabled`
+  attribute), with a line beside it ("Complete the highlighted fields to
+  continue." / "No changes to save yet."). Tapping it saves nothing, marks
+  every field touched, shows every error and moves focus to the first.
+  While saving, the button shows progress and can't be pressed again.
+  A wizard's Next checks its own step only.
+- **Pieces:** `createForm()` (valid, dirty, submitting, first invalid
+  field; `begin()` at the top of every submit handler, `end()` when the
+  save settles), `FormFieldDirective` (`[egField]` on a native control:
+  `aria-invalid`, `aria-describedby` to `<id>-error`, touch on blur),
+  `FieldError` (`<app-field-error>`, the message under the field), and
+  `SubmitButton` (`<app-submit-button>`). A custom control (password,
+  address search, colour) takes `inputId`/`invalid`/`describedBy` inputs
+  and emits `blurred`.
+- **Server errors:** a 422/409 the backend ties to a field (its message
+  names the value) goes beside that field with `failField()`; anything
+  else stays in the form's banner.
+- **Messages** are short and plain: "Enter the venue name", "Use the
+  format +27 82 123 4567", "The end time must be after the start time" —
+  never "Invalid input" or "This field is required".
+- A numeric field where blank means something (unlimited) is a text input
+  with `inputmode="numeric"`, so a typo reaches the rule instead of the
+  browser silently turning it into blank.
 
 ---
 
 ## 6. Testing
 
-Seed accounts (`npm run seed`) exist specifically so authenticated and
-cross-tenant flows are testable. Two tenants exist deliberately.
+**Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
+only** — a separate Neon database, never the shared dev/prod one. The
+isolation guard (`resolve-database-url.util.ts`) refuses to run
+otherwise. New migrations reach it through the guarded harness
+(`npm run test:db:reset`, or `NODE_ENV=test npx prisma migrate deploy`);
+see "Migrations and the shared database". Fixtures are created and
+hard-deleted by the tests themselves (`tests/helpers/`). The test database
+is still a real remote Postgres, which is what catches round-trip bugs
+like the Prisma transaction timeout at 50 rows that a fast local database
+or a 5-row fixture would never show.
+
+**Manual smoke runs use the dev database** with the seed accounts
+(`npm run seed`). They exist specifically so authenticated and
+cross-tenant flows can be clicked through, and two tenants exist
+deliberately. Nothing automated ever points at dev.
 
 Emails at `@eventgenie.test` cannot receive mail — read the OTP from the
 `OtpRecord` table in the dev database.
 
-**Always clean up fixtures**, then re-run `npm run seed` and confirm it
-reports everything already exists.
-
-Test against the real dev database. It has caught bugs that pass locally
-— a Prisma transaction timeout at 50 rows, for one, that would never
-appear against a fast local database or a 5-row fixture.
+**Always clean up smoke-run fixtures**, then re-run `npm run seed` and
+confirm it reports everything already exists.
+The seed **never overwrites** an existing tier config, tenant or user — a
+tenant you put on Celebrate for a test stays there. To reset on purpose:
+`--reset-tier-configs`, `--reset-tenants`, `--reset-users` (see the README).
 
 ---
 
@@ -350,8 +957,98 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   guests.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
-- **Automated test coverage is thin.** Backend has none; frontend has
-  interceptor regression tests only.
+- **Automated test coverage is thin.** The backend has a Vitest suite
+  (`npm test`, `tests/`) on real Postgres in a separate
+  `DATABASE_URL_TEST` database (never the shared dev/prod one — see
+  `resolve-database-url.util.ts`'s isolation guard), Firebase Admin
+  stubbed at exactly `verifyIdToken`. Tests are HTTP-level (`supertest`
+  against the real Express app) or call a service directly, and cover
+  targeted guarantees rather than whole modules:
+  - **Auth** (`tests/auth/`): `exchange-session` and `logout`
+    (valid/garbage/wrong-user/expired device tokens, the
+    `FIREBASE_TOKEN_INVALID`/`DEVICE_NOT_RECOGNISED` codes, a suspended
+    user refused cleanly rather than a masked 500), `refresh-session`'s
+    strict Firebase verify, `forgotPassword` no longer revoking on
+    request, both rate limiters (`skipSuccessfulRequests`, hash-keying),
+    `DeviceToken.userAgent`, only the token's hash ever stored, the
+    `authenticate` middleware, the test-database isolation guard, and
+    username escaping in auth emails.
+  - **Tenant scoping** (`tests/tenant-scope/`): fail-closed lookups for
+    a caller with no tenant, event program and program items across
+    tenants, vendor-space membership, `TENANT_ADMIN`/`EVENT_ADMIN`
+    refused without a tenant at creation, tickets and custom RSVP fields
+    across tenants and under the wrong event (plus the SPARK custom-field
+    gate and organiser-only ticket reads), and event days under the wrong
+    event.
+  - **Program defaults** (`tests/event-program/`): visible by default on
+    both creation paths and still hideable, the publish migration, and a
+    program item's `order` defaulting to the end of the list.
+  - **Guest-facing responses**: RSVP `submit()`'s exact response shape,
+    the guest program contract, archived event days hidden from guests
+    and refused at submit (`tests/rsvp/`); Memory Hub guest view,
+    guest-safe wording and the per-invite upload rate limit
+    (`tests/memory-hub/`); invite email escaping (`tests/invite/`).
+  - **Invitation designs** (`tests/invitation-design/`): cross-tenant
+    404, cancelled-event 409, every 422 validation, create/replace/switch
+    kind, and the guest projection's exact keys.
+  - **Day venues** (`tests/event-day/`): a day without a venue is 422
+    on create and update, stale coordinates cleared, cross-tenant day
+    update 404, the event no longer taking a venue, `hostName` trimmed and
+    blank stored as null, publish refusing a venue-less day, and the venue
+    migration's data copy. Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
+    per-day venues on `/rsvp/validate`, `/rsvp/program` and the sent emails.
+  - **RSVP contact update** (`tests/rsvp/rsvp-contact-update.test.ts`).
+  - **Required fields** (`tests/validation/`): 422 on blanks for program
+    items, tickets, custom RSVP fields, guests, the wizard's materialize,
+    and RSVP submit (attending, name, required custom questions).
+  - **Wizard draft conversion** (`tests/event-draft/`): `hostName`
+    carried through (null when absent or blank), and a legacy
+    `invitationTemplate` in an old draft ignored.
+  - **Client-supplied Cloudinary assets** (`tests/cloudinary/`): foreign
+    publicIds and mismatched URLs refused with nothing destroyed, on
+    Memory Hub uploads and event covers.
+  - **The global error handler** (`tests/errors/`): no raw Prisma text
+    in a response.
+
+  Everything else has no backend test: event CRUD and lifecycle, guests
+  and import, invite sending and reminders, check-in, tickets and
+  payments, subscriptions and Event Pass, vendor spaces beyond
+  membership, and tier enforcement. The frontend has Vitest
+  unit/integration specs (`ng test`, jsdom, HTTP via
+  `HttpTestingController`, Firebase stubbed): thorough on auth and
+  session handling — the interceptor, trusted-device bootstrap and
+  exchange, logout, the idle timeout and cross-tab activity, the auth
+  modal, role and tier guards — plus tier gating, check-in, reminders,
+  the control center's send/upgrade paths, the Event Pass panel,
+  tenant navigation/routes and the vendor space list, and the event
+  wizard's day venues, program item days and required fields, program
+  visibility, guest-facing day venues, and RSVP contact editing. Most screens and
+  services have no spec, and nothing runs in a real browser: the
+  cross-tab, tab-freezing and Android behaviours in particular are
+  verified only by a manual browser run.
+- **`npm test` against Neon can hang on dropped connections.** Run test
+  files individually until the suite moves to local Postgres.
+- **Events have no timezone.** Every event is implicitly UTC: "23:59:59"
+  on a deadline means 23:59:59 UTC for a guest anywhere, so for a UTC+2
+  audience it passes at 01:59 the next morning, and for a UTC−8 audience
+  mid-afternoon on the stated day. Guest-facing dates are correct (they are
+  the calendar dates the organiser picked); only the *instant* a deadline
+  passes is off. An `Event.timezone` would fix that and would not change how
+  stored dates read back.
+- **The event-level venue columns are debt.** `Event.location`,
+  `address`, `latitude`, `longitude` are retired — nothing reads or writes
+  them (see "Venue") — but are kept, `location` made nullable, so the
+  frontend deployed before the day-venue change keeps working during the
+  rollout. `/rsvp/validate`'s and the public event view's `event.location`
+  /`address` (and validate's coordinates) are likewise kept only for that
+  frontend, and are filled from the first day's venue, never from the
+  columns. The current frontend reads and sends none of them (every venue
+  comes from a day). Once it has deployed, remove those compatibility keys
+  and drop the four columns in a new migration.
+- **Check-in by QR is not built.** The check-in endpoint already accepts an
+  `inviteToken` in place of a `guestId`, so a scanner is a second input, not a
+  second feature — but nothing renders a code yet, and a plus-one's invite
+  token is never given to anyone.
 - **Twilio SMS is blocked** pending compliance approval. Everything
   except real delivery is testable.
 - A deferred technical debt register tracks tenant-isolation and

@@ -12,6 +12,7 @@ import {
   type UpdateProductDto,
 } from './vendor.types.js';
 import { type PlatformRole } from '@prisma/client';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 
 // ─────────────────────────────────────────
 //  VENDOR SERVICE
@@ -42,8 +43,17 @@ export const vendorService = {
 
   // ── Vendor Space ──────────────────────────
 
+  // NOTE — an EVENT_VENDOR managing a platform-level space (tenantId
+  // null on both the space and the user, see the header comment) reaches
+  // here with tenantId=null too. That is a real, reachable case, not
+  // just a misconfigured admin — it used to fall through to `tenantId ??
+  // undefined` and get every tenant's spaces back. It now gets an empty
+  // list/404 from these two like anyone else without a tenant; their own
+  // spaces are unaffected — those come from getMySpaces below (GET
+  // /api/vendors/mine), scoped by VendorSpaceUser membership, not tenantId.
   getAllSpaces: (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     if (requestingRole === 'SUPER_ADMIN') return vendorRepository.findAllSpaces(undefined, includeArchived);
+    if (isTenantScopeEmptyForList(requestingRole, tenantId)) return Promise.resolve([]);
     return vendorRepository.findAllSpaces(tenantId ?? undefined, includeArchived);
   },
 
@@ -51,12 +61,41 @@ export const vendorService = {
   // tenant admin explicitly browsing their own archived spaces via
   // getAllSpaces) — every other call site relies on the default so an
   // archived space stays a 404, cross-tenant-access included.
+  //
+  // Unchanged for every role, including EVENT_VENDOR — this is the
+  // shared gate every write and every service/product lookup below
+  // still goes through. An EVENT_VENDOR reading THEIR OWN space by
+  // membership (not tenantId) is handled by getSpaceForViewer below
+  // instead, deliberately kept separate so this function's existing
+  // callers (createService, updateSpace, ...) can't regress.
   getSpaceById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const space = requestingRole === 'SUPER_ADMIN'
-      ? await vendorRepository.findSpaceById(id, includeArchived)
-      : await vendorRepository.findSpaceById(id, includeArchived, tenantId ?? undefined);
+    const scope = resolveTenantScope(requestingRole, tenantId, 'Vendor space not found');
+    const space = await vendorRepository.findSpaceById(id, includeArchived, scope);
 
     if (!space) throw new HttpError(404, 'Vendor space not found');
+    return space;
+  },
+
+  // READ, single-record — used ONLY by GET /api/vendors/:id. SUPER_ADMIN/
+  // TENANT_ADMIN/EVENT_ADMIN behave EXACTLY as getSpaceById above (this
+  // just delegates). EVENT_VENDOR is the one case that differs: their
+  // scope is VendorSpaceUser membership, not tenantId, which is what lets
+  // a platform-level vendor (tenantId null on both the user and a
+  // SUPER_ADMIN-managed space — see this file's header comment) read
+  // their own space, while any space they are NOT a member of — including
+  // one merely sharing their tenantId — still 404s. Archived spaces 404
+  // for them too, same as every other role. Kept as its own method
+  // (rather than changing getSpaceById itself) so getServiceById/
+  // createService/updateSpace/... — every OTHER caller of getSpaceById —
+  // are untouched; membership-based reads for services/products are not
+  // part of this fix.
+  getSpaceForViewer: async (id: string, requestingRole: PlatformRole, tenantId: string | null, userId: string) => {
+    if (requestingRole !== 'EVENT_VENDOR') {
+      return vendorService.getSpaceById(id, requestingRole, tenantId);
+    }
+    const space = await vendorRepository.findSpaceById(id, false);
+    const membership = space ? await vendorRepository.findMembership(id, userId) : null;
+    if (!space || !membership) throw new HttpError(404, 'Vendor space not found');
     return space;
   },
 
@@ -115,22 +154,19 @@ export const vendorService = {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
     await assertEventVendorMarketplaceAccessible(event);
 
-    if (event.latitude === null || event.longitude === null) {
+    // The venue belongs to each event day now; the event-level columns are
+    // retired. "Near the event" means near its FIRST day's venue (days
+    // arrive ordered by date from eventRepository.findById) — the same
+    // venue an organiser list shows. Coordinates are already plain numbers
+    // (withPlainCoordinates converts eventDays too).
+    const firstDay = event.eventDays[0];
+    if (!firstDay || firstDay.latitude === null || firstDay.longitude === null) {
       throw new HttpError(
         422,
-        "This event doesn't have coordinates yet. Search for and select its address before looking for nearby vendors."
+        "This event's first day doesn't have a located venue yet. Search for and select the day's address before looking for nearby vendors."
       );
     }
-
-    // Event.latitude/longitude are Prisma Decimal, same as VendorSpace's
-    // (see vendor.repository.ts's withPlainCoords) — converted explicitly
-    // here since event.repository.ts doesn't do this conversion itself
-    // (a pre-existing gap flagged in an earlier batch's report; out of
-    // scope for the vendor module to fix at the source, but it has to be
-    // handled at this call site regardless, or the Haversine math below
-    // silently breaks on a Decimal instance instead of a number).
-    const latitude = Number(event.latitude);
-    const longitude = Number(event.longitude);
+    const { latitude, longitude } = firstDay;
 
     return vendorRepository.findSpacesNearLocation(latitude, longitude, radiusKm);
   },

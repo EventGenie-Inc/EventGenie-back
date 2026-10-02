@@ -138,6 +138,22 @@ export const authenticate = async (req, res, next) => {
             });
             return;
         }
+        // checkRevoked (line 83) is what makes verifyIdToken also look at the
+        // account's disabled flag, which suspendFirebaseAccount sets — so a
+        // suspended user hitting ANY authenticated route can surface this
+        // before ever reaching the isActive/isArchived check below (line
+        // ~155), which never gets a chance to run. Mapped to the exact same
+        // 403 that check already uses elsewhere in this file, mirroring the
+        // identical fix in auth.service.ts's exchangeSession (Trusted Devices
+        // Hardening batch, Part 4) — same root cause, same shape of fix,
+        // found by the same kind of real-account testing.
+        if (err.code === 'auth/user-disabled') {
+            res.status(403).json({
+                status: 'error',
+                message: 'Account is inactive or has been archived',
+            });
+            return;
+        }
         next(error);
     }
 };

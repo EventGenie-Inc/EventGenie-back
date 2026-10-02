@@ -366,22 +366,46 @@ export declare const memoryHubService: {
         uploaderDisplayName: string;
     }>;
     requestGuestUploadSignature: (token: unknown, mediaType: unknown) => Promise<import("../upload/upload.types.js").UploadSignatureResponse>;
+    getGuestView: (token: unknown) => Promise<{
+        available: false;
+        title?: never;
+        description?: never;
+        requiresApproval?: never;
+        items?: never;
+        myPendingItems?: never;
+        limits?: never;
+    } | {
+        available: true;
+        title: string | null;
+        description: string | null;
+        requiresApproval: true;
+        items: {
+            id: string;
+            mediaUrl: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+            createdAt: Date;
+            uploaderDisplayName: string;
+        }[];
+        myPendingItems: {
+            id: string;
+            mediaUrl: string;
+            mediaType: import("@prisma/client").$Enums.MediaType;
+            caption: string | null;
+            createdAt: Date;
+        }[];
+        limits: {
+            imageMaxBytes: number;
+            videoMaxBytes: number;
+            uploadRequestsPer5Min: number;
+        };
+    }>;
     createGuestItem: (data: CreateGuestMemoryItemDto) => Promise<{
         id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        status: import("@prisma/client").$Enums.MemoryItemStatus;
-        createdBy: string;
-        updatedBy: string;
-        bytes: number;
-        memoryHubId: string;
-        uploadedByGuestId: string | null;
-        uploadedByUserId: string | null;
         mediaUrl: string;
-        cloudinaryPublicId: string;
         mediaType: import("@prisma/client").$Enums.MediaType;
         caption: string | null;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
     }>;
 };
 //# sourceMappingURL=memory-hub.service.d.ts.map

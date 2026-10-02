@@ -8,4 +8,11 @@ export interface ClientTenantDto {
     subscriptionStatus: SubscriptionStatus;
     createdAt: Date;
 }
+export interface VendorSpaceLimitDto {
+    limit: number | null;
+    currentCount: number;
+}
+export interface ClientTenantDetailDto extends ClientTenantDto {
+    vendorSpaceLimit: VendorSpaceLimitDto;
+}
 //# sourceMappingURL=tenant.types.d.ts.map

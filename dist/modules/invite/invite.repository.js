@@ -1,6 +1,7 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import {} from './invite.types.js';
 import crypto from 'crypto';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 export const inviteRepository = {
     // Excludes plus-ones' invites — they never had one to send, so they don't
     // belong in the invite management / outstanding-invitations / resend
@@ -36,6 +37,53 @@ export const inviteRepository = {
         include: { guest: true },
     }),
     markDelivered: (id) => prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
+    // Reminder candidates — STRUCTURAL filter only: this event, live invite,
+    // live guest, and never a plus-one (hostGuestId: null — a plus-one has
+    // no contact and cannot be reminded, so they are excluded here rather
+    // than left to fail at send time). Every live invite of each matching
+    // guest is returned, deliberately NOT narrowed to status PENDING /
+    // delivered: whether a guest "has responded" must be judged across all
+    // of their live invites (one ACCEPTED invite means answered, even if an
+    // older duplicate is still PENDING), and that cannot be seen once the
+    // answered one has been filtered out. invite-reminder.util.ts's
+    // classifyGuestForReminder applies the state rules to the result.
+    // guestIds omitted = every guest on the event.
+    findReminderCandidates: (eventId, guestIds) => prisma.invite.findMany({
+        where: {
+            eventId,
+            isArchived: false,
+            guest: { isArchived: false, hostGuestId: null },
+            ...(guestIds ? { guestId: { in: guestIds } } : {}),
+        },
+        include: { guest: true },
+        orderBy: { createdAt: 'desc' },
+    }),
+    // Atomically claims the right to remind this invite's guest. The single
+    // UPDATE re-checks, at the moment of the write, everything that must
+    // still be true — still live, still un-responded, not reminded since
+    // `cutoff` — so of two overlapping "remind" requests exactly one wins
+    // and the guest is texted once. A read-then-send check could not give
+    // that guarantee. Returns false when the claim is lost, whatever the
+    // reason (already reminded, or the guest just answered).
+    claimReminder: async (id, cutoff, claimedAt) => {
+        const { count } = await prisma.invite.updateMany({
+            where: {
+                id,
+                isArchived: false,
+                status: 'PENDING',
+                OR: [{ lastRemindedAt: null }, { lastRemindedAt: { lte: cutoff } }],
+            },
+            data: { lastRemindedAt: claimedAt },
+        });
+        return count === 1;
+    },
+    // Undoes a claim after a failed send so a guest who never received the
+    // reminder isn't locked out of the next attempt. Matches on claimedAt so
+    // it can only ever undo THIS claim, never a later one.
+    releaseReminderClaim: (id, claimedAt, previous) => prisma.invite.updateMany({
+        where: { id, lastRemindedAt: claimedAt },
+        data: { lastRemindedAt: previous },
+    }),
     // guest.plusOnes, attendances, rsvpResponses, and ticketPurchases are
     // included so rsvp.service.ts's validate() can hand an edit form
     // everything it needs to prefill a guest's previous answer — validate()
@@ -44,7 +92,13 @@ export const inviteRepository = {
         where: { token },
         include: {
             guest: { include: { plusOnes: { where: { isArchived: false } } } },
-            inviteEventDay: { include: { eventDay: true } },
+            // Guest-facing: an ARCHIVED event day is no longer part of the
+            // event, so it is filtered out here rather than in each caller
+            // (rsvp.service.ts's validate() and event-program.service.ts's
+            // getProgramForInvite both read this list). Archiving a day only
+            // flips its flag; the InviteEventDay row survives, which is why
+            // this filter is needed at all.
+            inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } },
             attendances: true,
             rsvpResponses: true,
             ticketPurchases: true,
@@ -58,6 +112,10 @@ export const inviteRepository = {
                     // this invite's `.event` into event-scoped tier checks) to
                     // resolve entitlement with no extra query.
                     eventPass: true,
+                    // The active invitation design (at most one non-archived row,
+                    // enforced by a partial unique index) for rsvp.service.ts's
+                    // validate(), which projects it through toGuestDesign.
+                    invitationDesigns: { where: { isArchived: false }, take: 1 },
                 },
             },
         },
@@ -83,7 +141,7 @@ export const inviteRepository = {
                 used: false,
                 deliveryMethod: data.deliveryMethod,
                 // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
-                expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+                expiresAt: data.expiresAt ? parseClientDateTime(data.expiresAt) : null,
                 isArchived: false,
                 createdBy: userId,
                 updatedBy: userId,
@@ -104,7 +162,7 @@ export const inviteRepository = {
             ...(data.deliveryMethod !== undefined && { deliveryMethod: data.deliveryMethod }),
             // For nullable DateTime: explicitly set null or the Date value
             ...(data.expiresAt !== undefined && {
-                expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+                expiresAt: data.expiresAt ? parseClientDateTime(data.expiresAt) : null,
             }),
             updatedBy: userId,
         },

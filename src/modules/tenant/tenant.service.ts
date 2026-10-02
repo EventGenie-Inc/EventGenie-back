@@ -1,13 +1,17 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { tenantRepository } from './tenant.repository.js';
 import { eventRepository } from '../event/event.repository.js';
+import { vendorRepository } from '../vendor/vendor.repository.js';
 import { withEffectiveStatus } from '../event/event-status.util.js';
 import { withEffectiveTier } from '../subscription/effective-tier.util.js';
-import { type ClientTenantDto } from './tenant.types.js';
+import { resolveVendorSpaceLimit } from '../vendor/vendor-tier-enforcement.util.js';
+import { HttpError } from '../../shared/errors/http-error.js';
+import { type ClientTenantDto, type ClientTenantDetailDto } from './tenant.types.js';
 import {
   suspendFirebaseAccount,
   reactivateFirebaseAccount,
 } from '../../shared/firebase/firebase-account-status.util.js';
+import { revokeAllDeviceTokensForUser, REVOKE_REASON } from '../auth/device-token.util.js';
 
 // Deliberate, hand-picked projection (ClientTenantDto) — see that
 // type's own comment. Every method below that hands a Tenant back to
@@ -48,6 +52,45 @@ export const tenantService = {
     const tenant = await tenantRepository.findById(id, includeArchived);
     if (!tenant) throw new Error('Tenant not found');
     return toClientTenant(withEffectiveTier(tenant));
+  },
+
+  // Client-facing single-tenant read (GET /api/tenants/me, and
+  // SUPER_ADMIN's GET /api/tenants/:id) — adds vendorSpaceLimit on top of
+  // getById's projection.
+  //
+  // Deliberately NOT folded into getById itself: getById is also the bare
+  // ownership/existence check getUsers/getEvents/suspend/reactivate call
+  // purely for its 404 side effect, discarding the return value — paying
+  // two extra queries (tier config + vendor space count) on every one of
+  // those internal calls would be the same unnecessary tax event.service.
+  // ts's getById/getDetail split exists to avoid (see that module's own
+  // comment on getDetail). Also deliberately NOT folded into getAll's
+  // toClientTenant projector — that would turn the SUPER_ADMIN tenant
+  // list into an N+1 query across every tenant on the platform.
+  //
+  // vendorSpaceLimit.limit reuses resolveVendorSpaceLimit — the exact
+  // resolution assertVendorSpaceCreatable enforces at write time — so
+  // this can never tell a tenant they have room only for the write to
+  // then be refused. currentCount is vendorRepository.
+  // countActiveSpacesForTenant, the exact denominator that check compares
+  // against.
+  getDetail: async (id: string, includeArchived = false): Promise<ClientTenantDetailDto> => {
+    const tenant = await tenantRepository.findById(id, includeArchived);
+    if (!tenant) throw new HttpError(404, 'Tenant not found');
+
+    const effectiveTenant = withEffectiveTier(tenant);
+    const [limitInfo, currentCount] = await Promise.all([
+      resolveVendorSpaceLimit(tenant),
+      vendorRepository.countActiveSpacesForTenant(id),
+    ]);
+
+    return {
+      ...toClientTenant(effectiveTenant),
+      vendorSpaceLimit: {
+        limit: limitInfo.limit, // null = unlimited; the object itself is always present
+        currentCount,
+      },
+    };
   },
 
   getUsers: async (id: string) => {
@@ -107,6 +150,12 @@ export const tenantService = {
 
     for (const user of users) {
       await suspendFirebaseAccount(user.firebaseUid);
+      // Trusted Devices — same reasoning as user.service.ts's individual
+      // archive(): not what makes the suspension effective immediately
+      // (subscriptionStatus/isActive already do that), but without it a
+      // device trusted before the suspension stays trusted the instant
+      // the tenant is reactivated.
+      await revokeAllDeviceTokensForUser(user.id, REVOKE_REASON.USER_SUSPENDED);
     }
 
     return tenantService.getById(id);

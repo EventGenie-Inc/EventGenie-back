@@ -29,6 +29,12 @@ import { resolveEventEntitlement, isEventPassActive, type EntitlementDerivableEv
 
 export type SmsSendPool = 'QUOTA' | 'BUNDLE';
 
+// Which kind of message the batch is — affects only the WORDING of a
+// refusal (a reminder refusal must not talk about "invites"), never which
+// pool is drawn from or how much. Invitations and reminders are both just
+// SMS to the quota and the bundle: they share one allowance / one bundle.
+export type SmsBatchKind = 'invite' | 'reminder';
+
 // EVENT-SCOPED (Event Pass batch) — takes the full fetched event, not a
 // bare tenantId, so a missed call site fails to compile rather than
 // falling back to tenant-only (quota-only) resolution. Both the
@@ -36,7 +42,8 @@ export type SmsSendPool = 'QUOTA' | 'BUNDLE';
 // assertGuestsCreatable's shape.
 export const assertSmsSendable = async (
   event: EntitlementDerivableEvent & { id: string },
-  batchSmsCount: number
+  batchSmsCount: number,
+  kind: SmsBatchKind = 'invite'
 ): Promise<{ source: SmsSendPool }> => {
   if (batchSmsCount === 0) return { source: 'QUOTA' };
 
@@ -59,9 +66,13 @@ export const assertSmsSendable = async (
   if (!config?.smsEnabled) {
     throw new HttpError(
       403,
-      `The ${effectiveTier} plan does not include SMS invites. ` +
-        `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
-        `invited by SMS. Add an email address for these guests, or upgrade the plan to enable SMS.`
+      kind === 'invite'
+        ? `The ${effectiveTier} plan does not include SMS invites. ` +
+            `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
+            `invited by SMS. Add an email address for these guests, or upgrade the plan to enable SMS.`
+        : `The ${effectiveTier} plan does not include SMS. ` +
+            `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
+            `reminded by SMS. Nothing was sent. Add an email address for these guests, or upgrade the plan to enable SMS.`
     );
   }
 
@@ -93,9 +104,13 @@ export const assertSmsSendable = async (
     if (batchSmsCount > remaining) {
       throw new HttpError(
         403,
-        `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
-          `${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
-          `— this batch needs ${batchSmsCount}. Reduce the batch, wait until next month, or upgrade the plan.`
+        kind === 'invite'
+          ? `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
+              `${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
+              `— this batch needs ${batchSmsCount}. Reduce the batch, wait until next month, or upgrade the plan.`
+          : `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS message(s) per month, shared by invitations and ` +
+              `reminders. ${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
+              `— this batch needs ${batchSmsCount}. Nothing was sent. Remind fewer guests, wait until next month, or upgrade the plan.`
       );
     }
   }

@@ -77,6 +77,20 @@ router.post('/send', async (req, res, next) => {
         next(err);
     }
 });
+// Manual reminder to guests who were sent an invitation and haven't
+// responded. Body: { guestIds?: string[] } — omit guestIds to remind
+// everyone still waiting; give it to remind only those guests.
+router.post('/remind', async (req, res, next) => {
+    try {
+        const auth = req;
+        const { guestIds } = (req.body ?? {});
+        const result = await inviteDispatchService.remindBulk(req.params['eventId'], guestIds, auth.user.id, auth.user.role, auth.user.tenantId);
+        res.status(200).json({ status: 'ok', data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 router.post('/:id/resend', async (req, res, next) => {
     try {
         const auth = req;

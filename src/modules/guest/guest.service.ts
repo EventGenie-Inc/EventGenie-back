@@ -18,6 +18,7 @@ import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
 import { buildGuestExportWorkbook } from './guest-export.util.js';
 import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
+import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
@@ -44,13 +45,16 @@ export const guestService = {
 
   getAll: (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     if (requestingRole === 'SUPER_ADMIN') return guestRepository.findAll(undefined, includeArchived);
+    // A non-SUPER_ADMIN with no tenantId should never exist — fail closed
+    // with an empty list rather than an unscoped, every-tenant query. See
+    // tenant-scope.util.ts.
+    if (isTenantScopeEmptyForList(requestingRole, tenantId)) return Promise.resolve([]);
     return guestRepository.findAll(tenantId ?? undefined, includeArchived);
   },
 
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const guest = requestingRole === 'SUPER_ADMIN'
-      ? await guestRepository.findById(id, includeArchived)
-      : await guestRepository.findById(id, includeArchived, tenantId ?? undefined);
+    const scope = resolveTenantScope(requestingRole, tenantId, 'Guest not found');
+    const guest = await guestRepository.findById(id, includeArchived, scope);
 
     if (!guest) throw new HttpError(404, 'Guest not found');
     return guest;
@@ -65,8 +69,8 @@ export const guestService = {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
     assertEventAcceptsOrganiserGuestList(event.visibility);
 
-    if (!data.eventDayIds?.length) {
-      throw new HttpError(400, 'At least one eventDayId is required');
+    if (!Array.isArray(data.eventDayIds) || !data.eventDayIds.length) {
+      throw new HttpError(422, 'Choose at least one day to invite this guest to.');
     }
     const validDayIds = new Set(event.eventDays.map((d) => d.id));
     const unknownDayId = data.eventDayIds.find((id) => !validDayIds.has(id));
@@ -74,9 +78,10 @@ export const guestService = {
       throw new HttpError(400, `Event day '${unknownDayId}' does not belong to this event`);
     }
 
-    const email = data.email ? normalizeEmail(data.email) : null;
+    // Blank (or whitespace) is "not supplied", never a stored "".
+    const email = data.email?.trim() ? normalizeEmail(data.email) : null;
     if (email) assertValidEmail(email);
-    const phoneNumber = data.phoneNumber ? normalizePhoneToE164(data.phoneNumber) : null;
+    const phoneNumber = data.phoneNumber?.trim() ? normalizePhoneToE164(data.phoneNumber) : null;
     // Organiser-created guests are never plus-ones — hostGuestId isn't
     // settable through this path — so contact stays required here.
     assertExactlyOneContact(email, phoneNumber);
@@ -113,11 +118,14 @@ export const guestService = {
   update: async (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateGuestDto) => {
     const guest = await guestService.getById(id, requestingRole, tenantId);
 
+    // A blank value clears the field like null does — it used to be
+    // stored as "", which then passed as "has a contact" nowhere and as a
+    // real value in exports.
     const nextEmail = data.email !== undefined
-      ? (data.email === null ? null : normalizeEmail(data.email))
+      ? (data.email === null || !data.email.trim() ? null : normalizeEmail(data.email))
       : guest.email;
     const nextPhone = data.phoneNumber !== undefined
-      ? (data.phoneNumber === null ? null : normalizePhoneToE164(data.phoneNumber))
+      ? (data.phoneNumber === null || !data.phoneNumber.trim() ? null : normalizePhoneToE164(data.phoneNumber))
       : guest.phoneNumber;
 
     if (nextEmail) assertValidEmail(nextEmail);

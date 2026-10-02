@@ -1,5 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateProgramItemDto, type UpdateProgramItemDto } from './program-item.types.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 export const programItemRepository = {
 
@@ -9,20 +10,31 @@ export const programItemRepository = {
       orderBy: { order: 'asc' },
     }),
 
+  // The order value that puts a new item at the END of this program's
+  // live list: one past the highest order in use, or 0 for the first item.
+  nextOrder: async (programId: string): Promise<number> => {
+    const { _max } = await prisma.programItem.aggregate({
+      where: { programId, isArchived: false },
+      _max: { order: true },
+    });
+    return _max.order === null ? 0 : _max.order + 1;
+  },
+
   findById: (id: string) =>
     prisma.programItem.findFirst({
       where: { id, isArchived: false },
     }),
 
-  create: (programId: string, userId: string, data: CreateProgramItemDto) =>
+  create: (programId: string, userId: string, data: CreateProgramItemDto & { order: number }) =>
     prisma.programItem.create({
       data: {
         programId,
         title: data.title,
         description: data.description ?? null,
-        startTime: new Date(data.startTime),
+        startTime: parseClientDateTime(data.startTime),
         durationMins: data.durationMins ?? null,
         order: data.order,
+        eventDayId: data.eventDayId ?? null,
         isArchived: false,
         createdBy: userId,
         updatedBy: userId,
@@ -35,9 +47,10 @@ export const programItemRepository = {
       data: {
         ...(data.title !== undefined && { title: data.title }),
         ...(data.description !== undefined && { description: data.description ?? null }),
-        ...(data.startTime !== undefined && { startTime: new Date(data.startTime) }),
+        ...(data.startTime !== undefined && { startTime: parseClientDateTime(data.startTime) }),
         ...(data.durationMins !== undefined && { durationMins: data.durationMins ?? null }),
         ...(data.order !== undefined && { order: data.order }),
+        ...(data.eventDayId !== undefined && { eventDayId: data.eventDayId ?? null }),
         updatedBy: userId,
       },
     }),

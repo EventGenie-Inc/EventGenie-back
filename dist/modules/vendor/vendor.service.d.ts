@@ -128,6 +128,76 @@ export declare const vendorService: {
         latitude: number;
         longitude: number;
     }>;
+    getSpaceForViewer: (id: string, requestingRole: PlatformRole, tenantId: string | null, userId: string) => Promise<{
+        vendorServices: {
+            products: (Omit<{
+                name: string;
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                description: string | null;
+                createdBy: string;
+                updatedBy: string;
+                currency: string;
+                price: import("@prisma/client-runtime-utils").Decimal | null;
+                isAvailable: boolean;
+                vendorServiceId: string;
+                imageUrls: string[];
+            }, "price"> & {
+                price: number | null;
+            })[];
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            vendorSpaceId: string;
+            category: import("@prisma/client").$Enums.VendorCategory;
+            operatingDays: string | null;
+            operatingHours: string | null;
+        }[];
+        name: string;
+        id: string;
+        email: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string | null;
+        isActive: boolean;
+        description: string | null;
+        address: string | null;
+        createdBy: string;
+        updatedBy: string;
+        phoneNumber: string | null;
+        website: string | null;
+        isVerified: boolean;
+        vendorSpaceUsers: ({
+            user: {
+                id: string;
+                email: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                tenantId: string | null;
+                firebaseUid: string;
+                username: string;
+                role: import("@prisma/client").$Enums.PlatformRole;
+                isActive: boolean;
+            };
+        } & {
+            id: string;
+            createdAt: Date;
+            createdBy: string;
+            vendorSpaceId: string;
+            userId: string;
+        })[];
+        latitude: number;
+        longitude: number;
+    }>;
     findNearbyVendors: (latitude: number, longitude: number, requestingTenantId: string | null, radiusKm?: number) => Promise<{
         distanceKm: number;
         name: string;

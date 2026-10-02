@@ -68,6 +68,7 @@ export declare const memoryHubRepository: {
     findByShareToken: (shareToken: string) => import("@prisma/client").Prisma.Prisma__MemoryHubClient<({
         event: {
             eventDays: {
+                label: string;
                 id: string;
                 isArchived: boolean;
                 createdAt: Date;
@@ -75,7 +76,6 @@ export declare const memoryHubRepository: {
                 createdBy: string;
                 updatedBy: string;
                 eventId: string;
-                label: string;
                 date: Date;
                 startTime: Date | null;
                 endTime: Date | null;
@@ -98,8 +98,6 @@ export declare const memoryHubRepository: {
             status: import("@prisma/client").$Enums.EventStatus;
             visibility: import("@prisma/client").$Enums.EventVisibility;
             ticketing: import("@prisma/client").$Enums.EventTicketing;
-            invitationTemplate: string | null;
-            invitationConfig: string | null;
             hostName: string | null;
             rsvpDeadline: Date | null;
             capacity: number | null;
@@ -255,6 +253,23 @@ export declare const memoryHubRepository: {
         mediaType: import("@prisma/client").$Enums.MediaType;
         caption: string | null;
     })[]>;
+    findPendingItemsByGuest: (memoryHubId: string, guestId: string) => import("@prisma/client").Prisma.PrismaPromise<{
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        status: import("@prisma/client").$Enums.MemoryItemStatus;
+        createdBy: string;
+        updatedBy: string;
+        bytes: number;
+        memoryHubId: string;
+        uploadedByGuestId: string | null;
+        uploadedByUserId: string | null;
+        mediaUrl: string;
+        cloudinaryPublicId: string;
+        mediaType: import("@prisma/client").$Enums.MediaType;
+        caption: string | null;
+    }[]>;
     findItemById: (id: string, includeArchived?: boolean) => import("@prisma/client").Prisma.Prisma__MemoryItemClient<({
         uploadedByGuest: {
             firstName: string | null;

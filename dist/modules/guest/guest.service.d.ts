@@ -1,7 +1,7 @@
 import { type CreateGuestDto, type UpdateGuestDto } from './guest.types.js';
 import { type PlatformRole } from '@prisma/client';
 export declare const guestService: {
-    getAll: (requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => import("@prisma/client").Prisma.PrismaPromise<{
+    getAll: (requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<never[]> | import("@prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string | null;
         isArchived: boolean;

@@ -12,6 +12,18 @@ export interface ForgotPasswordDto {
   email: string;
 }
 
+// Firebase ID token (Authorization header, same as every other auth
+// route) plus the device token proving this device already passed an
+// OTP — see device-token.util.ts. Neither alone is enough; see
+// auth.service.ts's exchangeSession.
+export interface ExchangeSessionDto {
+  deviceToken: string;
+}
+
+export interface LogoutDto {
+  deviceToken: string;
+}
+
 export interface AuthUserResponse {
   user: {
     id: string;

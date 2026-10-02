@@ -2,6 +2,7 @@ import { type CreateEventDayDto, type UpdateEventDayDto } from './event-day.type
 import { type PlatformRole } from '@prisma/client';
 export declare const eventDayService: {
     getAll: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        label: string;
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -9,12 +10,12 @@ export declare const eventDayService: {
         createdBy: string;
         updatedBy: string;
         eventId: string;
-        label: string;
         date: Date;
         startTime: Date | null;
         endTime: Date | null;
     }[]>;
     getById: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        label: string;
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -22,12 +23,12 @@ export declare const eventDayService: {
         createdBy: string;
         updatedBy: string;
         eventId: string;
-        label: string;
         date: Date;
         startTime: Date | null;
         endTime: Date | null;
     }>;
     create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateEventDayDto) => Promise<{
+        label: string;
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -35,12 +36,12 @@ export declare const eventDayService: {
         createdBy: string;
         updatedBy: string;
         eventId: string;
-        label: string;
         date: Date;
         startTime: Date | null;
         endTime: Date | null;
     }>;
     update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDayDto) => Promise<{
+        label: string;
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -48,12 +49,12 @@ export declare const eventDayService: {
         createdBy: string;
         updatedBy: string;
         eventId: string;
-        label: string;
         date: Date;
         startTime: Date | null;
         endTime: Date | null;
     }>;
     archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
+        label: string;
         id: string;
         isArchived: boolean;
         createdAt: Date;
@@ -61,7 +62,6 @@ export declare const eventDayService: {
         createdBy: string;
         updatedBy: string;
         eventId: string;
-        label: string;
         date: Date;
         startTime: Date | null;
         endTime: Date | null;

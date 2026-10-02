@@ -90,10 +90,13 @@ router.get('/mine', authenticate, async (req: Request, res: Response, next: Next
 });
 
 // GET /api/vendors/:id
+// getSpaceForViewer, not getSpaceById directly — an EVENT_VENDOR reads
+// their own space via VendorSpaceUser membership here, not tenantId
+// (see vendor.service.ts's own comment); every other role is unchanged.
 router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const space = await vendorService.getSpaceById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    const space = await vendorService.getSpaceForViewer(req.params['id'] as string, auth.user.role, auth.user.tenantId, auth.user.id);
     res.status(200).json({ status: 'ok', data: space });
   } catch (err) { next(err); }
 });

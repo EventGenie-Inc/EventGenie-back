@@ -42,15 +42,18 @@ export const withEffectiveStatus = (event) => ({
 //  bug report waiting to happen.
 // ─────────────────────────────────────────
 const OUTBOUND_BLOCK_MESSAGES = {
-    DRAFT: 'This event is still a draft. Publish it before sending invitations.',
     COMPLETED: 'This event has already taken place.',
     CANCELLED: 'This event has been cancelled.',
 };
 // Expects an already-effective status (i.e. event.status as returned
 // by eventService.getById/getAll, which apply withEffectiveStatus).
-export const assertEventIsPublished = (effectiveStatus) => {
+// `action` only completes the draft message ("Publish it before ___") —
+// the other blocked statuses read the same whatever was being attempted.
+export const assertEventIsPublished = (effectiveStatus, action = 'sending invitations') => {
     if (effectiveStatus === 'PUBLISHED')
         return;
-    throw new HttpError(409, OUTBOUND_BLOCK_MESSAGES[effectiveStatus] ?? `This event is not published (current status: ${effectiveStatus}).`);
+    throw new HttpError(409, effectiveStatus === 'DRAFT'
+        ? `This event is still a draft. Publish it before ${action}.`
+        : OUTBOUND_BLOCK_MESSAGES[effectiveStatus] ?? `This event is not published (current status: ${effectiveStatus}).`);
 };
 //# sourceMappingURL=event-status.util.js.map

@@ -11,8 +11,6 @@ export interface CreateEventDto {
     coverImageBytes?: number;
     visibility?: EventVisibility;
     ticketing?: EventTicketing;
-    invitationTemplate?: string;
-    invitationConfig?: string;
     hostName?: string;
     rsvpDeadline?: string;
     capacity?: number;
@@ -30,8 +28,6 @@ export interface UpdateEventDto {
     coverImageBytes?: number;
     visibility?: EventVisibility;
     ticketing?: EventTicketing;
-    invitationTemplate?: string;
-    invitationConfig?: string;
     hostName?: string | null;
     rsvpDeadline?: string | null;
     capacity?: number | null;

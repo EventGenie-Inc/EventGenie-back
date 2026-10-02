@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type MemoryItemStatus } from '@prisma/client';
 import { type CreateMemoryHubDto, type UpdateMemoryHubDto } from './memory-hub.types.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
 // MemoryHub/MemoryItem have no tenantId of their own — ownership is
 // transitive through eventId -> Event.tenantId (MemoryHub) and two hops
@@ -61,7 +62,7 @@ export const memoryHubRepository = {
         description: data.description ?? null,
         isPublic: false,
         shareToken: null,
-        opensAt: data.opensAt ? new Date(data.opensAt) : null,
+        opensAt: data.opensAt ? parseClientDateTime(data.opensAt) : null,
         isArchived: false,
         createdBy: userId,
         updatedBy: userId,
@@ -74,7 +75,7 @@ export const memoryHubRepository = {
       data: {
         ...(data.title !== undefined && { title: data.title ?? null }),
         ...(data.description !== undefined && { description: data.description ?? null }),
-        ...(data.opensAt !== undefined && { opensAt: data.opensAt ? new Date(data.opensAt) : null }),
+        ...(data.opensAt !== undefined && { opensAt: data.opensAt ? parseClientDateTime(data.opensAt) : null }),
         updatedBy: userId,
       },
     }),
@@ -149,6 +150,17 @@ export const memoryHubRepository = {
         uploadedByGuest: { select: { firstName: true } },
         uploadedByUser: { select: { username: true } },
       },
+      orderBy: { createdAt: 'desc' },
+    }),
+
+  // Contract B (guest-view) — myPendingItems. Filters by uploadedByGuestId
+  // directly at the query level rather than fetching every pending item
+  // and filtering in the service: a guest's request should never even
+  // transit another guest's pending upload over the network, let alone
+  // risk it leaking through a later refactor of the filter step.
+  findPendingItemsByGuest: (memoryHubId: string, guestId: string) =>
+    prisma.memoryItem.findMany({
+      where: { memoryHubId, uploadedByGuestId: guestId, status: 'PENDING', isArchived: false },
       orderBy: { createdAt: 'desc' },
     }),
 

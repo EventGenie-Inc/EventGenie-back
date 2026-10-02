@@ -1,4 +1,4 @@
-import { type RegisterDto, type VerifyOtpDto } from './auth.types.js';
+import { type RegisterDto, type VerifyOtpDto, type ExchangeSessionDto, type LogoutDto } from './auth.types.js';
 export declare const authService: {
     register: (firebaseToken: string, data: RegisterDto) => Promise<{
         user: {
@@ -19,7 +19,20 @@ export declare const authService: {
         message: string;
         otpExpiresAt: string;
     }>;
-    verifyOtp: (firebaseToken: string, data: VerifyOtpDto) => Promise<{
+    verifyOtp: (firebaseToken: string, data: VerifyOtpDto, userAgent?: string | null) => Promise<{
+        sessionToken: string;
+        expiresIn: string;
+        deviceToken: string;
+        deviceTokenExpiresAt: string;
+        user: {
+            id: string;
+            email: string;
+            username: string;
+            role: import("@prisma/client").$Enums.PlatformRole;
+            tenantId: string | null;
+        };
+    }>;
+    exchangeSession: (firebaseToken: string, data: ExchangeSessionDto) => Promise<{
         sessionToken: string;
         expiresIn: string;
         user: {
@@ -29,6 +42,9 @@ export declare const authService: {
             role: import("@prisma/client").$Enums.PlatformRole;
             tenantId: string | null;
         };
+    }>;
+    logout: (data: LogoutDto) => Promise<{
+        message: string;
     }>;
     refreshSession: (firebaseToken: string, currentSessionToken: string) => Promise<{
         sessionToken: string;

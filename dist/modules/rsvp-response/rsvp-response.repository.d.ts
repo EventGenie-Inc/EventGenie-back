@@ -5,6 +5,7 @@ type Db = Prisma.TransactionClient | typeof prisma;
 export declare const rsvpResponseRepository: {
     findAll: (inviteId: string) => Prisma.PrismaPromise<({
         rsvpField: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -12,7 +13,6 @@ export declare const rsvpResponseRepository: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -27,6 +27,7 @@ export declare const rsvpResponseRepository: {
     })[]>;
     findById: (id: string) => Prisma.Prisma__RsvpResponseClient<({
         rsvpField: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -34,7 +35,6 @@ export declare const rsvpResponseRepository: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;

@@ -1,7 +1,8 @@
-import { type ClientTenantDto } from './tenant.types.js';
+import { type ClientTenantDto, type ClientTenantDetailDto } from './tenant.types.js';
 export declare const tenantService: {
     getAll: () => Promise<ClientTenantDto[]>;
     getById: (id: string, includeArchived?: boolean) => Promise<ClientTenantDto>;
+    getDetail: (id: string, includeArchived?: boolean) => Promise<ClientTenantDetailDto>;
     getUsers: (id: string) => Promise<{
         id: string;
         email: string;
@@ -14,8 +15,9 @@ export declare const tenantService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    getEvents: (id: string) => Promise<({
+    getEvents: (id: string) => Promise<(Omit<{
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -23,7 +25,6 @@ export declare const tenantService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
@@ -46,8 +47,6 @@ export declare const tenantService: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -55,6 +54,9 @@ export declare const tenantService: {
         ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
     })[]>;
     suspend: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;
     reactivate: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;

@@ -1,9 +1,41 @@
+import { type SubscriptionTier } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
 import { vendorRepository } from './vendor.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
+import { resolveEffectiveTier, type TenantSubscriptionState } from '../subscription/effective-tier.util.js';
 import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+
+export interface VendorSpaceLimitInfo {
+  limit: number | null; // effective ceiling on active vendor spaces for this tenant; null = unlimited
+  tenantTier: SubscriptionTier; // resolved via resolveEffectiveTier — never the raw stored tier
+  vendorMarketplace: boolean; // whether this tier can use the vendor marketplace at all
+}
+
+// The single resolution point for "how many active vendor spaces can this
+// tenant have, right now" — shared by assertVendorSpaceCreatable (below)
+// and tenant.service.ts's getDetail (which surfaces it read-only to the
+// owning tenant via GET /api/tenants/me). Deliberately one function, same
+// reasoning as guest-tier-enforcement.util.ts's resolveGuestLimit: a
+// second, independent derivation would drift the moment a tier config
+// changes, and the disagreement would show up as "the UI said there was
+// room, then the write was refused."
+//
+// Takes the already-fetched tenant (not a bare tenantId), same shape as
+// resolveGuestLimit taking the fetched event — a caller that already has
+// the tenant row (assertVendorSpaceCreatable, tenant.service.ts's
+// getDetail) doesn't pay for a second lookup, and there is exactly one
+// config fetch here shared by both the capability gate and the numeric
+// ceiling below, rather than assertVendorSpaceCreatable fetching it twice.
+export const resolveVendorSpaceLimit = async (tenant: TenantSubscriptionState): Promise<VendorSpaceLimitInfo> => {
+  const tenantTier = resolveEffectiveTier(tenant);
+  const config = await subscriptionTierConfigRepository.findByTier(tenantTier);
+  return {
+    limit: config?.maxVendorSpaces ?? null,
+    tenantTier,
+    vendorMarketplace: config?.vendorMarketplace ?? false,
+  };
+};
 
 // Called before creating a new vendor space (POST /api/vendors).
 //
@@ -19,28 +51,28 @@ export const assertVendorSpaceCreatable = async (tenantId: string | null): Promi
   const tenant = await tenantRepository.findById(tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
+  const resolved = await resolveVendorSpaceLimit(tenant);
+
   // vendorMarketplace is an all-or-nothing capability gate (can this
   // tier use the marketplace at all) — read at runtime, never hardcoded,
   // so a Super Admin toggling it takes effect immediately. CREATION-time
   // (a new vendor space): bound by the tenant's current effective tier.
-  const effectiveTier = resolveEffectiveTier(tenant);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (!config?.vendorMarketplace) {
+  if (!resolved.vendorMarketplace) {
     throw new HttpError(
       403,
-      `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`
+      `The ${resolved.tenantTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`
     );
   }
 
   // maxVendorSpaces is the separate numeric ceiling for tiers that DO
   // have marketplace access — null means unlimited, same convention as
   // maxEvents/maxGuestsPerEvent.
-  if (config.maxVendorSpaces != null) {
+  if (resolved.limit !== null) {
     const activeCount = await vendorRepository.countActiveSpacesForTenant(tenantId);
-    if (activeCount >= config.maxVendorSpaces) {
+    if (activeCount >= resolved.limit) {
       throw new HttpError(
         403,
-        `The ${effectiveTier} plan allows a maximum of ${config.maxVendorSpaces} active vendor space(s). Archive an existing space or upgrade your plan to add another.`
+        `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} active vendor space(s). Archive an existing space or upgrade your plan to add another.`
       );
     }
   }

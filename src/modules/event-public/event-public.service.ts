@@ -91,8 +91,7 @@ const assertEventAcceptsRegistration = (event: {
 
 // Deliberate, hand-picked projection — a guest sees only what belongs
 // on an invitation. No tenant id, no Event.id, no createdBy/updatedBy,
-// no coverImagePublicId, no capacity, no organiser-internal fields
-// (invitationTemplate/invitationConfig), no raw status. Built as an
+// no coverImagePublicId, no capacity, no raw status. Built as an
 // explicit allowlist (not a spread of the Prisma row) so this can never
 // silently start leaking a field added to Event later — the same
 // mistake already flagged on rsvp.service.ts's validate().
@@ -100,14 +99,24 @@ const toPublicView = (event: {
   name: string;
   description: string | null;
   hostName: string | null;
-  location: string;
-  address: string | null;
   coverImageUrl: string | null;
   rsvpDeadline: Date | null;
   visibility: string;
   status: EventStatus;
-  eventDays: { id: string; label: string; date: Date; startTime: Date | null; endTime: Date | null }[];
+  eventDays: {
+    id: string;
+    label: string;
+    date: Date;
+    startTime: Date | null;
+    endTime: Date | null;
+    location: string | null;
+    address: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  }[];
 }) => {
+  // Days arrive ordered by date (eventRepository.findByShareToken).
+  const firstDay = event.eventDays[0];
   const effectiveStatus = resolveEffectiveStatus(event);
   const isPublic = event.visibility === 'PUBLIC';
   const isPublished = effectiveStatus === 'PUBLISHED';
@@ -119,8 +128,11 @@ const toPublicView = (event: {
     name: event.name,
     description: event.description,
     hostName: event.hostName,
-    location: event.location,
-    address: event.address,
+    // DEPRECATED — rollout compatibility only, same as rsvp.service.ts's
+    // validate(): the FIRST day's venue, not the retired Event columns.
+    // Each day below carries its own venue.
+    location: firstDay?.location ?? null,
+    address: firstDay?.address ?? null,
     coverImageUrl: event.coverImageUrl,
     rsvpDeadline: event.rsvpDeadline,
     eventDays: event.eventDays.map((d) => ({
@@ -129,6 +141,10 @@ const toPublicView = (event: {
       date: d.date,
       startTime: d.startTime,
       endTime: d.endTime,
+      location: d.location,
+      address: d.address,
+      latitude: d.latitude,
+      longitude: d.longitude,
     })),
     isPublic,
     isPublished,

@@ -27,7 +27,7 @@ export declare const eventDraftService: {
         currentStep: number;
         payload: import("@prisma/client/runtime/client").JsonValue;
     }>;
-    materialize: (tenantId: string, userId: string) => Promise<({
+    materialize: (tenantId: string, userId: string) => Promise<(Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -51,6 +51,7 @@ export declare const eventDraftService: {
             opensAt: Date | null;
         } | null;
         eventDays: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -58,12 +59,12 @@ export declare const eventDraftService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
         }[];
         rsvpFields: {
+            label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
@@ -71,7 +72,6 @@ export declare const eventDraftService: {
             createdBy: string;
             updatedBy: string;
             eventId: string;
-            label: string;
             fieldType: import("@prisma/client").$Enums.RsvpFieldType;
             isRequired: boolean;
             options: string | null;
@@ -90,6 +90,7 @@ export declare const eventDraftService: {
                 order: number;
                 title: string;
                 programId: string;
+                eventDayId: string | null;
                 durationMins: number | null;
             }[];
         } & {
@@ -138,8 +139,6 @@ export declare const eventDraftService: {
         status: import("@prisma/client").$Enums.EventStatus;
         visibility: import("@prisma/client").$Enums.EventVisibility;
         ticketing: import("@prisma/client").$Enums.EventTicketing;
-        invitationTemplate: string | null;
-        invitationConfig: string | null;
         hostName: string | null;
         rsvpDeadline: Date | null;
         capacity: number | null;
@@ -147,6 +146,9 @@ export declare const eventDraftService: {
         ticketsRefundable: boolean;
         createdBy: string;
         updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
     }) | null>;
 };
 //# sourceMappingURL=event-draft.service.d.ts.map
