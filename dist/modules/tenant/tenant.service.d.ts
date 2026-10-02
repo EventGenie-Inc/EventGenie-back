@@ -15,13 +15,17 @@ export declare const tenantService: {
         role: import("@prisma/client").$Enums.PlatformRole;
         isActive: boolean;
     }[]>;
-    getEvents: (id: string) => Promise<(Omit<{
+    getEvents: (id: string) => Promise<(Omit<Omit<{
         eventDays: {
             label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -38,7 +42,7 @@ export declare const tenantService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -57,6 +61,27 @@ export declare const tenantService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     })[]>;
     suspend: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;
     reactivate: (id: string, superAdminUserId: string) => Promise<ClientTenantDto>;

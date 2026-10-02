@@ -9,6 +9,10 @@ export declare const attendanceRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: Prisma.Decimal | null;
+            longitude: Prisma.Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -29,6 +33,10 @@ export declare const attendanceRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: Prisma.Decimal | null;
+            longitude: Prisma.Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;

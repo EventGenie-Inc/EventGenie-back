@@ -4,6 +4,13 @@ import {} from '@prisma/client';
 import {} from './event.types.js';
 import { withPlainCoordinates } from './event-coordinates.util.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+// A blank host name means "no host line" — stored as null, never "", the
+// same as the wizard's materialize path (event-draft.service.ts) has always
+// done. Trimmed so "  Sarah & Tom " doesn't print with stray spaces.
+export const normalizeHostName = (hostName) => {
+    const trimmed = typeof hostName === 'string' ? hostName.trim() : '';
+    return trimmed ? trimmed : null;
+};
 // The ownership + archive filter for a lookup of ONE event by id. Every
 // by-id read below — the full findById AND the lean variants — builds its
 // `where` here, so what a lookup REFUSES (another tenant's event, an archived
@@ -24,14 +31,16 @@ export const eventRepository = {
             ...(includeArchived ? {} : { isArchived: false }),
             ...(tenantId ? { tenantId } : {}),
         },
-        include: { eventDays: { where: { isArchived: false } } },
+        // Ordered by date so "the first day" — whose venue an organiser
+        // list shows, now that the venue belongs to the day — is stable.
+        include: { eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } } },
         orderBy: { createdAt: 'desc' },
     })).map(withPlainCoordinates),
     findById: async (id, includeArchived = false, tenantId) => {
         const event = await prisma.event.findFirst({
             where: scopedWhere(id, includeArchived, tenantId),
             include: {
-                eventDays: { where: { isArchived: false } },
+                eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } },
                 memoryHub: true,
                 tickets: { where: { isArchived: false } },
                 rsvpFields: { where: { isArchived: false }, orderBy: { order: 'asc' } },
@@ -97,7 +106,7 @@ export const eventRepository = {
             // eventPass included alongside eventDays — event-public.service.ts's
             // register() calls assertGuestsCreatable, which is event-scoped
             // (Event Pass batch) and needs both to resolve entitlement.
-            include: { eventDays: { where: { isArchived: false } }, eventPass: true },
+            include: { eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } }, eventPass: true },
         });
         return event ? withPlainCoordinates(event) : null;
     },
@@ -135,16 +144,12 @@ export const eventRepository = {
                 name: data.name,
                 // Optional fields must be null (not undefined) for exactOptionalPropertyTypes
                 description: data.description ?? null,
-                location: data.location,
-                address: data.address ?? null,
-                latitude: data.latitude ?? null,
-                longitude: data.longitude ?? null,
                 coverImageUrl: data.coverImageUrl ?? null,
                 coverImagePublicId: data.coverImagePublicId ?? null,
                 status: 'DRAFT',
                 visibility: data.visibility ?? 'PRIVATE',
                 ticketing: data.ticketing ?? 'FREE',
-                hostName: data.hostName ?? null,
+                hostName: normalizeHostName(data.hostName),
                 rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null,
                 capacity: data.capacity ?? null,
                 ticketsRefundable: data.ticketsRefundable ?? false,
@@ -173,15 +178,11 @@ export const eventRepository = {
             // Only include fields that are explicitly provided
             ...(data.name !== undefined && { name: data.name }),
             ...(data.description !== undefined && { description: data.description ?? null }),
-            ...(data.location !== undefined && { location: data.location }),
-            ...(data.address !== undefined && { address: data.address ?? null }),
-            ...(data.latitude !== undefined && { latitude: data.latitude ?? null }),
-            ...(data.longitude !== undefined && { longitude: data.longitude ?? null }),
             ...(data.coverImageUrl !== undefined && { coverImageUrl: data.coverImageUrl ?? null }),
             ...(data.coverImagePublicId !== undefined && { coverImagePublicId: data.coverImagePublicId ?? null }),
             ...(data.visibility !== undefined && { visibility: data.visibility }),
             ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
-            ...(data.hostName !== undefined && { hostName: data.hostName ?? null }),
+            ...(data.hostName !== undefined && { hostName: normalizeHostName(data.hostName) }),
             ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null }),
             ...(data.capacity !== undefined && { capacity: data.capacity ?? null }),
             ...(data.ticketsRefundable !== undefined && { ticketsRefundable: data.ticketsRefundable }),

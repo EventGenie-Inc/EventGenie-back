@@ -7,6 +7,10 @@ export declare const attendanceService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -27,6 +31,10 @@ export declare const attendanceService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;

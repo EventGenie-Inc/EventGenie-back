@@ -1,6 +1,7 @@
+import { type PlatformRole } from '@prisma/client';
 import { type CreateTicketDto, type UpdateTicketDto } from './ticket.types.js';
 export declare const ticketService: {
-    getAllForAdmin: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<{
+    getAllForAdmin: (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -17,24 +18,7 @@ export declare const ticketService: {
         heldCount: number;
         isAvailable: boolean;
     }[]>;
-    getAllPublic: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<{
-        name: string;
-        id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        description: string | null;
-        createdBy: string;
-        updatedBy: string;
-        eventId: string;
-        currency: string;
-        price: import("@prisma/client-runtime-utils").Decimal;
-        totalQuantity: number | null;
-        soldCount: number;
-        heldCount: number;
-        isAvailable: boolean;
-    }[]>;
-    getById: (id: string) => Promise<{
+    getById: (id: string, eventId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -51,24 +35,7 @@ export declare const ticketService: {
         heldCount: number;
         isAvailable: boolean;
     }>;
-    create: (eventId: string, userId: string, data: CreateTicketDto) => import("@prisma/client").Prisma.Prisma__TicketClient<{
-        name: string;
-        id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        description: string | null;
-        createdBy: string;
-        updatedBy: string;
-        eventId: string;
-        currency: string;
-        price: import("@prisma/client-runtime-utils").Decimal;
-        totalQuantity: number | null;
-        soldCount: number;
-        heldCount: number;
-        isAvailable: boolean;
-    }, never, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    update: (id: string, userId: string, data: UpdateTicketDto) => Promise<{
+    create: (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateTicketDto) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -85,7 +52,24 @@ export declare const ticketService: {
         heldCount: number;
         isAvailable: boolean;
     }>;
-    archive: (id: string, userId: string) => Promise<{
+    update: (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateTicketDto) => Promise<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        createdBy: string;
+        updatedBy: string;
+        eventId: string;
+        currency: string;
+        price: import("@prisma/client-runtime-utils").Decimal;
+        totalQuantity: number | null;
+        soldCount: number;
+        heldCount: number;
+        isAvailable: boolean;
+    }>;
+    archive: (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         name: string;
         id: string;
         isArchived: boolean;

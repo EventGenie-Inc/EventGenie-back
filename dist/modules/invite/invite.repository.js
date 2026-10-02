@@ -34,7 +34,9 @@ export const inviteRepository = {
             isArchived: false,
             guest: { isArchived: false, hostGuestId: null },
         },
-        include: { guest: true },
+        // Invited days with their venues — the email names this guest's
+        // own days and where each is (invite-dispatch.service.ts).
+        include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
     }),
     markDelivered: (id) => prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
     // Reminder candidates — STRUCTURAL filter only: this event, live invite,
@@ -55,7 +57,7 @@ export const inviteRepository = {
             guest: { isArchived: false, hostGuestId: null },
             ...(guestIds ? { guestId: { in: guestIds } } : {}),
         },
-        include: { guest: true },
+        include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
         orderBy: { createdAt: 'desc' },
     }),
     // Atomically claims the right to remind this invite's guest. The single

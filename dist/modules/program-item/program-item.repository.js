@@ -6,6 +6,15 @@ export const programItemRepository = {
         where: { programId, isArchived: false },
         orderBy: { order: 'asc' },
     }),
+    // The order value that puts a new item at the END of this program's
+    // live list: one past the highest order in use, or 0 for the first item.
+    nextOrder: async (programId) => {
+        const { _max } = await prisma.programItem.aggregate({
+            where: { programId, isArchived: false },
+            _max: { order: true },
+        });
+        return _max.order === null ? 0 : _max.order + 1;
+    },
     findById: (id) => prisma.programItem.findFirst({
         where: { id, isArchived: false },
     }),

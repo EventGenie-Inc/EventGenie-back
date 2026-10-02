@@ -3,7 +3,7 @@ export interface CreateProgramItemDto {
     description?: string;
     startTime: string;
     durationMins?: number;
-    order: number;
+    order?: number;
     eventDayId?: string | null;
 }
 export interface UpdateProgramItemDto {

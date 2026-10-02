@@ -3,7 +3,13 @@ import {} from './event-day.types.js';
 import { eventService } from '../event/event.service.js';
 import {} from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { assertNoDuplicateDayLabel, isDayLabelUniqueViolation } from './event-day-validation.util.js';
+import { assertNoDuplicateDayLabel, isDayLabelUniqueViolation, requireDayLabel, requireDayDate } from './event-day-validation.util.js';
+import { resolveDayVenueForCreate, resolveDayVenueForUpdate } from './event-day-venue.util.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+// startTime/endTime are optional; an explicit null (or blank) clears one.
+// Never new Date(null) — that is 1970-01-01, the bug the old repository
+// comment described.
+const optionalDateTime = (value) => value ? parseClientDateTime(value) : null;
 // EventDay has no tenantId of its own — ownership is transitive through
 // its parent Event. Rather than duplicating tenant-scoping logic here,
 // every method gates through eventService.getById(), which is already
@@ -14,45 +20,68 @@ export const eventDayService = {
         await eventService.getById(eventId, requestingRole, tenantId);
         return eventDayRepository.findAll(eventId);
     },
-    getById: async (id, requestingRole, tenantId) => {
+    // The day must belong to the :eventId in the URL, not merely to some
+    // event the caller owns — a day reached under another event's URL (even
+    // the same tenant's) is the same 404 as one that doesn't exist, exactly
+    // like program-item.service.ts's assertProgramInScope. The tenant gate
+    // runs on the URL's event first, so another tenant's day can never
+    // be distinguished from a missing one.
+    getById: async (id, eventId, requestingRole, tenantId) => {
+        await eventService.getById(eventId, requestingRole, tenantId);
         const day = await eventDayRepository.findById(id);
-        if (!day)
+        if (!day || day.eventId !== eventId)
             throw new HttpError(404, 'Event day not found');
-        // Ownership gate via the parent event — throws 404 if it belongs to
-        // a different tenant, indistinguishable from the day not existing.
-        await eventService.getById(day.eventId, requestingRole, tenantId);
         return day;
     },
     create: async (eventId, userId, requestingRole, tenantId, data) => {
         await eventService.getById(eventId, requestingRole, tenantId);
-        await assertNoDuplicateDayLabel(eventId, data.label);
+        const label = requireDayLabel(data.label);
+        const date = requireDayDate(data.date, label);
+        const venue = resolveDayVenueForCreate(data, label);
+        await assertNoDuplicateDayLabel(eventId, label);
         try {
-            return await eventDayRepository.create(eventId, userId, data);
+            return await eventDayRepository.create(eventId, userId, {
+                label,
+                date,
+                startTime: optionalDateTime(data.startTime),
+                endTime: optionalDateTime(data.endTime),
+                venue,
+            });
         }
         catch (err) {
             if (isDayLabelUniqueViolation(err)) {
-                throw new HttpError(409, `This event already has a day labeled '${data.label}' — day labels must be unique per event`);
+                throw new HttpError(409, `This event already has a day labeled '${label}' — day labels must be unique per event`);
             }
             throw err;
         }
     },
-    update: async (id, userId, requestingRole, tenantId, data) => {
-        const day = await eventDayService.getById(id, requestingRole, tenantId);
-        if (data.label !== undefined) {
-            await assertNoDuplicateDayLabel(day.eventId, data.label, id);
+    update: async (id, eventId, userId, requestingRole, tenantId, data) => {
+        const day = await eventDayService.getById(id, eventId, requestingRole, tenantId);
+        const label = data.label !== undefined ? requireDayLabel(data.label) : undefined;
+        const effectiveLabel = label ?? day.label;
+        const date = data.date !== undefined ? requireDayDate(data.date, effectiveLabel) : undefined;
+        const venue = resolveDayVenueForUpdate(data, day, effectiveLabel);
+        if (label !== undefined) {
+            await assertNoDuplicateDayLabel(day.eventId, label, id);
         }
         try {
-            return await eventDayRepository.update(id, userId, data);
+            return await eventDayRepository.update(id, userId, {
+                ...(label !== undefined && { label }),
+                ...(date !== undefined && { date }),
+                ...(data.startTime !== undefined && { startTime: optionalDateTime(data.startTime) }),
+                ...(data.endTime !== undefined && { endTime: optionalDateTime(data.endTime) }),
+                venue,
+            });
         }
         catch (err) {
             if (isDayLabelUniqueViolation(err)) {
-                throw new HttpError(409, `This event already has a day labeled '${data.label ?? day.label}' — day labels must be unique per event`);
+                throw new HttpError(409, `This event already has a day labeled '${effectiveLabel}' — day labels must be unique per event`);
             }
             throw err;
         }
     },
-    archive: async (id, userId, requestingRole, tenantId) => {
-        await eventDayService.getById(id, requestingRole, tenantId);
+    archive: async (id, eventId, userId, requestingRole, tenantId) => {
+        await eventDayService.getById(id, eventId, requestingRole, tenantId);
         return eventDayRepository.archive(id, userId);
     },
 };

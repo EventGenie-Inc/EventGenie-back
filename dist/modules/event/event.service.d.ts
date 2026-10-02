@@ -1,13 +1,17 @@
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole } from '@prisma/client';
 export declare const eventService: {
-    getAll: (requestingRole: PlatformRole, tenantId: string | null) => Promise<(Omit<{
+    getAll: (requestingRole: PlatformRole, tenantId: string | null) => Promise<(Omit<Omit<{
         eventDays: {
             label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -24,7 +28,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -43,8 +47,29 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     })[]>;
-    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<{
+    getById: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -73,6 +98,10 @@ export declare const eventService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -147,7 +176,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -166,14 +195,39 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }>;
-    getScoped: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<{
+    getScoped: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<Omit<{
         eventDays: {
             label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -190,7 +244,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -209,8 +263,29 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }>;
-    getScopedWithPass: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<{
+    getScopedWithPass: (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived?: boolean) => Promise<Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -225,6 +300,10 @@ export declare const eventService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -241,7 +320,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -260,6 +339,27 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }>;
     getDetail: (id: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         acceptedGuestCount: number;
@@ -279,8 +379,10 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
+        latitude: number | null;
+        longitude: number | null;
         coverImageUrl: string | null;
         coverImagePublicId: string | null;
         status: import("@prisma/client").$Enums.EventStatus;
@@ -315,19 +417,6 @@ export declare const eventService: {
             isPublic: boolean;
             opensAt: Date | null;
         } | null;
-        eventDays: {
-            label: string;
-            id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            date: Date;
-            startTime: Date | null;
-            endTime: Date | null;
-        }[];
         rsvpFields: {
             label: string;
             id: string;
@@ -386,133 +475,28 @@ export declare const eventService: {
             heldCount: number;
             isAvailable: boolean;
         }[];
-        latitude: number | null;
-        longitude: number | null;
-    }>;
-    create: (tenantId: string, userId: string, data: CreateEventDto) => Promise<Omit<{
-        name: string;
-        id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        tenantId: string;
-        createdByUserId: string;
-        description: string | null;
-        location: string;
-        address: string | null;
-        latitude: import("@prisma/client-runtime-utils").Decimal | null;
-        longitude: import("@prisma/client-runtime-utils").Decimal | null;
-        coverImageUrl: string | null;
-        coverImagePublicId: string | null;
-        status: import("@prisma/client").$Enums.EventStatus;
-        visibility: import("@prisma/client").$Enums.EventVisibility;
-        ticketing: import("@prisma/client").$Enums.EventTicketing;
-        hostName: string | null;
-        rsvpDeadline: Date | null;
-        capacity: number | null;
-        shareToken: string | null;
-        ticketsRefundable: boolean;
-        createdBy: string;
-        updatedBy: string;
-    }, "latitude" | "longitude"> & {
-        latitude: number | null;
-        longitude: number | null;
-    }>;
-    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => Promise<Omit<{
-        eventPass: {
-            id: string;
-            createdAt: Date;
-            updatedAt: Date;
-            tenantId: string;
-            eventId: string;
-            passTier: import("@prisma/client").$Enums.EventPassTier;
-        } | null;
-        memoryHub: {
-            id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
-            description: string | null;
-            shareToken: string | null;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            title: string | null;
-            isPublic: boolean;
-            opensAt: Date | null;
-        } | null;
-        eventDays: {
+        eventDays: (Omit<{
             label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
-        }[];
-        rsvpFields: {
-            label: string;
-            id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            fieldType: import("@prisma/client").$Enums.RsvpFieldType;
-            isRequired: boolean;
-            options: string | null;
-            order: number;
-        }[];
-        program: ({
-            programItems: {
-                id: string;
-                isArchived: boolean;
-                createdAt: Date;
-                updatedAt: Date;
-                description: string | null;
-                createdBy: string;
-                updatedBy: string;
-                startTime: Date;
-                order: number;
-                title: string;
-                programId: string;
-                eventDayId: string | null;
-                durationMins: number | null;
-            }[];
-        } & {
-            id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            title: string | null;
-            isPublished: boolean;
-        }) | null;
-        tickets: {
-            name: string;
-            id: string;
-            isArchived: boolean;
-            createdAt: Date;
-            updatedAt: Date;
-            description: string | null;
-            createdBy: string;
-            updatedBy: string;
-            eventId: string;
-            currency: string;
-            price: import("@prisma/client-runtime-utils").Decimal;
-            totalQuantity: number | null;
-            soldCount: number;
-            heldCount: number;
-            isAvailable: boolean;
-        }[];
-    } & {
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
+    }>;
+    create: (tenantId: string, userId: string, data: CreateEventDto) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -521,7 +505,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -540,37 +524,8 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
-    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<{
-        name: string;
-        id: string;
-        isArchived: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        tenantId: string;
-        createdByUserId: string;
-        description: string | null;
-        location: string;
-        address: string | null;
-        latitude: import("@prisma/client-runtime-utils").Decimal | null;
-        longitude: import("@prisma/client-runtime-utils").Decimal | null;
-        coverImageUrl: string | null;
-        coverImagePublicId: string | null;
-        status: import("@prisma/client").$Enums.EventStatus;
-        visibility: import("@prisma/client").$Enums.EventVisibility;
-        ticketing: import("@prisma/client").$Enums.EventTicketing;
-        hostName: string | null;
-        rsvpDeadline: Date | null;
-        capacity: number | null;
-        shareToken: string | null;
-        ticketsRefundable: boolean;
-        createdBy: string;
-        updatedBy: string;
-    }, "latitude" | "longitude"> & {
-        latitude: number | null;
-        longitude: number | null;
-    }>;
-    reactivate: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<{
+    }, "eventDays">>;
+    update: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => Promise<Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -599,6 +554,10 @@ export declare const eventService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -673,7 +632,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -692,6 +651,204 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
+    }>;
+    archive: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<Omit<{
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string | null;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        hostName: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        shareToken: string | null;
+        ticketsRefundable: boolean;
+        createdBy: string;
+        updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
+    }, "eventDays">>;
+    reactivate: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<Omit<{
+        eventPass: {
+            id: string;
+            createdAt: Date;
+            updatedAt: Date;
+            tenantId: string;
+            eventId: string;
+            passTier: import("@prisma/client").$Enums.EventPassTier;
+        } | null;
+        memoryHub: {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            shareToken: string | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            title: string | null;
+            isPublic: boolean;
+            opensAt: Date | null;
+        } | null;
+        eventDays: {
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }[];
+        rsvpFields: {
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            fieldType: import("@prisma/client").$Enums.RsvpFieldType;
+            isRequired: boolean;
+            options: string | null;
+            order: number;
+        }[];
+        program: ({
+            programItems: {
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                description: string | null;
+                createdBy: string;
+                updatedBy: string;
+                startTime: Date;
+                order: number;
+                title: string;
+                programId: string;
+                eventDayId: string | null;
+                durationMins: number | null;
+            }[];
+        } & {
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            title: string | null;
+            isPublished: boolean;
+        }) | null;
+        tickets: {
+            name: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            description: string | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            currency: string;
+            price: import("@prisma/client-runtime-utils").Decimal;
+            totalQuantity: number | null;
+            soldCount: number;
+            heldCount: number;
+            isAvailable: boolean;
+        }[];
+    } & {
+        name: string;
+        id: string;
+        isArchived: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+        tenantId: string;
+        createdByUserId: string;
+        description: string | null;
+        location: string | null;
+        address: string | null;
+        latitude: import("@prisma/client-runtime-utils").Decimal | null;
+        longitude: import("@prisma/client-runtime-utils").Decimal | null;
+        coverImageUrl: string | null;
+        coverImagePublicId: string | null;
+        status: import("@prisma/client").$Enums.EventStatus;
+        visibility: import("@prisma/client").$Enums.EventVisibility;
+        ticketing: import("@prisma/client").$Enums.EventTicketing;
+        hostName: string | null;
+        rsvpDeadline: Date | null;
+        capacity: number | null;
+        shareToken: string | null;
+        ticketsRefundable: boolean;
+        createdBy: string;
+        updatedBy: string;
+    }, "latitude" | "longitude"> & {
+        latitude: number | null;
+        longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }>;
     getShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         url: string;
@@ -699,7 +856,7 @@ export declare const eventService: {
     regenerateShareLink: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<{
         url: string;
     }>;
-    publish: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<{
+    publish: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -728,6 +885,10 @@ export declare const eventService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -802,7 +963,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -821,8 +982,29 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }>;
-    cancel: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<{
+    cancel: (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => Promise<Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -851,6 +1033,10 @@ export declare const eventService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -925,7 +1111,7 @@ export declare const eventService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -944,6 +1130,27 @@ export declare const eventService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }>;
 };
 //# sourceMappingURL=event.service.d.ts.map

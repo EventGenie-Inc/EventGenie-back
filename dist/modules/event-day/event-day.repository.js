@@ -1,40 +1,52 @@
 import prisma from '../../shared/prisma/prisma.client.js';
-import {} from './event-day.types.js';
-import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { withPlainDayCoordinates } from '../event/event-coordinates.util.js';
+import {} from './event-day-venue.util.js';
 export const eventDayRepository = {
-    findAll: (eventId) => prisma.eventDay.findMany({
+    findAll: async (eventId) => (await prisma.eventDay.findMany({
         where: { eventId, isArchived: false },
         orderBy: { date: 'asc' },
-    }),
-    findById: (id) => prisma.eventDay.findFirst({ where: { id, isArchived: false } }),
-    create: (eventId, userId, data) => prisma.eventDay.create({
+    })).map(withPlainDayCoordinates),
+    findById: async (id) => {
+        const day = await prisma.eventDay.findFirst({ where: { id, isArchived: false } });
+        return day ? withPlainDayCoordinates(day) : null;
+    },
+    create: (eventId, userId, data) => prisma.eventDay
+        .create({
         data: {
             eventId,
             label: data.label,
-            date: parseClientDateTime(data.date),
-            // Optional fields: only include if provided, using null explicitly
-            startTime: data.startTime ? parseClientDateTime(data.startTime) : null,
-            endTime: data.endTime ? parseClientDateTime(data.endTime) : null,
+            date: data.date,
+            startTime: data.startTime,
+            endTime: data.endTime,
+            location: data.venue.location,
+            address: data.venue.address,
+            latitude: data.venue.latitude,
+            longitude: data.venue.longitude,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,
         },
-    }),
-    update: (id, userId, data) => prisma.eventDay.update({
+    })
+        .then(withPlainDayCoordinates),
+    // The venue is always written in full: the service has already merged
+    // the request with the stored day (event-day-venue.util.ts), including
+    // clearing coordinates when the address changed without new ones.
+    update: (id, userId, data) => prisma.eventDay
+        .update({
         where: { id },
         data: {
-            // Only include fields that are explicitly provided — never pass undefined
             ...(data.label !== undefined && { label: data.label }),
-            ...(data.date !== undefined && { date: parseClientDateTime(data.date) }),
-            // startTime/endTime are nullable — explicit null must clear them,
-            // not fall into new Date(null) (1970-01-01T00:00:00Z), which is
-            // what happened when the ?? null guard sat outside the
-            // transform instead of inside it. Mirrors create()'s handling.
-            ...(data.startTime !== undefined && { startTime: data.startTime ? parseClientDateTime(data.startTime) : null }),
-            ...(data.endTime !== undefined && { endTime: data.endTime ? parseClientDateTime(data.endTime) : null }),
+            ...(data.date !== undefined && { date: data.date }),
+            ...(data.startTime !== undefined && { startTime: data.startTime }),
+            ...(data.endTime !== undefined && { endTime: data.endTime }),
+            location: data.venue.location,
+            address: data.venue.address,
+            latitude: data.venue.latitude,
+            longitude: data.venue.longitude,
             updatedBy: userId,
         },
-    }),
+    })
+        .then(withPlainDayCoordinates),
     archive: (id, userId) => prisma.eventDay.update({
         where: { id },
         data: { isArchived: true, updatedBy: userId },

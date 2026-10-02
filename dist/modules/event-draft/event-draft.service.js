@@ -5,7 +5,11 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import {} from './event-draft.types.js';
 import {} from '@prisma/client';
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
-import { assertValidCoordinates } from '../event/event-coordinates.util.js';
+import { requireDayLabel, requireDayDate } from '../event-day/event-day-validation.util.js';
+import { resolveDayVenueForCreate } from '../event-day/event-day-venue.util.js';
+import { requireTicketName, requireTicketPrice } from '../ticket/ticket-validation.util.js';
+import { requireFieldLabel, requireFieldType } from '../rsvp-field/rsvp-field-validation.util.js';
+import { requireItemTitle, requireItemStartTime } from '../program-item/program-item-validation.util.js';
 import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
@@ -27,10 +31,28 @@ export const eventDraftService = {
         // Payload shape is owned by the frontend wizard and stored opaquely —
         // only the fields actually needed here are validated/read.
         const p = draft.payload;
-        if (!p.name || !p.location || !Array.isArray(p.days) || p.days.length === 0) {
-            throw new HttpError(400, 'Event is missing required fields (name, location, at least one day)');
+        // 422, the same status and words the direct endpoints use — each
+        // required field is checked by the SAME helper the matching endpoint
+        // calls (event name here; days, tickets, custom fields and program
+        // items below), so the wizard can't save what an edit would refuse.
+        // No event-level venue any more: it belongs to each day.
+        if (typeof p.name !== 'string' || !p.name.trim()) {
+            throw new HttpError(422, 'Your event needs a name.');
         }
-        const days = p.days;
+        const eventName = p.name.trim();
+        if (!Array.isArray(p.days) || p.days.length === 0) {
+            throw new HttpError(422, 'Your event needs at least one day.');
+        }
+        const days = p.days.map((day) => {
+            const label = requireDayLabel(day.label);
+            return {
+                label,
+                date: requireDayDate(day.date, label),
+                startTime: day.startTime ? parseClientDateTime(day.startTime) : null,
+                endTime: day.endTime ? parseClientDateTime(day.endTime) : null,
+                venue: resolveDayVenueForCreate(day, label),
+            };
+        });
         // Duplicate day labels within this draft would make the import
         // engine's Day-column matching ambiguous later — checked purely
         // in-memory, before the transaction starts, since the event doesn't
@@ -38,18 +60,12 @@ export const eventDraftService = {
         // event-day-validation.util.ts's case-insensitive rule.
         const seenLabels = new Set();
         for (const day of days) {
-            const label = String(day.label ?? '').trim().toLowerCase();
+            const label = day.label.toLowerCase();
             if (seenLabels.has(label)) {
                 throw new HttpError(409, `Duplicate day label '${day.label}' — day labels must be unique within an event`);
             }
             seenLabels.add(label);
         }
-        // Draft payload is opaque JSON — coerce before validating rather than
-        // trusting the frontend sent numbers. Same both-or-neither, plausible-
-        // range rule as the direct POST/PUT paths in event.service.ts.
-        const latitude = p.latitude !== undefined && p.latitude !== null ? Number(p.latitude) : undefined;
-        const longitude = p.longitude !== undefined && p.longitude !== null ? Number(p.longitude) : undefined;
-        assertValidCoordinates(latitude, longitude);
         // Same both-or-neither/plausibility treatment extended to the two
         // Batch A fields — the wizard is the primary event-creation path, so
         // leaving these validated only on the direct POST would make the
@@ -57,11 +73,7 @@ export const eventDraftService = {
         const capacity = p.capacity !== undefined && p.capacity !== null ? Number(p.capacity) : undefined;
         assertValidCapacity(capacity);
         const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseClientDateTime(p.rsvpDeadline) : undefined;
-        const draftEventDays = days.map((day) => ({
-            date: parseClientDateTime(day.date),
-            endTime: day.endTime ? parseClientDateTime(day.endTime) : null,
-        }));
-        assertValidRsvpDeadline(rsvpDeadline ?? null, draftEventDays, { rejectPast: true });
+        assertValidRsvpDeadline(rsvpDeadline ?? null, days, { rejectPast: true });
         // Same size-limit + cleanup-of-the-already-uploaded-file treatment as
         // the direct POST path (event.service.ts) — see event-cover-image.util.ts
         // for why this can only be checked here, after Cloudinary has already
@@ -80,10 +92,19 @@ export const eventDraftService = {
             }
             throw new HttpError(400, coverImageTooLargeMessage(coverImageBytes));
         }
-        const tickets = Array.isArray(p.tickets) ? p.tickets : [];
-        const customFields = Array.isArray(p.customFields) ? p.customFields : [];
+        const tickets = (Array.isArray(p.tickets) ? p.tickets : []).map((ticket) => {
+            const name = requireTicketName(ticket.name);
+            return { ...ticket, name, price: requireTicketPrice(ticket.price, name) };
+        });
+        const customFields = (Array.isArray(p.customFields) ? p.customFields : []).map((field) => {
+            const label = requireFieldLabel(field.label);
+            return { ...field, label, fieldType: requireFieldType(field.fieldType, label) };
+        });
         const program = p.program;
-        const programItems = Array.isArray(program?.items) ? program.items : [];
+        const programItems = (Array.isArray(program?.items) ? program.items : []).map((item) => {
+            const title = requireItemTitle(item.title);
+            return { ...item, title, startTime: requireItemStartTime(item.startTime, title) };
+        });
         const memoryHub = p.memoryHub;
         await assertEventCreatable(tenantId, {
             ...(p.visibility !== undefined && { visibility: p.visibility }),
@@ -95,12 +116,8 @@ export const eventDraftService = {
                 data: {
                     tenantId,
                     createdByUserId: userId,
-                    name: p.name,
+                    name: eventName,
                     description: p.description ?? null,
-                    location: p.location,
-                    address: p.address ?? null,
-                    latitude: latitude ?? null,
-                    longitude: longitude ?? null,
                     coverImageUrl: p.coverImageUrl ?? null,
                     coverImagePublicId: coverImagePublicId ?? null,
                     status: 'DRAFT',
@@ -120,9 +137,13 @@ export const eventDraftService = {
                     data: {
                         eventId: event.id,
                         label: day.label,
-                        date: parseClientDateTime(day.date),
-                        startTime: day.startTime ? parseClientDateTime(day.startTime) : null,
-                        endTime: day.endTime ? parseClientDateTime(day.endTime) : null,
+                        date: day.date,
+                        startTime: day.startTime,
+                        endTime: day.endTime,
+                        location: day.venue.location,
+                        address: day.venue.address,
+                        latitude: day.venue.latitude,
+                        longitude: day.venue.longitude,
                         isArchived: false,
                         createdBy: userId,
                         updatedBy: userId,
@@ -168,7 +189,8 @@ export const eventDraftService = {
                     data: {
                         eventId: event.id,
                         title: program?.title ?? null,
-                        isPublished: false,
+                        // Visible to guests by default, same as event-program.repository.ts.
+                        isPublished: true,
                         isArchived: false,
                         createdBy: userId,
                         updatedBy: userId,
@@ -180,7 +202,7 @@ export const eventDraftService = {
                             programId: eventProgram.id,
                             title: item.title,
                             description: item.description ?? null,
-                            startTime: parseClientDateTime(item.startTime),
+                            startTime: item.startTime,
                             durationMins: item.durationMins ?? null,
                             order: index,
                             isArchived: false,

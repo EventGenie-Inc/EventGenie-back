@@ -96,9 +96,6 @@ export declare const eventProgramService: {
         available: true;
         title: string | null;
         days: {
-            eventDayId: string;
-            label: string;
-            date: Date;
             items: {
                 id: string;
                 title: string;
@@ -106,6 +103,13 @@ export declare const eventProgramService: {
                 startTime: Date;
                 durationMins: number | null;
             }[];
+            location: string | null;
+            address: string | null;
+            latitude: number | null;
+            longitude: number | null;
+            eventDayId: string;
+            label: string;
+            date: Date;
         }[];
     }>;
 };

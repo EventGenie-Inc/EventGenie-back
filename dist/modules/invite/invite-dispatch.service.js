@@ -12,6 +12,13 @@ import { REMINDER_COOLDOWN_HOURS, REMINDER_COOLDOWN_MS, SKIP_MESSAGES, assertRsv
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatEarliestDay } from '../../shared/utils/guest-date.util.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
+// Live days only (an archived day is no longer part of the event), earliest
+// first. The repository already filters archived days on the bulk paths;
+// resend loads through inviteService.getById, which does not.
+const invitedDaysFor = (invite) => invite.inviteEventDay
+    .map((d) => d.eventDay)
+    .filter((d) => !d.isArchived)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
 const guestDisplayName = (guest) => [guest.firstName, guest.surname].filter(Boolean).join(' ').trim() || 'Guest';
 // Keyed off the Invite's own deliveryMethod (fixed at creation from
 // whichever contact the guest had then), never re-derived from the
@@ -30,19 +37,18 @@ const buildDispatchContext = (event) => ({
     eventId: event.id,
     tenantId: event.tenantId,
     eventName: event.name,
-    location: event.location,
     dateLabel: formatEarliestDay(event.eventDays),
     rsvpDeadline: event.rsvpDeadline,
 });
-const buildMessage = (kind, ctx, rsvpLink) => kind === 'INVITE'
+const buildMessage = (kind, ctx, days, rsvpLink) => kind === 'INVITE'
     ? {
         emailSubject: buildInviteEmailSubject(ctx.eventName),
-        emailHtml: buildInviteEmailHtml(ctx.eventName, ctx.location, ctx.dateLabel, rsvpLink),
+        emailHtml: buildInviteEmailHtml(ctx.eventName, days, ctx.dateLabel, rsvpLink),
         smsBody: buildInviteSmsBody(ctx.eventName, rsvpLink),
     }
     : {
         emailSubject: buildReminderEmailSubject(ctx.eventName),
-        emailHtml: buildReminderEmailHtml(ctx.eventName, ctx.location, ctx.dateLabel, ctx.rsvpDeadline, rsvpLink),
+        emailHtml: buildReminderEmailHtml(ctx.eventName, days, ctx.dateLabel, ctx.rsvpDeadline, rsvpLink),
         smsBody: buildReminderSmsBody(ctx.eventName, rsvpLink, ctx.rsvpDeadline),
     };
 const dispatchOne = async (ctx, invite, 
@@ -52,7 +58,7 @@ const dispatchOne = async (ctx, invite,
 // disagree with what was actually enforced. Meaningless for an EMAIL
 // delivery.
 smsSource, kind = 'INVITE') => {
-    const message = buildMessage(kind, ctx, buildInviteRsvpLink(invite.token));
+    const message = buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token));
     const result = invite.deliveryMethod === 'EMAIL'
         ? await sendEmail(invite.guest.email ?? '', message.emailSubject, message.emailHtml)
         : await sendSms(invite.guest.phoneNumber ?? '', message.smsBody);

@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventDayRepository } from './event-day.repository.js';
+import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 // EventDay.label must be unique per event so the import engine's Day
 // column (and any human reading a spreadsheet) never faces an ambiguous
 // label. The DB constraint (@@unique([eventId, label])) is case-sensitive
@@ -21,4 +22,26 @@ export const assertNoDuplicateDayLabel = async (eventId, label, excludeDayId) =>
 // raw DB unique-constraint violation into the same friendly HttpError
 // instead of letting a bare P2002 reach the client.
 export const isDayLabelUniqueViolation = (err) => err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+// Required-field checks for a day's own fields (the venue has its own,
+// event-day-venue.util.ts). 422 — a well-formed request missing a value
+// the organiser must supply — with the day named where there is one, so a
+// multi-day wizard save says WHICH row to fix. Used by event-day.service.ts
+// and the wizard's materialize path alike.
+export const requireDayLabel = (label) => {
+    const trimmed = typeof label === 'string' ? label.trim() : '';
+    if (!trimmed)
+        throw new HttpError(422, 'Each event day needs a label, e.g. "Day 1 — Ceremony".');
+    return trimmed;
+};
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}/;
+export const requireDayDate = (date, label) => {
+    if (typeof date !== 'string' || !DATE_ONLY.test(date.trim())) {
+        throw new HttpError(422, `'${label}' needs a date.`);
+    }
+    const parsed = parseClientDateTime(date.trim());
+    if (Number.isNaN(parsed.getTime())) {
+        throw new HttpError(422, `'${label}' needs a valid date — '${date}' isn't one.`);
+    }
+    return parsed;
+};
 //# sourceMappingURL=event-day-validation.util.js.map

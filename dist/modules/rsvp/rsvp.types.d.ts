@@ -12,8 +12,8 @@ export interface SubmitRsvpDto {
     plusOneNames?: string[];
     firstName?: string;
     surname?: string;
-    email?: string;
-    phoneNumber?: string;
+    email?: string | null;
+    phoneNumber?: string | null;
 }
 export interface QuoteTicketDto {
     token: string;

@@ -136,18 +136,16 @@ export const vendorService = {
         // needs the event's pass/day fields, not just the tenant.
         const event = await eventService.getById(eventId, requestingRole, tenantId);
         await assertEventVendorMarketplaceAccessible(event);
-        if (event.latitude === null || event.longitude === null) {
-            throw new HttpError(422, "This event doesn't have coordinates yet. Search for and select its address before looking for nearby vendors.");
+        // The venue belongs to each event day now; the event-level columns are
+        // retired. "Near the event" means near its FIRST day's venue (days
+        // arrive ordered by date from eventRepository.findById) — the same
+        // venue an organiser list shows. Coordinates are already plain numbers
+        // (withPlainCoordinates converts eventDays too).
+        const firstDay = event.eventDays[0];
+        if (!firstDay || firstDay.latitude === null || firstDay.longitude === null) {
+            throw new HttpError(422, "This event's first day doesn't have a located venue yet. Search for and select the day's address before looking for nearby vendors.");
         }
-        // Event.latitude/longitude are Prisma Decimal, same as VendorSpace's
-        // (see vendor.repository.ts's withPlainCoords) — converted explicitly
-        // here since event.repository.ts doesn't do this conversion itself
-        // (a pre-existing gap flagged in an earlier batch's report; out of
-        // scope for the vendor module to fix at the source, but it has to be
-        // handled at this call site regardless, or the Haversine math below
-        // silently breaks on a Decimal instance instead of a number).
-        const latitude = Number(event.latitude);
-        const longitude = Number(event.longitude);
+        const { latitude, longitude } = firstDay;
         return vendorRepository.findSpacesNearLocation(latitude, longitude, radiusKm);
     },
     createSpace: async (userId, requestingRole, requestingTenantId, data) => {

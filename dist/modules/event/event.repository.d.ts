@@ -1,13 +1,18 @@
 import { type EventStatus } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
+export declare const normalizeHostName: (hostName: string | null | undefined) => string | null;
 export declare const eventRepository: {
-    findAll: (tenantId?: string, includeArchived?: boolean) => Promise<(Omit<{
+    findAll: (tenantId?: string, includeArchived?: boolean) => Promise<(Omit<Omit<{
         eventDays: {
             label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -24,7 +29,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -43,8 +48,29 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     })[]>;
-    findById: (id: string, includeArchived?: boolean, tenantId?: string) => Promise<(Omit<{
+    findById: (id: string, includeArchived?: boolean, tenantId?: string) => Promise<(Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -73,6 +99,10 @@ export declare const eventRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -147,7 +177,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -166,14 +196,39 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }) | null>;
-    findScoped: (id: string, includeArchived?: boolean, tenantId?: string) => Promise<(Omit<{
+    findScoped: (id: string, includeArchived?: boolean, tenantId?: string) => Promise<(Omit<Omit<{
         eventDays: {
             label: string;
             id: string;
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -190,7 +245,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -209,8 +264,29 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }) | null>;
-    findScopedWithPass: (id: string, includeArchived?: boolean, tenantId?: string) => Promise<(Omit<{
+    findScopedWithPass: (id: string, includeArchived?: boolean, tenantId?: string) => Promise<(Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -225,6 +301,10 @@ export declare const eventRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -241,7 +321,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -260,9 +340,30 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }) | null>;
     countActive: (tenantId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
-    findByShareToken: (shareToken: string) => Promise<(Omit<{
+    findByShareToken: (shareToken: string) => Promise<(Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -277,6 +378,10 @@ export declare const eventRepository: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -293,7 +398,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -312,8 +417,29 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }) | null>;
-    generateShareToken: (id: string, userId: string) => Promise<Omit<{
+    generateShareToken: (id: string, userId: string) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -322,7 +448,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -341,9 +467,9 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
+    }, "eventDays">>;
     countAcceptedInvitesForEvent: (eventId: string) => import("@prisma/client").Prisma.PrismaPromise<number>;
-    create: (tenantId: string, userId: string, data: CreateEventDto) => Promise<Omit<{
+    create: (tenantId: string, userId: string, data: CreateEventDto) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -352,7 +478,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -371,8 +497,8 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
-    update: (id: string, userId: string, data: UpdateEventDto) => Promise<Omit<{
+    }, "eventDays">>;
+    update: (id: string, userId: string, data: UpdateEventDto) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -381,7 +507,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -400,8 +526,8 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
-    archive: (id: string, userId: string) => Promise<Omit<{
+    }, "eventDays">>;
+    archive: (id: string, userId: string) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -410,7 +536,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -429,8 +555,8 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
-    reactivate: (id: string, userId: string) => Promise<Omit<{
+    }, "eventDays">>;
+    reactivate: (id: string, userId: string) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -439,7 +565,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -458,8 +584,8 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
-    updateStatus: (id: string, userId: string, status: EventStatus) => Promise<Omit<{
+    }, "eventDays">>;
+    updateStatus: (id: string, userId: string, status: EventStatus) => Promise<Omit<Omit<{
         name: string;
         id: string;
         isArchived: boolean;
@@ -468,7 +594,7 @@ export declare const eventRepository: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -487,6 +613,6 @@ export declare const eventRepository: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
-    }>;
+    }, "eventDays">>;
 };
 //# sourceMappingURL=event.repository.d.ts.map

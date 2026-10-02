@@ -15,6 +15,7 @@ export declare const programItemRepository: {
         eventDayId: string | null;
         durationMins: number | null;
     }[]>;
+    nextOrder: (programId: string) => Promise<number>;
     findById: (id: string) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
         id: string;
         isArchived: boolean;
@@ -30,7 +31,9 @@ export declare const programItemRepository: {
         eventDayId: string | null;
         durationMins: number | null;
     } | null, null, import("@prisma/client/runtime/client").DefaultArgs, import("@prisma/client").Prisma.PrismaClientOptions>;
-    create: (programId: string, userId: string, data: CreateProgramItemDto) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
+    create: (programId: string, userId: string, data: CreateProgramItemDto & {
+        order: number;
+    }) => import("@prisma/client").Prisma.Prisma__ProgramItemClient<{
         id: string;
         isArchived: boolean;
         createdAt: Date;

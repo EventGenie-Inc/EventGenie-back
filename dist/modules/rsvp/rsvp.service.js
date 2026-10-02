@@ -10,6 +10,7 @@ import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest/guest-validation.util.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
+import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
 // that reader specifically: what happened, and what they can do about
@@ -136,19 +137,41 @@ const assertValidSubmission = (data) => {
     if (data.surname !== undefined && typeof data.surname !== 'string') {
         throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
     }
-    if (data.email !== undefined && typeof data.email !== 'string') {
+    // Required: an absent/non-boolean `attending` used to be read as a
+    // decline, silently recording an answer the guest never gave.
+    if (typeof data.attending !== 'boolean') {
+        throw new HttpError(422, "Please let us know whether you'll be attending.");
+    }
+    // null is meaningful here (remove this contact), so only other non-strings are malformed.
+    if (data.email !== undefined && data.email !== null && typeof data.email !== 'string') {
         throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
     }
-    if (data.phoneNumber !== undefined && typeof data.phoneNumber !== 'string') {
+    if (data.phoneNumber !== undefined && data.phoneNumber !== null && typeof data.phoneNumber !== 'string') {
         throw new HttpError(400, 'Something went wrong with your response. Please refresh the page and try again.');
     }
 };
-// undefined (field omitted) and '' (submitted blank) both mean "leave
-// existing data alone" — a guest resubmitting a form that only shows
-// SOME fields (e.g. a plain "attending?" toggle with no name field at
-// all) must never be treated as clearing what an earlier submission, or
-// the organiser, already set. Only a genuinely non-empty value is ever
-// written.
+const contactIntent = (value) => {
+    if (value === null)
+        return { kind: 'remove' };
+    const trimmed = trimToUndefined(value);
+    return trimmed === undefined ? { kind: 'keep' } : { kind: 'set', value: trimmed };
+};
+// The guest-import validators (guest-validation.util.ts) throw 400 — right
+// for an organiser's spreadsheet row, which is malformed input. On the RSVP
+// form it is a well-formed answer that fails a precondition, so the same
+// specific message ("'0821234567' is missing a country code, use
+// +27821234567") is re-raised as 422. The normalisation itself is exactly
+// guest import's: same functions, same default country (ZA).
+const asUnprocessable = (fn) => {
+    try {
+        return fn();
+    }
+    catch (err) {
+        if (err instanceof HttpError && err.statusCode === 400)
+            throw new HttpError(422, err.message);
+        throw err;
+    }
+};
 const trimToUndefined = (value) => {
     if (value === undefined)
         return undefined;
@@ -185,6 +208,13 @@ export const rsvpService = {
         }
         const isExpired = !!invite.expiresAt && invite.expiresAt < new Date();
         const ticketPurchase = invite.ticketPurchases[0] ?? null;
+        // Earliest first, so "the first invited day" (whose venue fills the
+        // compatibility fields on `event` below) is well defined.
+        const invitedDays = invite.inviteEventDay
+            .map((d) => d.eventDay)
+            .slice()
+            .sort((a, b) => a.date.getTime() - b.date.getTime());
+        const firstDayVenue = invitedDays[0] ? toDayVenueView(invitedDays[0]) : { location: null, address: null, latitude: null, longitude: null };
         return {
             // Deliberate, hand-picked projection — a guest sees an invitation,
             // not a database row. Mirrors event-public.service.ts's
@@ -209,28 +239,31 @@ export const rsvpService = {
                 },
                 // The days THIS invite offers — never every EventDay on the
                 // event (a guest may be invited to a subset).
-                inviteEventDay: invite.inviteEventDay.map((d) => ({
+                // Each day carries its own venue — the venue belongs to the day.
+                inviteEventDay: invitedDays.map((day) => ({
                     eventDay: {
-                        id: d.eventDay.id,
-                        label: d.eventDay.label,
-                        date: d.eventDay.date,
-                        startTime: d.eventDay.startTime,
-                        endTime: d.eventDay.endTime,
+                        id: day.id,
+                        label: day.label,
+                        date: day.date,
+                        startTime: day.startTime,
+                        endTime: day.endTime,
+                        ...toDayVenueView(day),
                     },
                 })),
                 event: {
                     name: invite.event.name,
                     description: invite.event.description,
                     hostName: invite.event.hostName,
-                    location: invite.event.location,
-                    address: invite.event.address,
-                    // Venue coordinates for a map link on the invitation, or null
-                    // when the organiser never geocoded the address. Plain numbers:
-                    // the columns are Decimal, which JSON renders as strings (see
-                    // event-coordinates.util.ts). findByToken does not go through
-                    // eventRepository, so the conversion happens here.
-                    latitude: invite.event.latitude === null ? null : Number(invite.event.latitude),
-                    longitude: invite.event.longitude === null ? null : Number(invite.event.longitude),
+                    // DEPRECATED — rollout compatibility only. The venue belongs to
+                    // each day (inviteEventDay[].eventDay above); these four keys
+                    // are NOT the retired Event columns but a copy of this guest's
+                    // FIRST invited day's venue, so the frontend deployed before the
+                    // change keeps showing a correct venue. Remove them together
+                    // with the Event venue columns (STEERING Known gaps).
+                    location: firstDayVenue.location,
+                    address: firstDayVenue.address,
+                    latitude: firstDayVenue.latitude,
+                    longitude: firstDayVenue.longitude,
                     coverImageUrl: invite.event.coverImageUrl,
                     rsvpDeadline: invite.event.rsvpDeadline,
                     // Reported as the EFFECTIVE status, consistent with every other
@@ -365,8 +398,8 @@ export const rsvpService = {
             // can carry every changed field in a single write.
             const nextFirstName = trimToUndefined(data.firstName);
             const nextSurname = trimToUndefined(data.surname);
-            const nextEmailRaw = trimToUndefined(data.email);
-            const nextPhoneRaw = trimToUndefined(data.phoneNumber);
+            const emailIntent = contactIntent(data.email);
+            const phoneIntent = contactIntent(data.phoneNumber);
             const guestUpdateData = {};
             if (nextFirstName !== undefined && nextFirstName !== invite.guest.firstName) {
                 guestUpdateData.firstName = nextFirstName;
@@ -376,27 +409,42 @@ export const rsvpService = {
             }
             // Contact is a separate question from name: a guest imported by
             // phone has no email, and the reason BOTH fields exist on Guest is
-            // so the other can be captured here. Unlike
-            // guest-validation.util.ts's assertExactlyOneContact (which governs
-            // organiser create/update), a guest is deliberately allowed to end
-            // up holding both — routing (contactFor/dispatchOne in
-            // invite-dispatch.service.ts) is keyed off the Invite's
-            // already-fixed deliveryMethod, not re-derived from the guest's
-            // contact fields, so an existing invite's delivery is unaffected
-            // either way. If a dynamic per-send channel choice is ever built,
-            // phone should win when both are present — that's a preference
-            // setting, not something to invent here.
-            if (nextEmailRaw !== undefined) {
-                const normalizedEmail = normalizeEmail(nextEmailRaw);
-                assertValidEmail(normalizedEmail);
+            // so the other can be captured here — and so a guest whose number
+            // changed can correct it. Unlike guest-validation.util.ts's
+            // assertExactlyOneContact (which governs organiser create/update), a
+            // guest is deliberately allowed to end up holding both.
+            if (emailIntent.kind === 'set') {
+                const normalizedEmail = normalizeEmail(emailIntent.value);
+                asUnprocessable(() => assertValidEmail(normalizedEmail));
                 if (normalizedEmail !== invite.guest.email)
                     guestUpdateData.email = normalizedEmail;
             }
-            if (nextPhoneRaw !== undefined) {
-                const normalizedPhone = normalizePhoneToE164(nextPhoneRaw);
+            else if (emailIntent.kind === 'remove' && invite.guest.email !== null) {
+                guestUpdateData.email = null;
+            }
+            if (phoneIntent.kind === 'set') {
+                const normalizedPhone = asUnprocessable(() => normalizePhoneToE164(phoneIntent.value));
                 if (normalizedPhone !== invite.guest.phoneNumber)
                     guestUpdateData.phoneNumber = normalizedPhone;
             }
+            else if (phoneIntent.kind === 'remove' && invite.guest.phoneNumber !== null) {
+                guestUpdateData.phoneNumber = null;
+            }
+            // A guest can never be left unreachable: the organiser's only way to
+            // send them anything (invitation resend, reminder) is one of these.
+            const finalEmail = guestUpdateData.email !== undefined ? guestUpdateData.email : invite.guest.email;
+            const finalPhone = guestUpdateData.phoneNumber !== undefined ? guestUpdateData.phoneNumber : invite.guest.phoneNumber;
+            if (!finalEmail && !finalPhone) {
+                throw new HttpError(422, 'Please keep at least one way for the organiser to reach you — an email address or a phone number.');
+            }
+            // Future invitations and reminders go to the guest's CURRENT contact:
+            // dispatch (invite-dispatch.service.ts's contactFor) reads the guest's
+            // email/phone at send time on the invite's deliveryMethod channel. So
+            // a changed number is picked up by itself; only a REMOVED channel
+            // needs the invite moved to the one the guest kept.
+            const nextDeliveryMethod = invite.deliveryMethod === 'SMS' && !finalPhone ? 'EMAIL'
+                : invite.deliveryMethod === 'EMAIL' && !finalEmail ? 'SMS'
+                    : null;
             // Same duplicate rule as guest.service.ts's create/import paths
             // (STEERING: same email/phone on the same event is a duplicate) —
             // only queried when a contact is actually changing, since this is
@@ -426,10 +474,24 @@ export const rsvpService = {
             // earlier RSVP) is never re-prompted.
             const finalFirstName = guestUpdateData.firstName ?? invite.guest.firstName;
             if (data.attending && !finalFirstName) {
-                throw new HttpError(400, "Please tell us your name so the organiser knows who's coming.");
+                throw new HttpError(422, "Please tell us your name so the organiser knows who's coming.");
+            }
+            // Custom questions the organiser marked required must be answered
+            // when attending — the same rule the RSVP form applies client-side
+            // (a decline needs no answers: nothing to cater for). Previously only
+            // the frontend enforced it, so a direct call could skip them.
+            if (data.attending) {
+                const answered = new Set((data.rsvpResponses ?? []).filter((r) => r.value.trim().length > 0).map((r) => r.rsvpFieldId));
+                const unanswered = invite.event.rsvpFields.filter((f) => f.isRequired && !answered.has(f.id));
+                if (unanswered.length > 0) {
+                    throw new HttpError(422, `Please answer ${unanswered.map((f) => `'${f.label}'`).join(', ')} — the organiser needs ${unanswered.length === 1 ? 'this' : 'these'} to plan for you.`);
+                }
             }
             if (Object.keys(guestUpdateData).length > 0) {
                 await tx.guest.update({ where: { id: invite.guestId }, data: guestUpdateData });
+            }
+            if (nextDeliveryMethod) {
+                await tx.invite.update({ where: { id: invite.id }, data: { deliveryMethod: nextDeliveryMethod, updatedBy: GUEST_ACTOR } });
             }
             // Wholesale replace: an edit states the guest's CURRENT intent, not
             // an amendment to history, so whatever this invite (and any
@@ -622,7 +684,7 @@ export const rsvpService = {
                     // checkout link and receipt — a guest imported by phone alone
                     // has no email until they supply one, same moment as any
                     // other contact-detail gap this form fills.
-                    guestEmailForReservation = guestUpdateData.email ?? invite.guest.email;
+                    guestEmailForReservation = finalEmail;
                     if (!guestEmailForReservation) {
                         throw new HttpError(400, 'An email address is required to purchase a ticket — please provide one above.');
                     }

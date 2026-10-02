@@ -5,6 +5,7 @@ import { eventService } from '../event/event.service.js';
 import { inviteRepository } from '../invite/invite.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 // Guest-facing date matching — UTC only, per STEERING's "guest-facing
 // dates are UTC" anchor (guest-date.util.ts). EventDay.date is a
 // @db.Date column (Prisma round-trips it as UTC midnight); ProgramItem.
@@ -123,7 +124,9 @@ export const eventProgramService = {
                 startTime: item.startTime,
                 durationMins: item.durationMins,
             }));
-            return { eventDayId: day.id, label: day.label, date: day.date, items };
+            // The day's own venue — a guest reading the day's schedule needs to
+            // know where it happens, and days of one event can differ.
+            return { eventDayId: day.id, label: day.label, date: day.date, ...toDayVenueView(day), items };
         });
         const totalItems = days.reduce((sum, day) => sum + day.items.length, 0);
         if (totalItems === 0) {

@@ -73,6 +73,8 @@ const assertEventAcceptsRegistration = (event) => {
 // silently start leaking a field added to Event later — the same
 // mistake already flagged on rsvp.service.ts's validate().
 const toPublicView = (event) => {
+    // Days arrive ordered by date (eventRepository.findByShareToken).
+    const firstDay = event.eventDays[0];
     const effectiveStatus = resolveEffectiveStatus(event);
     const isPublic = event.visibility === 'PUBLIC';
     const isPublished = effectiveStatus === 'PUBLISHED';
@@ -83,8 +85,11 @@ const toPublicView = (event) => {
         name: event.name,
         description: event.description,
         hostName: event.hostName,
-        location: event.location,
-        address: event.address,
+        // DEPRECATED — rollout compatibility only, same as rsvp.service.ts's
+        // validate(): the FIRST day's venue, not the retired Event columns.
+        // Each day below carries its own venue.
+        location: firstDay?.location ?? null,
+        address: firstDay?.address ?? null,
         coverImageUrl: event.coverImageUrl,
         rsvpDeadline: event.rsvpDeadline,
         eventDays: event.eventDays.map((d) => ({
@@ -93,6 +98,10 @@ const toPublicView = (event) => {
             date: d.date,
             startTime: d.startTime,
             endTime: d.endTime,
+            location: d.location,
+            address: d.address,
+            latitude: d.latitude,
+            longitude: d.longitude,
         })),
         isPublic,
         isPublished,

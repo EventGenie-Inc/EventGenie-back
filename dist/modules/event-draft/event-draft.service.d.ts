@@ -27,7 +27,7 @@ export declare const eventDraftService: {
         currentStep: number;
         payload: import("@prisma/client/runtime/client").JsonValue;
     }>;
-    materialize: (tenantId: string, userId: string) => Promise<(Omit<{
+    materialize: (tenantId: string, userId: string) => Promise<(Omit<Omit<{
         eventPass: {
             id: string;
             createdAt: Date;
@@ -56,6 +56,10 @@ export declare const eventDraftService: {
             isArchived: boolean;
             createdAt: Date;
             updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
             createdBy: string;
             updatedBy: string;
             eventId: string;
@@ -130,7 +134,7 @@ export declare const eventDraftService: {
         tenantId: string;
         createdByUserId: string;
         description: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         latitude: import("@prisma/client-runtime-utils").Decimal | null;
         longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -149,6 +153,27 @@ export declare const eventDraftService: {
     }, "latitude" | "longitude"> & {
         latitude: number | null;
         longitude: number | null;
+    }, "eventDays"> & {
+        eventDays: (Omit<{
+            label: string;
+            id: string;
+            isArchived: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+            location: string | null;
+            address: string | null;
+            latitude: import("@prisma/client-runtime-utils").Decimal | null;
+            longitude: import("@prisma/client-runtime-utils").Decimal | null;
+            createdBy: string;
+            updatedBy: string;
+            eventId: string;
+            date: Date;
+            startTime: Date | null;
+            endTime: Date | null;
+        }, "latitude" | "longitude"> & {
+            latitude: number | null;
+            longitude: number | null;
+        })[];
     }) | null>;
 };
 //# sourceMappingURL=event-draft.service.d.ts.map

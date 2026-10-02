@@ -4,7 +4,7 @@ export declare const eventPublicService: {
         name: string;
         description: string | null;
         hostName: string | null;
-        location: string;
+        location: string | null;
         address: string | null;
         coverImageUrl: string | null;
         rsvpDeadline: Date | null;
@@ -14,6 +14,10 @@ export declare const eventPublicService: {
             date: Date;
             startTime: Date | null;
             endTime: Date | null;
+            location: string | null;
+            address: string | null;
+            latitude: number | null;
+            longitude: number | null;
         }[];
         isPublic: boolean;
         isPublished: boolean;

@@ -23,7 +23,10 @@ export const eventProgramRepository = {
         data: {
             eventId,
             title: data.title ?? null,
-            isPublished: false,
+            // Visible to guests by default — an organiser who built a program
+            // means guests to see it. isPublished stays so it can be hidden
+            // (PUT .../program/:id { isPublished: false }).
+            isPublished: true,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,

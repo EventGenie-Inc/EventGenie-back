@@ -17,6 +17,10 @@ export declare const rsvpService: {
             };
             inviteEventDay: {
                 eventDay: {
+                    location: string | null;
+                    address: string | null;
+                    latitude: number | null;
+                    longitude: number | null;
                     id: string;
                     label: string;
                     date: Date;
@@ -28,7 +32,7 @@ export declare const rsvpService: {
                 name: string;
                 description: string | null;
                 hostName: string | null;
-                location: string;
+                location: string | null;
                 address: string | null;
                 latitude: number | null;
                 longitude: number | null;

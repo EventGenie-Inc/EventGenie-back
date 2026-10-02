@@ -21,6 +21,10 @@ export declare const inviteRepository: {
                 isArchived: boolean;
                 createdAt: Date;
                 updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
                 createdBy: string;
                 updatedBy: string;
                 eventId: string;
@@ -75,6 +79,10 @@ export declare const inviteRepository: {
                 isArchived: boolean;
                 createdAt: Date;
                 updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
                 createdBy: string;
                 updatedBy: string;
                 eventId: string;
@@ -95,6 +103,10 @@ export declare const inviteRepository: {
                 isArchived: boolean;
                 createdAt: Date;
                 updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
                 createdBy: string;
                 updatedBy: string;
                 eventId: string;
@@ -142,6 +154,30 @@ export declare const inviteRepository: {
             hostGuestId: string | null;
             plusOnesAllowed: number;
         };
+        inviteEventDay: ({
+            eventDay: {
+                label: string;
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
+                createdBy: string;
+                updatedBy: string;
+                eventId: string;
+                date: Date;
+                startTime: Date | null;
+                endTime: Date | null;
+            };
+        } & {
+            id: string;
+            createdAt: Date;
+            inviteId: string;
+            eventDayId: string;
+        })[];
     } & {
         id: string;
         isArchived: boolean;
@@ -196,6 +232,30 @@ export declare const inviteRepository: {
             hostGuestId: string | null;
             plusOnesAllowed: number;
         };
+        inviteEventDay: ({
+            eventDay: {
+                label: string;
+                id: string;
+                isArchived: boolean;
+                createdAt: Date;
+                updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
+                createdBy: string;
+                updatedBy: string;
+                eventId: string;
+                date: Date;
+                startTime: Date | null;
+                endTime: Date | null;
+            };
+        } & {
+            id: string;
+            createdAt: Date;
+            inviteId: string;
+            eventDayId: string;
+        })[];
     } & {
         id: string;
         isArchived: boolean;
@@ -234,6 +294,10 @@ export declare const inviteRepository: {
                 isArchived: boolean;
                 createdAt: Date;
                 updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
                 createdBy: string;
                 updatedBy: string;
                 eventId: string;
@@ -299,7 +363,7 @@ export declare const inviteRepository: {
             tenantId: string;
             createdByUserId: string;
             description: string | null;
-            location: string;
+            location: string | null;
             address: string | null;
             latitude: import("@prisma/client-runtime-utils").Decimal | null;
             longitude: import("@prisma/client-runtime-utils").Decimal | null;
@@ -350,6 +414,10 @@ export declare const inviteRepository: {
                 isArchived: boolean;
                 createdAt: Date;
                 updatedAt: Date;
+                location: string | null;
+                address: string | null;
+                latitude: import("@prisma/client-runtime-utils").Decimal | null;
+                longitude: import("@prisma/client-runtime-utils").Decimal | null;
                 createdBy: string;
                 updatedBy: string;
                 eventId: string;

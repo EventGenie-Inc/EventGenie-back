@@ -18,7 +18,7 @@ router.get('/', async (req, res, next) => {
 router.get('/:id', async (req, res, next) => {
     try {
         const auth = req;
-        const day = await eventDayService.getById(req.params['id'], auth.user.role, auth.user.tenantId);
+        const day = await eventDayService.getById(req.params['id'], req.params['eventId'], auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', data: day });
     }
     catch (err) {
@@ -38,7 +38,7 @@ router.post('/', async (req, res, next) => {
 router.put('/:id', async (req, res, next) => {
     try {
         const auth = req;
-        const day = await eventDayService.update(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId, req.body);
+        const day = await eventDayService.update(req.params['id'], req.params['eventId'], auth.user.id, auth.user.role, auth.user.tenantId, req.body);
         res.status(200).json({ status: 'ok', data: day });
     }
     catch (err) {
@@ -48,7 +48,7 @@ router.put('/:id', async (req, res, next) => {
 router.delete('/:id', async (req, res, next) => {
     try {
         const auth = req;
-        await eventDayService.archive(req.params['id'], auth.user.id, auth.user.role, auth.user.tenantId);
+        await eventDayService.archive(req.params['id'], req.params['eventId'], auth.user.id, auth.user.role, auth.user.tenantId);
         res.status(200).json({ status: 'ok', message: 'Event day archived' });
     }
     catch (err) {
