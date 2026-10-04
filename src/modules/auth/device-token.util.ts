@@ -3,7 +3,9 @@ import { deviceTokenRepository } from './device-token.repository.js';
 import { generateSecureToken } from '../../shared/utils/token.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 
-// 30 days. Long enough that the feature actually solves the problem it
+// 30 days — the length of one grant, both at issue and on each extension
+// (see assertDeviceTokenUsable: a successful exchange pushes expiresAt to
+// now + 30 days, capped by DEVICE_TOKEN_MAX_AGE_DAYS below). Long enough that the feature actually solves the problem it
 // exists for (a phone that opens the app every few days, not every few
 // minutes, should never see an OTP prompt) while keeping the exposure
 // window of a stolen device token — the scenario this whole design is a
@@ -14,6 +16,16 @@ import { HttpError } from '../../shared/errors/http-error.js';
 export const DEVICE_TOKEN_TTL_DAYS = 30;
 
 const DEVICE_TOKEN_TTL_MS = DEVICE_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+// Hard ceiling, counted from createdAt: however often a device is used,
+// its token dies 90 days after the OTP that issued it and the next
+// sign-in asks for a code again. Sliding the 30 days with use keeps a
+// device in daily use from ever hitting the 30-day wall mid-week; the
+// ceiling keeps "in use" from meaning "forever" for a stolen token that
+// is itself being used.
+export const DEVICE_TOKEN_MAX_AGE_DAYS = 90;
+
+const DEVICE_TOKEN_MAX_AGE_MS = DEVICE_TOKEN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
 // SHA-256 of the raw value — deterministic, so a lookup can still be an
 // exact-match query, but the raw 256-bit token itself is never at rest in
@@ -66,27 +78,37 @@ export const issueDeviceToken = async (
 
 // The read/validate side — called by exchangeSession before it will mint
 // a session with no OTP. Deliberately ONE generic failure for "doesn't
-// exist" / "belongs to someone else" / "revoked" / "expired": a device
-// token found to belong to a different user must fail exactly like one
-// that doesn't exist at all, or the error itself becomes an oracle for
-// "is this random value a live credential for account X." Touches
-// lastUsedAt on success — not a rotation (see the module header comment
-// on DeviceToken), just a "when was this last actually used" fact for a
-// future device-management/audit view.
+// exist" / "belongs to someone else" / "revoked" / "expired" / "past its
+// 90-day ceiling": a device token found to belong to a different user
+// must fail exactly like one that doesn't exist at all, or the error
+// itself becomes an oracle for "is this random value a live credential
+// for account X."
+//
+// On success, touches lastUsedAt and EXTENDS expiresAt to now + 30 days,
+// never past createdAt + 90 days, and never earlier than it already was
+// (two tabs exchanging at once must not shorten each other's write).
+// The token VALUE never changes — that is not a rotation (see the module
+// header comment on DeviceToken and STEERING.md: rotating on use would
+// fail every tab but the first in a multi-tab load).
 export const assertDeviceTokenUsable = async (rawToken: string, userId: string): Promise<void> => {
   const record = await deviceTokenRepository.findByHash(hashToken(rawToken));
+  const now = Date.now();
 
   const usable =
     record !== null &&
     record.userId === userId &&
     record.revokedAt === null &&
-    record.expiresAt.getTime() > Date.now();
+    record.expiresAt.getTime() > now &&
+    // Checked on its own, not just via the capped expiresAt: a row whose
+    // expiresAt was ever written past the ceiling (by hand, or by code
+    // before this rule) is still refused at 90 days.
+    record.createdAt.getTime() + DEVICE_TOKEN_MAX_AGE_MS > now;
 
   if (!usable) {
-    // DEVICE_NOT_RECOGNISED — deliberately the SAME code for all four
-    // underlying cases (missing/wrong-user/revoked/expired). Splitting it
-    // further is exactly the oracle this function's own header comment
-    // already refuses to create.
+    // DEVICE_NOT_RECOGNISED — deliberately the SAME code for every
+    // underlying case (missing/wrong-user/revoked/expired/too old).
+    // Splitting it further is exactly the oracle this function's own
+    // header comment already refuses to create.
     throw new HttpError(
       401,
       'This device is not recognised. Please sign in with your password and verify with a new code.',
@@ -94,7 +116,9 @@ export const assertDeviceTokenUsable = async (rawToken: string, userId: string):
     );
   }
 
-  await deviceTokenRepository.touchLastUsed(record!.id);
+  const ceiling = record!.createdAt.getTime() + DEVICE_TOKEN_MAX_AGE_MS;
+  const extended = Math.min(Math.max(record!.expiresAt.getTime(), now + DEVICE_TOKEN_TTL_MS), ceiling);
+  await deviceTokenRepository.touchOnUse(record!.id, new Date(now), new Date(extended));
 };
 
 // Revocation entry points. Each caller supplies its own reason (see

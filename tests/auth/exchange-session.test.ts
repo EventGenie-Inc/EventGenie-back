@@ -187,6 +187,89 @@ describe('POST /api/auth/exchange-session', () => {
   });
 });
 
+describe('POST /api/auth/exchange-session — expiry extends while in use', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  // Slack for the test DB's round trip — the server's "now" lands
+  // somewhere between the test's before/after timestamps.
+  const SLACK_MS = 60 * 1000;
+
+  const hashOf = (raw: string) => crypto.createHash('sha256').update(raw).digest('hex');
+
+  const exchange = (deviceToken: string) =>
+    request(app)
+      .post('/api/auth/exchange-session')
+      .set('Authorization', `Bearer ${FIREBASE_TOKEN_A}`)
+      .send({ deviceToken });
+
+  it('extends expiresAt to now + 30 days on a successful exchange, keeping the same token', async () => {
+    const { token: rawToken } = await issueDeviceToken(userA.id);
+    const tokenHash = hashOf(rawToken);
+    // Two days left — a use must push this back out to a full 30.
+    await prisma.deviceToken.update({
+      where: { tokenHash },
+      data: { expiresAt: new Date(Date.now() + 2 * DAY_MS) },
+    });
+
+    const before = Date.now();
+    const res = await exchange(rawToken);
+    const after = Date.now();
+    expect(res.status).toBe(200);
+
+    const row = await prisma.deviceToken.findUnique({ where: { tokenHash } });
+    expect(row).not.toBeNull();
+    expect(row!.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 30 * DAY_MS - SLACK_MS);
+    expect(row!.expiresAt.getTime()).toBeLessThanOrEqual(after + 30 * DAY_MS + SLACK_MS);
+    expect(row!.lastUsedAt).not.toBeNull();
+
+    // Same value still works — no rotation.
+    const again = await exchange(rawToken);
+    expect(again.status).toBe(200);
+  });
+
+  it('never extends expiresAt past createdAt + 90 days', async () => {
+    const { token: rawToken } = await issueDeviceToken(userA.id);
+    const tokenHash = hashOf(rawToken);
+    // Issued 80 days ago: now + 30 would be day 110, so the cap (day 90,
+    // ten days from now) must win.
+    const createdAt = new Date(Date.now() - 80 * DAY_MS);
+    await prisma.deviceToken.update({
+      where: { tokenHash },
+      data: { createdAt, expiresAt: new Date(Date.now() + 2 * DAY_MS) },
+    });
+
+    const res = await exchange(rawToken);
+    expect(res.status).toBe(200);
+
+    const row = await prisma.deviceToken.findUnique({ where: { tokenHash } });
+    expect(row!.expiresAt.getTime()).toBe(createdAt.getTime() + 90 * DAY_MS);
+  });
+
+  it('refuses a token past 90 days from issue even if recently used and not yet expired — 401, DEVICE_NOT_RECOGNISED', async () => {
+    const { token: rawToken } = await issueDeviceToken(userA.id);
+    const tokenHash = hashOf(rawToken);
+    await prisma.deviceToken.update({
+      where: { tokenHash },
+      data: {
+        createdAt: new Date(Date.now() - 91 * DAY_MS),
+        expiresAt: new Date(Date.now() + 20 * DAY_MS),
+        lastUsedAt: new Date(Date.now() - 60 * 1000),
+      },
+    });
+
+    const res = await exchange(rawToken);
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('DEVICE_NOT_RECOGNISED');
+    expect(res.body.data).toBeUndefined();
+  });
+
+  it('lets several tabs exchange the same token at once — all succeed', async () => {
+    const { token: rawToken } = await issueDeviceToken(userA.id);
+
+    const results = await Promise.all([exchange(rawToken), exchange(rawToken), exchange(rawToken)]);
+    for (const res of results) expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/auth/logout', () => {
   it('revokes the device token; double logout and a garbage token both still 200', async () => {
     const { token: rawToken } = await issueDeviceToken(userA.id);

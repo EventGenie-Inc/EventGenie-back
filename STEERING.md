@@ -407,10 +407,12 @@ established pairs: `SESSION_EXPIRED`/`SESSION_INVALID` (`authenticate`
 middleware and `POST /api/auth/refresh-session`, decide whether a
 silent retry is worth attempting) and `FIREBASE_TOKEN_INVALID`/
 `DEVICE_NOT_RECOGNISED` (`POST /api/auth/exchange-session`, Trusted
-Devices — decide whether to refresh the Firebase token and retry, or
-discard the stored device token and fall back to a fresh OTP — today's
-client can't tell these apart, forces a Firebase refresh on every 401,
-and sometimes discards a valid device token for nothing).
+Devices — decide whether to refresh the Firebase token and retry once,
+or discard the stored device token). The client acts on each code: see
+"A 401 from the exchange is acted on by its code" under "Session and
+tokens". It keeps the old behaviour (one refresh and retry, then discard)
+only for a 401 with no code, so it stays correct against an older
+backend mid-deploy.
 
 One single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
 "We couldn't send your code. Try again in a moment."): the sign-in code
@@ -531,8 +533,8 @@ tab and brings back the Android bug) or into memory (which dies on
 reload). Do not move it without replacing the design.
 
 **Only `AuthService` reads or writes credentials** — the device token,
-the in-memory JWT, and the OTP-step record (`sessionStorage`, an email
-and an expiry, no secret). No guard, interceptor, or component touches
+the in-memory JWT, and the pending sign-in record (`localStorage`, key
+`eg.otp-handoff`: an email and the code's expiry, no secret). No guard, interceptor, or component touches
 them directly; that boundary is what made removing an earlier bad
 implementation a single-file change. (The shared last-activity
 timestamp, `eg.last-activity`, is not a credential and belongs to
@@ -540,10 +542,16 @@ timestamp, `eg.last-activity`, is not a credential and belongs to
 
 **Server side:** only a SHA-256 hash of the device token is stored; the
 raw value is sent to the client exactly once, in the `verify-otp`
-response. Tokens last 30 days from issue and are **not rotated on use**
-— every tab exchanges the same token concurrently on load, and rotating
-it would make all but the first exchange fail with a 401 and discard
-the device (a multi-tab race).
+response. **Trust extends while the device is in use:** a token is
+issued for 30 days, and each successful `exchange-session` moves its
+expiry to now + 30 days — but never past 90 days after it was issued
+(`createdAt`). At 90 days it is refused however recently it was used,
+and the next sign-in asks for a code again. An extension never shortens
+an expiry already set. The token is **not rotated on use** — only the
+expiry moves, the value stays the same. Every tab exchanges the same
+token concurrently on load, and rotating it would make all but the
+first exchange fail with a 401 and discard the device (a multi-tab
+race).
 
 **What revokes a device token:** an explicit logout (`POST
 /api/auth/logout`, that one device), and suspending the user or their
@@ -615,9 +623,9 @@ This applies everywhere the exchange is called (bootstrap, after the
 password step, and a woken tab's re-mint — all through
 `AuthService.resumeSession()`):
 
-- `DEVICE_NOT_RECOGNISED` — discard the device token and go straight
-  to the OTP step. No Firebase refresh, no retry: a fresh ID token
-  cannot change that answer.
+- `DEVICE_NOT_RECOGNISED` — discard the device token. No Firebase
+  refresh, no retry: a fresh ID token cannot change that answer. After
+  the password step the code step follows; on a page load, see below.
 - `FIREBASE_TOKEN_INVALID` — one forced Firebase refresh
   (`getIdToken(true)`) and exactly one retry. Success keeps the device
   token. A second `FIREBASE_TOKEN_INVALID`, or Firebase itself refusing
@@ -634,6 +642,31 @@ password step, and a woken tab's re-mint — all through
   correct against an older backend during a deploy. Do not remove it.
 
 Never a loop: at most one retry, on any path.
+
+**A page load never sends a code and never opens the code step.** This
+replaces the old rule that a Firebase user with no usable device token
+went straight to the code step (which emailed a code nobody asked for,
+on devices people believed were trusted). When a load finds a Firebase
+user but no usable device token — none stored, or the exchange answers
+`DEVICE_NOT_RECOGNISED` (or the no-code fallback's second 401) — the
+client signs out of Firebase, keeps nothing half-signed-in, and shows
+the normal sign-in screen with a calm "Please sign in again on this
+device." The code step appears only right after the person submits
+their email and password, and the code is requested only then.
+
+**A sign-in in progress is visible to every tab.** Reaching the code
+step writes the pending sign-in record (above) to `localStorage`, valid
+until the code itself expires. While a fresh record exists for the
+signed-in Firebase account, a page load in ANY tab leaves Firebase
+signed in (signing out is shared by every tab and would end the code
+step the user is in the middle of) and shows that code step, sending
+nothing. That also covers a reload, or a tab Android discarded, while
+the person reads their email. The record is read, never consumed by a
+load; it is removed when the code is verified, the step is abandoned
+(the back arrow), the session ends, or it is found expired. From then
+on the rule above applies again. A late background retry of a load
+that had no verdict never touches a sign-in the user started in that
+tab meanwhile.
 
 **A refresh after a completed password reset ends the session the
 same way.** `refresh-session` verifies with `checkRevoked`, so once a
@@ -944,6 +977,34 @@ Every list screen needs **loading, empty, and error** states.
 
 Never label a modal's dismiss button "Cancel" when the confirm button is
 also "Cancel Event".
+
+### Modals
+
+Every modal renders inside the shared shell, `<app-modal>`
+(`src/app/shared/components/modal/`); `ConfirmModal` is built on it. A
+modal never builds its own backdrop.
+
+- **A tap on the backdrop never closes a modal.** On a phone it is
+  nearly always an accident, and it threw away what had been typed.
+- A modal closes only through its own Close (✕, `<app-modal-close>`,
+  visible and 44×44) or Cancel button (`requestClose()`), or Escape.
+- **With unsaved changes**, each of those first asks "Discard your
+  changes?" (Keep editing / Discard). Unsaved is real state wherever
+  the form layer can supply it: the form's `dirty()` for an edit form
+  that knows what is saved (`changed`); else its `modified()`, which
+  compares the form's `value` with what it held when the modal opened
+  (`reset()`), so a change made by a button (the day editor's "Same
+  venue as day 1") counts and one put back does not. Every form-layer
+  form in a modal supplies `value`. Only a form outside the form layer
+  (the vendor forms) falls back to "anything typed since the modal
+  opened". The owner's own `dirty` input overrides all of these.
+- A purely informational modal (nothing to type) closes on Escape with
+  no question. Only the top modal answers Escape.
+- `dismissible: false` (the idle warning, whose Cancel is "Log out"):
+  no ✕ and Escape does nothing; its own buttons still work. While a
+  request is in flight (`busy`), nothing closes a modal.
+- The auth modal keeps its own stricter rule: Escape does not close it
+  either (see `AuthModal`).
 
 **Backend messages reach the user.** Surface the API's message rather
 than replacing it with generic text. `"'0821234567' is missing a country

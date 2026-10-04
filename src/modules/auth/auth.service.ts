@@ -187,7 +187,8 @@ export const authService = {
     // device passed the second factor" becomes a fact worth remembering.
     // Every subsequent page load on THIS device can mint a session
     // through exchangeSession below without another OTP, until this
-    // token is revoked or its own 30 days pass — see device-token.util.ts.
+    // token is revoked or expires (30 days, extended by each use up to 90
+    // days from issue) — see device-token.util.ts.
     const deviceToken = await issueDeviceToken(user.id, userAgent);
 
     return {

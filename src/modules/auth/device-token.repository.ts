@@ -16,10 +16,13 @@ export const deviceTokenRepository = {
       where: { tokenHash },
     }),
 
-  touchLastUsed: (id: string) =>
+  // A successful exchange: record the use and slide the expiry (the new
+  // expiresAt is computed in device-token.util.ts's
+  // assertDeviceTokenUsable). Same row, same tokenHash — never a rotation.
+  touchOnUse: (id: string, lastUsedAt: Date, expiresAt: Date) =>
     prisma.deviceToken.update({
       where: { id },
-      data: { lastUsedAt: new Date() },
+      data: { lastUsedAt, expiresAt },
     }),
 
   revoke: (id: string, reason: string) =>
