@@ -175,12 +175,14 @@ describe('event — the venue is no longer the event\'s', () => {
     expect(res.status).toBe(201);
     createdEventIds.push(res.body.data.id);
     const row = await prisma.event.findUniqueOrThrow({ where: { id: res.body.data.id } });
-    expect(row).toMatchObject({ location: null, address: null, latitude: null, longitude: null, hostName: null });
+    // The Event has no venue columns any more; an old client's venue keys are
+    // ignored, not refused, and never reach the row.
+    expect(row.hostName).toBeNull();
+    for (const key of ['location', 'address', 'latitude', 'longitude']) expect(row).not.toHaveProperty(key);
   }, 60000);
 
   it('update ignores an event-level venue, refuses a blank name, and trims hostName (blank → null)', async () => {
     const h = headersFor(owner);
-    const before = await prisma.event.findUniqueOrThrow({ where: { id: eventId } });
 
     const blankName = await request(app).put(`/api/events/${eventId}`).set(h).send({ name: '  ' });
     expect(blankName.status).toBe(422);
@@ -189,7 +191,7 @@ describe('event — the venue is no longer the event\'s', () => {
     expect(trimmed.status).toBe(200);
     let row = await prisma.event.findUniqueOrThrow({ where: { id: eventId } });
     expect(row.hostName).toBe('Sarah & Tom');
-    expect(row.location).toBe(before.location);
+    expect(row).not.toHaveProperty('location');
 
     const blank = await request(app).put(`/api/events/${eventId}`).set(h).send({ hostName: '   ' });
     expect(blank.status).toBe(200);

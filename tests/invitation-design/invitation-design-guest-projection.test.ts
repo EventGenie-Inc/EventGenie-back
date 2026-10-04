@@ -94,14 +94,13 @@ describe('rsvp validate() — invitation design projection', () => {
     expect((await rsvpService.validate(invite.token)).design).toBeNull();
   }, 30000);
 
-  // The venue belongs to the event day: coordinates come from the day
-  // (and, for the deployed frontend, event.latitude/longitude mirror the
-  // FIRST invited day's) — never from the retired Event columns.
+  // The venue belongs to the event day: coordinates come from the day, and
+  // the compatibility keys event.latitude/longitude mirror the FIRST
+  // invited day's (the Event's own venue columns have been dropped).
   it('venue coordinates come from the day, as plain numbers (or null)', async () => {
     const { event, invite } = await setup();
     expect((await rsvpService.validate(invite.token)).invite.event).toMatchObject({ latitude: null, longitude: null });
 
-    await prisma.event.update({ where: { id: event.id }, data: { latitude: 1, longitude: 1 } });
     await prisma.eventDay.updateMany({ where: { eventId: event.id }, data: { latitude: -26.1943201, longitude: 28.0340512 } });
     const result = await rsvpService.validate(invite.token);
     expect(result.invite.event.latitude).toBe(-26.1943201);

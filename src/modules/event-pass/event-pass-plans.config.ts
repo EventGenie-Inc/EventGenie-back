@@ -86,3 +86,8 @@ export const EVENT_PASS_GUEST_CAP: Record<EventPassTier, number> = {
 // linearly (organiser picks a quantity; no fixed pack sizes, since none
 // were specified anywhere in the brief).
 export const SMS_BUNDLE_UNIT_PRICE_CENTS = 222;
+
+// How many SMS credits one bundle purchase may buy — the frontend's
+// purchase form allows the same range (sms-bundle-purchase.ts).
+export const SMS_BUNDLE_MIN_COUNT = 1;
+export const SMS_BUNDLE_MAX_COUNT = 5000;

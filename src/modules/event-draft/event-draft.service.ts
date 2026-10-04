@@ -5,11 +5,17 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
-import { requireDayLabel, requireDayDate } from '../event-day/event-day-validation.util.js';
+import { requireDayLabel, requireDayDate, assertDayTimesInOrder } from '../event-day/event-day-validation.util.js';
 import { resolveDayVenueForCreate } from '../event-day/event-day-venue.util.js';
-import { requireTicketName, requireTicketPrice } from '../ticket/ticket-validation.util.js';
+import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
 import { requireFieldLabel, requireFieldType } from '../rsvp-field/rsvp-field-validation.util.js';
-import { requireItemTitle, requireItemStartTime } from '../program-item/program-item-validation.util.js';
+import {
+  requireItemTitle,
+  requireItemStartTime,
+  optionalItemDuration,
+  itemDayRequiredMessage,
+} from '../program-item/program-item-validation.util.js';
+import { assertValidHostName } from '../event/event-host-name.util.js';
 import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
@@ -47,17 +53,21 @@ export const eventDraftService = {
       throw new HttpError(422, 'Your event needs a name.');
     }
     const eventName = p.name.trim();
+    assertValidHostName(p.hostName);
     if (!Array.isArray(p.days) || p.days.length === 0) {
       throw new HttpError(422, 'Your event needs at least one day.');
     }
 
     const days = (p.days as Array<Record<string, unknown>>).map((day) => {
       const label = requireDayLabel(day.label);
+      const startTime = day.startTime ? parseClientDateTime(day.startTime as string) : null;
+      const endTime = day.endTime ? parseClientDateTime(day.endTime as string) : null;
+      assertDayTimesInOrder(startTime, endTime, label);
       return {
         label,
         date: requireDayDate(day.date, label),
-        startTime: day.startTime ? parseClientDateTime(day.startTime as string) : null,
-        endTime: day.endTime ? parseClientDateTime(day.endTime as string) : null,
+        startTime,
+        endTime,
         venue: resolveDayVenueForCreate(day, label),
       };
     });
@@ -106,17 +116,50 @@ export const eventDraftService = {
 
     const tickets = (Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : []).map((ticket) => {
       const name = requireTicketName(ticket.name);
-      return { ...ticket, name, price: requireTicketPrice(ticket.price, name) } as Record<string, unknown> & { name: string; price: number };
+      return {
+        ...ticket,
+        name,
+        price: requireTicketPrice(ticket.price, name),
+        totalQuantity: optionalTicketQuantity(ticket.totalQuantity, name),
+      } as Record<string, unknown> & { name: string; price: number; totalQuantity: number | null };
     });
     const customFields = (Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : []).map((field) => {
       const label = requireFieldLabel(field.label);
       return { ...field, label, fieldType: requireFieldType(field.fieldType, label) } as Record<string, unknown> & { label: string; fieldType: RsvpFieldType };
     });
     const program = p.program as Record<string, unknown> | undefined;
+    // Each item names its day by `dayIndex`, its position in the draft's
+    // `days` list (the days have no ids until the transaction below creates
+    // them). Required on a multi-day draft, the same rule the program-item
+    // endpoints apply; optional on a single-day one, where an item without
+    // it is left NULL and placed by date. An index that isn't a whole
+    // number naming one of the draft's days is 422.
     const programItems = (Array.isArray(program?.items) ? (program.items as Array<Record<string, unknown>>) : []).map((item) => {
       const title = requireItemTitle(item.title);
-      return { ...item, title, startTime: requireItemStartTime(item.startTime, title) } as Record<string, unknown> & { title: string; startTime: Date };
+      const startTime = requireItemStartTime(item.startTime, title);
+      const durationMins = optionalItemDuration(item.durationMins, title);
+      let dayIndex: number | null = null;
+      if (item.dayIndex !== undefined && item.dayIndex !== null) {
+        if (typeof item.dayIndex !== 'number' || !Number.isInteger(item.dayIndex) || item.dayIndex < 0 || item.dayIndex >= days.length) {
+          throw new HttpError(422, `'${title}' is set to a day that isn't part of this event. Choose its day again.`);
+        }
+        dayIndex = item.dayIndex;
+      } else if (days.length > 1) {
+        throw new HttpError(422, itemDayRequiredMessage(title));
+      }
+      return { ...item, title, startTime, durationMins, dayIndex } as Record<string, unknown> & {
+        title: string;
+        startTime: Date;
+        durationMins: number | null;
+        dayIndex: number | null;
+      };
     });
+    // Visible to guests by default (STEERING "Event program"); the wizard's
+    // "hide from guests" sends false.
+    if (program?.isPublished !== undefined && typeof program.isPublished !== 'boolean') {
+      throw new HttpError(422, 'Program visibility must be true or false.');
+    }
+    const programPublished = program?.isPublished !== false;
     const memoryHub = p.memoryHub as Record<string, unknown> | undefined;
 
     await assertEventCreatable(tenantId, {
@@ -147,8 +190,11 @@ export const eventDraftService = {
         },
       });
 
+      // Created in the draft's order, so createdDayIds[i] is days[i]'s id —
+      // what a program item's dayIndex resolves to.
+      const createdDayIds: string[] = [];
       for (const day of days) {
-        await tx.eventDay.create({
+        const createdDay = await tx.eventDay.create({
           data: {
             eventId: event.id,
             label: day.label,
@@ -164,6 +210,7 @@ export const eventDraftService = {
             updatedBy: userId,
           },
         });
+        createdDayIds.push(createdDay.id);
       }
 
       if (p.ticketing === 'PAID') {
@@ -175,7 +222,7 @@ export const eventDraftService = {
               description: (ticket.description as string) ?? null,
               price: ticket.price,
               currency: (ticket.currency as string) ?? 'ZAR',
-              totalQuantity: (ticket.totalQuantity as number) ?? null,
+              totalQuantity: ticket.totalQuantity,
               soldCount: 0,
               isAvailable: true,
               isArchived: false,
@@ -207,8 +254,7 @@ export const eventDraftService = {
           data: {
             eventId: event.id,
             title: (program?.title as string) ?? null,
-            // Visible to guests by default, same as event-program.repository.ts.
-            isPublished: true,
+            isPublished: programPublished,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,
@@ -222,8 +268,9 @@ export const eventDraftService = {
               title: item.title,
               description: (item.description as string) ?? null,
               startTime: item.startTime,
-              durationMins: (item.durationMins as number) ?? null,
+              durationMins: item.durationMins,
               order: index,
+              eventDayId: item.dayIndex === null ? null : createdDayIds[item.dayIndex]!,
               isArchived: false,
               createdBy: userId,
               updatedBy: userId,

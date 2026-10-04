@@ -423,6 +423,15 @@ for any failure: anyone can call it with any email, so every outcome
 (unknown email, suspended account, a reset link that couldn't be built, a
 failed send) returns the same generic 200.
 
+One trio: `CONTACT_PHONE_INVALID`, `CONTACT_PHONE_NOT_INTERNATIONAL` and
+`CONTACT_LAST_REMOVED` (`POST /api/rsvp/submit`, all 422) tell the RSVP
+form which contact field to mark: a number that isn't a real one ("Use the
+format +27 82 123 4567" when written with a country code), a local number
+missing its country code ("'0825551234' is missing a country code, use
++27825551234"), and a guest removing their only contact. The two phone
+codes are set by `normalizePhoneToE164` (`guest-validation.util.ts`), so
+organiser guest create and import carry them too, still as 400.
+
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
 wrong-user, revoked, **and** expired device tokens — one code, matching
@@ -753,7 +762,8 @@ naming the fix, not a generic "invalid".
 `email`/`phoneNumber`): a value sets it (normalised by the same functions
 guest import uses, 422 with import's specific message when invalid),
 `null` removes it, omitted or blank leaves it alone. A guest can never
-remove their only contact (422). Dispatch reads the guest's contact at
+remove their only contact (422). Each refusal carries its code (see
+"Machine-readable codes" under Errors). Dispatch reads the guest's contact at
 send time, so a changed number reaches future invites and reminders by
 itself; removing the channel the invite goes out on moves
 `Invite.deliveryMethod` to the one they kept.
@@ -774,7 +784,12 @@ emails from the guest's own invited days (one line per day when several),
 the check-in roster's day, vendor proximity and organiser lists from the
 first day by date. Publishing refuses an event with a day that has no
 venue. Event create and update take no venue at all (an older client
-still sending one is ignored, not refused).
+still sending one is ignored, not refused). The Event's own `location`,
+`address`, `latitude` and `longitude` columns are dropped
+(`20261004090000_drop_event_venue_columns`). `/rsvp/validate`'s and the
+public event view's `event.location`/`address` (and validate's
+coordinates) remain as compatibility keys, filled from the first day's
+venue.
 
 ### Event program
 
@@ -803,11 +818,18 @@ the same event as the program itself — 422 otherwise.
 The organiser program UI sets `eventDayId` through a day picker on every
 item, required when the event has more than one day and hidden on a
 single-day event (where an item is left `NULL` and date-matching above
-places it). Items created before the picker, and any left `NULL`, still
-resolve by date as described. The wizard's materialize takes no item day
-(the days have no ids until it runs) and always creates the program
-visible, so the frontend sets each item's day — and hides the program
-when the organiser asked — with follow-up calls straight after it.
+places it). The API requires it too: on an event with more than one live
+day, creating an item without `eventDayId`, or clearing it, is 422. An
+update that leaves it out keeps what is stored, so an older `NULL` item
+can still be edited. Items created before the picker, and any left `NULL`,
+still resolve by date as described.
+
+The wizard's materialize does it all in its one transaction. Each program
+item names its day by `dayIndex`, its position in the draft's `days` list
+(the days have no ids until materialize creates them): required on a
+multi-day draft, optional on a single-day one (left `NULL`), 422 when it
+isn't a whole number naming one of the draft's days. `program.isPublished`
+is honoured (absent means visible). No follow-up calls are needed.
 
 ### Reminders
 
@@ -1187,16 +1209,24 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   - **Day venues** (`tests/event-day/`): a day without a venue is 422
     on create and update, stale coordinates cleared, cross-tenant day
     update 404, the event no longer taking a venue, `hostName` trimmed and
-    blank stored as null, publish refusing a venue-less day, and the venue
-    migration's data copy. Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
+    blank stored as null, publish refusing a venue-less day, and the event
+    carrying no venue columns. (The venue migration's data-copy test was
+    retired with the columns it read.) Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
     per-day venues on `/rsvp/validate`, `/rsvp/program` and the sent emails.
-  - **RSVP contact update** (`tests/rsvp/rsvp-contact-update.test.ts`).
+  - **RSVP contact update** (`tests/rsvp/rsvp-contact-update.test.ts`)
+    and its error codes (`tests/rsvp/rsvp-contact-codes.test.ts`).
   - **Required fields** (`tests/validation/`): 422 on blanks for program
     items, tickets, custom RSVP fields, guests, the wizard's materialize,
-    and RSVP submit (attending, name, required custom questions).
+    and RSVP submit (attending, name, required custom questions). The
+    frontend's form rules on the server (`frontend-rule-parity.test.ts`):
+    whole-number durations, ticket quantities and tier limits, day end
+    after start, an item's day on a multi-day event, SMS credits 1–5000,
+    host name length, typed custom answers, and the international phone
+    message and code.
   - **Wizard draft conversion** (`tests/event-draft/`): `hostName`
-    carried through (null when absent or blank), and a legacy
-    `invitationTemplate` in an old draft ignored.
+    carried through (null when absent or blank), a legacy
+    `invitationTemplate` in an old draft ignored, and each program item's
+    day (`dayIndex`) and the program's visibility set in one step.
   - **Client-supplied Cloudinary assets** (`tests/cloudinary/`): foreign
     publicIds and mismatched URLs refused with nothing destroyed, on
     Memory Hub uploads and event covers.
@@ -1228,16 +1258,11 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   the calendar dates the organiser picked); only the *instant* a deadline
   passes is off. An `Event.timezone` would fix that and would not change how
   stored dates read back.
-- **The event-level venue columns are debt.** `Event.location`,
-  `address`, `latitude`, `longitude` are retired — nothing reads or writes
-  them (see "Venue") — but are kept, `location` made nullable, so the
-  frontend deployed before the day-venue change keeps working during the
-  rollout. `/rsvp/validate`'s and the public event view's `event.location`
-  /`address` (and validate's coordinates) are likewise kept only for that
-  frontend, and are filled from the first day's venue, never from the
-  columns. The current frontend reads and sends none of them (every venue
-  comes from a day). Once it has deployed, remove those compatibility keys
-  and drop the four columns in a new migration.
+- **The venue compatibility keys are kept.** The Event venue columns are
+  dropped (see "Venue"), but `/rsvp/validate`'s and the public event
+  view's `event.location`/`address` (and validate's coordinates), filled
+  from the first day's venue, are still sent. The current frontend reads
+  none of them. Remove them once no deployed client does.
 - **Check-in by QR is not built.** The check-in endpoint already accepts an
   `inviteToken` in place of a `guestId`, so a scanner is a second input, not a
   second feature — but nothing renders a code yet, and a plus-one's invite

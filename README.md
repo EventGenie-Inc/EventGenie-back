@@ -23,10 +23,11 @@ platform instead of a stack of disconnected tools.
 | | Frontend | API | Hosting |
 |---|---|---|---|
 | Dev | `dev.e-velope.co.za` | `dev.api.e-velope.co.za` | Firebase Hosting / Render |
-| Prod | `app.e-velope.co.za` | `prod.api.e-velope.co.za` | Firebase Hosting / Render |
+| Prod | `https://www.e-velope.co.za` | `prod.api.e-velope.co.za` | Firebase Hosting / Render |
 
-Prod is not live yet: its two hostnames are planned and have no DNS
-records. The public website is `e-velope.co.za`.
+The prod frontend is `https://www.e-velope.co.za`. `e-velope.co.za`,
+`evelope.co.za` and `www.evelope.co.za` all redirect to it, so it is the
+one prod origin `ALLOWED_ORIGINS` and `FRONTEND_BASE_URL` need.
 
 Branch mapping: `develop` → dev, `main` → prod. Render auto-deploys from
 branch; the frontend deploys via CI to its matching Firebase Hosting site.

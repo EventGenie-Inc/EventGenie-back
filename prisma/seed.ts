@@ -422,7 +422,6 @@ async function main() {
             createdByUserId: actor,
             name: eventName,
             description: 'A sample event seeded for manual and automated testing.',
-            location: 'Cape Town, South Africa',
             status: 'PUBLISHED',
             visibility: 'PRIVATE',
             ticketing: 'FREE',

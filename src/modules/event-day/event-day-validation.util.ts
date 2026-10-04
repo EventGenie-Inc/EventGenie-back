@@ -53,3 +53,14 @@ export const requireDayDate = (date: unknown, label: string): Date => {
   }
   return parsed;
 };
+
+// A day's end time, when it has one, must come after its start time — the
+// wizard's rule, same words. Only checked when both are set: either alone
+// is fine. Judged on the day an update leaves behind (stored values fill
+// in what the request omits), like the venue. Used by event-day.service.ts
+// and the wizard's materialize path.
+export const assertDayTimesInOrder = (startTime: Date | null, endTime: Date | null, label: string): void => {
+  if (startTime && endTime && endTime.getTime() <= startTime.getTime()) {
+    throw new HttpError(422, `The end time of '${label}' must be after its start time.`);
+  }
+};

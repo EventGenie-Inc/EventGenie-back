@@ -174,20 +174,20 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
       // created with the LATEST order value but the EARLIEST startTime
       // on day1, to prove sort is by startTime first, order only as the
       // tiebreaker.
-      const itemDateMatchedDay1 = await programItemService.create(event.id, program.id, user.id, user.role, tenant.id, {
-        title: 'Welcome coffee',
-        startTime: '2027-06-01T09:00:00',
-        order: 5,
-      });
+      //
+      // Both NULL items are inserted as rows, not through the service: the
+      // API now refuses an item without a day on a multi-day event, but
+      // items saved before that rule still exist and must still be placed.
+      const legacyNullDayItem = (title: string, startTime: string, order: number) =>
+        prisma.programItem.create({
+          data: { programId: program.id, title, startTime: new Date(`${startTime}Z`), order, createdBy: user.id, updatedBy: user.id },
+        });
+      const itemDateMatchedDay1 = await legacyNullDayItem('Welcome coffee', '2027-06-01T09:00:00', 5);
       // NULL eventDayId, startTime's UTC date matches NONE of the
       // event's days (a month before the event) — must fall back to
       // every one of the GUEST's invited days (day1 and day2), never
       // day3 (guest isn't invited to it).
-      const itemNoDateMatch = await programItemService.create(event.id, program.id, user.id, user.role, tenant.id, {
-        title: 'Bring cash for the bar',
-        startTime: '2027-05-15T08:00:00',
-        order: 1,
-      });
+      const itemNoDateMatch = await legacyNullDayItem('Bring cash for the bar', '2027-05-15T08:00:00', 1);
       const itemDay1Late = await programItemService.create(event.id, program.id, user.id, user.role, tenant.id, {
         title: 'Ceremony',
         startTime: '2027-06-01T15:00:00',
