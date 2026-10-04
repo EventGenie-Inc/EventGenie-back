@@ -1,4 +1,4 @@
-# EventGenie — Steering
+# e-velope — Steering
 
 Conventions every contributor and AI coding agent must follow.
 
@@ -244,20 +244,93 @@ event covers (create, update, wizard materialize) and Memory Hub
 `mediaUrl`; invitation designs were built with both checks. An id
 already stored on a record is not re-checked when re-sent unchanged.
 
-### Email HTML
+### Email
 
-Every user-supplied value interpolated into an email HTML body —
-organiser-typed (event name, venue, custom messages) or guest-typed (a
-name captured at RSVP) — goes through `escapeHtml`
-(`shared/utils/html.util.ts`) before reaching `renderBrandEmailShell`. An
-event named `<script>...</script>` must not become live markup in a
-guest's inbox, sent under EventGenie's own address. A URL placed in an
-`href` needs attribute-context escaping too, unless it is server-built
-from config and a random token rather than free text — document that
-exemption inline where you rely on it, the way `invite-message.util.ts`
-does for `rsvpLink`. Found missing on `buildInviteEmailHtml` (Security
-Sweep Before G3) — `buildReminderEmailHtml` already did this correctly,
-which is how the gap was spotted.
+**Every email is rendered by one layout,** `renderEmail`
+(`shared/messaging/email-layout.ts`), and sent by one function,
+`sendEmail` (`shared/messaging/email.engine.ts`). Never call Resend
+directly, and never hand-write email HTML. A builder describes its message
+as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
+`image`, `details`, `code`, `button`). The layout turns the same blocks
+into the HTML part and the plain-text part, so the two always match.
+`sendEmail` requires `text`, so no email leaves without a plain-text part.
+Builders: `invite-message.util.ts` (invitation, reminder) and
+`auth-email.util.ts` (sign-in code, password reset).
+
+**Escaping lives in the layout.** Every text and every URL in a block goes
+through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
+HTML, attribute values included. That covers organiser-typed values (event
+name, host name, day label, venue, address, design alt text) and
+guest-typed ones (a name captured at RSVP). Builders pass raw text and
+never markup: an event named `<script>...</script>` must not become live
+markup in a guest's inbox, sent under e-velope's own address. A block that
+took HTML would bring back the gap the Security Sweep Before G3 found in
+`buildInviteEmailHtml`.
+
+**Headers are not HTML.** Organiser text that reaches a header (the
+invitation's From name, the subject) goes through `email-address.util.ts`:
+control characters, line breaks, Unicode line separators and bidi
+overrides become spaces, angle brackets are dropped, the display name is
+capped at 60 characters, and `formatFromHeader` always sends it as a
+quoted string, with `\` and `"` escaped.
+
+**The layout.** Table layout, inline styles, a 600px column, system serif
+and sans-serif stacks (no web fonts, no SVG). Brand blue `#3452E1` for the
+one button, ink `#14161F` for text, white card, and these email-only
+neutrals: page `#F6F5F2`, muted text `#5C6070`, hairline `#E6E4DF`. A
+`<style>` block only adds dark-mode overrides (Apple Mail, iOS Mail,
+Outlook.com); everything reads correctly without it. Header:
+`e-velope-logo-email.png` shown 200px wide, alt "e-velope". Footer: "Sent
+with e-velope · e-velope.co.za" and a line saying why the reader got it.
+Every email has a hidden preheader. **Every URL is built from
+`FRONTEND_BASE_URL`** (`frontendUrl`, `shared/utils/frontend-url.util.ts`),
+including the logo and seal under `<base>/brand/`. The only other URLs in an
+email are the ones passed in: a Cloudinary design image and Firebase's reset
+link. Never write a domain into an email.
+
+**Guest emails (invitation, reminder).** From `"<host name> via e-velope"
+<RESEND_INVITE_EMAIL>`, where the host name is `Event.hostName`, falling
+back to the event name. Reply-To is the organiser who created the event, so
+replies reach a person; there is none if that user is archived. Subjects:
+"You've received an e-velope from <host>" / "Your e-velope from <host> is
+waiting". **Never "RSVP" in a subject.** Body: the seal, the eyebrow, the
+event name in serif, "From <host>" when there is one, an UPLOAD design's
+image, each invited day (date and UTC time via `guest-date.util.ts`,
+venue, address; labelled when there are several), and one button, "Open
+your e-velope". The preheader is the event name, plus the date and venue of
+the guest's first invited day. A reminder adds the reply deadline when
+there is one.
+
+**The design image** is shown only for an `UPLOAD` design, rewritten to an
+explicit JPEG (`f_jpg,w_1200,c_limit`, displayed at 600px) with its alt
+text. **Never `f_auto` in email**: image proxies fetch with their own
+`Accept` header. A URL not in the Cloudinary `image/upload` shape is left
+out, never sent as it is. TEMPLATE designs aren't shown in email.
+
+**Auth emails** use the same layout, calm and functional: no seal, no
+wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
+code" (the code, its validity from `OTP_TTL_MINUTES`, the ignore line) and
+"Reset your e-velope password" (one "Reset password" button, the link's
+1-hour Firebase expiry, the ignore line).
+
+**Firebase email.** Firebase's own email templates and its hosted action
+page (`<project>.firebaseapp.com/__/auth/action`) are **not used**: their
+settings are locked on our Firebase projects. Every auth email is ours,
+rendered by `renderEmail` and sent through Resend, and every link in it
+points at the frontend. Firebase only mints the code: `forgotPassword` calls
+`generatePasswordResetLink` (`handleCodeInApp: false`, the web value),
+keeps only the `oobCode`, and emails
+`<FRONTEND_BASE_URL>/auth/action?mode=resetPassword&oobCode=…&continueUrl=<FRONTEND_BASE_URL>/dashboard&lang=en`,
+every parameter URL-encoded (`password-reset-link.util.ts`). The frontend's
+`/auth/action` page applies the code with the Firebase client SDK, then goes
+to `continueUrl`. The `oobCode` is a live credential, so it is never logged.
+If it can't be extracted, no email is sent (never a broken or
+Firebase-hosted link), the failure is logged without the code, and the
+response stays the generic one.
+
+**Checking by eye:** `TEST_EMAIL_TO=<address> npx tsx
+scripts/send-test-emails.ts` sends one of each email to that address and
+nowhere else.
 
 ### Soft delete
 
@@ -338,6 +411,17 @@ Devices — decide whether to refresh the Firebase token and retry, or
 discard the stored device token and fall back to a fresh OTP — today's
 client can't tell these apart, forces a Firebase refresh on every 401,
 and sometimes discards a valid device token for nothing).
+
+One single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
+"We couldn't send your code. Try again in a moment."): the sign-in code
+email could not be sent, so the client shows that and offers a retry
+instead of a code step that will never receive one. The provider's reason
+stays in the server log. Saying so is safe: this caller has already passed
+the password step, so it reveals nothing about which emails have accounts.
+`POST /api/auth/forgot-password` is the opposite case and has **no** code
+for any failure: anyone can call it with any email, so every outcome
+(unknown email, suspended account, a reset link that couldn't be built, a
+failed send) returns the same generic 200.
 
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
@@ -901,6 +985,109 @@ Signals and explicit `(input)` handlers, as above; not the Forms API.
   with `inputmode="numeric"`, so a typo reaches the rule instead of the
   browser silently turning it into blank.
 
+### Brand
+
+The public brand is **e-velope** (website: e-velope.co.za; tagline:
+"Make it Memorable"). Internal names stay as they are and are never
+renamed as brand work: classes, files, services, packages, storage keys
+(`eg.*`), the `eg-` CSS prefix, Cloudinary folders, and the repo names
+`EventGenie-back` and `eventgenie-front`.
+
+**Rules.** Always "e-velope", lowercase, even at the start of a sentence
+or heading. Never "E-velope", "Evelope" or "EventGenie". Where a sentence
+reads awkwardly with the brand lowercase at the start, rephrase it ("We
+offer…", "The e-velope platform is…"); never capitalise it. CSS that
+uppercases text must not reach the brand either: an eyebrow containing
+it carries `eg-eyebrow--brand`, which turns the transform off.
+
+**Voice.** The invitation a guest receives *is* an e-velope: something
+personal that arrives, gets opened, and gets answered. Like real post,
+but better. "e-velope" is a noun (plural "e-velopes"): you send one,
+receive one, open yours.
+
+- **Guest-facing copy uses it.** "You've received an e-velope", "Open
+  your e-velope", "Your reply is on its way back to Thandi & Sipho".
+  Guests still never see internal feature names (see "Guest-facing
+  responses"): "photo album", not "Memory Hub".
+- **Landing and marketing copy uses it.** "Send an e-velope",
+  "Invitations people actually open".
+- **Organiser working screens don't.** Guest lists, check-in, payments,
+  settings and tables keep plain words ("event", "invitation",
+  "guests"), so they stay clear. The two exceptions are the main send
+  action ("Send e-velopes") and its confirmation ("Your e-velopes are on
+  their way").
+- **Restrained and warm, never cute.** No puns stacked on puns; one
+  e-velope reference per screen is plenty.
+
+**Logo files** live in the frontend's `public/brand/`. Frontend code
+reads the SVGs through `src/app/shared/brand/brand-assets.ts`, never a
+literal path. The SVGs are the source; every PNG is generated from them
+by `npm run brand:assets` (`scripts/build-brand-assets.mjs`, resvg).
+Never edit a PNG by hand, and re-run the script after changing an SVG.
+The icon is the sealed envelope from the guest's invitation reveal; its
+lettering is outlined to paths, so no file depends on a font.
+
+| File | What | Used by |
+|---|---|---|
+| `e-velope-logo.svg` | The icon: envelope and wax seal, square | Wedding template footer mark; source of the app icons and email seal |
+| `e-velope-logo-white.svg` | The icon in white | Dark backgrounds (nothing uses it yet) |
+| `e-velope-lockup.svg` | Icon beside the word "e-velope" | Site header and footer (light), tenant and admin shells |
+| `e-velope-lockup-white.svg` | The lockup in white | Site header and footer in dark mode, or over a photo |
+| `e-velope-seal.svg` | The icon's wax seal alone | Guest invitation reveal, which draws its own envelope |
+| `e-velope-favicon.svg` | Icon simplified for 16–32px | Favicon; source of the PNG favicons |
+| `e-velope-favicon-16.png`, `-32.png` | Favicons | `index.html` |
+| `e-velope-apple-touch-icon.png` | 180px, on white | `index.html` |
+| `e-velope-icon-192.png`, `-512.png` | App icons | Web manifest; the 512 is also `og:image` |
+| `e-velope-logo-email.png` | Lockup, 400px wide (2x for 200px), transparent | Email headers (backend) |
+| `e-velope-seal-email.png` | Icon, 128px (2x for 64px), transparent | The seal in invitation emails (backend) |
+
+Email clients don't show SVG, and dark-mode clients show the same PNG on
+a dark background. So the email PNGs are transparent and use only
+colours that read on both: the solid-blue icon, and the wordmark in
+`#4C6EF5` (4.3:1 on white, 3.8:1 on `#1F1F1F`) rather than the ink the
+site uses. A copy kept anywhere else is regenerated from these files,
+never redrawn.
+
+**Colour tokens** live in `:root` in the frontend's `src/styles.css` and
+are the same in both themes. The logo files and the backend's emails use
+exactly these hex values:
+
+| Token | Hex | Use |
+|---|---|---|
+| `--eg-brand-blue` | `#3452E1` | Envelope and wax seal; the primary brand colour |
+| `--eg-brand-blue-deep` | `#253BB3` | Closed flap; seal ring |
+| `--eg-brand-blue-bright` | `#4C6EF5` | Envelope folds; the email wordmark |
+| `--eg-brand-ink` | `#14161F` | Wordmark on light backgrounds |
+| `--eg-brand-paper` | `#FFFFFF` | The seal's "e"; wordmark on dark backgrounds |
+
+Change one and you change all three together: the token, the SVGs (then
+re-run `npm run brand:assets`), and the backend's email colours.
+
+**Coloured words in headings use `--eg-emphasis`**, never `--eg-gold`
+(the italic in a call-to-action title, a hero's highlighted word). It is
+the brand blue on light and the dark theme's own accent (`#8CA0FF`) on
+dark: the brand blue on the dark surface is 2.8:1, below the 3:1 large
+text needs.
+
+**MashWare.** The frontend's `/mashware` page says who built e-velope, and
+the footer carries a quiet "Built by MashWare" line linking to it. The
+files are in `public/brand/mashware/`, read through `brand-assets.ts`:
+
+| File | Use | Alt text |
+|---|---|---|
+| `mashware-logo.svg` | Full logo with tagline, olive lettering: `/mashware` in light mode | "MashWare — Brave As Code, Emerging While Others Crash" |
+| `mashware-logo-dark.svg` | The same with gold lettering: `/mashware` in dark mode | the same |
+| `mashware-mark.svg` | Olive tile, gold "M": the footer, in both modes (there is no white version) | "MashWare" |
+
+**The one exception to "no new colours"** (§5) is that page. MashWare's
+olive `#3B4630` and gold `#E0C36F` are custom properties scoped to it, and
+appear as accents only: the grid's icons, the quote's rule, a faint wash
+behind the call to action. They are never text and never a solid
+background; every word on the page uses e-velope's tokens. Olive is the
+accent in the light theme and gold in the dark, because each fails the
+other: olive on the dark background is 1.84:1, gold on white 1.72:1, both
+below the 3:1 a non-text accent needs. No other page uses these colours.
+
 ---
 
 ## 6. Testing
@@ -921,8 +1108,10 @@ or a 5-row fixture would never show.
 cross-tenant flows can be clicked through, and two tenants exist
 deliberately. Nothing automated ever points at dev.
 
-Emails at `@eventgenie.test` cannot receive mail — read the OTP from the
-`OtpRecord` table in the dev database.
+The seed accounts are `superadmin@`, `tenantadmin@`, `eventadmin@` and
+`sparkadmin@evelope.test` (`prisma/seed.ts`). Addresses at `@evelope.test`
+cannot receive mail, so read the OTP from the `OtpRecord` table in the dev
+database.
 
 **Always clean up smoke-run fixtures**, then re-run `npm run seed` and
 confirm it reports everything already exists.
@@ -988,6 +1177,10 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     and refused at submit (`tests/rsvp/`); Memory Hub guest view,
     guest-safe wording and the per-invite upload rate limit
     (`tests/memory-hub/`); invite email escaping (`tests/invite/`).
+  - **Emails** (`tests/email/`): every email through the shared layout,
+    with a plain-text part, every user value escaped, the sender name
+    sanitised, no "RSVP" in a subject, the design image only for UPLOAD,
+    and every URL built from `FRONTEND_BASE_URL`.
   - **Invitation designs** (`tests/invitation-design/`): cross-tenant
     404, cancelled-event 409, every 422 validation, create/replace/switch
     kind, and the guest projection's exact keys.

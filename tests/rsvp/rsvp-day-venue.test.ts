@@ -22,9 +22,9 @@ import {
 //  different venues (plus an archived third day): GET /api/rsvp/validate
 //  gives each invited day its venue, POST /api/rsvp/program gives each
 //  day its venue, and the invitation email a guest is actually sent names
-//  their own day(s) and venue(s) — one line per day when invited to
-//  several, a Date + Venue pair when invited to one — never the archived
-//  day and never the retired event-level venue.
+//  their own day(s) and venue(s) — each day headed by its label when
+//  invited to several, just the date and venue when invited to one — never
+//  the archived day and never the retired event-level venue.
 // ─────────────────────────────────────────
 
 const CEREMONY = { location: 'St George\'s Cathedral', address: '5 Wale St, Cape Town', latitude: -33.925, longitude: 18.419 };
@@ -119,26 +119,34 @@ describe('guest responses carry per-day venues', () => {
     const result = await inviteDispatchService.sendBulk(eventId, [bothGuest.guestId, oneDayGuest.guestId], 'TENANT_ADMIN', tenantId);
     expect(result).toMatchObject({ sent: 2, failed: 0 });
 
-    const htmlFor = async (guestId: string) => {
+    const sentTo = async (guestId: string) => {
       const guest = await prisma.guest.findUniqueOrThrow({ where: { id: guestId } });
       const call = mockResendSend.mock.calls.find(([arg]) => (arg as { to: string }).to === guest.email);
-      return (call?.[0] as { html: string }).html;
+      return call?.[0] as { html: string; text: string; from: string; replyTo?: string; subject: string };
     };
+    const organiser = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
 
-    const multi = await htmlFor(bothGuest.guestId);
-    expect(multi).toContain('Your days:');
-    expect(multi).toContain('<strong>Ceremony</strong> — 5 June 2027 — St George&#39;s Cathedral, 5 Wale St, Cape Town');
-    expect(multi).toContain('<strong>Brunch</strong> — 6 June 2027 — Kirstenbosch Tea Room, Rhodes Dr, Newlands');
-    expect(multi.indexOf('Ceremony')).toBeLessThan(multi.indexOf('Kirstenbosch'));
+    const multi = await sentTo(bothGuest.guestId);
+    // Several days: each headed by its label, then date, venue, address.
+    expect(multi.text).toContain('Ceremony\n5 June 2027\nSt George\'s Cathedral\n5 Wale St, Cape Town');
+    expect(multi.text).toContain('Brunch\n6 June 2027\nKirstenbosch Tea Room\nRhodes Dr, Newlands');
+    expect(multi.text.indexOf('Ceremony')).toBeLessThan(multi.text.indexOf('Kirstenbosch'));
+    expect(multi.html).toContain('St George&#39;s Cathedral');
 
-    const single = await htmlFor(oneDayGuest.guestId);
-    expect(single).toContain('<strong>Date:</strong> 6 June 2027');
-    expect(single).toContain('<strong>Venue:</strong> Kirstenbosch Tea Room, Rhodes Dr, Newlands');
-    expect(single).not.toContain('Your days:');
+    const single = await sentTo(oneDayGuest.guestId);
+    // One day: no label heading, just its date and venue.
+    expect(single.text).toContain('\n\n6 June 2027\nKirstenbosch Tea Room\nRhodes Dr, Newlands\n\n');
+    expect(single.text).not.toContain('Brunch\n');
 
-    for (const html of [multi, single]) {
-      expect(html).not.toContain('RETIRED');
-      expect(html).not.toContain('ARCHIVED VENUE');
+    for (const email of [multi, single]) {
+      expect(email.html).toContain('data-eg-email-layout="1"');
+      expect(email.subject).toMatch(/^You've received an e-velope from /);
+      expect(email.from).toMatch(/^".+ via e-velope" <.+>$/);
+      expect(email.replyTo).toBe(organiser.email);
+      for (const part of [email.html, email.text]) {
+        expect(part).not.toContain('RETIRED');
+        expect(part).not.toContain('ARCHIVED VENUE');
+      }
     }
   }, 60000);
 });

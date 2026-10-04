@@ -11,7 +11,7 @@ import { createTestTenantAndUser, deleteTestTenantAndUser, prisma, type TestUser
 //  user.username unescaped — same vulnerability class as Fix 3
 //  (buildInviteEmailHtml), flagged as out of scope there ("Anything in
 //  auth") and fixed here on explicit request. A hostile username must
-//  render escaped in both emails, sent under EventGenie's own address.
+//  render escaped in both emails, sent under e-velope's own address.
 // ─────────────────────────────────────────
 
 const HOSTILE_USERNAME = `<script>alert(1)</script> "&'`;
@@ -66,5 +66,42 @@ describe('auth emails — username is escaped', () => {
     expect(html).not.toContain(HOSTILE_USERNAME);
     expect(html).not.toContain('<script>');
     expect(html).toContain(ESCAPED_USERNAME);
+  });
+});
+
+// Both auth emails go out through the shared layout (email-layout.ts) on
+// the real request path, with a plain-text part and the "e-velope" sender.
+describe('auth emails — shared layout, plain-text part, sender', () => {
+  const lastSend = () =>
+    mockResendSend.mock.calls[mockResendSend.mock.calls.length - 1][0] as {
+      from: string; subject: string; html: string; text: string;
+    };
+
+  it('the sign-in code email', async () => {
+    const res = await request(app).post('/api/auth/request-otp').set('Authorization', `Bearer ${FIREBASE_TOKEN}`).send();
+    expect(res.status).toBe(200);
+    const sent = lastSend();
+    expect(sent.subject).toBe('Your e-velope sign-in code');
+    expect(sent.from).toMatch(/^"e-velope" <.+>$/);
+    expect(sent.html).toContain('data-eg-email-layout="1"');
+    expect(sent.text).toMatch(/\n\d{6}\n/);
+    expect(sent.text).toContain("It's valid for 10 minutes.");
+  });
+
+  it('the password reset email', async () => {
+    mockGetUserByEmail.mockResolvedValueOnce({ uid: user.firebaseUid });
+    mockGeneratePasswordResetLink.mockResolvedValueOnce('https://example.test/reset?oobCode=fake');
+    const res = await request(app).post('/api/auth/forgot-password').send({ email: user.email });
+    expect(res.status).toBe(200);
+    const sent = lastSend();
+    expect(sent.subject).toBe('Reset your e-velope password');
+    expect(sent.from).toMatch(/^"e-velope" <.+>$/);
+    expect(sent.html).toContain('data-eg-email-layout="1"');
+    // Our own link on the frontend, carrying Firebase's code — never Firebase's link.
+    const link = new URL(sent.text.match(/Reset password:\n(\S+)/)![1]!);
+    expect(link.pathname).toBe('/auth/action');
+    expect(link.searchParams.get('mode')).toBe('resetPassword');
+    expect(link.searchParams.get('oobCode')).toBe('fake');
+    expect(sent.text).not.toContain('example.test/reset');
   });
 });

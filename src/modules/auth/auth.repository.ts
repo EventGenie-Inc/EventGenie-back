@@ -1,6 +1,10 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type RegisterDto } from './auth.types.js';
 
+// How long an emailed sign-in code is valid. The email states it too
+// (auth-email.util.ts), from this same constant.
+export const OTP_TTL_MINUTES = 10;
+
 export const authRepository = {
 
   // ─────────────────────────────────────────
@@ -85,7 +89,7 @@ export const authRepository = {
       data: {
         userId,
         otp,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+        expiresAt: new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000),
       },
     }),
 

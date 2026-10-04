@@ -26,6 +26,16 @@ export const userRepository = {
       where: { firebaseUid },
     }),
 
+  // The longest-serving active TENANT_ADMIN of a tenant — the stand-in
+  // Reply-To for an invitation whose creator can no longer be reached
+  // (invite-dispatch.service.ts). Oldest first, so the choice is stable.
+  findFirstActiveTenantAdmin: (tenantId: string) =>
+    prisma.user.findFirst({
+      where: { tenantId, role: 'TENANT_ADMIN', isActive: true, isArchived: false },
+      orderBy: { createdAt: 'asc' },
+      select: { email: true },
+    }),
+
   findByEmail: (email: string) =>
     prisma.user.findFirst({
       where: { email, isArchived: false },
