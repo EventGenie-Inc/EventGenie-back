@@ -2,7 +2,8 @@ export interface CreateProgramItemDto {
   title: string;
   description?: string;
   startTime: string;
-  durationMins?: number;
+  // Whole minutes, 0 or more; null or blank = no duration (422 otherwise).
+  durationMins?: number | null;
   // Optional: omitted means "at the end of this program's list"
   // (program-item.service.ts). Used to be required by type only, and a
   // request without it reached Prisma as a generic 500.
@@ -17,7 +18,7 @@ export interface UpdateProgramItemDto {
   title?: string;
   description?: string;
   startTime?: string;
-  durationMins?: number;
+  durationMins?: number | null;
   order?: number;
   eventDayId?: string | null;
 }

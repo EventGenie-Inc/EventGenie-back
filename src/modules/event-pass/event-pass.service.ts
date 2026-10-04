@@ -15,6 +15,8 @@ import {
   EVENT_PASS_TIER_RANK,
   EVENT_PASS_GRANTED_TIER,
   SMS_BUNDLE_UNIT_PRICE_CENTS,
+  SMS_BUNDLE_MIN_COUNT,
+  SMS_BUNDLE_MAX_COUNT,
 } from './event-pass-plans.config.js';
 import {
   type PurchaseEventPassDto,
@@ -206,8 +208,18 @@ export const eventPassService = {
     dto: PurchaseSmsBundleDto,
     callbackUrl: string
   ): Promise<PassCheckoutResult> => {
-    if (!Number.isInteger(dto.smsCount) || dto.smsCount <= 0) {
-      throw new HttpError(400, 'smsCount must be a positive whole number.');
+    // 422 with the purchase form's own words (sms-bundle-purchase.ts on the
+    // frontend, 1 to 5000). There was no upper bound before.
+    if (
+      typeof dto.smsCount !== 'number' ||
+      !Number.isInteger(dto.smsCount) ||
+      dto.smsCount < SMS_BUNDLE_MIN_COUNT ||
+      dto.smsCount > SMS_BUNDLE_MAX_COUNT
+    ) {
+      throw new HttpError(
+        422,
+        `Enter a whole number of SMS credits from ${SMS_BUNDLE_MIN_COUNT} to ${SMS_BUNDLE_MAX_COUNT}.`
+      );
     }
 
     const event = await eventService.getById(eventId, role, tenantId);

@@ -3,7 +3,7 @@ import { type CreateEventDayDto, type UpdateEventDayDto } from './event-day.type
 import { eventService } from '../event/event.service.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { assertNoDuplicateDayLabel, isDayLabelUniqueViolation, requireDayLabel, requireDayDate } from './event-day-validation.util.js';
+import { assertNoDuplicateDayLabel, isDayLabelUniqueViolation, requireDayLabel, requireDayDate, assertDayTimesInOrder } from './event-day-validation.util.js';
 import { resolveDayVenueForCreate, resolveDayVenueForUpdate } from './event-day-venue.util.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
@@ -42,13 +42,16 @@ export const eventDayService = {
     const label = requireDayLabel(data.label);
     const date = requireDayDate(data.date, label);
     const venue = resolveDayVenueForCreate(data, label);
+    const startTime = optionalDateTime(data.startTime);
+    const endTime = optionalDateTime(data.endTime);
+    assertDayTimesInOrder(startTime, endTime, label);
     await assertNoDuplicateDayLabel(eventId, label);
     try {
       return await eventDayRepository.create(eventId, userId, {
         label,
         date,
-        startTime: optionalDateTime(data.startTime),
-        endTime: optionalDateTime(data.endTime),
+        startTime,
+        endTime,
         venue,
       });
     } catch (err) {
@@ -65,6 +68,9 @@ export const eventDayService = {
     const effectiveLabel = label ?? day.label;
     const date = data.date !== undefined ? requireDayDate(data.date, effectiveLabel) : undefined;
     const venue = resolveDayVenueForUpdate(data, day, effectiveLabel);
+    const startTime = data.startTime !== undefined ? optionalDateTime(data.startTime) : undefined;
+    const endTime = data.endTime !== undefined ? optionalDateTime(data.endTime) : undefined;
+    assertDayTimesInOrder(startTime !== undefined ? startTime : day.startTime, endTime !== undefined ? endTime : day.endTime, effectiveLabel);
     if (label !== undefined) {
       await assertNoDuplicateDayLabel(day.eventId, label, id);
     }
@@ -72,8 +78,8 @@ export const eventDayService = {
       return await eventDayRepository.update(id, userId, {
         ...(label !== undefined && { label }),
         ...(date !== undefined && { date }),
-        ...(data.startTime !== undefined && { startTime: optionalDateTime(data.startTime) }),
-        ...(data.endTime !== undefined && { endTime: optionalDateTime(data.endTime) }),
+        ...(startTime !== undefined && { startTime }),
+        ...(endTime !== undefined && { endTime }),
         venue,
       });
     } catch (err) {

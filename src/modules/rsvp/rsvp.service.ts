@@ -1,4 +1,4 @@
-import { type EventStatus } from '@prisma/client';
+import { type EventStatus, type RsvpFieldType } from '@prisma/client';
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { inviteRepository } from '../invite/invite.repository.js';
@@ -7,7 +7,15 @@ import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
-import { normalizeEmail, assertValidEmail, normalizePhoneToE164 } from '../guest/guest-validation.util.js';
+import {
+  normalizeEmail,
+  assertValidEmail,
+  normalizePhoneToE164,
+  isValidEmail,
+  isInternationalPhoneNumber,
+  CONTACT_ERROR_CODES,
+  PHONE_FORMAT_MESSAGE,
+} from '../guest/guest-validation.util.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
@@ -201,14 +209,36 @@ const contactIntent = (value: string | null | undefined): ContactIntent => {
 // for an organiser's spreadsheet row, which is malformed input. On the RSVP
 // form it is a well-formed answer that fails a precondition, so the same
 // specific message ("'0821234567' is missing a country code, use
-// +27821234567") is re-raised as 422. The normalisation itself is exactly
-// guest import's: same functions, same default country (ZA).
+// +27821234567") is re-raised as 422, its machine-readable code kept. The
+// normalisation itself is exactly guest import's: same functions, same
+// default country (ZA).
 const asUnprocessable = <T>(fn: () => T): T => {
   try {
     return fn();
   } catch (err) {
-    if (err instanceof HttpError && err.statusCode === 400) throw new HttpError(422, err.message);
+    if (err instanceof HttpError && err.statusCode === 400) throw new HttpError(422, err.message, err.code);
     throw err;
+  }
+};
+
+// A plain decimal number, as a guest types one: "12", "-3", "2.5". Not
+// Number()'s looser idea of a number ("0x1f", "1e3", "Infinity").
+const PLAIN_NUMBER = /^[+-]?(\d+(\.\d+)?|\.\d+)$/;
+
+// The message for an answer that isn't its question's type, or null.
+// Only EMAIL, PHONE and NUMBER have a format; every other type takes any text.
+const customAnswerProblem = (fieldType: RsvpFieldType, label: string, value: string): string | null => {
+  const answer = typeof value === 'string' ? value.trim() : '';
+  if (!answer) return null;
+  switch (fieldType) {
+    case 'EMAIL':
+      return isValidEmail(answer) ? null : `Enter an email address like name@example.com for '${label}'.`;
+    case 'PHONE':
+      return isInternationalPhoneNumber(answer) ? null : `${PHONE_FORMAT_MESSAGE} for '${label}'.`;
+    case 'NUMBER':
+      return PLAIN_NUMBER.test(answer) ? null : `Enter a number for '${label}'.`;
+    default:
+      return null;
   }
 };
 
@@ -484,7 +514,11 @@ export const rsvpService = {
       const finalEmail = guestUpdateData.email !== undefined ? guestUpdateData.email : invite.guest.email;
       const finalPhone = guestUpdateData.phoneNumber !== undefined ? guestUpdateData.phoneNumber : invite.guest.phoneNumber;
       if (!finalEmail && !finalPhone) {
-        throw new HttpError(422, 'Please keep at least one way for the organiser to reach you — an email address or a phone number.');
+        throw new HttpError(
+          422,
+          'Please keep at least one way for the organiser to reach you — an email address or a phone number.',
+          CONTACT_ERROR_CODES.LAST_REMOVED
+        );
       }
 
       // Future invitations and reminders go to the guest's CURRENT contact:
@@ -548,6 +582,17 @@ export const rsvpService = {
             `Please answer ${unanswered.map((f) => `'${f.label}'`).join(', ')} — the organiser needs ${unanswered.length === 1 ? 'this' : 'these'} to plan for you.`
           );
         }
+      }
+
+      // An answer to a typed question must be that type: EMAIL an email
+      // address (guest import's pattern), PHONE an international number,
+      // NUMBER a number. Checked attending or not, since answers are stored
+      // either way; a blank answer is no answer, and required-ness is the
+      // check above. Unknown field ids get their own 400 further down.
+      for (const response of data.rsvpResponses ?? []) {
+        const field = invite.event.rsvpFields.find((f) => f.id === response.rsvpFieldId);
+        const message = field ? customAnswerProblem(field.fieldType, field.label, response.value) : null;
+        if (message) throw new HttpError(422, message);
       }
 
       if (Object.keys(guestUpdateData).length > 0) {

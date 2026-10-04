@@ -452,16 +452,9 @@ model Event {
   createdByUserId    String
   name               String
   description        String?
-  // RETIRED — the venue belongs to each EventDay (see EventDay.location).
-  // Nothing in this backend reads or writes these four columns any more;
-  // they are kept only so the frontend deployed before the day-venue
-  // rollout keeps working (STEERING Known gaps). `location` became
-  // nullable so a new event can be created without it. Drop all four in a
-  // later migration once the frontend has deployed.
-  location           String?
-  address            String?
-  latitude           Decimal?        @db.Decimal(10, 7)
-  longitude          Decimal?        @db.Decimal(10, 7)
+  // No venue here: it belongs to each EventDay (see EventDay.location).
+  // The four retired Event venue columns were dropped in
+  // 20261004090000_drop_event_venue_columns.
   coverImageUrl      String?
   // Cloudinary's asset id for coverImageUrl, when the cover was uploaded
   // through the signed-upload flow (src/modules/upload/) rather than

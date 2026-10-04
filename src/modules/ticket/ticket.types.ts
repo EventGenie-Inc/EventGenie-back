@@ -3,7 +3,8 @@ export interface CreateTicketDto {
   description?: string;
   price: number;
   currency?: string;
-  totalQuantity?: number;
+  // Whole number, 0 or more; null or blank = unlimited (422 otherwise).
+  totalQuantity?: number | null;
 }
 
 export interface UpdateTicketDto {
@@ -11,6 +12,6 @@ export interface UpdateTicketDto {
   description?: string;
   price?: number;
   currency?: string;
-  totalQuantity?: number;
+  totalQuantity?: number | null;
   isAvailable?: boolean;
 }

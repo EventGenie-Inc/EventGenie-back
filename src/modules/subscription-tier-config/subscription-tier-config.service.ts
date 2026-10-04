@@ -1,6 +1,6 @@
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import{type CreateSubscriptionTierConfigDto, type UpdateSubscriptionTierConfigDto } from './subscription-tier-config.type.js';
-import { assertValidTierLimit } from './tier-limit-validation.util.js';
+import { normalizeTierLimits } from './tier-limit-validation.util.js';
 import { type SubscriptionTier } from '@prisma/client';
 
 export const subscriptionTierConfigService = {
@@ -13,8 +13,8 @@ export const subscriptionTierConfigService = {
     return config;
   },
 
-  create: async (data: CreateSubscriptionTierConfigDto) => {
-    if (data.maxVendorSpaces !== undefined) assertValidTierLimit(data.maxVendorSpaces, 'maxVendorSpaces');
+  create: async (body: CreateSubscriptionTierConfigDto) => {
+    const data = normalizeTierLimits(body);
 
     const existing = await subscriptionTierConfigRepository.findByTier(data.tier);
     if (existing) throw new Error(`Configuration for tier ${data.tier} already exists`);
@@ -26,8 +26,8 @@ export const subscriptionTierConfigService = {
   // is the exact number assertVendorSpaceCreatable/resolveVendorSpaceLimit
   // enforce/read at runtime (vendor-tier-enforcement.util.ts) — a change
   // here takes effect on the very next request, no redeploy needed.
-  update: async (tier: SubscriptionTier, data: UpdateSubscriptionTierConfigDto) => {
-    if (data.maxVendorSpaces !== undefined) assertValidTierLimit(data.maxVendorSpaces, 'maxVendorSpaces');
+  update: async (tier: SubscriptionTier, body: UpdateSubscriptionTierConfigDto) => {
+    const data = normalizeTierLimits(body);
 
     await subscriptionTierConfigService.getByTier(tier);
     return subscriptionTierConfigRepository.update(tier, data);

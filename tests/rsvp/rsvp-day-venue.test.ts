@@ -43,9 +43,8 @@ beforeAll(async () => {
   userId = (await createTestUserRow({ role: 'TENANT_ADMIN', tenantId })).id;
   const event = await createTestEvent(tenantId, userId);
   eventId = event.id;
-  // The retired event-level column holds something else entirely: nothing
-  // guest-facing may show it.
-  await prisma.event.update({ where: { id: eventId }, data: { location: 'RETIRED EVENT VENUE', address: 'RETIRED' } });
+  // The Event's own venue columns are dropped (20261004090000), so every
+  // venue a guest sees can only come from a day.
 
   const day = (label: string, date: string, venue: typeof CEREMONY | typeof BRUNCH, isArchived = false) =>
     prisma.eventDay.create({

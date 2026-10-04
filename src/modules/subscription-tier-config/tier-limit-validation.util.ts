@@ -1,20 +1,35 @@
-import { HttpError } from '../../shared/errors/http-error.js';
+import { optionalWholeNumber } from '../../shared/utils/whole-number.util.js';
 
-// Validates a tier's numeric ceiling field (maxVendorSpaces, and — by the
-// same convention — every other max* column on SubscriptionTierConfig):
-// null means unlimited (STEERING.md "Tier enforcement"), so null is a
-// valid, meaningful value here, not a missing one. undefined ("omitted
-// from this PUT") is the caller's concern, not this function's — callers
-// only invoke this when the field is present in the request body.
-//
-// Scoped to maxVendorSpaces for now (Vendor Limit batch) — the sibling
-// max* fields (maxEvents, maxGuestsPerEvent, maxSmsPerMonth,
-// maxMemoryHubBytesPerEvent) have no equivalent validation on the tier
-// update endpoint today and are not touched here; see the batch report.
-export const assertValidTierLimit = (value: number | null, fieldLabel: string): void => {
-  if (value === null) return;
+// The four tier limits a SUPER_ADMIN edits on the Subscription Tiers page,
+// with the labels that page shows. null means unlimited (STEERING.md "Tier
+// enforcement"), so null — or a blank string — is a valid, meaningful value
+// here, not a missing one, and is stored as null. Anything else must be a
+// whole number of 0 or more: 422 otherwise, with the frontend's own words.
+// A decimal used to reach Prisma's Int columns as a generic 500.
+// maxMemoryHubBytesPerEvent is not on that page and is left as it was.
+export const TIER_LIMIT_LABELS = {
+  maxEvents: 'Max events',
+  maxGuestsPerEvent: 'Max guests / event',
+  maxSmsPerMonth: 'Max SMS / month',
+  maxVendorSpaces: 'Max vendor spaces',
+} as const;
 
-  if (!Number.isInteger(value) || value < 0) {
-    throw new HttpError(400, `'${fieldLabel}' must be a non-negative whole number, or null for unlimited.`);
+export type TierLimitField = keyof typeof TIER_LIMIT_LABELS;
+
+export const normalizeTierLimit = (value: unknown, field: TierLimitField): number | null =>
+  optionalWholeNumber(
+    value,
+    `Enter a whole number of 0 or more for ${TIER_LIMIT_LABELS[field]}, or leave it blank for unlimited.`
+  );
+
+// Validates and normalises every tier limit present in a create/update
+// body. Omitted (undefined) means "not in this PUT" and stays omitted.
+export const normalizeTierLimits = <T extends Partial<Record<TierLimitField, unknown>>>(data: T): T => {
+  const out = { ...data };
+  for (const field of Object.keys(TIER_LIMIT_LABELS) as TierLimitField[]) {
+    if (data[field] !== undefined) {
+      (out as Record<TierLimitField, unknown>)[field] = normalizeTierLimit(data[field], field);
+    }
   }
+  return out;
 };

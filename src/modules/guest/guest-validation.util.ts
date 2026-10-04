@@ -26,26 +26,56 @@ export const detectContactShape = (raw: string): ContactShape => {
   return 'unknown';
 };
 
+// Machine-readable codes for a contact the RSVP form can't accept, so the
+// client can put the message beside the right field without parsing it
+// (STEERING "Machine-readable codes"). The phone codes are set here, so
+// every caller of normalizePhoneToE164 carries them; CONTACT_LAST_REMOVED
+// is RSVP submit's own (rsvp.service.ts).
+export const CONTACT_ERROR_CODES = {
+  PHONE_INVALID: 'CONTACT_PHONE_INVALID',
+  PHONE_NOT_INTERNATIONAL: 'CONTACT_PHONE_NOT_INTERNATIONAL',
+  LAST_REMOVED: 'CONTACT_LAST_REMOVED',
+} as const;
+
+// The frontend phone rule's own words for a number written with a country
+// code that still isn't a real number.
+export const PHONE_FORMAT_MESSAGE = 'Use the format +27 82 123 4567';
+
 // Throws a specific, actionable HttpError(400) — distinguishing "you forgot
 // the country code" (the common case for South African numbers typed in
 // local 0xx format) from a genuinely invalid number, rather than a single
-// generic "invalid phone" message.
+// generic "invalid phone" message. RSVP submit re-raises these as 422,
+// code included.
 export const normalizePhoneToE164 = (raw: string, defaultCountry: CountryCode = DEFAULT_COUNTRY): string => {
   const trimmed = raw.trim();
 
   if (trimmed.startsWith('+')) {
     const parsed = parsePhoneNumberFromString(trimmed);
     if (parsed?.isValid()) return parsed.number;
-    throw new HttpError(400, `'${raw}' is not a valid phone number`);
+    throw new HttpError(400, PHONE_FORMAT_MESSAGE, CONTACT_ERROR_CODES.PHONE_INVALID);
   }
 
   const withDefaultCountry = parsePhoneNumberFromString(trimmed, defaultCountry);
   if (withDefaultCountry?.isValid()) {
-    throw new HttpError(400, `'${raw}' is missing a country code, use ${withDefaultCountry.number}`);
+    throw new HttpError(
+      400,
+      `'${raw}' is missing a country code, use ${withDefaultCountry.number}`,
+      CONTACT_ERROR_CODES.PHONE_NOT_INTERNATIONAL
+    );
   }
 
-  throw new HttpError(400, `'${raw}' is not a valid phone number`);
+  throw new HttpError(400, `'${raw}' is not a valid phone number`, CONTACT_ERROR_CODES.PHONE_INVALID);
 };
+
+// A custom RSVP question of type PHONE: a number written in international
+// form ("+27 82 123 4567"), the same test normalizePhoneToE164 applies to
+// a contact number. Answers are stored as typed, so this only checks.
+export const isInternationalPhoneNumber = (raw: string): boolean => {
+  const trimmed = raw.trim();
+  return trimmed.startsWith('+') && parsePhoneNumberFromString(trimmed)?.isValid() === true;
+};
+
+export const isValidEmail = (raw: string): boolean => EMAIL_PATTERN.test(raw);
 
 // Product rule: a guest holds exactly one contact method at
 // creation/update time — the second field is filled in later, at RSVP

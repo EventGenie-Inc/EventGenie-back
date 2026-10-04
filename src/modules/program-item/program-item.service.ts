@@ -5,7 +5,13 @@ import { eventProgramRepository } from '../event-program/event-program.repositor
 import { eventDayRepository } from '../event-day/event-day.repository.js';
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { requireItemTitle, requireItemStartTime, assertValidItemOrder } from './program-item-validation.util.js';
+import {
+  requireItemTitle,
+  requireItemStartTime,
+  assertValidItemOrder,
+  optionalItemDuration,
+  itemDayRequiredMessage,
+} from './program-item-validation.util.js';
 
 // ProgramItem has no tenantId of its own — ownership is transitive
 // through programId -> EventProgram.eventId -> Event.tenantId, two hops.
@@ -42,6 +48,10 @@ const assertEventDayInScope = async (eventId: string, eventDayId: string): Promi
     throw new HttpError(422, "That day doesn't belong to this event.");
   }
 };
+
+// Live days only: an archived day is not one an organiser can pick.
+const isMultiDayEvent = async (eventId: string): Promise<boolean> =>
+  (await eventDayRepository.findAll(eventId)).length > 1;
 
 export const programItemService = {
 
@@ -80,11 +90,14 @@ export const programItemService = {
     const title = requireItemTitle(data.title);
     requireItemStartTime(data.startTime, title);
     assertValidItemOrder(data.order);
+    const durationMins = optionalItemDuration(data.durationMins, title);
     if (data.eventDayId) {
       await assertEventDayInScope(eventId, data.eventDayId);
+    } else if (await isMultiDayEvent(eventId)) {
+      throw new HttpError(422, itemDayRequiredMessage(title));
     }
     const order = data.order ?? (await programItemRepository.nextOrder(programId));
-    return programItemRepository.create(programId, userId, { ...data, title, order });
+    return programItemRepository.create(programId, userId, { ...data, title, order, durationMins });
   },
 
   update: async (
@@ -100,10 +113,20 @@ export const programItemService = {
     const title = data.title !== undefined ? requireItemTitle(data.title) : undefined;
     if (data.startTime !== undefined) requireItemStartTime(data.startTime, title ?? item.title);
     assertValidItemOrder(data.order);
+    const durationMins = data.durationMins !== undefined ? optionalItemDuration(data.durationMins, title ?? item.title) : undefined;
     if (data.eventDayId !== undefined && data.eventDayId !== null) {
       await assertEventDayInScope(eventId, data.eventDayId);
+    } else if (data.eventDayId !== undefined && (await isMultiDayEvent(eventId))) {
+      // Clearing the day on a multi-day event. An update that leaves
+      // eventDayId out keeps what is stored, so an older item with no day
+      // can still be edited without being forced to pick one.
+      throw new HttpError(422, itemDayRequiredMessage(title ?? item.title));
     }
-    return programItemRepository.update(id, userId, { ...data, ...(title !== undefined && { title }) });
+    return programItemRepository.update(id, userId, {
+      ...data,
+      ...(title !== undefined && { title }),
+      ...(durationMins !== undefined && { durationMins }),
+    });
   },
 
   archive: async (
