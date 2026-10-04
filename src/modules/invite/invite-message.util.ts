@@ -1,32 +1,25 @@
-import { renderBrandEmailShell } from '../../shared/messaging/email.engine.js';
+import { type InvitationDesignKind } from '@prisma/client';
 import { normalizeSmsPunctuation } from '../../shared/messaging/sms-segments.util.js';
-import { escapeHtml } from '../../shared/utils/html.util.js';
-import { formatGuestDate, formatGuestDateShort } from '../../shared/utils/guest-date.util.js';
+import { renderEmail, type EmailBlock } from '../../shared/messaging/email-layout.js';
+import { formatFromHeader, sanitizeDisplayName, sanitizeHeaderText } from '../../shared/messaging/email-address.util.js';
+import { inviteSenderAddress, type OutgoingEmail } from '../../shared/messaging/email.engine.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { formatGuestDate, formatGuestDateShort, formatGuestTime } from '../../shared/utils/guest-date.util.js';
 
 // Domain-aware content builders — this is where "invite"/"event"/"RSVP
-// link" concepts live, as opposed to the domain-ignorant engines. No
-// frontend route is confirmed to exist yet for the guest-facing RSVP page
-// (rsvp.router.ts is API-only: GET /validate/:token, POST /submit) — this
-// path is a best-guess placeholder, matching the only prior convention
-// found in git history (an old, removed WhatsApp-integration commit used
-// `/rsvp?token=...`). Flagged as unconfirmed in the final report.
+// link" concepts live, as opposed to the domain-ignorant engines.
 //
-// HTML ESCAPING — every organiser-typed value interpolated into an HTML
-// email body below (eventName, and each day's label, venue name and
-// address) goes through escapeHtml
-// (shared/utils/html.util.ts) before reaching renderBrandEmailShell: an
-// event named `<script>...` or containing `"` must not become live markup
-// or break out of a style attribute in a guest's inbox, sent under
-// EventGenie's own From address. dateLabel is NOT escaped — it is derived
-// from EventDay.date (guest-date.util.ts), never free text a user types.
-// rsvpLink is NOT escaped either — it is server-built from
-// FRONTEND_BASE_URL (env config) and a crypto.randomBytes(32) hex token
-// (invite.repository.ts), never user input, so it can't carry HTML or
-// attribute-breaking characters by construction. Both exemptions are
-// deliberate, not oversights — re-check them if either value's source
-// ever changes to accept free text.
-export const buildInviteRsvpLink = (token: string): string =>
-  `${process.env.FRONTEND_BASE_URL}/rsvp?token=${token}`;
+// ESCAPING — the email builders below hand renderEmail (email-layout.ts)
+// plain text only: the event name, host name, each day's label, venue and
+// address, the design's alt text. renderEmail escapes every one of them,
+// and every URL, on the way into the HTML. Nothing here builds markup, so
+// there is nothing here to forget to escape. Organiser text that reaches a
+// HEADER (the From name, the subject) goes through email-address.util.ts
+// instead, which strips line breaks and control characters.
+//
+// rsvpLink is server-built from FRONTEND_BASE_URL (env config) and a
+// crypto.randomBytes(32) hex token (invite.repository.ts), never user input.
+export const buildInviteRsvpLink = (token: string): string => frontendUrl(`/rsvp?token=${token}`);
 
 // ─────────────────────────────────────────
 //  WHEN AND WHERE — per guest, from THEIR invited days
@@ -34,126 +27,161 @@ export const buildInviteRsvpLink = (token: string): string =>
 //  The venue belongs to each event day, and a guest may be invited to a
 //  subset of an event's days, so the "when and where" of an invitation or
 //  reminder is built per guest from their own days (invite-dispatch.service.ts
-//  passes them in, archived days already excluded):
-//    - one invited day  → a Date line and a Venue line
-//    - several          → one line per day: label, date, venue
+//  passes them in, archived days already excluded, earliest first):
+//    - each invited day → its date and time, its venue name, its address;
+//      headed by the day's label when there are several
 //    - none (defensive: every invite is created with at least one day, but
 //      its only day could since have been archived) → the event's earliest
-//      date, if there is one, and no venue line rather than a wrong one.
+//      date, if there is one, and no venue rather than a wrong one.
 // ─────────────────────────────────────────
 export interface InviteDayLine {
   label: string;
   date: Date;
+  startTime?: Date | null;
+  endTime?: Date | null;
   location: string | null;
   address: string | null;
 }
 
-const venueText = (day: InviteDayLine): string | null => {
-  const parts = [day.location?.trim(), day.address?.trim()].filter((p): p is string => !!p);
-  return parts.length ? escapeHtml(parts.join(', ')) : null;
+const whenText = (day: InviteDayLine): string => {
+  const start = day.startTime ? formatGuestTime(day.startTime) : null;
+  const end = day.endTime ? formatGuestTime(day.endTime) : null;
+  const time = start && end ? `${start} – ${end}` : start;
+  return time ? `${formatGuestDate(day.date)} · ${time}` : formatGuestDate(day.date);
 };
 
-const LINE = 'style="color: #1A1A2E;"';
-
-export const buildWhenAndWhereHtml = (days: InviteDayLine[], fallbackDateLabel: string | null): string => {
+const dayGroups = (days: InviteDayLine[], fallbackDateLabel: string | null) => {
   if (days.length === 0) {
-    return fallbackDateLabel ? `<p ${LINE}><strong>Date:</strong> ${fallbackDateLabel}</p>` : '';
+    return fallbackDateLabel ? [{ heading: null, lines: [fallbackDateLabel] }] : [];
   }
-  if (days.length === 1) {
-    const day = days[0]!;
-    const venue = venueText(day);
-    return `<p ${LINE}><strong>Date:</strong> ${formatGuestDate(day.date)}</p>` +
-      (venue ? `<p ${LINE}><strong>Venue:</strong> ${venue}</p>` : '');
-  }
-  const lines = days.map((day) => {
-    const venue = venueText(day);
-    return `<p ${LINE}><strong>${escapeHtml(day.label)}</strong> — ${formatGuestDate(day.date)}${venue ? ` — ${venue}` : ''}</p>`;
-  });
-  return `<p ${LINE}><strong>Your days:</strong></p>${lines.join('')}`;
+  return days.map((day) => ({
+    heading: days.length > 1 ? day.label.trim() : null,
+    lines: [whenText(day), day.location?.trim(), day.address?.trim()].filter((l): l is string => !!l),
+  }));
 };
 
-export const buildInviteEmailSubject = (eventName: string): string =>
-  `You're invited to ${eventName}!`;
+// ─────────────────────────────────────────
+//  THE INVITATION DESIGN IN THE EMAIL
+//
+//  Only an UPLOAD design is shown (a TEMPLATE is drawn by the frontend and
+//  has no image to send). The stored imageUrl is a Cloudinary delivery URL
+//  already checked by invitation-design-validation.util.ts; it is rewritten
+//  to an explicit JPEG, 1200px wide (2x for the 600px column), never
+//  upscaled. Never f_auto: email image proxies (Gmail's especially) fetch
+//  with their own Accept header and get a format the reader may not show.
+//  A URL not in the expected shape is left out rather than sent as is.
+// ─────────────────────────────────────────
+export interface InviteEmailDesign {
+  kind: InvitationDesignKind;
+  imageUrl: string | null;
+  width: number | null;
+  height: number | null;
+  altText: string | null;
+}
 
-export const buildInviteEmailHtml = (
-  eventName: string,
-  days: InviteDayLine[],
-  fallbackDateLabel: string | null,
-  rsvpLink: string
-): string =>
-  renderBrandEmailShell(
-    "You're invited!",
-    `
-      <p>You've been invited to <strong>${escapeHtml(eventName)}</strong>.</p>
-      ${buildWhenAndWhereHtml(days, fallbackDateLabel)}
-      <div style="text-align: center; margin: 24px 0;">
-        <a href="${rsvpLink}" style="
-          display: inline-block;
-          padding: 14px 32px;
-          background: #C6A43A;
-          color: #1A1A2E;
-          font-weight: bold;
-          text-decoration: none;
-          border-radius: 8px;
-        ">
-          RSVP Now
-        </a>
-      </div>
-      <p style="color: #6B6B80; font-size: 14px;">
-        If the button doesn't work, copy and paste this link: ${rsvpLink}
-      </p>
-    `
-  );
+export const EMAIL_DESIGN_TRANSFORM = 'f_jpg,w_1200,c_limit';
+
+const CLOUDINARY_IMAGE_UPLOAD = /^(https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/)(.+)$/;
+
+export const emailDesignImageUrl = (imageUrl: string): string | null => {
+  const match = CLOUDINARY_IMAGE_UPLOAD.exec(imageUrl);
+  return match ? `${match[1]}${EMAIL_DESIGN_TRANSFORM}/${match[2]}` : null;
+};
+
+const designBlock = (design: InviteEmailDesign | null, eventName: string): EmailBlock[] => {
+  if (design?.kind !== 'UPLOAD' || !design.imageUrl) return [];
+  const src = emailDesignImageUrl(design.imageUrl);
+  if (!src) return [];
+  return [{ kind: 'image', src, alt: design.altText?.trim() || `Invitation to ${eventName}`, width: design.width, height: design.height }];
+};
+
+// ─────────────────────────────────────────
+//  INVITATIONS AND REMINDERS
+//
+//  The guest should feel they got an e-velope: the seal, "You've received
+//  an e-velope", the event name, their days, and one button. A reminder is
+//  the same email, gentler, with the reply deadline when there is one.
+//  Never "RSVP" in a subject line.
+//
+//  From:     "<host name> via e-velope" <RESEND_INVITE_EMAIL>
+//  Reply-To: the organiser who created the event, so a reply reaches a person
+// ─────────────────────────────────────────
+export interface InviteEmailInput {
+  eventName: string;
+  // Event.hostName; the event name stands in when there is none.
+  hostName: string | null;
+  days: InviteDayLine[];
+  fallbackDateLabel: string | null;
+  rsvpDeadline: Date | null;
+  rsvpLink: string;
+  design: InviteEmailDesign | null;
+  organiserEmail: string | null;
+}
+
+export type BuiltEmail = Omit<OutgoingEmail, 'to'>;
+
+const senderFor = (input: InviteEmailInput): string =>
+  sanitizeDisplayName(input.hostName?.trim() || input.eventName);
+
+export const buildInviteFromHeader = (input: InviteEmailInput): string =>
+  formatFromHeader(`${senderFor(input)} via e-velope`, inviteSenderAddress());
+
+const preheaderFor = (input: InviteEmailInput): string => {
+  const first = input.days[0];
+  const parts = first
+    ? [input.eventName, formatGuestDate(first.date), first.location?.trim()]
+    : [input.eventName, input.fallbackDateLabel];
+  return parts.filter((p): p is string => !!p).join(' · ');
+};
+
+const hostLine = (input: InviteEmailInput): EmailBlock[] =>
+  input.hostName?.trim() ? [{ kind: 'paragraph', text: `From ${input.hostName.trim()}`, muted: true }] : [];
+
+const guestReason = (input: InviteEmailInput): string =>
+  `You received this because ${senderFor(input)} added you to their guest list.`;
+
+const buildGuestEmail = (input: InviteEmailInput, subject: string, eyebrow: string, extra: EmailBlock[]): BuiltEmail => {
+  const blocks: EmailBlock[] = [
+    { kind: 'seal' },
+    { kind: 'eyebrow', text: eyebrow },
+    { kind: 'title', text: input.eventName },
+    ...hostLine(input),
+    ...designBlock(input.design, input.eventName),
+    ...extra,
+    { kind: 'details', groups: dayGroups(input.days, input.fallbackDateLabel) },
+    { kind: 'button', label: 'Open your e-velope', href: input.rsvpLink },
+  ];
+  const { html, text } = renderEmail({ subject, preheader: preheaderFor(input), blocks, reason: guestReason(input) });
+  return {
+    from: buildInviteFromHeader(input),
+    ...(input.organiserEmail ? { replyTo: input.organiserEmail } : {}),
+    subject,
+    html,
+    text,
+  };
+};
+
+export const buildInviteEmailSubject = (input: InviteEmailInput): string =>
+  `You've received an e-velope from ${sanitizeHeaderText(senderFor(input))}`;
+
+export const buildReminderEmailSubject = (input: InviteEmailInput): string =>
+  `Your e-velope from ${sanitizeHeaderText(senderFor(input))} is waiting`;
+
+export const buildInviteEmail = (input: InviteEmailInput): BuiltEmail =>
+  buildGuestEmail(input, buildInviteEmailSubject(input), "You've received an e-velope", []);
+
+export const buildReminderEmail = (input: InviteEmailInput): BuiltEmail =>
+  buildGuestEmail(input, buildReminderEmailSubject(input), 'Your e-velope is still waiting for a reply', [
+    {
+      kind: 'paragraph',
+      text: input.rsvpDeadline
+        ? `Replies close on ${formatGuestDate(input.rsvpDeadline)}.`
+        : 'Open it whenever you’re ready to let your host know whether you can make it.',
+    },
+  ]);
 
 export const buildInviteSmsBody = (eventName: string, rsvpLink: string): string =>
   `You're invited to ${eventName}! RSVP: ${rsvpLink}`;
-
-// ─────────────────────────────────────────
-//  REMINDERS
-//
-//  An invitation says "you are invited"; a reminder says "we have not
-//  heard from you". Same RSVP link and same brand shell, different words —
-//  and the deadline, when there is one, is the reason to act now, so it
-//  leads. No template customisation by design (out of scope).
-// ─────────────────────────────────────────
-
-export const buildReminderEmailSubject = (eventName: string): string =>
-  `Reminder: please RSVP to ${eventName}`;
-
-// Same escaping as buildInviteEmailHtml above — see this file's header.
-export const buildReminderEmailHtml = (
-  eventName: string,
-  days: InviteDayLine[],
-  fallbackDateLabel: string | null,
-  rsvpDeadline: Date | null,
-  rsvpLink: string
-): string =>
-  renderBrandEmailShell(
-    "We haven't heard from you yet",
-    `
-      <p>You were invited to <strong>${escapeHtml(eventName)}</strong>, and we haven't received your RSVP yet.</p>
-      ${rsvpDeadline
-        ? `<p style="color: #1A1A2E;"><strong>Please respond by ${formatGuestDate(rsvpDeadline)}</strong> — RSVPs close after that.</p>`
-        : '<p style="color: #1A1A2E;">Please let us know whether you can make it.</p>'}
-      ${buildWhenAndWhereHtml(days, fallbackDateLabel)}
-      <div style="text-align: center; margin: 24px 0;">
-        <a href="${rsvpLink}" style="
-          display: inline-block;
-          padding: 14px 32px;
-          background: #C6A43A;
-          color: #1A1A2E;
-          font-weight: bold;
-          text-decoration: none;
-          border-radius: 8px;
-        ">
-          RSVP Now
-        </a>
-      </div>
-      <p style="color: #6B6B80; font-size: 14px;">
-        If the button doesn't work, copy and paste this link: ${rsvpLink}
-      </p>
-    `
-  );
 
 // Segments cost money, and the RSVP link alone (base URL + a 64-character
 // token) is ~105 characters of a 160-character segment. So the wording is

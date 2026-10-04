@@ -38,6 +38,12 @@ const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'S
 export const formatGuestDateShort = (date: Date): string =>
   `${date.getUTCDate()} ${MONTHS_SHORT[date.getUTCMonth()]}`;
 
+// "14:30" — the UTC wall-clock time of an event day's start or end. Times
+// are stored the same way dates are (parseClientDateTime reads an
+// offset-less time as UTC), so UTC prints the time the organiser picked.
+export const formatGuestTime = (date: Date): string =>
+  `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
+
 // The date of the first day of an event, as a guest-facing label; null when
 // the event has no days yet.
 export const formatEarliestDay = (eventDays: { date: Date }[]): string | null => {

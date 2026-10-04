@@ -92,7 +92,7 @@ const assertItemAcceptableOrDestroy = async (
       422,
       audience === 'guest'
         ? "This photo or video's link doesn't match what was uploaded. Please try uploading it again."
-        : "This file's link must be the one EventGenie's uploader returned for it. Upload it again from this event."
+        : "This file's link must be the one our uploader returned for it. Upload it again from this event."
     );
   }
 

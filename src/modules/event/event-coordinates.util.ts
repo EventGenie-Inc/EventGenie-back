@@ -42,7 +42,8 @@ export const assertValidCoordinates = (
 // ─────────────────────────────────────────
 //  DECIMAL -> NUMBER, at the repository boundary
 //
-//  Event.latitude/longitude are Prisma Decimal(10, 7) columns. On read
+//  EventDay.latitude/longitude (and, until they were dropped, the Event's
+//  own) are Prisma Decimal(10, 7) columns. On read
 //  they arrive as Decimal instances, which JSON.stringify (via Decimal's
 //  own toJSON) renders as STRINGS — so the API told clients
 //  `"latitude": "-26.19432"` while its own contract (and the frontend's
@@ -79,18 +80,20 @@ export const withPlainDayCoordinates = <T extends DecimalCoordinates>(row: T): P
   longitude: row.longitude === null ? null : Number(row.longitude),
 });
 
-type PlainEvent<T extends DecimalCoordinates> = Omit<PlainCoordinates<T>, 'eventDays'> &
+type PlainEvent<T> = Omit<T, 'eventDays'> &
   (T extends { eventDays: (infer D)[] }
     ? { eventDays: D extends DecimalCoordinates ? PlainCoordinates<D>[] : D[] }
     : unknown);
 
-// An Event row, and its eventDays when they were included — the day venue
-// columns are Decimal too, and every event response that carries days
-// would otherwise leak them as strings exactly as described above.
-export const withPlainCoordinates = <T extends DecimalCoordinates>(event: T): PlainEvent<T> => {
+// An Event row's eventDays, when they were included — the day venue
+// columns are Decimal, and every event response that carries days would
+// otherwise leak them as strings exactly as described above. The Event row
+// itself has no coordinates since its venue columns were dropped
+// (20261004090000_drop_event_venue_columns), so it passes through as is.
+export const withPlainCoordinates = <T extends object>(event: T): PlainEvent<T> => {
   const days = (event as { eventDays?: DecimalCoordinates[] }).eventDays;
   return {
-    ...withPlainDayCoordinates(event),
+    ...event,
     ...(days ? { eventDays: days.map(withPlainDayCoordinates) } : {}),
   } as unknown as PlainEvent<T>;
 };

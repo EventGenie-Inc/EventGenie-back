@@ -9,14 +9,15 @@ import { sendSms } from '../../shared/messaging/sms.engine.js';
 import { sendEmail } from '../../shared/messaging/email.engine.js';
 import {
   buildInviteRsvpLink,
-  buildInviteEmailSubject,
-  buildInviteEmailHtml,
+  buildInviteEmail,
   buildInviteSmsBody,
-  buildReminderEmailSubject,
-  buildReminderEmailHtml,
+  buildReminderEmail,
   buildReminderSmsBody,
   type InviteDayLine,
+  type InviteEmailDesign,
 } from './invite-message.util.js';
+import { invitationDesignRepository } from '../invitation-design/invitation-design.repository.js';
+import { userRepository } from '../user/user.repository.js';
 import {
   REMINDER_COOLDOWN_HOURS,
   REMINDER_COOLDOWN_MS,
@@ -137,37 +138,75 @@ interface DispatchContext {
   eventId: string;
   tenantId: string;
   eventName: string;
+  hostName: string | null;
   // Fallback only — used when a guest has no live invited day left.
   dateLabel: string | null;
   rsvpDeadline: Date | null;
+  // The event's active design (an UPLOAD is shown in the email).
+  design: InviteEmailDesign | null;
+  // The email's Reply-To — see resolveReplyTo.
+  organiserEmail: string | null;
 }
 
-const buildDispatchContext = (event: {
+// Who a guest's reply reaches, so it never lands in the no-reply sender:
+//   1. the organiser who created the event, while active and not archived;
+//   2. else the tenant's longest-serving active TENANT_ADMIN;
+//   3. else e-velope's own admin address, from config
+//      (EMAIL_FALLBACK_REPLY_TO);
+//   4. else no Reply-To at all (config missing), logged.
+export const resolveReplyTo = async (event: { tenantId: string; createdByUserId: string }): Promise<string | null> => {
+  const creator = await userRepository.findById(event.createdByUserId);
+  if (creator?.isActive && !creator.isArchived) return creator.email;
+  const admin = await userRepository.findFirstActiveTenantAdmin(event.tenantId);
+  if (admin) return admin.email;
+  const fallback = process.env.EMAIL_FALLBACK_REPLY_TO?.trim();
+  if (fallback) return fallback;
+  console.error(`[invites] no Reply-To for event tenant ${event.tenantId}: EMAIL_FALLBACK_REPLY_TO is not set`);
+  return null;
+};
+
+// Loaded once per batch, never per guest: at most three small queries
+// whatever the batch size.
+const buildDispatchContext = async (event: {
   id: string;
   tenantId: string;
   name: string;
+  hostName: string | null;
+  createdByUserId: string;
   rsvpDeadline: Date | null;
   eventDays: { date: Date }[];
-}): DispatchContext => ({
-  eventId: event.id,
-  tenantId: event.tenantId,
-  eventName: event.name,
-  dateLabel: formatEarliestDay(event.eventDays),
-  rsvpDeadline: event.rsvpDeadline,
-});
+}): Promise<DispatchContext> => {
+  const [design, organiserEmail] = await Promise.all([
+    invitationDesignRepository.findActiveByEventId(event.id),
+    resolveReplyTo(event),
+  ]);
+  return {
+    eventId: event.id,
+    tenantId: event.tenantId,
+    eventName: event.name,
+    hostName: event.hostName,
+    dateLabel: formatEarliestDay(event.eventDays),
+    rsvpDeadline: event.rsvpDeadline,
+    design,
+    organiserEmail,
+  };
+};
 
-const buildMessage = (kind: DispatchKind, ctx: DispatchContext, days: InviteDayLine[], rsvpLink: string) =>
-  kind === 'INVITE'
-    ? {
-        emailSubject: buildInviteEmailSubject(ctx.eventName),
-        emailHtml: buildInviteEmailHtml(ctx.eventName, days, ctx.dateLabel, rsvpLink),
-        smsBody: buildInviteSmsBody(ctx.eventName, rsvpLink),
-      }
-    : {
-        emailSubject: buildReminderEmailSubject(ctx.eventName),
-        emailHtml: buildReminderEmailHtml(ctx.eventName, days, ctx.dateLabel, ctx.rsvpDeadline, rsvpLink),
-        smsBody: buildReminderSmsBody(ctx.eventName, rsvpLink, ctx.rsvpDeadline),
-      };
+const buildMessage = (kind: DispatchKind, ctx: DispatchContext, days: InviteDayLine[], rsvpLink: string) => {
+  const input = {
+    eventName: ctx.eventName,
+    hostName: ctx.hostName,
+    days,
+    fallbackDateLabel: ctx.dateLabel,
+    rsvpDeadline: ctx.rsvpDeadline,
+    rsvpLink,
+    design: ctx.design,
+    organiserEmail: ctx.organiserEmail,
+  };
+  return kind === 'INVITE'
+    ? { email: buildInviteEmail(input), smsBody: buildInviteSmsBody(ctx.eventName, rsvpLink) }
+    : { email: buildReminderEmail(input), smsBody: buildReminderSmsBody(ctx.eventName, rsvpLink, ctx.rsvpDeadline) };
+};
 
 const dispatchOne = async (
   ctx: DispatchContext,
@@ -183,7 +222,7 @@ const dispatchOne = async (
   const message = buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token));
 
   const result = invite.deliveryMethod === 'EMAIL'
-    ? await sendEmail(invite.guest.email ?? '', message.emailSubject, message.emailHtml)
+    ? await sendEmail({ to: invite.guest.email ?? '', ...message.email })
     : await sendSms(invite.guest.phoneNumber ?? '', message.smsBody);
 
   if (!result.ok) return { ok: false, reason: result.reason ?? 'Delivery failed' };
@@ -240,7 +279,7 @@ export const inviteDispatchService = {
     const smsCount = invites.filter((i) => i.deliveryMethod === 'SMS').length;
     const { source: smsSource } = await assertSmsSendable(event, smsCount);
 
-    const ctx = buildDispatchContext(event);
+    const ctx = await buildDispatchContext(event);
     const failures: InviteDispatchFailure[] = [];
     let sent = 0;
 
@@ -297,7 +336,7 @@ export const inviteDispatchService = {
     const smsSource: SmsSendPool =
       invite.deliveryMethod === 'SMS' ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
 
-    const ctx = buildDispatchContext(event);
+    const ctx = await buildDispatchContext(event);
     // Dispatches using the invite's EXISTING token — never regenerated,
     // so a guest who opens an old link days later doesn't find it dead.
     const result = await dispatchOne(ctx, invite, smsSource);
@@ -419,7 +458,7 @@ export const inviteDispatchService = {
     const smsCount = toRemind.filter((i) => i.deliveryMethod === 'SMS').length;
     const { source: smsSource } = await assertSmsSendable(event, smsCount, 'reminder');
 
-    const ctx = buildDispatchContext(event);
+    const ctx = await buildDispatchContext(event);
     const failures: InviteDispatchFailure[] = [];
     let sent = 0;
 

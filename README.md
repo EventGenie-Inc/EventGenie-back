@@ -1,8 +1,8 @@
-# EventGenie
+# e-velope
 
 Multi-tenant SaaS event management platform, built by MashWare.
 
-EventGenie gives event organisers — from families planning a wedding to
+e-velope gives event organisers — from families planning a wedding to
 promoters running a concert series — the tools to invite guests, collect
 RSVPs, sell tickets, discover vendors, and preserve memories, in one
 platform instead of a stack of disconnected tools.
@@ -22,8 +22,12 @@ platform instead of a stack of disconnected tools.
 
 | | Frontend | API | Hosting |
 |---|---|---|---|
-| Dev | `dev.eventgenie.org.za` | `dev.api.eventgenie.org.za` | Firebase Hosting / Render |
-| Prod | `app.eventgenie.org.za` | `prod.api.eventgenie.org.za` | Firebase Hosting / Render |
+| Dev | `dev.e-velope.co.za` | `dev.api.e-velope.co.za` | Firebase Hosting / Render |
+| Prod | `https://www.e-velope.co.za` | `prod.api.e-velope.co.za` | Firebase Hosting / Render |
+
+The prod frontend is `https://www.e-velope.co.za`. `e-velope.co.za`,
+`evelope.co.za` and `www.evelope.co.za` all redirect to it, so it is the
+one prod origin `ALLOWED_ORIGINS` and `FRONTEND_BASE_URL` need.
 
 Branch mapping: `develop` → dev, `main` → prod. Render auto-deploys from
 branch; the frontend deploys via CI to its matching Firebase Hosting site.
@@ -126,19 +130,19 @@ from `SEED_TEST_PASSWORD` (printed at the end of every seed run).
 
 | Account | Role | Tenant |
 |---|---|---|
-| `superadmin@eventgenie.test` | SUPER_ADMIN | — |
-| `tenantadmin@eventgenie.test` | TENANT_ADMIN | Test Events Co (Celebrate) |
-| `eventadmin@eventgenie.test` | EVENT_ADMIN | Test Events Co (Celebrate) |
-| `sparkadmin@eventgenie.test` | TENANT_ADMIN | Spark Tenant (Spark) |
+| `superadmin@evelope.test` | SUPER_ADMIN | — |
+| `tenantadmin@evelope.test` | TENANT_ADMIN | Test Events Co (Celebrate) |
+| `eventadmin@evelope.test` | EVENT_ADMIN | Test Events Co (Celebrate) |
+| `sparkadmin@evelope.test` | TENANT_ADMIN | Spark Tenant (Spark) |
 
 Two tenants exist deliberately: it makes cross-tenant isolation and
 tier-gating testable without inventing fixtures.
 
-Emails at `@eventgenie.test` cannot receive mail. To complete the OTP flow
+Emails at `@evelope.test` cannot receive mail. To complete the OTP flow
 locally, read the code from the `OtpRecord` table in the dev database.
 
 The seed script refuses to run unless `NODE_ENV !== 'production'` **and**
-the resolved database URL contains `eventgenie_dev`.
+the resolved database URL contains `evelope-dev`.
 
 **Tier configs are created, never overwritten.** Re-running the seed leaves
 an existing `SubscriptionTierConfig` alone, so limits a SUPER_ADMIN has

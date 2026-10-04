@@ -7,6 +7,7 @@ import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '.
 import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
+import { assertValidHostName } from './event-host-name.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
@@ -150,6 +151,7 @@ export const eventService = {
   create: async (tenantId: string, userId: string, data: CreateEventDto) => {
     assertEventName(data.name);
     assertValidCapacity(data.capacity);
+    assertValidHostName(data.hostName);
     // Ownership first: the size check below destroys the asset on rejection.
     assertCoverPublicIdOwned(tenantId, data.coverImagePublicId);
     assertCoverImageWithinSizeLimit(data);
@@ -172,6 +174,7 @@ export const eventService = {
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
     if (data.name !== undefined) assertEventName(data.name);
     assertValidCapacity(data.capacity);
+    assertValidHostName(data.hostName);
     // Tier rules are evaluated against the EVENT's owning tenant, not the
     // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
     // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of

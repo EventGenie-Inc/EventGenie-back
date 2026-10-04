@@ -1,8 +1,7 @@
 import jwt from 'jsonwebtoken';
-import { Resend } from 'resend';
 import { getAuth } from 'firebase-admin/auth';
 import { firebaseAdmin } from '../../shared/firebase/firebase.admin.js';
-import { authRepository } from './auth.repository.js';
+import { authRepository, OTP_TTL_MINUTES } from './auth.repository.js';
 import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {
@@ -18,7 +17,13 @@ import {
   type LogoutDto,
   type SessionTokenPayload,
 } from './auth.types.js';
-import { escapeHtml } from '../../shared/utils/html.util.js';
+import { sendEmail } from '../../shared/messaging/email.engine.js';
+import { buildOtpEmail, buildPasswordResetEmail } from './auth-email.util.js';
+import {
+  buildPasswordResetLink,
+  extractOobCode,
+  passwordResetActionCodeSettings,
+} from './password-reset-link.util.js';
 
 // Never reveal whether an email exists in the system — every branch
 // of forgotPassword() (unknown email, suspended account, send failure)
@@ -27,7 +32,7 @@ const FORGOT_PASSWORD_GENERIC_RESPONSE = {
   message: 'If an account exists for this email, a password reset link has been sent.',
 };
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+export const OTP_SEND_FAILED_MESSAGE = "We couldn't send your code. Try again in a moment.";
 
 // ─────────────────────────────────────────
 //  Helpers
@@ -132,37 +137,18 @@ export const authService = {
     const otp = generateOtp();
     const otpRecord = await authRepository.createOtp(user.id, otp);
 
-    const fromEmail = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
-
-    await resend.emails.send({
-      from: fromEmail,
-      to: user.email,
-      subject: 'Your EventGenie verification code',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-          <h2 style="color: #1A1A2E;">EventGenie Verification</h2>
-          <p>Hello ${escapeHtml(user.username)},</p>
-          <p>Your verification code is:</p>
-          <div style="
-            font-size: 36px;
-            font-weight: bold;
-            letter-spacing: 8px;
-            color: #C6A43A;
-            padding: 24px;
-            background: #F7F5F0;
-            border-radius: 8px;
-            text-align: center;
-            margin: 24px 0;
-          ">
-            ${otp}
-          </div>
-          <p style="color: #6B6B80; font-size: 14px;">
-            This code expires in <strong>10 minutes</strong>.<br/>
-            If you did not request this, please ignore this email.
-          </p>
-        </div>
-      `,
-    });
+    // A failed send is an error the user sees, not a silent "code sent":
+    // otherwise they wait for an email that never comes. Saying so leaks
+    // nothing — this caller has already proved the password (a verified
+    // Firebase token for an existing, active user). The provider's reason
+    // stays in the server log only.
+    const sent = await sendEmail(
+      buildOtpEmail({ to: user.email, username: user.username, code: otp, validMinutes: OTP_TTL_MINUTES })
+    );
+    if (!sent.ok) {
+      console.error('Failed to send sign-in code email:', sent.reason);
+      throw new HttpError(503, OTP_SEND_FAILED_MESSAGE, 'OTP_SEND_FAILED');
+    }
 
     return {
       message: 'Verification code sent to your email.',
@@ -201,7 +187,8 @@ export const authService = {
     // device passed the second factor" becomes a fact worth remembering.
     // Every subsequent page load on THIS device can mint a session
     // through exchangeSession below without another OTP, until this
-    // token is revoked or its own 30 days pass — see device-token.util.ts.
+    // token is revoked or expires (30 days, extended by each use up to 90
+    // days from issue) — see device-token.util.ts.
     const deviceToken = await issueDeviceToken(user.id, userAgent);
 
     return {
@@ -387,12 +374,14 @@ export const authService = {
     if (!user || !user.isActive || user.isArchived) return FORGOT_PASSWORD_GENERIC_RESPONSE;
 
     try {
-      const actionCodeSettings = {
-        url: `${process.env.FRONTEND_BASE_URL}/reset-password`,
-        handleCodeInApp: true,
-      };
-
-      const resetLink = await getAuth(firebaseAdmin).generatePasswordResetLink(email, actionCodeSettings);
+      // Firebase mints the code; the link we email is our own, on the
+      // frontend's /auth/action page (password-reset-link.util.ts). If the
+      // code can't be taken out of Firebase's link, NO email is sent —
+      // never a broken link — and the error is logged without the code.
+      // The response stays the generic one either way: an error only an
+      // existing, active account could trigger would reveal that it exists.
+      const firebaseLink = await getAuth(firebaseAdmin).generatePasswordResetLink(email, passwordResetActionCodeSettings());
+      const resetLink = buildPasswordResetLink(extractOobCode(firebaseLink));
 
       // Trusted Devices Hardening batch, Part 5 — deliberately NOT
       // revoking device tokens here anymore. Requesting a reset link
@@ -407,42 +396,14 @@ export const authService = {
       // OLD password's Firebase session stops working the moment the
       // reset completes, with no action needed here. See STEERING.md's
       // revocation paragraph for the full argument.
-      const fromEmail = process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
-
-      await resend.emails.send({
-        from: fromEmail,
-        to: email,
-        subject: 'Reset your EventGenie password',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-            <h2 style="color: #1A1A2E;">Reset your EventGenie password</h2>
-            <p>Hello ${escapeHtml(user.username)},</p>
-            <p>We received a request to reset your password. Click the button below to choose a new one:</p>
-            <div style="text-align: center; margin: 24px 0;">
-              <a href="${resetLink}" style="
-                display: inline-block;
-                padding: 14px 32px;
-                background: #C6A43A;
-                color: #1A1A2E;
-                font-weight: bold;
-                text-decoration: none;
-                border-radius: 8px;
-              ">
-                Reset Password
-              </a>
-            </div>
-            <p style="color: #6B6B80; font-size: 14px;">
-              This link will expire shortly.<br/>
-              If you did not request this, please ignore this email — your password will remain unchanged.
-            </p>
-          </div>
-        `,
-      });
+      const sent = await sendEmail(buildPasswordResetEmail({ to: email, username: user.username, resetLink }));
+      if (!sent.ok) console.error('Failed to send password reset email:', sent.reason);
     } catch (error) {
       // Never let a send failure leak account existence via a different
       // response shape — log server-side and fall through to the same
-      // generic response as every other branch.
-      console.error('Failed to send password reset email:', error);
+      // generic response as every other branch. Only the error's message
+      // is logged: nothing raised above carries the reset code.
+      console.error('Password reset email NOT sent:', error instanceof Error ? error.message : 'unknown error');
     }
 
     return FORGOT_PASSWORD_GENERIC_RESPONSE;

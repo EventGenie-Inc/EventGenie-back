@@ -166,7 +166,7 @@ const assertUploadLocation = (imageUrl: unknown, publicId: unknown, ctx: { cloud
   if (!isCloudinaryDeliveryUrlFor(imageUrl, {
     cloudName: ctx.cloudName, resourceType: 'image', publicId, extensions: ['jpg', 'jpeg', 'png', 'webp'],
   })) {
-    throw invalid("The image link must be the one EventGenie's uploader returned for this image. Upload it again from this event's design page.");
+    throw invalid("The image link must be the one our uploader returned for this image. Upload it again from this event's design page.");
   }
 };
 

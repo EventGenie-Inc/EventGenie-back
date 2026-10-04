@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to EventGenie. Newest first.
+All notable changes to e-velope (formerly EventGenie). Newest first.
 
 Format is loosely [Keep a Changelog](https://keepachangelog.com/).
 Versioning is by feature milestone rather than semver — nothing is
@@ -371,7 +371,8 @@ live and reachable, record and defer what is dormant.
 - Dev seed script with safety guards preventing any production run
 
 ### Infrastructure
-- Domain `eventgenie.org.za` registered and configured
+- Domain `eventgenie.org.za` registered and configured (since replaced by
+  `e-velope.co.za` in the rebrand)
 - Resend sending domain verified
 - Twilio South African number (compliance approval pending)
 - Cloudinary configured for Memory Hub storage

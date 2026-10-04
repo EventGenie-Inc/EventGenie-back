@@ -9,4 +9,6 @@
 export interface EngineSendResult {
   ok: boolean;
   reason?: string;
+  // The provider's id for a sent message, when it gives one.
+  messageId?: string;
 }
