@@ -3,10 +3,11 @@ import { ticketPurchaseService } from './ticket-purchase.service.js';
 import { eventService } from '../event/event.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
-router.use(authenticate, requireEventAdmin);
+router.use(authenticate, requireFeature('ticketing'), requireEventAdmin);
 
 // Read-only — purchases are created internally by the RSVP-submit
 // transaction (POST /api/rsvp/submit), never through a public POST here.

@@ -11,6 +11,7 @@ import {
   assertValidEmail,
   normalizePhoneToE164,
   assertExactlyOneContact,
+  assertGuestHasEmail,
   assertValidPlusOnesAllowed,
   findDuplicateContact,
 } from './guest-validation.util.js';
@@ -19,6 +20,7 @@ import { buildImportTemplateWorkbook } from './guest-template.util.js';
 import { buildGuestExportWorkbook } from './guest-export.util.js';
 import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
@@ -85,6 +87,7 @@ export const guestService = {
     // Organiser-created guests are never plus-ones — hostGuestId isn't
     // settable through this path — so contact stays required here.
     assertExactlyOneContact(email, phoneNumber);
+    if (!isFeatureEnabled('sms')) assertGuestHasEmail(email);
 
     const plusOnesAllowed = data.plusOnesAllowed ?? 0;
     assertValidPlusOnesAllowed(plusOnesAllowed);
@@ -133,6 +136,9 @@ export const guestService = {
     // their name) must not be rejected for having no contact, which they
     // never have and never will.
     assertExactlyOneContact(nextEmail, nextPhone, guest.hostGuestId);
+    // Judged on the guest the update leaves behind, so an existing
+    // phone-only guest can't be saved again without an email either.
+    if (!isFeatureEnabled('sms')) assertGuestHasEmail(nextEmail, guest.hostGuestId);
 
     if (data.plusOnesAllowed !== undefined) assertValidPlusOnesAllowed(data.plusOnesAllowed);
 
@@ -210,7 +216,9 @@ export const guestService = {
     const existingGuests = await guestRepository.findContactsForEvent(eventId);
     const existingContacts = existingGuests.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber }));
 
-    const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts);
+    const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts, {
+      requireEmail: !isFeatureEnabled('sms'),
+    });
 
     if (validRows.length > 0) {
       await assertGuestsCreatable(event, validRows.length);

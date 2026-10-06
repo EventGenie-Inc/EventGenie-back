@@ -31,6 +31,7 @@ import {
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatEarliestDay } from '../../shared/utils/guest-date.util.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // Bulk invite orchestrator — knows guests/invites/tiers and routes each
 // guest to whichever engine matches their contact. Kept separate from
@@ -134,6 +135,19 @@ const assertEventAcceptsInvites = (visibility: string): void => {
 
 type DispatchKind = 'INVITE' | 'REMINDER';
 
+// With the sms feature off, a guest reachable only by SMS is a per-guest
+// FAILURE the organiser sees in the results, with what to do about it;
+// never a silent skip, and never a send. Email guests in the same batch go
+// out as normal.
+export const SMS_UNAVAILABLE_REASON =
+  "Text messages aren't available yet, so nothing was sent to this guest. Add an email address for them and send again.";
+
+// How many SMS a batch would send, for the tier check. Zero while sms is
+// off: nothing will be texted, so there is no quota to check and no plan
+// message about SMS to show.
+const smsCountFor = (invites: { deliveryMethod: DeliveryMethod }[]): number =>
+  isFeatureEnabled('sms') ? invites.filter((i) => i.deliveryMethod === 'SMS').length : 0;
+
 interface DispatchContext {
   eventId: string;
   tenantId: string;
@@ -176,8 +190,10 @@ const buildDispatchContext = async (event: {
   rsvpDeadline: Date | null;
   eventDays: { date: Date }[];
 }): Promise<DispatchContext> => {
+  // A switched-off invitationDesigns feature means no design image in any
+  // email; the saved design itself is left alone.
   const [design, organiserEmail] = await Promise.all([
-    invitationDesignRepository.findActiveByEventId(event.id),
+    isFeatureEnabled('invitationDesigns') ? invitationDesignRepository.findActiveByEventId(event.id) : Promise.resolve(null),
     resolveReplyTo(event),
   ]);
   return {
@@ -219,6 +235,9 @@ const dispatchOne = async (
   smsSource: SmsSendPool,
   kind: DispatchKind = 'INVITE'
 ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+  if (invite.deliveryMethod === 'SMS' && !isFeatureEnabled('sms')) {
+    return { ok: false, reason: SMS_UNAVAILABLE_REASON };
+  }
   const message = buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token));
 
   const result = invite.deliveryMethod === 'EMAIL'
@@ -276,8 +295,7 @@ export const inviteDispatchService = {
     // Also resolves WHICH pool (bundle vs quota) this whole batch draws
     // from — see sms-tier-enforcement.util.ts's header comment on why
     // that decision is made once per batch, never per guest.
-    const smsCount = invites.filter((i) => i.deliveryMethod === 'SMS').length;
-    const { source: smsSource } = await assertSmsSendable(event, smsCount);
+    const { source: smsSource } = await assertSmsSendable(event, smsCountFor(invites));
 
     const ctx = await buildDispatchContext(event);
     const failures: InviteDispatchFailure[] = [];
@@ -334,7 +352,7 @@ export const inviteDispatchService = {
     // pool, so `smsSource` is meaningless (and unused) in that branch —
     // 'QUOTA' is just a harmless placeholder, never written anywhere.
     const smsSource: SmsSendPool =
-      invite.deliveryMethod === 'SMS' ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
+      smsCountFor([invite]) ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
 
     const ctx = await buildDispatchContext(event);
     // Dispatches using the invite's EXISTING token — never regenerated,
@@ -455,8 +473,7 @@ export const inviteDispatchService = {
     // texted (not those skipped above), before any dispatch begins. Same
     // function invitations use, so the bundle and the monthly quota can
     // never pool here either.
-    const smsCount = toRemind.filter((i) => i.deliveryMethod === 'SMS').length;
-    const { source: smsSource } = await assertSmsSendable(event, smsCount, 'reminder');
+    const { source: smsSource } = await assertSmsSendable(event, smsCountFor(toRemind), 'reminder');
 
     const ctx = await buildDispatchContext(event);
     const failures: InviteDispatchFailure[] = [];

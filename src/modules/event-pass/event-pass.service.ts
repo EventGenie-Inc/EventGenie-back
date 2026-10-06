@@ -424,8 +424,17 @@ export const eventPassService = {
   // check; the webhook remains the actual source of truth either way —
   // this only ever ACTS on a definitive 'success' from Paystack's own
   // verify endpoint, never on the redirect's query params.
-  reconcilePassPurchase: async (purchaseId: string): Promise<{ status: 'PENDING' | 'PAID' | 'FAILED' }> => {
-    const purchase = await prisma.eventPassPurchase.findFirst({ where: { id: purchaseId } });
+  // Gated like every other event sub-resource (STEERING "Tenant scoping"):
+  // the event in the URL must be the caller's, and the purchase must belong
+  // to that event. Either miss is the same 404.
+  reconcilePassPurchase: async (
+    eventId: string,
+    purchaseId: string,
+    role: PlatformRole,
+    tenantId: string | null
+  ): Promise<{ status: 'PENDING' | 'PAID' | 'FAILED' }> => {
+    await eventService.getById(eventId, role, tenantId);
+    const purchase = await eventPassRepository.findPurchaseForEvent(purchaseId, eventId);
     if (!purchase) throw new HttpError(404, 'Event pass purchase not found');
     if (purchase.status !== 'PENDING' || !purchase.paymentRef) {
       return { status: purchase.status };
@@ -442,8 +451,14 @@ export const eventPassService = {
     return { status: 'PENDING' };
   },
 
-  reconcileSmsBundlePurchase: async (purchaseId: string): Promise<{ status: 'PENDING' | 'PAID' | 'FAILED' }> => {
-    const purchase = await prisma.eventSmsBundlePurchase.findFirst({ where: { id: purchaseId } });
+  reconcileSmsBundlePurchase: async (
+    eventId: string,
+    purchaseId: string,
+    role: PlatformRole,
+    tenantId: string | null
+  ): Promise<{ status: 'PENDING' | 'PAID' | 'FAILED' }> => {
+    await eventService.getById(eventId, role, tenantId);
+    const purchase = await eventPassRepository.findSmsBundlePurchaseForEvent(purchaseId, eventId);
     if (!purchase) throw new HttpError(404, 'SMS bundle purchase not found');
     if (purchase.status !== 'PENDING' || !purchase.paymentRef) {
       return { status: purchase.status };

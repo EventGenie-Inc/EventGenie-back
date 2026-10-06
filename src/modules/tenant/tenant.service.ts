@@ -12,6 +12,7 @@ import {
   reactivateFirebaseAccount,
 } from '../../shared/firebase/firebase-account-status.util.js';
 import { revokeAllDeviceTokensForUser, REVOKE_REASON } from '../auth/device-token.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // Deliberate, hand-picked projection (ClientTenantDto) — see that
 // type's own comment. Every method below that hands a Tenant back to
@@ -79,6 +80,10 @@ export const tenantService = {
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
     const effectiveTenant = withEffectiveTier(tenant);
+    // A switched-off feature's limit is never shown to a tenant: with
+    // vendors off there is no vendorSpaceLimit at all.
+    if (!isFeatureEnabled('vendors')) return toClientTenant(effectiveTenant);
+
     const [limitInfo, currentCount] = await Promise.all([
       resolveVendorSpaceLimit(tenant),
       vendorRepository.countActiveSpacesForTenant(id),
@@ -87,7 +92,7 @@ export const tenantService = {
     return {
       ...toClientTenant(effectiveTenant),
       vendorSpaceLimit: {
-        limit: limitInfo.limit, // null = unlimited; the object itself is always present
+        limit: limitInfo.limit, // null = unlimited; present whenever the vendors feature is on
         currentCount,
       },
     };

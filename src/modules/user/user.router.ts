@@ -2,10 +2,11 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { userService } from './user.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireTenantAdmin, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
-router.use(authenticate, requireTenantAdmin);
+router.use(authenticate, requireFeature('teamMembers'), requireTenantAdmin);
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {

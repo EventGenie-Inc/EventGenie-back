@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { eventService } from './event.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin, requireEventAdminOrVendor, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
@@ -22,7 +23,7 @@ router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request,
   } catch (err) { next(err); }
 });
 
-router.get('/:id/share-link', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id/share-link', authenticate, requireFeature('publicEvents'), requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const result = await eventService.getShareLink(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
@@ -30,7 +31,7 @@ router.get('/:id/share-link', authenticate, requireEventAdmin, async (req: Reque
   } catch (err) { next(err); }
 });
 
-router.post('/:id/share-link/regenerate', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/share-link/regenerate', authenticate, requireFeature('publicEvents'), requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const result = await eventService.regenerateShareLink(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);

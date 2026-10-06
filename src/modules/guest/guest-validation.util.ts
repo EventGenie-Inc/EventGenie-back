@@ -110,6 +110,16 @@ export const assertExactlyOneContact = (
   }
 };
 
+// With the sms feature off, nothing can reach a guest by text, so every
+// organiser-managed guest needs an email (a phone may still sit beside
+// one). Plus-ones have no contact of their own and are exempt. The caller
+// decides whether sms is off; this only says what follows from it.
+export const GUEST_EMAIL_REQUIRED_MESSAGE = "Add an email address: text messages aren't available yet.";
+
+export const assertGuestHasEmail = (email: string | null, hostGuestId: string | null = null): void => {
+  if (!hostGuestId && !email) throw new HttpError(422, GUEST_EMAIL_REQUIRED_MESSAGE);
+};
+
 // plusOnesAllowed is a per-guest allowance (not per-event) set by the
 // organiser at create/edit time or via the import template's optional
 // column. Enforced here as a simple sanity check; the RSVP flow enforces

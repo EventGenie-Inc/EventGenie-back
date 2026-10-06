@@ -10,8 +10,10 @@ import {
   assertValidEmail,
   normalizePhoneToE164,
   assertExactlyOneContact,
+  assertGuestHasEmail,
   findDuplicateContact,
 } from '../guest/guest-validation.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { type RegisterGuestDto } from './event-public.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
@@ -196,6 +198,9 @@ export const eventPublicService = {
     if (email) assertValidEmail(email);
     const phoneNumber = data.phoneNumber ? normalizePhoneToE164(data.phoneNumber) : null;
     assertExactlyOneContact(email, phoneNumber);
+    // With sms off nothing can reach a phone-only registrant later (a
+    // reminder, a resend), so registration needs an email.
+    if (!isFeatureEnabled('sms')) assertGuestHasEmail(email);
 
     // Same duplicate rule as guest.service.ts's create() (STEERING: same
     // email/phone on the same event is a duplicate) — one query, reused

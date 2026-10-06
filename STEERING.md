@@ -414,7 +414,15 @@ tokens". It keeps the old behaviour (one refresh and retry, then discard)
 only for a 401 with no code, so it stays correct against an older
 backend mid-deploy.
 
-One single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
+One single code: `USER_EMAIL_TAKEN` (`POST /api/users`, 409, "A user
+with this email address already exists. Use a different email
+address."): the admin form marks the email field rather than showing a
+banner. Email uniqueness is platform-wide, so this tells a `TENANT_ADMIN`
+that an address has an account somewhere, possibly in another tenant.
+The status already told them that before the code existed (500 instead
+of 201); the code adds nothing to it. Accepted for now, not designed.
+
+Another single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
 "We couldn't send your code. Try again in a moment."): the sign-in code
 email could not be sent, so the client shows that and offers a retry
 instead of a code step that will never receive one. The provider's reason
@@ -496,6 +504,57 @@ it is **never the public Pricing page for someone who is signed in**:
 
 Exception: registration-time tier selection is not an upsell surface —
 nobody is upgrading before they have an account.
+
+### Feature flags
+
+Production can run a reduced feature set while dev keeps everything. One
+codebase: a feature is switched off by configuration, **never deleted**.
+
+- **Every new optional feature registers a flag** in the one registry,
+  `FEATURE_NAMES` (`src/shared/features/feature-flags.ts`), under a
+  stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
+  `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`.
+- **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
+  (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
+  Unset means everything is on. An unknown name stops the app at load
+  (`assertFeatureConfigValid` in `app.ts`); it is never ignored. Names are
+  case-sensitive.
+- **Routes are guarded on the server**, with one `requireFeature(name)`
+  (`shared/middleware/feature.middleware.ts`) per router or route: after
+  `authenticate`, before the role gate. Never as checks scattered through
+  services. Off means a 404 with the global 404 body, for everyone except
+  `SUPER_ADMIN`, the way a role gate hides. On a public route, off is a
+  404 for everyone.
+- **A shared path belongs to the feature it serves, not to whatever it
+  touches.** The Paystack webhook, subscriptions and Event Pass use
+  Paystack but are not ticketing; only the ticket routes and the payout
+  bank-details (subaccount) routes are.
+- **Beyond its routes, a switched-off feature can't be reached by any
+  other path.** Every refusal is a 422 checked BEFORE any tier check, so
+  a tenant never hears an upgrade pitch for a feature that isn't on offer:
+  - `ticketing` off: `/rsvp/validate` offers no tickets, an RSVP carrying
+    a `ticketId` is refused, and no path makes an event paid (create,
+    update, publish, the wizard's materialize).
+  - `publicEvents` off: no path makes an event `PUBLIC` (the same four).
+  - `vendors` off: an `EVENT_VENDOR` user can't be created, and
+    `/api/tenants/me` has no `vendorSpaceLimit`.
+  - `sms` off: nothing is texted; an SMS-only guest on a send, resend or
+    reminder is a per-guest failure the organiser sees, never a silent
+    skip. Nobody ends up reachable only by phone: phone-only is 422 on
+    guest create and update and on public self-registration, phone-only
+    rows are refused and listed on import while the rest imports, and at
+    RSVP a guest who has an email can't remove it or swap it for a phone
+    (adding a phone beside it is fine; a guest who never had an email can
+    still reply).
+  - `invitationDesigns` off: `/rsvp/validate`'s `design` is `null` and
+    emails carry no design image.
+  Tier messages and limits never name a switched-off feature to a tenant.
+- **The frontend reads `GET /api/config/features`** (public, no auth,
+  `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
+  flags. Frontend hiding is UX; the server guard is the boundary.
+- **Switching a flag off never deletes data.** Saved designs, tickets,
+  vendor spaces and the rest stay exactly as they were; they are only not
+  served. Switching it back on brings them back unchanged.
 
 ### Migrations and the shared database
 
@@ -1250,8 +1309,9 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     tenants, vendor-space membership, `TENANT_ADMIN`/`EVENT_ADMIN`
     refused without a tenant at creation, tickets and custom RSVP fields
     across tenants and under the wrong event (plus the SPARK custom-field
-    gate and organiser-only ticket reads), and event days under the wrong
-    event.
+    gate and organiser-only ticket reads), event days under the wrong
+    event, and Event Pass and SMS-bundle reconcile scoped to the URL's
+    event and the caller's tenant.
   - **Program defaults** (`tests/event-program/`): visible by default on
     both creation paths and still hideable, the publish migration, and a
     program item's `order` defaulting to the end of the list.
@@ -1292,7 +1352,19 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     publicIds and mismatched URLs refused with nothing destroyed, on
     Memory Hub uploads and event covers.
   - **The global error handler** (`tests/errors/`): no raw Prisma text
-    in a response.
+    in a response; a duplicate user email is 409 `USER_EMAIL_TAKEN`, not
+    a 500.
+  - **Feature flags** (`tests/feature-flags/`): an unknown name fails
+    startup, `/api/config/features` reflects the env, a switched-off
+    feature's routes 404 for a tenant and work for a `SUPER_ADMIN`, the
+    Paystack webhook and Event Pass purchase work with ticketing off,
+    `/rsvp/validate` hides a saved design and offers no tickets, invite
+    emails drop the design image, a paid or public event is 422 on create,
+    update, publish and the wizard, an RSVP with a `ticketId` is refused,
+    an `EVENT_VENDOR` user is 422, an SMS-only guest is a reported failure
+    on send, resend and reminder, and with SMS off a phone-only guest is
+    422 on create, update and public registration, refused per row on
+    import, and can't be left by an RSVP that removes the email.
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
@@ -1334,3 +1406,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —
   fixing them inside the feature build is far cheaper than retrofitting.
+
+---
+
+## 9. Known decisions for later
+
+Decided, not yet built. Do not build them early, and do not build
+anything that contradicts them.
+
+- **Cover photo vs invitation design:** after the pilot, the cover photo
+  becomes the event's image OUTSIDE the event (invite emails, and share
+  previews on WhatsApp and social media), and the invitation design is
+  what guests see INSIDE the event, on their page. Each has one job; they
+  never compete.

@@ -34,10 +34,11 @@ export interface VendorSpaceLimitDto {
   currentCount: number; // active (non-archived) vendor spaces this tenant owns right now
 }
 
-// Returned only by tenant.service.ts's getDetail (GET /api/tenants/me and
-// SUPER_ADMIN's GET /api/tenants/:id) — never by getAll or getById, which
+// Returned only by tenant.service.ts's getDetail (GET /api/tenants/me;
+// SUPER_ADMIN's GET /api/tenants/:id uses getById) — never by getAll or getById, which
 // stay at plain ClientTenantDto so a tenant list or an internal
 // ownership-gate check doesn't pay for the extra vendor-space queries.
+// vendorSpaceLimit is absent while the vendors feature is switched off.
 export interface ClientTenantDetailDto extends ClientTenantDto {
-  vendorSpaceLimit: VendorSpaceLimitDto;
+  vendorSpaceLimit?: VendorSpaceLimitDto;
 }

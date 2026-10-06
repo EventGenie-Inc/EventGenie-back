@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { ticketService } from './ticket.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 // mergeParams gives access to :eventId from parent router.
@@ -10,7 +11,7 @@ import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 // public. No guest path reads tickets here (see ticket.service.ts): guests
 // get theirs through their invite token on /api/rsvp.
 const router = Router({ mergeParams: true });
-router.use(authenticate, requireEventAdmin);
+router.use(authenticate, requireFeature('ticketing'), requireEventAdmin);
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {

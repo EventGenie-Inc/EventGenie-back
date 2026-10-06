@@ -2,6 +2,8 @@ import express, { type Application, type Request, type Response, type NextFuncti
 import cors from 'cors';
 import { HttpError } from './shared/errors/http-error.js';
 import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
+import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
+import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
 
 // ─────────────────────────────────────────
 //  ROUTERS
@@ -38,6 +40,15 @@ import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.
 import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
+import featureConfigRouter from './modules/feature-config/feature-config.router.js';
+
+// ─────────────────────────────────────────
+//  FEATURE FLAGS
+//  An unknown name in FEATURES_DISABLED stops the app here, at load,
+//  before it can serve a single request with a flag nobody meant to set.
+//  See shared/features/feature-flags.ts.
+// ─────────────────────────────────────────
+assertFeatureConfigValid();
 
 const app: Application = express();
 
@@ -139,6 +150,11 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/geocoding (address search — HERE proxy)
 //  /api/payments/subaccount (tenant admin — Paystack subaccount onboarding)
 //  /api/payments/webhook (public — Paystack calls this)
+//  /api/config/features (public — which optional features are on)
+//
+//  A switched-off feature's routes 404 through requireFeature
+//  (shared/middleware/feature.middleware.ts), applied inside each
+//  feature's own router.
 // ─────────────────────────────────────────
 app.use('/api/tenants', tenantRouter);
 app.use('/api/users', userRouter);
@@ -220,13 +236,16 @@ app.use('/api/billing-history', paymentLedgerRouter);
 app.use('/api/event-passes', eventPassSignalRouter);
 
 // ─────────────────────────────────────────
+//  PUBLIC CONFIG
+//  /api/config/features — public, no auth; see feature-config.router.ts
+// ─────────────────────────────────────────
+app.use('/api/config', featureConfigRouter);
+
+// ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
-  res.status(404).json({
-    status: 'error',
-    message: 'Route not found',
-  });
+  res.status(404).json(ROUTE_NOT_FOUND_BODY);
 });
 
 // ─────────────────────────────────────────
