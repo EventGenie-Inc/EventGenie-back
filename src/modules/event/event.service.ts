@@ -16,6 +16,7 @@ import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from './public-events-availability.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -201,13 +202,20 @@ export const eventService = {
       assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
     }
 
-    assertPaidTicketingAvailable(data.ticketing);
-    assertPublicEventsAvailable(data.visibility);
+    // Only a CHANGE to paid/public is refused while the feature is off.
+    // Past that point, a switched-off feature's value can only be the one
+    // already stored, so it stays out of the tier and payout checks below:
+    // re-saving an older paid event must not 403 on a plan or ask for bank
+    // details, whose routes are off too.
+    assertPaidTicketingAvailable(data.ticketing, event.ticketing);
+    assertPublicEventsAvailable(data.visibility, event.visibility);
+    const ticketing = isFeatureEnabled('ticketing') ? data.ticketing : undefined;
+    const visibility = isFeatureEnabled('publicEvents') ? data.visibility : undefined;
     await assertEventUpdatable(event, {
-      ...(data.visibility !== undefined && { visibility: data.visibility }),
-      ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
+      ...(visibility !== undefined && { visibility }),
+      ...(ticketing !== undefined && { ticketing }),
     });
-    if (data.ticketing === 'PAID') {
+    if (ticketing === 'PAID') {
       await assertEventReadyToSellTickets(event);
     }
     await eventRepository.update(id, userId, data);

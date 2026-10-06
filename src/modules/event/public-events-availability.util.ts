@@ -6,12 +6,17 @@ export const PUBLIC_EVENTS_UNAVAILABLE_MESSAGE =
   "Public events aren't available yet. Keep this event private to continue.";
 
 // With the publicEvents feature switched off, no path may make an event
-// PUBLIC: event create and update, the wizard's materialize, and publish
-// (for an event already saved as public). Called BEFORE any tier check,
-// like assertPaidTicketingAvailable, so a tenant never hears an upgrade
-// pitch for a feature that isn't on offer.
-export const assertPublicEventsAvailable = (visibility: EventVisibility | string | undefined | null): void => {
-  if (visibility === 'PUBLIC' && !isFeatureEnabled('publicEvents')) {
+// PUBLIC: event create, update PRIVATE -> PUBLIC, the wizard's
+// materialize, and publish (for a draft already saved as public). An
+// update that leaves an already-public event public passes `current` and
+// is allowed. Called BEFORE any tier check, like
+// assertPaidTicketingAvailable, so a tenant never hears an upgrade pitch
+// for a feature that isn't on offer.
+export const assertPublicEventsAvailable = (
+  visibility: EventVisibility | string | undefined | null,
+  current?: EventVisibility
+): void => {
+  if (visibility === 'PUBLIC' && current !== 'PUBLIC' && !isFeatureEnabled('publicEvents')) {
     throw new HttpError(422, PUBLIC_EVENTS_UNAVAILABLE_MESSAGE);
   }
 };

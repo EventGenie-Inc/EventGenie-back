@@ -198,7 +198,7 @@ export const guestService = {
   getImportTemplate: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
     const eventDays = await eventDayRepository.findAll(eventId);
-    return buildImportTemplateWorkbook(event, eventDays);
+    return buildImportTemplateWorkbook(event, eventDays, { emailOnly: !isFeatureEnabled('sms') });
   },
 
   importGuests: async (
