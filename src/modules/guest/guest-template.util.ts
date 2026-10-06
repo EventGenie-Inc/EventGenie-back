@@ -22,9 +22,15 @@ const slugify = (name: string): string =>
 // not a generic placeholder. For a single-day event, the Day column is
 // pre-filled in the examples and the "Valid Days" reference sheet is
 // omitted (redundant with one value).
+//
+// emailOnly is set while the sms feature is off: import then refuses
+// phone-only rows (guest-import.engine.ts), so the template asks for an
+// email for every guest and its examples use only email addresses. A
+// phone example left in would be a row the import refuses.
 export const buildImportTemplateWorkbook = async (
   event: TemplateEvent,
-  eventDays: TemplateEventDay[]
+  eventDays: TemplateEventDay[],
+  options: { emailOnly?: boolean } = {}
 ): Promise<{ buffer: Buffer; filename: string }> => {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Guests');
@@ -41,10 +47,11 @@ export const buildImportTemplateWorkbook = async (
   const singleDayLabel = eventDays.length === 1 ? eventDays[0]!.label : undefined;
   const exampleDay = (preferred: string | undefined): string => singleDayLabel ?? preferred ?? '';
 
+  const emailOnly = options.emailOnly === true;
   const exampleRows: { firstName: string; surname: string; contact: string; day: string; plusOnesAllowed: number }[] = [
     { firstName: 'John', surname: 'Smith', contact: 'john.smith@example.com', day: exampleDay(eventDays[0]?.label), plusOnesAllowed: 1 },
-    { firstName: 'Jane', surname: 'Doe', contact: '+27821234567', day: exampleDay(eventDays[1]?.label ?? eventDays[0]?.label), plusOnesAllowed: 0 },
-    { firstName: '', surname: '', contact: '+27831234567', day: exampleDay(eventDays[0]?.label), plusOnesAllowed: 0 },
+    { firstName: 'Jane', surname: 'Doe', contact: emailOnly ? 'jane.doe@example.com' : '+27821234567', day: exampleDay(eventDays[1]?.label ?? eventDays[0]?.label), plusOnesAllowed: 0 },
+    { firstName: '', surname: '', contact: emailOnly ? 'guest@example.com' : '+27831234567', day: exampleDay(eventDays[0]?.label), plusOnesAllowed: 0 },
   ];
 
   for (const example of exampleRows) {
@@ -53,7 +60,9 @@ export const buildImportTemplateWorkbook = async (
   }
 
   sheet.getCell('C1').note =
-    'Enter one email OR one phone number (E.164, e.g. +27821234567) per guest — not both. ' +
+    (emailOnly
+      ? "Enter one email address per guest. Every guest needs an email address: text messages aren't available yet. "
+      : 'Enter one email OR one phone number (E.164, e.g. +27821234567) per guest — not both. ') +
     'First Name and Surname may be left blank; the guest can supply their name later when they RSVP.';
 
   sheet.getCell('E1').note =

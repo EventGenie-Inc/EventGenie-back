@@ -533,14 +533,21 @@ codebase: a feature is switched off by configuration, **never deleted**.
   other path.** Every refusal is a 422 checked BEFORE any tier check, so
   a tenant never hears an upgrade pitch for a feature that isn't on offer:
   - `ticketing` off: `/rsvp/validate` offers no tickets, an RSVP carrying
-    a `ticketId` is refused, and no path makes an event paid (create,
-    update, publish, the wizard's materialize).
-  - `publicEvents` off: no path makes an event `PUBLIC` (the same four).
+    a `ticketId` is refused, and no path makes an event paid: create,
+    update FREE → PAID, the wizard's materialize, and publishing a draft
+    saved as paid.
+  - `publicEvents` off: no path makes an event `PUBLIC`, the same way.
+  - **Only a change is refused.** Saving an event that is already paid or
+    public, re-sending the stored value or leaving it out, succeeds, so
+    older events stay editable. Past that check the switched-off value is
+    kept out of the tier and payout checks, so the save isn't refused for
+    a plan or for missing bank details either.
   - `vendors` off: an `EVENT_VENDOR` user can't be created, and
     `/api/tenants/me` has no `vendorSpaceLimit`.
   - `sms` off: nothing is texted; an SMS-only guest on a send, resend or
     reminder is a per-guest failure the organiser sees, never a silent
-    skip. Nobody ends up reachable only by phone: phone-only is 422 on
+    skip. The guest import template asks for an email for every guest and
+    its examples are emails. Nobody ends up reachable only by phone: phone-only is 422 on
     guest create and update and on public self-registration, phone-only
     rows are refused and listed on import while the rest imports, and at
     RSVP a guest who has an email can't remove it or swap it for a phone
@@ -1361,7 +1368,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     `/rsvp/validate` hides a saved design and offers no tickets, invite
     emails drop the design image, a paid or public event is 422 on create,
     update, publish and the wizard, an RSVP with a `ticketId` is refused,
-    an `EVENT_VENDOR` user is 422, an SMS-only guest is a reported failure
+    an older paid or public event stays editable, the import template is
+    email-only with SMS off, an `EVENT_VENDOR` user is 422, an SMS-only guest is a reported failure
     on send, resend and reminder, and with SMS off a phone-only guest is
     422 on create, update and public registration, refused per row on
     import, and can't be left by an RSVP that removes the email.
