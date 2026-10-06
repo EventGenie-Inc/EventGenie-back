@@ -14,6 +14,8 @@ import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforc
 import { guestRepository } from '../guest/guest.repository.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
+import { assertPublicEventsAvailable } from './public-events-availability.util.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -159,6 +161,8 @@ export const eventService = {
     // them — see event-day.router.ts), so there's nothing to compare the
     // deadline against beyond "not in the past".
     assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, [], { rejectPast: true });
+    assertPaidTicketingAvailable(data.ticketing);
+    assertPublicEventsAvailable(data.visibility);
     await assertEventCreatable(tenantId, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -197,6 +201,8 @@ export const eventService = {
       assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
     }
 
+    assertPaidTicketingAvailable(data.ticketing);
+    assertPublicEventsAvailable(data.visibility);
     await assertEventUpdatable(event, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -335,6 +341,8 @@ export const eventService = {
     // subaccount can regress from ACTIVE to FAILED between when a PAID
     // event was created and when it's published (a rejected bank-detail
     // update attempt) — see payment-account-readiness.util.ts.
+    assertPaidTicketingAvailable(event.ticketing);
+    assertPublicEventsAvailable(event.visibility);
     if (event.ticketing === 'PAID') {
       await assertEventReadyToSellTickets(event);
     }

@@ -1,5 +1,6 @@
 import twilio from 'twilio';
 import { type EngineSendResult } from './messaging.types.js';
+import { isFeatureEnabled } from '../features/feature-flags.js';
 
 // ─────────────────────────────────────────
 //  SMS ENGINE
@@ -29,6 +30,11 @@ const TWILIO_ERROR_REASONS: Record<number, string> = {
 };
 
 export const sendSms = async (to: string, body: string): Promise<EngineSendResult> => {
+  // Backstop for the sms feature flag: whatever the caller, nothing reaches
+  // Twilio while it is off. Callers handle it themselves first (see
+  // invite-dispatch.service.ts), so this reason should never be what an
+  // organiser reads.
+  if (!isFeatureEnabled('sms')) return { ok: false, reason: 'Text messages are not available' };
   if (!SMS_FROM) throw new Error('TWILIO_SMS_FROM is not defined in .env');
 
   try {

@@ -21,6 +21,8 @@ import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
+import { assertPublicEventsAvailable } from '../event/public-events-availability.util.js';
 
 export const eventDraftService = {
 
@@ -162,6 +164,8 @@ export const eventDraftService = {
     const programPublished = program?.isPublished !== false;
     const memoryHub = p.memoryHub as Record<string, unknown> | undefined;
 
+    assertPaidTicketingAvailable(p.ticketing as EventTicketing | undefined);
+    assertPublicEventsAvailable(p.visibility as EventVisibility | undefined);
     await assertEventCreatable(tenantId, {
       ...(p.visibility !== undefined && { visibility: p.visibility as EventVisibility }),
       ...(p.ticketing !== undefined && { ticketing: p.ticketing as EventTicketing }),

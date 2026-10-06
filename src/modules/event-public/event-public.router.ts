@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { eventPublicService } from './event-public.service.js';
 import {
   publicEventViewLimiter,
@@ -10,6 +11,9 @@ import {
 // shareToken, never a platform session. No `authenticate` anywhere in
 // this file, mirroring memory-hub-public.router.ts / rsvp.router.ts.
 const router = Router();
+
+// The whole public registration surface belongs to publicEvents.
+router.use(requireFeature('publicEvents'));
 
 // GET /api/public-events/:shareToken
 // Public event view, resolved from the share token — lets the page show

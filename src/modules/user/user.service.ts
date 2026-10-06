@@ -8,6 +8,7 @@ import {
 } from '../../shared/firebase/firebase-account-status.util.js';
 import { revokeAllDeviceTokensForUser, REVOKE_REASON } from '../auth/device-token.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 const ROLES_ASSIGNABLE_BY_TENANT_ADMIN: PlatformRole[] = ['TENANT_ADMIN', 'EVENT_ADMIN', 'EVENT_VENDOR'];
 
@@ -109,11 +110,22 @@ export const userService = {
       throw new HttpError(422, `A ${data.role} must belong to a tenant — specify tenantId.`);
     }
 
+    // With the vendors feature off there is nothing for a vendor to sign
+    // in to, so the role can't be created. Existing vendor users are left
+    // alone (switching a flag off never touches data).
+    if (data.role === 'EVENT_VENDOR' && !isFeatureEnabled('vendors')) {
+      throw new HttpError(422, "Vendor accounts aren't available yet. Choose a different role for this user.");
+    }
+
     // EVENT_VENDOR users are no longer linked to a space at creation —
     // vendor-space membership is many-to-many now (VendorSpaceUser) and
     // is assigned separately afterward, via vendorService.assignVendorUser.
     const existing = await userRepository.findByEmail(data.email);
-    if (existing) throw new Error('A user with this email already exists');
+    // 409 with a code, not a bare Error (which the global handler turns into
+    // a generic 500): the client marks the email field from the code.
+    if (existing) {
+      throw new HttpError(409, 'A user with this email address already exists. Use a different email address.', 'USER_EMAIL_TAKEN');
+    }
 
     return userRepository.create({
       firebaseUid: data.firebaseUid,

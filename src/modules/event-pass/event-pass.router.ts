@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { eventPassService } from './event-pass.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin, requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 // Nested under /api/events/:eventId/pass (app.ts) — mergeParams is set
@@ -23,7 +24,7 @@ router.get('/', requireEventAdmin, async (req: Request, res: Response, next: Nex
   } catch (err) { next(err); }
 });
 
-router.get('/sms-bundle', requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/sms-bundle', requireFeature('sms'), requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
@@ -46,12 +47,18 @@ router.post('/purchase', requireTenantAdmin, async (req: Request, res: Response,
 
 router.post('/purchases/:purchaseId/reconcile', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const result = await eventPassService.reconcilePassPurchase(req.params['purchaseId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const result = await eventPassService.reconcilePassPurchase(
+      req.params['eventId'] as string,
+      req.params['purchaseId'] as string,
+      auth.user.role,
+      auth.user.tenantId
+    );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchase', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchase', requireFeature('sms'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
@@ -61,9 +68,15 @@ router.post('/sms-bundle/purchase', requireTenantAdmin, async (req: Request, res
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireFeature('sms'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const result = await eventPassService.reconcileSmsBundlePurchase(req.params['purchaseId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const result = await eventPassService.reconcileSmsBundlePurchase(
+      req.params['eventId'] as string,
+      req.params['purchaseId'] as string,
+      auth.user.role,
+      auth.user.tenantId
+    );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });

@@ -15,9 +15,11 @@ import {
   isInternationalPhoneNumber,
   CONTACT_ERROR_CODES,
   PHONE_FORMAT_MESSAGE,
+  GUEST_EMAIL_REQUIRED_MESSAGE,
 } from '../guest/guest-validation.util.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
@@ -281,7 +283,12 @@ export const rsvpService = {
     }
 
     const isExpired = !!invite.expiresAt && invite.expiresAt < new Date();
-    const ticketPurchase = invite.ticketPurchases[0] ?? null;
+    // Switched-off features reach the guest as if the event never had
+    // them: no tickets offered (a free event, no ticket list, no purchase
+    // to retry) and no design. What is saved stays saved; it is only not
+    // shown.
+    const ticketingOn = isFeatureEnabled('ticketing');
+    const ticketPurchase = ticketingOn ? (invite.ticketPurchases[0] ?? null) : null;
     // Earliest first, so "the first invited day" (whose venue fills the
     // compatibility fields on `event` below) is well defined.
     const invitedDays = invite.inviteEventDay
@@ -345,7 +352,7 @@ export const rsvpService = {
           // read path — the guest's browser branches on this to decide
           // whether to render the RSVP form at all.
           status: resolveEffectiveStatus(invite.event),
-          ticketing: invite.event.ticketing,
+          ticketing: ticketingOn ? invite.event.ticketing : 'FREE',
           // Deliberately added to this explicit allowlist, not a spread —
           // see this projection's own header comment. Informational only
           // (schema.prisma's comment on Event.ticketsRefundable), but
@@ -364,7 +371,7 @@ export const rsvpService = {
           })),
           // Only non-archived, isAvailable tickets — see
           // invite.repository.ts's findByToken.
-          tickets: invite.event.tickets.map((t) => ({
+          tickets: (ticketingOn ? invite.event.tickets : []).map((t) => ({
             id: t.id,
             name: t.name,
             price: t.price,
@@ -375,7 +382,7 @@ export const rsvpService = {
       // The invitation card's design: null, a template + overrides, or an
       // uploaded image. Guest-safe projection (toGuestDesign): no ids,
       // audit fields or Cloudinary publicId.
-      design: toGuestDesign(invite.event.invitationDesigns[0]),
+      design: isFeatureEnabled('invitationDesigns') ? toGuestDesign(invite.event.invitationDesigns[0]) : null,
       isExpired,
       isUsed: invite.used,
       // Flag, not a throw — same "return flags, don't throw" design as
@@ -412,6 +419,11 @@ export const rsvpService = {
 
   submit: async (data: SubmitRsvpDto) => {
     assertValidSubmission(data);
+    // validate() offers no tickets while ticketing is off, so only a stale
+    // or hand-made request gets here; it is refused, not quietly dropped.
+    if (data.ticketId && !isFeatureEnabled('ticketing')) {
+      throw new HttpError(422, "Tickets aren't available for this event. Please refresh the page and reply again.");
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       // Every lookup a later step could need is folded into this ONE
@@ -513,6 +525,12 @@ export const rsvpService = {
       // send them anything (invitation resend, reminder) is one of these.
       const finalEmail = guestUpdateData.email !== undefined ? guestUpdateData.email : invite.guest.email;
       const finalPhone = guestUpdateData.phoneNumber !== undefined ? guestUpdateData.phoneNumber : invite.guest.phoneNumber;
+      // With sms off an email is the only way to reach a guest, so one who
+      // has an email can't remove it (or swap it for a phone alone). A
+      // guest who never had one isn't removing anything and can still reply.
+      if (invite.guest.email && !finalEmail && !isFeatureEnabled('sms')) {
+        throw new HttpError(422, GUEST_EMAIL_REQUIRED_MESSAGE);
+      }
       if (!finalEmail && !finalPhone) {
         throw new HttpError(
           422,

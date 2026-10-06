@@ -9,6 +9,7 @@ import {
   normalizePhoneToE164,
   findDuplicateContact,
   type ExistingContact,
+  GUEST_EMAIL_REQUIRED_MESSAGE,
 } from './guest-validation.util.js';
 
 // Independent, DB-free module: parsing and validation take plain data in
@@ -148,7 +149,10 @@ export interface ImportEngineResult {
 export const validateImportRows = (
   rows: ParsedImportRow[],
   eventDays: EventDayOption[],
-  existingContacts: ExistingContact[]
+  existingContacts: ExistingContact[],
+  // Set while the sms feature is off: a phone-only row is refused with
+  // GUEST_EMAIL_REQUIRED_MESSAGE, and the rest of the file imports.
+  options: { requireEmail?: boolean } = {}
 ): ImportEngineResult => {
   const failures: ImportRowFailure[] = [];
   const validRows: ValidatedGuestRow[] = [];
@@ -187,6 +191,11 @@ export const validateImportRows = (
       }
     } catch (err) {
       fail((err as Error).message);
+      continue;
+    }
+
+    if (options.requireEmail && !email) {
+      fail(GUEST_EMAIL_REQUIRED_MESSAGE);
       continue;
     }
 
