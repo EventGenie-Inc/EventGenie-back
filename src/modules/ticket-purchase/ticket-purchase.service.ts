@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { type Prisma } from '@prisma/client';
+import { type Prisma, type PlatformRole } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { decimalToCents } from '../../shared/payments/money.util.js';
@@ -9,6 +9,8 @@ import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.j
 import { assertSubaccountReadyForPurchase } from '../payment-account/payment-account-readiness.util.js';
 import { ticketRepository } from '../ticket/ticket.repository.js';
 import { ticketPurchaseRepository } from './ticket-purchase.repository.js';
+import { inviteRepository } from '../invite/invite.repository.js';
+import { eventService } from '../event/event.service.js';
 import { computeTicketChargeCents } from './ticket-purchase-pricing.util.js';
 
 // 30 minutes — long enough for a guest to actually complete a card 3-D
@@ -107,11 +109,27 @@ export const ticketPurchaseService = {
     };
   },
 
-  getAll: (inviteId: string) => ticketPurchaseRepository.findAll(inviteId),
+  // Both gate on the purchase's event through eventService.getScoped
+  // (tenant AND the assignment lock). Before the Team Members batch neither
+  // did any scoping: any EVENT_ADMIN could read any tenant's purchases by
+  // invite or purchase id.
+  getAll: async (inviteId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    const invite = await inviteRepository.findById(inviteId);
+    if (!invite) throw new HttpError(404, 'Invite not found');
+    await eventService.getScoped(invite.eventId, requestingRole, tenantId);
+    return ticketPurchaseRepository.findAll(inviteId);
+  },
 
-  getById: async (id: string) => {
+  getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const purchase = await ticketPurchaseRepository.findById(id);
     if (!purchase) throw new HttpError(404, 'Ticket purchase not found');
+    try {
+      await eventService.getScoped(purchase.ticket.eventId, requestingRole, tenantId);
+    } catch (err) {
+      // The same 404 as a missing purchase, not the event's own wording.
+      if (err instanceof HttpError && err.statusCode === 404) throw new HttpError(404, 'Ticket purchase not found');
+      throw err;
+    }
     return purchase;
   },
 

@@ -1,3 +1,4 @@
+import { normalizeEmail } from '../../shared/utils/email.util.js';
 import crypto from 'crypto';
 import { type Prisma, type SubscriptionTier, type SubscriptionPeriod } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
@@ -545,7 +546,7 @@ export const subscriptionService = {
     const customer = data['customer'] as { customer_code?: string; email?: string } | undefined;
     if (!customer?.email) return { claimed: false };
 
-    const tenant = await subscriptionRepository.findByEmail(customer.email, tx);
+    const tenant = await subscriptionRepository.findByEmail(normalizeEmail(customer.email), tx);
     if (!tenant) return { claimed: false };
 
     const planField = data['plan'];
@@ -629,7 +630,7 @@ export const subscriptionService = {
     const customer = data['customer'] as { email?: string } | undefined;
     if (!customer?.email) return { claimed: false };
 
-    const tenant = await subscriptionRepository.findByEmail(customer.email, tx);
+    const tenant = await subscriptionRepository.findByEmail(normalizeEmail(customer.email), tx);
     if (!tenant) return { claimed: false };
 
     if (!tenant.subscriptionCancelAtPeriodEnd) {

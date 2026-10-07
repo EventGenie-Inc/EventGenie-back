@@ -43,8 +43,31 @@ export const subscriptionRepository = {
   // the tenant's own (unique) billing email instead. Order-independent
   // of charge.success, unlike matching by customer_code (see
   // subscription.service.ts's dispatch comment).
-  findByEmail: (email: string, db: Db = prisma) =>
-    db.tenant.findFirst({ where: { email }, select: SUBSCRIPTION_FIELDS }),
+  //
+  // Compared in normal form on BOTH sides (trimmed, lowercased — see
+  // shared/utils/email.util.ts): Paystack echoes the address in whatever
+  // case it holds, and a stored row the lowercase_tenant_emails migration
+  // had to skip (a collision) may still be mixed-case. The caller passes
+  // the address already normalised. (\\s is doubled because this is a JS
+  // template literal: a single \s would reach Postgres as a plain "s".)
+  // Two stored rows that normalise to the
+  // same address make the match ambiguous, so neither is returned: crediting
+  // the wrong tenant with a subscription is worse than leaving the webhook
+  // unclaimed (it's logged; resolve the collision with
+  // scripts/report-email-collisions.ts).
+  findByEmail: async (normalizedEmail: string, db: Db = prisma) => {
+    const rows = await db.$queryRaw<{ id: string }[]>`
+      SELECT "id" FROM "Tenant"
+      WHERE lower(regexp_replace("email", '^\\s+|\\s+$', '', 'g')) = ${normalizedEmail}
+      LIMIT 2`;
+    if (rows.length !== 1) {
+      if (rows.length > 1) {
+        console.error('[subscription] two tenants share a billing email once normalised — not matching either; see scripts/report-email-collisions.ts');
+      }
+      return null;
+    }
+    return db.tenant.findFirst({ where: { id: (rows[0] as { id: string }).id }, select: SUBSCRIPTION_FIELDS });
+  },
 
   // The tenant's own in-flight subscribe attempt — set by
   // savePendingAttempt before the Initialize Transaction call, matched

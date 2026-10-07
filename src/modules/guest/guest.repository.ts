@@ -8,8 +8,20 @@ import { type DeliveryMethod } from '@prisma/client';
 // stay unscoped (or take an optional tenantId that filters through that
 // one-hop relation); tenant ownership is enforced by the service layer,
 // exactly like event-day.repository.ts / event.repository.ts.
-const tenantOwnedGuestFilter = (tenantId?: string) =>
-  tenantId ? { event: { tenantId, isArchived: false } } : {};
+//
+// eventIds is the assignment lock (event-assignment-lock.util.ts), from
+// eventService's resolveEventScope: a locked EVENT_ADMIN reaches only the
+// guests of their assigned events.
+const tenantOwnedGuestFilter = (tenantId?: string, eventIds?: string[]) =>
+  tenantId || eventIds
+    ? {
+        event: {
+          isArchived: false,
+          ...(tenantId ? { tenantId } : {}),
+          ...(eventIds ? { id: { in: eventIds } } : {}),
+        },
+      }
+    : {};
 
 export interface CreateGuestWithInviteInput {
   firstName: string | null;
@@ -21,20 +33,20 @@ export interface CreateGuestWithInviteInput {
 }
 
 export const guestRepository = {
-  findById: (id: string, includeArchived = false, tenantId?: string) =>
+  findById: (id: string, includeArchived = false, tenantId?: string, eventIds?: string[]) =>
     prisma.guest.findFirst({
       where: {
         id,
         ...(includeArchived ? {} : { isArchived: false }),
-        ...tenantOwnedGuestFilter(tenantId),
+        ...tenantOwnedGuestFilter(tenantId, eventIds),
       },
     }),
 
-  findAll: (tenantId?: string, includeArchived = false) =>
+  findAll: (tenantId?: string, includeArchived = false, eventIds?: string[]) =>
     prisma.guest.findMany({
       where: {
         ...(includeArchived ? {} : { isArchived: false }),
-        ...tenantOwnedGuestFilter(tenantId),
+        ...tenantOwnedGuestFilter(tenantId, eventIds),
       },
       orderBy: { createdAt: 'desc' },
     }),

@@ -1,6 +1,8 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { eventDraftRepository } from './event-draft.repository.js';
 import { eventRepository } from '../event/event.repository.js';
+import { isCreatorLocked } from '../event/event.service.js';
+import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
@@ -172,6 +174,10 @@ export const eventDraftService = {
       hasCustomRsvpFields: customFields.length > 0,
     });
 
+    // A locked member is assigned to the event they create, in the same
+    // transaction (eventService.create does the same; see isCreatorLocked).
+    const assignCreator = await isCreatorLocked(userId);
+
     const result = await prisma.$transaction(async (tx) => {
       const event = await tx.event.create({
         data: {
@@ -297,6 +303,10 @@ export const eventDraftService = {
           updatedBy: userId,
         },
       });
+
+      if (assignCreator) {
+        await eventAssignmentRepository.create(tx, tenantId, userId, event.id, userId);
+      }
 
       return event;
     }, {

@@ -122,10 +122,13 @@ describe('sms off — RSVP contact update', () => {
     const removed = await submit({ token: invite.token, email: null });
     expect(removed.status).toBe(422);
     expect(removed.body.message).toBe(GUEST_EMAIL_REQUIRED_MESSAGE);
+    // The RSVP form marks the email field from the code (Team Members batch).
+    expect(removed.body.code).toBe('GUEST_EMAIL_REQUIRED');
 
     const swapped = await submit({ token: invite.token, email: null, phoneNumber: phone() });
     expect(swapped.status).toBe(422);
     expect(swapped.body.message).toBe(GUEST_EMAIL_REQUIRED_MESSAGE);
+    expect(swapped.body.code).toBe('GUEST_EMAIL_REQUIRED');
 
     const after = await reload(guest.id);
     expect(after.email).toBe(guest.email);

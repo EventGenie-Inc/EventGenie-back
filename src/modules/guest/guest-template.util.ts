@@ -62,7 +62,7 @@ export const buildImportTemplateWorkbook = async (
   sheet.getCell('C1').note =
     (emailOnly
       ? "Enter one email address per guest. Every guest needs an email address: text messages aren't available yet. "
-      : 'Enter one email OR one phone number (E.164, e.g. +27821234567) per guest — not both. ') +
+      : 'Enter one email OR one phone number (e.g. +27 82 123 4567) per guest — not both. ') +
     'First Name and Surname may be left blank; the guest can supply their name later when they RSVP.';
 
   sheet.getCell('E1').note =

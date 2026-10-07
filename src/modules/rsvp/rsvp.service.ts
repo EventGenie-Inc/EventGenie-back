@@ -529,7 +529,7 @@ export const rsvpService = {
       // has an email can't remove it (or swap it for a phone alone). A
       // guest who never had one isn't removing anything and can still reply.
       if (invite.guest.email && !finalEmail && !isFeatureEnabled('sms')) {
-        throw new HttpError(422, GUEST_EMAIL_REQUIRED_MESSAGE);
+        throw new HttpError(422, GUEST_EMAIL_REQUIRED_MESSAGE, CONTACT_ERROR_CODES.EMAIL_REQUIRED);
       }
       if (!finalEmail && !finalPhone) {
         throw new HttpError(

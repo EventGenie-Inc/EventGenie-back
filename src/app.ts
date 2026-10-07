@@ -10,6 +10,7 @@ import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js'
 // ─────────────────────────────────────────
 import tenantRouter from './modules/tenant/tenant.router.js';
 import userRouter from './modules/user/user.router.js';
+import userInvitePublicRouter from './modules/user/user-invite-public.router.js';
 import eventRouter from './modules/event/event.router.js';
 import eventDayRouter from './modules/event-day/event-day.router.js';
 import eventDraftRouter from './modules/event-draft/event-draft.router.js';
@@ -158,6 +159,8 @@ app.get('/health', (_req: Request, res: Response) => {
 // ─────────────────────────────────────────
 app.use('/api/tenants', tenantRouter);
 app.use('/api/users', userRouter);
+// Team invitation lookup/accept — public, token-authenticated (user-invite-public.router.ts)
+app.use('/api/team-invites', userInvitePublicRouter);
 app.use('/api/guests', guestRouter);
 app.use('/api/attendance', attendanceRouter);
 
