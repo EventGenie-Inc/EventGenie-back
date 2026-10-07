@@ -153,13 +153,52 @@ design) and `EVENT_VENDOR` (scoped by `VendorSpaceUser` membership, not
 `tenantId`) are exempt on purpose — see `ROLES_REQUIRING_TENANT`'s own
 comment. Existing rows are never touched by this; it only gates new ones.
 
-**Vendor space visibility, intended design:** a vendor sees a space if
-they are a member of it, OR if it is in their tenant and has no members
-at all (unassigned spaces are visible to every vendor in the tenant).
-Anything else is a 404. **KNOWN DEBT:** the code currently enforces
-membership only (`getSpaceForViewer`) and applies the same gap to
-services and products. Resolved by the user management feature, which
-assigns users to vendor spaces.
+**The assignment lock — one rule for every resource with assignments.**
+For a locked role, a user with **no** assignments of a kind sees **every**
+resource of that kind in their tenant; a user with **any** sees **only**
+those. Anything else is a 404, the same as another tenant's record. It
+only ever narrows what tenant scoping already allows; it never replaces
+it. Written once, `createAssignmentLock`
+(`shared/utils/assignment-lock.util.ts`), and instantiated per resource:
+
+- **Events** (`event-assignment-lock.util.ts`): `EVENT_ADMIN` locked by
+  `EventAssignment` rows. `TENANT_ADMIN` and `SUPER_ADMIN` are never
+  locked. Enforced in exactly one place, `event.service.ts`'s
+  `resolveEventScope`, which every event lookup (`getById`, `getScoped`,
+  `getScopedWithPass`) and the list (`getAll`) goes through, and through
+  those every event sub-resource: days, program, guests, invites, RSVP
+  fields and responses, check-in, Memory Hub, Event Pass, tickets and
+  purchases, invitation design, uploads. `/api/guests/:id`, which has no
+  event in its URL, calls `resolveEventScope` directly. Never build an
+  event `where` anywhere else.
+- **Vendor spaces**, later: `EVENT_VENDOR` locked by `VendorSpaceUser`,
+  through another `createAssignmentLock` call. This replaces the earlier
+  vendor-visibility convention ("a member, or an unassigned space in their
+  tenant") as the pattern for both spaces. Not switched over yet (vendors
+  are off for the pilot): vendor spaces still enforce membership only
+  (`getSpaceForViewer`), and services and products have the same gap.
+
+The lock needs the signed-in user's id, which routers do not thread (they
+pass `(role, tenantId)`). `authenticate` puts the viewer in a request
+context (`shared/context/request-viewer.context.ts`, `AsyncLocalStorage`),
+and the lock reads it there, so no call site can forget to pass it. It
+supplies identity only; services still decide on the role and tenant they
+are passed. **A locked role with no viewer fails closed**: a lookup 404s
+and a list is empty. That covers a script or a test calling a service
+directly (wrap it in `runAsRequestViewer`), and a callback API that loses
+the async context. Node doesn't guarantee the context through stream-event
+callbacks, so wrap one in `bindRequestViewer`, as the guest import route
+does for multer (multer kept the context in testing; the bind is
+insurance). A new callback-style middleware on an authenticated route
+does the same, and gets a test as a locked member.
+
+**Releasing the lock widens access.** Removing a user's **last**
+assignment moves them from a few resources to all of them, so it is 409
+`ASSIGNMENT_LOCK_RELEASE` unless the request carries `confirmWidening:
+true` (`assertReleaseConfirmed`). A row for an archived resource still
+counts as an assignment, so archiving someone's last event never widens
+them either. A locked member who creates an event (direct create or the
+wizard's materialize) is assigned to it in the same transaction.
 
 ### Guest-facing responses
 
@@ -254,8 +293,9 @@ as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
 `image`, `details`, `code`, `button`). The layout turns the same blocks
 into the HTML part and the plain-text part, so the two always match.
 `sendEmail` requires `text`, so no email leaves without a plain-text part.
-Builders: `invite-message.util.ts` (invitation, reminder) and
-`auth-email.util.ts` (sign-in code, password reset).
+Builders: `invite-message.util.ts` (invitation, reminder),
+`auth-email.util.ts` (sign-in code, password reset) and
+`user-invite-email.util.ts` (team invitation).
 
 **Escaping lives in the layout.** Every text and every URL in a block goes
 through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
@@ -307,6 +347,12 @@ text. **Never `f_auto` in email**: image proxies fetch with their own
 `Accept` header. A URL not in the Cloudinary `image/upload` shape is left
 out, never sent as it is. TEMPLATE designs aren't shown in email.
 
+**The team invitation** reads like an auth email (same From, no seal):
+subject "You've been invited to join <company> on e-velope", one button
+"Accept invitation" to `<FRONTEND_BASE_URL>/join?token=…`, its 7-day
+validity, the ignore line. The company name goes through
+`sanitizeDisplayName` on its way into the subject.
+
 **Auth emails** use the same layout, calm and functional: no seal, no
 wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
 code" (the code, its validity from `OTP_TTL_MINUTES`, the ignore line) and
@@ -336,7 +382,7 @@ nowhere else.
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Five documented exceptions:
+Six documented exceptions:
 
 - `Attendance` — a guest's **RSVP answer per day** ("will attend"), NOT
   arrival. RSVP submit rebuilds these wholesale on every edit, which is why
@@ -351,6 +397,10 @@ Five documented exceptions:
   `payment-ledger.repository.ts`.
 - The append-only send logs `SmsSendLog` and `InviteReminderLog` — a message
   was sent, or failed to be, recorded once and never edited or archived.
+- Membership join rows, `VendorSpaceUser` and `EventAssignment` — "this
+  person is on this space/event" is a current fact, set and unset as a
+  whole; removing a membership deletes the row. The person and the
+  resource are each archived (or suspended) on their own.
 
 `EventDraft` is a record that stopped mattering once consumed;
 `PaymentLedgerEntry` and the logs record something that happened, which does
@@ -417,10 +467,24 @@ backend mid-deploy.
 One single code: `USER_EMAIL_TAKEN` (`POST /api/users`, 409, "A user
 with this email address already exists. Use a different email
 address."): the admin form marks the email field rather than showing a
-banner. Email uniqueness is platform-wide, so this tells a `TENANT_ADMIN`
+banner. The same code covers the database's own unique-email error when
+two creations race past the check (`isUniqueViolationOn`,
+`shared/utils/prisma-error.util.ts`: never a 500), and an address that
+already has an account on team invitation create, resend and accept
+(the accept message tells the person to sign in instead). Email uniqueness is platform-wide, so this tells a `TENANT_ADMIN`
 that an address has an account somewhere, possibly in another tenant.
 The status already told them that before the code existed (500 instead
 of 201); the code adds nothing to it. Accepted for now, not designed.
+
+Team members: `ASSIGNMENT_LOCK_RELEASE` (`PUT /api/users/:id/assignments`,
+409; see "The assignment lock" under Tenant scoping), `TEAM_INVITE_PENDING`
+(`POST /api/users/invites`, 409, vs `USER_EMAIL_TAKEN`: resend the open
+invite instead), and on `POST /api/team-invites/lookup` and `/accept`:
+`TEAM_INVITE_INVALID` (404 — unknown, revoked, or the workspace is
+suspended; told apart from a route 404), `TEAM_INVITE_EXPIRED` (422, vs a
+blank name), `TEAM_INVITE_USED` (409, vs `USER_EMAIL_TAKEN`). An accept
+signed in with a different email is a plain 403. Unknown and revoked are
+deliberately one code.
 
 Another single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
 "We couldn't send your code. Try again in a moment."): the sign-in code
@@ -438,7 +502,9 @@ One trio: `CONTACT_PHONE_INVALID`, `CONTACT_PHONE_NOT_INTERNATIONAL` and
 form which contact field to mark: a number that isn't a real one ("Use the
 format +27 82 123 4567" when written with a country code), a local number
 missing its country code ("'0825551234' is missing a country code, use
-+27825551234"), and a guest removing their only contact. The two phone
++27825551234"), and a guest removing their only contact. With `sms` off,
+a guest removing their email (or swapping it for a phone) is 422
+`GUEST_EMAIL_REQUIRED`. The two phone
 codes are set by `normalizePhoneToE164` (`guest-validation.util.ts`), so
 organiser guest create and import carry them too, still as 400.
 
@@ -555,6 +621,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
     still reply).
   - `invitationDesigns` off: `/rsvp/validate`'s `design` is `null` and
     emails carry no design image.
+  - `teamMembers` off: `/api/users` (team management, assignments,
+    invitations) and `/api/team-invites` are 404. Members already added,
+    their assignments and the assignment lock carry on unchanged.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -854,6 +923,22 @@ they RSVP.
 Duplicate = same email or phone on the **same event**. The same person
 across two events is two unrelated records.
 
+**Emails are stored and compared lowercase and trimmed, everywhere** —
+users, tenants, team invites, guests, sign-in lookups — through one
+`normalizeEmail` (`shared/utils/email.util.ts`). Rows from before the rule
+were brought in line by `20261006091000_lowercase_emails` (users, guests)
+and `20261007090000_lowercase_tenant_emails` (tenants), which skip (never
+merge) any row whose normalised email would collide: two users, two
+tenants, or two guests on one event. `scripts/report-email-collisions.ts`
+lists them, read-only. A comparison of a stored email still normalises
+both sides, so a skipped row matches its other casing. The one place that
+finds a tenant by email, Paystack's subscription webhooks
+(`subscription.repository.ts`'s `findByEmail`), compares normalised forms
+in SQL and matches **nothing** when two tenants share an address once
+normalised: crediting the wrong tenant is worse than an unclaimed webhook.
+A Postgres regex in a `$queryRaw` template literal needs its backslashes
+doubled (`'^\\s+|\\s+$'`); a single `\s` reaches Postgres as a plain `s`.
+
 Phone numbers are E.164 (`+27...`). Reject with a specific message
 naming the fix, not a generic "invalid".
 
@@ -966,6 +1051,56 @@ listed and checked in like anyone else (they have an `Invite`). Check-in and
 undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
+
+### Team roles and invitations
+
+Behind the `teamMembers` flag. A tenant has two kinds of member:
+
+- **`TENANT_ADMIN`** manages the team, billing and every event. Never
+  locked by assignments: a promotion to it clears the user's assignments
+  in the same transaction (a later demotion starts unlocked, never with
+  stale ones), and assignments for one are 422.
+- **`EVENT_ADMIN`** (a team member) works on events, subject to the
+  assignment lock (see Tenant scoping).
+
+**A tenant always keeps one active `TENANT_ADMIN`.** Demoting or
+suspending the last one is 409, whoever asks (a `SUPER_ADMIN` too),
+checked inside a transaction that holds a row lock on the tenant
+(`user.repository.ts`'s `withTenantTeamLock`), so two admins demoting or
+suspending each other at once can't both succeed. **Nobody can suspend
+themselves** (403), or change their own role (403, as before).
+
+Team management is the existing `/api/users` router, extended:
+`GET /api/users` for a `TENANT_ADMIN` lists every member of the tenant,
+suspended ones included (where else would they be reactivated?), each
+with `status` (`ACTIVE`/`SUSPENDED`) and `assignments`;
+`PUT /api/users/:id` writes only `username` and `role` (it used to spread
+the body into Prisma); a `TENANT_ADMIN` may now suspend and reactivate
+their own members (`POST /:id/suspend`, `/:id/reactivate`); assignments
+are `PUT /api/users/:id/assignments` (the whole list). Suspending revokes
+every device token, as before. With `vendors` off, creating an
+`EVENT_VENDOR` or **changing** someone to one is 422.
+
+**Invitations** (`TeamInvite`, `/api/users/invites`, `TENANT_ADMIN` only):
+an email, a role (`TENANT_ADMIN` or `EVENT_ADMIN`) and, for an
+`EVENT_ADMIN`, optional event assignments. The token is 256 random bits
+in the emailed link only; the row keeps its SHA-256 hash, like a device
+token, and it is never logged. Valid 7 days, single use, at most one open
+invite per tenant and email (a partial unique index). Resending mints a
+new token and expiry (the old link stops working); revoking sets
+`revokedAt`. Acceptance: the frontend's `/join` page reads the invite
+(`POST /api/team-invites/lookup`: email, company name, role, expiry),
+creates the Firebase account for that email, locked, and calls `POST
+/api/team-invites/accept` with the new account's Firebase ID token, the
+invite token and a name. The backend checks the Firebase email matches,
+then in one transaction claims the invite, creates the `User` in the
+inviting tenant with the invited role, and creates the assignments that
+still name live events. The device code step follows on first sign-in.
+Users belong to one tenant: an address that already has an account can't
+be invited or accept (409 `USER_EMAIL_TAKEN`). An `EVENT_ADMIN` invite all
+of whose events have been archived since is refused (422) rather than
+accepted unlocked. Create and resend are limited per admin; lookup and
+accept per token hash and per IP (failures only).
 
 ### Invitation designs
 
@@ -1309,7 +1444,9 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     strict Firebase verify, `forgotPassword` no longer revoking on
     request, both rate limiters (`skipSuccessfulRequests`, hash-keying),
     `DeviceToken.userAgent`, only the token's hash ever stored, the
-    `authenticate` middleware, the test-database isolation guard, and
+    `authenticate` middleware, `register`, `request-otp` and `verify-otp`
+    answering a rejected Firebase token with a 401 (and an outage still
+    with a 500), the test-database isolation guard, and
     username escaping in auth emails.
   - **Tenant scoping** (`tests/tenant-scope/`): fail-closed lookups for
     a caller with no tenant, event program and program items across
@@ -1361,6 +1498,24 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   - **The global error handler** (`tests/errors/`): no raw Prisma text
     in a response; a duplicate user email is 409 `USER_EMAIL_TAKEN`, not
     a 500.
+  - **Tenant emails** (`tests/subscription/`): Paystack's subscription
+    lookup finds a tenant whatever case and padding either side has,
+    matches neither of two colliding tenants, and the tenant email
+    migration skips collisions.
+  - **Team members** (`tests/team/`): the assignment lock (an unlocked
+    member sees every event; a locked one gets 404 on an unassigned event,
+    its guests, invites, check-in, `/api/guests/:id` and RSVP responses,
+    and a list of only their events; import still works through multer;
+    create auto-assigns; the last assignment is 409 without
+    `confirmWidening`; outside a request it fails closed), team roles (the
+    last `TENANT_ADMIN` can't be demoted or suspended, including two
+    demotions racing; no self-suspend; vendor role change 422 with
+    vendors off; `PUT` ignores other fields; promotion clears
+    assignments), invitations (lowercased email, only the hash stored, the
+    raw token never logged, can't be accepted twice, after expiry, by
+    another email or by an existing account; resend rotates; revoke), and
+    email normalisation (case-insensitive `USER_EMAIL_TAKEN`, the
+    database race as 409, and the lowercase migration's collision skips).
   - **Feature flags** (`tests/feature-flags/`): an unknown name fails
     startup, `/api/config/features` reflects the env, a switched-off
     feature's routes 404 for a tenant and work for a `SUPER_ADMIN`, the

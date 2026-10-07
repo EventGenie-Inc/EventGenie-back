@@ -342,6 +342,8 @@ model Tenant {
   eventPasses             EventPass[]
   eventPassPurchases      EventPassPurchase[]
   eventSmsBundlePurchases EventSmsBundlePurchase[]
+  eventAssignments        EventAssignment[]
+  teamInvites             TeamInvite[]
 }
 
 // ─────────────────────────────────────────
@@ -372,6 +374,9 @@ model User {
   otpRecords       OtpRecord[]
   eventDrafts      EventDraft[]
   deviceTokens     DeviceToken[]
+  // Team Members batch — see EventAssignment and TeamInvite below.
+  eventAssignments EventAssignment[]
+  teamInvitesSent  TeamInvite[]      @relation("TeamInviteInvitedBy")
 }
 
 // ─────────────────────────────────────────
@@ -529,6 +534,8 @@ model Event {
   // index in the invitation_design migration. Read it through
   // invitationDesignRepository.findActiveByEventId, never as a list.
   invitationDesigns       InvitationDesign[]
+  // Team Members batch — which EVENT_ADMINs this event is assigned to.
+  assignments             EventAssignment[]
 }
 
 // ─────────────────────────────────────────
@@ -1475,4 +1482,74 @@ model PaystackWebhookEvent {
   receivedAt DateTime @default(now())
 
   @@index([eventType, receivedAt])
+}
+
+// ─────────────────────────────────────────
+//  TEAM MEMBERS — event assignments and team invitations
+//
+//  EventAssignment is the assignment lock for events
+//  (shared/utils/assignment-lock.util.ts): an EVENT_ADMIN with NO rows
+//  here sees every event in their tenant; one with ANY rows sees only
+//  those events. TENANT_ADMIN is never locked (a promotion to it clears
+//  the user's rows — team.service.ts). tenantId is the user's and the
+//  event's tenant, checked equal when a row is written, so a row can
+//  never join two tenants.
+//
+//  A membership join row, like VendorSpaceUser: removing an assignment
+//  deletes the row rather than archiving it (see STEERING's soft-delete
+//  exceptions). A row pointing at an archived event is kept and still
+//  counts as an assignment, so archiving a member's last event never
+//  widens their access.
+// ─────────────────────────────────────────
+
+model EventAssignment {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  eventId   String
+  createdAt DateTime @default(now())
+  createdBy String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  event  Event  @relation(fields: [eventId], references: [id])
+
+  @@unique([userId, eventId])
+  @@index([eventId])
+}
+
+// An invitation for one email address to join a tenant with a role (and,
+// for an EVENT_ADMIN, optional event assignments, applied on acceptance).
+// Only the SHA-256 hash of the token is stored, exactly like DeviceToken:
+// the raw value exists only in the emailed link. Resending mints a new
+// token (the old link stops working) and a new 7-day expiry. Single use:
+// acceptedAt is set in the same transaction that creates the User.
+// Revoking sets revokedAt; nothing is deleted.
+//
+// At most one OPEN invite (not accepted, not revoked) per tenant and
+// email, enforced by a partial unique index in the team_members
+// migration, since Prisma can't express one.
+model TeamInvite {
+  id              String       @id @default(cuid())
+  tenantId        String
+  // Lowercased and trimmed (shared/utils/email.util.ts's normalizeEmail).
+  email           String
+  role            PlatformRole
+  // Event ids to assign on acceptance (EVENT_ADMIN only; empty = every
+  // event). Re-checked on acceptance: an event archived since is dropped.
+  eventIds        String[]
+  tokenHash       String       @unique
+  expiresAt       DateTime
+  lastSentAt      DateTime
+  acceptedAt      DateTime?
+  acceptedUserId  String?
+  revokedAt       DateTime?
+  invitedByUserId String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  invitedBy User   @relation("TeamInviteInvitedBy", fields: [invitedByUserId], references: [id])
+
+  @@index([tenantId, email])
 }

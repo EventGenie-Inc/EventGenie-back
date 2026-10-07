@@ -157,7 +157,8 @@ describe('sms off — the guest import template', () => {
     vi.stubEnv('FEATURES_DISABLED', '');
     const { buffer } = await guestService.getImportTemplate(event.id, 'TENANT_ADMIN', tenant.id);
     const { noteText, contacts } = await readTemplate(buffer);
-    expect(noteText).toContain('Enter one email OR one phone number (E.164, e.g. +27821234567) per guest — not both.');
+    expect(noteText).toContain('Enter one email OR one phone number (e.g. +27 82 123 4567) per guest — not both.');
+    expect(noteText).not.toContain('E.164');
     expect(contacts).toEqual(['john.smith@example.com', '+27821234567', '+27831234567']);
   }, 60000);
 });

@@ -37,14 +37,16 @@ router.get('/event/:eventId', async (req: Request, res: Response, next: NextFunc
 
 router.get('/invite/:inviteId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const purchases = await ticketPurchaseService.getAll(req.params['inviteId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const purchases = await ticketPurchaseService.getAll(req.params['inviteId'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: purchases });
   } catch (err) { next(err); }
 });
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const purchase = await ticketPurchaseService.getById(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const purchase = await ticketPurchaseService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: purchase });
   } catch (err) { next(err); }
 });

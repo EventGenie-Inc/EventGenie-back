@@ -237,6 +237,7 @@ async function main() {
   const { default: prisma } = await import('../src/shared/prisma/prisma.client.js');
   const { firebaseAdmin } = await import('../src/shared/firebase/firebase.admin.js');
   const { getAuth } = await import('firebase-admin/auth');
+  const { normalizeEmail } = await import('../src/shared/utils/email.util.js');
 
   const auth = getAuth(firebaseAdmin);
 
@@ -288,7 +289,8 @@ async function main() {
       const t = TENANTS[key];
       const seedValues = {
         name: t.name,
-        email: t.email,
+        // Stored lowercase and trimmed, like every email (shared/utils/email.util.ts).
+        email: normalizeEmail(t.email),
         subscriptionTier: t.subscriptionTier,
         subscriptionStatus: 'ACTIVE' as const,
       };

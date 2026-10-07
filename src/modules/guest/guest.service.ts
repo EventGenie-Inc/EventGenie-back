@@ -3,7 +3,7 @@ import { type CreateGuestDto, type UpdateGuestDto } from './guest.types.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import prisma from '../../shared/prisma/prisma.client.js';
-import { eventService } from '../event/event.service.js';
+import { eventService, resolveEventScope } from '../event/event.service.js';
 import { eventDayRepository } from '../event-day/event-day.repository.js';
 import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import {
@@ -45,18 +45,24 @@ export const guestService = {
   // by-id/tenant-wide operations), mirroring event-day.service.ts and
   // user.service.ts respectively.
 
-  getAll: (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+  getAll: async (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     if (requestingRole === 'SUPER_ADMIN') return guestRepository.findAll(undefined, includeArchived);
     // A non-SUPER_ADMIN with no tenantId should never exist — fail closed
     // with an empty list rather than an unscoped, every-tenant query. See
     // tenant-scope.util.ts.
     if (isTenantScopeEmptyForList(requestingRole, tenantId)) return Promise.resolve([]);
-    return guestRepository.findAll(tenantId ?? undefined, includeArchived);
+    // The event scope (tenant + assignment lock): a locked EVENT_ADMIN sees
+    // only their assigned events' guests.
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    return guestRepository.findAll(scope.tenantId, includeArchived, scope.eventIds);
   },
 
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const scope = resolveTenantScope(requestingRole, tenantId, 'Guest not found');
-    const guest = await guestRepository.findById(id, includeArchived, scope);
+    // Tenant first, with this record's own 404 wording; then the event scope
+    // adds the assignment lock (a guest of an unassigned event is a 404 too).
+    resolveTenantScope(requestingRole, tenantId, 'Guest not found');
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const guest = await guestRepository.findById(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!guest) throw new HttpError(404, 'Guest not found');
     return guest;

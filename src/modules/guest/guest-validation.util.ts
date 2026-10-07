@@ -1,14 +1,15 @@
 import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { normalizeEmail, isValidEmail } from '../../shared/utils/email.util.js';
 
 const DEFAULT_COUNTRY: CountryCode = 'ZA';
 
-export const normalizeEmail = (raw: string): string => raw.trim().toLowerCase();
-
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Moved to shared/utils/email.util.ts (users and team invites use it too);
+// re-exported so the guest call sites keep importing it from here.
+export { normalizeEmail, isValidEmail };
 
 export const assertValidEmail = (raw: string): void => {
-  if (!EMAIL_PATTERN.test(raw)) {
+  if (!isValidEmail(raw)) {
     throw new HttpError(400, `'${raw}' is not a valid email address`);
   }
 };
@@ -35,6 +36,9 @@ export const CONTACT_ERROR_CODES = {
   PHONE_INVALID: 'CONTACT_PHONE_INVALID',
   PHONE_NOT_INTERNATIONAL: 'CONTACT_PHONE_NOT_INTERNATIONAL',
   LAST_REMOVED: 'CONTACT_LAST_REMOVED',
+  // RSVP submit with sms off: a guest who has an email removing it (or
+  // swapping it for a phone alone). rsvp.service.ts's own, like LAST_REMOVED.
+  EMAIL_REQUIRED: 'GUEST_EMAIL_REQUIRED',
 } as const;
 
 // The frontend phone rule's own words for a number written with a country
@@ -74,8 +78,6 @@ export const isInternationalPhoneNumber = (raw: string): boolean => {
   const trimmed = raw.trim();
   return trimmed.startsWith('+') && parsePhoneNumberFromString(trimmed)?.isValid() === true;
 };
-
-export const isValidEmail = (raw: string): boolean => EMAIL_PATTERN.test(raw);
 
 // Product rule: a guest holds exactly one contact method at
 // creation/update time — the second field is filled in later, at RSVP
@@ -147,7 +149,9 @@ export const findDuplicateContact = (
   candidate: { email: string | null; phoneNumber: string | null }
 ): { guestId: string } | null => {
   for (const contact of existing) {
-    if (candidate.email && contact.email && contact.email === candidate.email) {
+    // Compared in normal form, not as stored: a row the lowercase_emails
+    // migration had to skip (a collision) still matches its other casing.
+    if (candidate.email && contact.email && normalizeEmail(contact.email) === normalizeEmail(candidate.email)) {
       return { guestId: contact.guestId };
     }
     if (candidate.phoneNumber && contact.phoneNumber && contact.phoneNumber === candidate.phoneNumber) {

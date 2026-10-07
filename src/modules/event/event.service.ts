@@ -17,6 +17,8 @@ import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/util
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from './public-events-availability.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { eventAssignmentLock, eventIdsFilter } from '../event-assignment/event-assignment-lock.util.js';
+import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -58,19 +60,59 @@ const assertEventName = (name: unknown): void => {
   }
 };
 
-const tenantScopeFor = (requestingRole: PlatformRole, tenantId: string | null): string | undefined =>
-  resolveTenantScope(requestingRole, tenantId, 'Event not found');
+// ─────────────────────────────────────────
+//  THE EVENT SCOPE — who may see which events, decided here and only here
+//
+//  Two layers, in order:
+//  1. Tenant (resolveTenantScope): SUPER_ADMIN unscoped; everyone else
+//     confined to their own tenant, failing closed without one.
+//  2. The assignment lock (event-assignment-lock.util.ts): a locked
+//     EVENT_ADMIN (one with any EventAssignment rows) is further confined
+//     to their assigned events. Their user id comes from the request viewer
+//     (request-viewer.context.ts), so no caller has to pass it.
+//
+//  Every by-id lookup (getById, getScoped, getScopedWithPass) and the list
+//  (getAll) resolves its scope here, and every event sub-resource (days,
+//  program, guests, invites, RSVP fields, check-in, Memory Hub, Event Pass,
+//  tickets, invitation design, uploads) gates on one of those lookups, so
+//  an unassigned event is the same 404 as another tenant's everywhere.
+//  /api/guests/:id, which reaches a guest without an event in its URL, uses
+//  resolveEventScope directly (guest.service.ts). Do not build an event
+//  `where` anywhere else.
+// ─────────────────────────────────────────
+export interface EventScope {
+  tenantId: string | undefined;
+  // Present only for a locked caller: the event must be one of these.
+  eventIds: string[] | undefined;
+}
+
+export const resolveEventScope = async (requestingRole: PlatformRole, tenantId: string | null): Promise<EventScope> => {
+  const scopedTenantId = resolveTenantScope(requestingRole, tenantId, 'Event not found');
+  const lock = await eventAssignmentLock.resolveForRequest(requestingRole);
+  return { tenantId: scopedTenantId, eventIds: eventIdsFilter(lock) };
+};
+
+// A locked member who creates an event is assigned to it (in the create
+// transaction), or they couldn't open what they just made. "Locked" is read
+// from the rows themselves: only an EVENT_ADMIN can hold assignments
+// (team.service.ts refuses them for any other role and clears them on a
+// promotion), so any rows at all means a locked EVENT_ADMIN. An unlocked
+// creator stays unlocked: assigning them would narrow them to one event.
+// Shared with the wizard's materialize (event-draft.service.ts).
+export const isCreatorLocked = async (userId: string): Promise<boolean> =>
+  (await eventAssignmentRepository.countForUser(userId)) > 0;
 
 export const eventService = {
 
   // Both list and detail flow through the SAME withEffectiveStatus
   // presenter, so they can never disagree about a given event's
   // status — there is no separate code path either could drift from.
+  //
+  // A locked EVENT_ADMIN's list holds only their assigned events.
   getAll: async (requestingRole: PlatformRole, tenantId: string | null) => {
     if (isTenantScopeEmptyForList(requestingRole, tenantId)) return [];
-    const events = requestingRole === 'SUPER_ADMIN'
-      ? await eventRepository.findAll()
-      : await eventRepository.findAll(tenantId ?? undefined);
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const events = await eventRepository.findAll(scope.tenantId, false, scope.eventIds);
     return events.map(withEffectiveStatus);
   },
 
@@ -85,7 +127,8 @@ export const eventService = {
   // response (update/publish/cancel/reactivate), and getDetail. Every other
   // caller wants getScoped or getScopedWithPass below.
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventRepository.findById(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const event = await eventRepository.findById(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -105,7 +148,8 @@ export const eventService = {
   // getScopedWithPass; one that needs the other relations, or returns the
   // event to a client, stays on getById.
   getScoped: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventRepository.findScoped(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const event = await eventRepository.findScoped(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -114,7 +158,8 @@ export const eventService = {
   // getScoped plus the Event Pass — three queries. What every tier check
   // needs (EntitlementDerivableEvent = tenantId + eventPass + eventDays).
   getScopedWithPass: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventRepository.findScopedWithPass(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const event = await eventRepository.findScopedWithPass(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -173,7 +218,7 @@ export const eventService = {
     if (data.ticketing === 'PAID') {
       await assertTenantReadyToSellTickets(tenantId);
     }
-    return eventRepository.create(tenantId, userId, data);
+    return eventRepository.create(tenantId, userId, data, await isCreatorLocked(userId));
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {

@@ -4,6 +4,7 @@ import { type Request, type Response, type NextFunction } from 'express';
 import { firebaseAdmin } from '../firebase/firebase.admin.js';
 import { prisma } from '../prisma/prisma.client.js';
 import { type SessionTokenPayload } from '../../modules/auth/auth.types.js';
+import { runAsRequestViewer } from '../context/request-viewer.context.js';
 
 // ─────────────────────────────────────────
 //  Extend Express Request to carry the
@@ -169,7 +170,9 @@ export const authenticate = async (
       tenantId: user.tenantId,
     };
 
-    next();
+    // The rest of this request runs as this viewer (request-viewer.context.ts):
+    // the assignment lock reads the user id from here.
+    runAsRequestViewer({ userId: user.id, role: user.role, tenantId: user.tenantId }, () => next());
   } catch (error) {
     // Firebase Admin errors carry the reason in `.code` (e.g. 'auth/id-token-expired'),
     // not in `.message` — the human-readable message never contains these strings.

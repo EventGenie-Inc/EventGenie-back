@@ -448,3 +448,59 @@ export const publicRegistrationEventLimiter = rateLimit({
     message: 'Registration for this event is receiving a high volume of requests right now. Please try again in a moment.',
   },
 });
+
+// ─────────────────────────────────────────
+//  RATE LIMITERS — TEAM INVITATIONS (Team Members batch)
+//
+//  Creating or resending an invite sends an email to an address the admin
+//  typed, so it's the same inbox-spamming risk as request-otp: keyed by the
+//  signed-in admin's id, 20 per hour covers onboarding a whole team in one
+//  sitting while bounding a script.
+//
+//  Lookup and accept are public (the invitee has no account yet) and
+//  carry a credential, the invite token, so they get the two-limiter shape
+//  the device-token exchange uses: per token (its SHA-256 hash, never the
+//  raw value, as a key — see deviceLimiterKey), 20 requests / 15 minutes,
+//  which a person opening the link a few times and accepting once never
+//  approaches; and per IP, FAILED requests only (skipSuccessfulRequests),
+//  30 / 15 minutes, the backstop against guessing tokens, generous enough
+//  for an office on one shared IP joining at once.
+// ─────────────────────────────────────────
+export const teamInviteSendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many invitations sent. Please wait a while and try again.',
+  },
+});
+
+export const teamInviteTokenKey = (rawToken: string): string => `team-invite:${hashToken(rawToken)}`;
+
+export const teamInviteTokenLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => teamInviteTokenKey(String(req.body?.token ?? 'unknown')),
+  message: {
+    status: 'error',
+    message: 'Too many attempts with this invitation. Please wait a few minutes and try again.',
+  },
+});
+
+export const teamInviteIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
+import { bindRequestViewer } from '../../shared/context/request-viewer.context.js';
 import { guestService } from './guest.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
@@ -54,14 +55,20 @@ router.get('/export', async (req: Request, res: Response, next: NextFunction) =>
 });
 
 router.post('/import', (req: Request, res: Response, next: NextFunction) => {
-  upload.single('file')(req, res, (err: unknown) => {
+  // Bound to the request viewer (request-viewer.context.ts): multer calls
+  // back from a stream event, and Node doesn't guarantee the async context
+  // the assignment lock reads the signed-in user from survives that. It did
+  // survive in the Team Members batch's tests (the import test still passed
+  // unbound), so this is insurance, not a proven fix: if the context were
+  // lost, every EVENT_ADMIN's import would fail closed with a 404.
+  upload.single('file')(req, res, bindRequestViewer((err: unknown) => {
     if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
       next(new HttpError(413, `File exceeds the maximum upload size of ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)}MB`));
       return;
     }
     if (err) { next(err); return; }
     next();
-  });
+  }));
 }, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;

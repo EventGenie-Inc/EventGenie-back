@@ -18,6 +18,9 @@ import {
   type SessionTokenPayload,
 } from './auth.types.js';
 import { sendEmail } from '../../shared/messaging/email.engine.js';
+import { normalizeEmail } from '../../shared/utils/email.util.js';
+import { verifyOr401 } from '../../shared/firebase/firebase-token-error.util.js';
+import { isUniqueViolationOn } from '../../shared/utils/prisma-error.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from './auth-email.util.js';
 import {
   buildPasswordResetLink,
@@ -42,6 +45,16 @@ const generateOtp = (): string =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
 const SESSION_TOKEN_TTL = '15m';
+
+const REGISTER_EMAIL_TAKEN_MESSAGE = 'An account with this email already exists. Please log in.';
+const REGISTER_SLUG_TAKEN_MESSAGE = 'This tenant slug is already taken. Please choose another.';
+// request-otp and verify-otp: the Firebase sign-in behind the code step is
+// no longer valid (it expired while the person read their email, or was
+// revoked). Uncoded, like register's: the frontend's interceptor leaves an
+// uncoded 401 on these two alone (there is no session yet for hardLogout to
+// end), so the code form shows this message as it is.
+export const OTP_TOKEN_INVALID_MESSAGE = 'Your sign-in has expired. Please sign in again to get a new code.';
+export const REGISTER_TOKEN_INVALID_MESSAGE = "Your sign-in has expired or isn't valid. Please sign in again, then finish creating your account.";
 
 const generateSessionToken = (payload: SessionTokenPayload): string => {
   const secret = process.env.JWT_SECRET;
@@ -73,7 +86,10 @@ const verifyFirebaseTokenStrict = async (token: string) =>
 export const authService = {
 
   register: async (firebaseToken: string, data: RegisterDto) => {
-    const decoded = await verifyFirebaseToken(firebaseToken);
+    // A bad or expired token is a 401 the person can act on, not a 500: the
+    // usual case is a sign-up form left open long enough for the token to
+    // expire.
+    const decoded = await verifyOr401(() => verifyFirebaseToken(firebaseToken), REGISTER_TOKEN_INVALID_MESSAGE);
 
     const existingUser = await authRepository.findUserByFirebaseUid(decoded.uid);
     if (existingUser) {
@@ -82,12 +98,17 @@ export const authService = {
 
     const existingTenant = await authRepository.findTenantBySlug(data.tenantSlug);
     if (existingTenant) {
-      throw new HttpError(409, 'This tenant slug is already taken. Please choose another.');
+      throw new HttpError(409, REGISTER_SLUG_TAKEN_MESSAGE);
     }
 
-    const existingEmail = await authRepository.findUserByEmail(decoded.email ?? '');
+    // Stored and compared lowercase and trimmed (shared/utils/email.util.ts).
+    // Firebase already lowercases the address in its tokens; this makes it
+    // a rule here rather than an assumption about Firebase.
+    const email = normalizeEmail(decoded.email ?? '');
+
+    const existingEmail = await authRepository.findUserByEmail(email);
     if (existingEmail) {
-      throw new HttpError(409, 'An account with this email already exists. Please log in.');
+      throw new HttpError(409, REGISTER_EMAIL_TAKEN_MESSAGE);
     }
 
     // Registration always creates tenants on SPARK — Celebrate/Elevate
@@ -99,11 +120,22 @@ export const authService = {
       throw new HttpError(503, 'New registrations are temporarily unavailable. Please try again later.');
     }
 
-    const { user, tenant } = await authRepository.registerTenantAndAdmin(
-      decoded.uid,
-      decoded.email ?? '',
-      data
-    );
+    let registered;
+    try {
+      registered = await authRepository.registerTenantAndAdmin(decoded.uid, email, data);
+    } catch (err) {
+      // Two registrations racing past the checks above: the unique index
+      // stops the second, and it gets the same 409 the check would have
+      // given, never a 500. (Tenant.email is the same address.)
+      if (isUniqueViolationOn(err, 'User', 'email') || isUniqueViolationOn(err, 'Tenant', 'email')) {
+        throw new HttpError(409, REGISTER_EMAIL_TAKEN_MESSAGE);
+      }
+      if (isUniqueViolationOn(err, 'Tenant', 'slug')) {
+        throw new HttpError(409, REGISTER_SLUG_TAKEN_MESSAGE);
+      }
+      throw err;
+    }
+    const { user, tenant } = registered;
 
     return {
       user: {
@@ -123,7 +155,9 @@ export const authService = {
   },
 
   requestOtp: async (firebaseToken: string) => {
-    const decoded = await verifyFirebaseToken(firebaseToken);
+    // A rejected token is a 401 asking them to sign in again (never a 500);
+    // a Firebase outage stays a 500. See OTP_TOKEN_INVALID_MESSAGE.
+    const decoded = await verifyOr401(() => verifyFirebaseToken(firebaseToken), OTP_TOKEN_INVALID_MESSAGE);
 
     const user = await authRepository.findUserByFirebaseUid(decoded.uid);
     if (!user) throw new HttpError(404, 'User not found. Please register first.');
@@ -157,7 +191,7 @@ export const authService = {
   },
 
   verifyOtp: async (firebaseToken: string, data: VerifyOtpDto, userAgent: string | null = null) => {
-    const decoded = await verifyFirebaseToken(firebaseToken);
+    const decoded = await verifyOr401(() => verifyFirebaseToken(firebaseToken), OTP_TOKEN_INVALID_MESSAGE);
 
     const user = await authRepository.findUserByFirebaseUid(decoded.uid);
     if (!user) throw new HttpError(404, 'User not found.');
@@ -362,7 +396,8 @@ export const authService = {
     return { sessionToken, expiresIn: SESSION_TOKEN_TTL };
   },
 
-  forgotPassword: async (email: string) => {
+  forgotPassword: async (rawEmail: string) => {
+    const email = normalizeEmail(typeof rawEmail === 'string' ? rawEmail : '');
     const firebaseUser = await getAuth(firebaseAdmin).getUserByEmail(email).catch(() => null);
     if (!firebaseUser) return FORGOT_PASSWORD_GENERIC_RESPONSE;
 
