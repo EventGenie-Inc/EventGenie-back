@@ -263,6 +263,15 @@ hardcoded on the frontend — `POST /api/memory-hub/guest-view`'s
 enforces (`upload-constants.ts`'s
 `MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`).
 
+Public self-registration has no credential before it succeeds, so it is
+limited three ways: per **email** (5 an hour, keyed by the SHA-256 of the
+normalised address, never the address: a repeat registration re-sends
+that person's link, so this stops anyone flooding an inbox from many
+IPs), per **IP** (30 per 15 minutes, counting successes, since every
+success writes a guest; generous because a company's staff register from
+one office network), and per **event** (30 a minute, a pace guard against
+a script spread across many IPs).
+
 ### Client-supplied Cloudinary assets
 
 **A client-supplied Cloudinary publicId is checked with
@@ -293,7 +302,7 @@ as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
 `image`, `details`, `code`, `button`). The layout turns the same blocks
 into the HTML part and the plain-text part, so the two always match.
 `sendEmail` requires `text`, so no email leaves without a plain-text part.
-Builders: `invite-message.util.ts` (invitation, reminder),
+Builders: `invite-message.util.ts` (invitation, reminder, registration),
 `auth-email.util.ts` (sign-in code, password reset) and
 `user-invite-email.util.ts` (team invitation).
 
@@ -339,7 +348,13 @@ image, each invited day (date and UTC time via `guest-date.util.ts`,
 venue, address; labelled when there are several), and one button, "Open
 your e-velope". The preheader is the event name, plus the date and venue of
 the guest's first invited day. A reminder adds the reply deadline when
-there is one.
+there is one. **The registration email** (public self-registration, see
+"Public events and self-registration") is the same guest email: subject
+"You're registered for <event>", eyebrow "You're registered", the days
+the registrant said they'll attend, the same one button to their own
+invite, and a footer saying they registered themselves. It goes through
+`inviteDispatchService.sendRegistrationEmail`, so its From, Reply-To and
+design image are an invitation's.
 
 **The design image** is shown only for an `UPLOAD` design, rewritten to an
 explicit JPEG (`f_jpg,w_1200,c_limit`, displayed at 600px) with its alt
@@ -508,6 +523,19 @@ a guest removing their email (or swapping it for a phone) is 422
 codes are set by `normalizePhoneToE164` (`guest-validation.util.ts`), so
 organiser guest create and import carry them too, still as 400.
 
+Public self-registration (`POST /api/public-events/:shareToken/register`)
+tells the registration page which state to show:
+`REGISTRATION_EVENT_CANCELLED` (410), `REGISTRATION_CLOSED` (410: the
+closing date or RSVP deadline passed, the event is over or not yet open,
+or no day is open to registration), `REGISTRATION_FULL` (409: the cap, or
+the plan's guest limit, never named to a registrant),
+`REGISTRATION_PARTY_TOO_LARGE` (409, vs FULL: room left, but not for this
+many plus-ones; the form marks the plus-ones) and
+`REGISTRATION_EMAIL_DOMAIN` (422, the email field). A missing email is 422
+`GUEST_EMAIL_REQUIRED`, and a bad phone carries the contact codes, as at
+RSVP. A self-registered guest whose RSVP edit asks for more seats than the
+cap has left gets 409 `REGISTRATION_FULL` too.
+
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
 wrong-user, revoked, **and** expired device tokens — one code, matching
@@ -603,6 +631,8 @@ codebase: a feature is switched off by configuration, **never deleted**.
     update FREE → PAID, the wizard's materialize, and publishing a draft
     saved as paid.
   - `publicEvents` off: no path makes an event `PUBLIC`, the same way.
+    The public view, registration, share links and
+    `/api/events/:eventId/registration-settings` are 404.
   - **Only a change is refused.** Saving an event that is already paid or
     public, re-sending the stored value or leaving it out, succeeds, so
     older events stay editable. Past that check the switched-off value is
@@ -614,7 +644,8 @@ codebase: a feature is switched off by configuration, **never deleted**.
     reminder is a per-guest failure the organiser sees, never a silent
     skip. The guest import template asks for an email for every guest and
     its examples are emails. Nobody ends up reachable only by phone: phone-only is 422 on
-    guest create and update and on public self-registration, phone-only
+    guest create and update (public self-registration needs an email
+    whatever the flag says: the link is emailed), phone-only
     rows are refused and listed on import while the rest imports, and at
     RSVP a guest who has an email can't remove it or swap it for a phone
     (adding a phone beside it is fine; a guest who never had an email can
@@ -904,18 +935,76 @@ Genuinely different workflows, not a toggle:
 invitations. Import, manual add, and send all apply.
 
 **Public** — no organiser-built list. A shareable link is distributed;
-guests self-create by RSVPing. Import, manual add, and send are all
-rejected server-side.
+guests add themselves by registering (below). Import, manual add, and
+send are all rejected server-side.
 
 In the UI, build **two variants**, not one screen with disabled fields.
 Offering an action the backend will always reject reads as broken
 software.
 
+### Public events and self-registration
+
+Behind `publicEvents`. A company shares one link ("register for the
+year-end function here"); each person who registers becomes a guest with
+their own invitation.
+
+- **The link** carries `Event.shareToken` (`GET /api/events/:id/share-link`,
+  `POST .../share-link/regenerate`; a published public event only). An
+  unknown or regenerated token, or one for an event since made private, is
+  a 404.
+- **Settings** (`GET`/`PUT /api/events/:eventId/registration-settings`,
+  organiser only, tenant-scoped and under the assignment lock): allowed
+  email domains (stored lowercase without "@"; an email must be at exactly
+  one of them, so `company.co.za` does not admit `mail.company.co.za`;
+  empty = anyone), a cap, a closing date, the plus-ones each registrant may
+  bring, and which days are open (`EventDay.openForRegistration`, on by
+  default; at least one). The **cap** counts self-registered guests who
+  haven't declined plus their plus-ones, and can't be set above the plan's
+  guest limit (422); registration also stops at that limit itself. The
+  **closing date** defaults to the RSVP deadline and can't be after it
+  (422); registration closes at whichever comes first, because a
+  registrant can only change their answer until the deadline.
+- **The view** (`GET /api/public-events/:shareToken`) is exactly what the
+  registration page shows, as an explicit allowlist: name, host,
+  description, cover, the live days with their venue and whether each is
+  open, and `registration` (`isOpen`, `reason` CANCELLED/CLOSED/FULL with
+  its guest-facing `message`, `closesAt`, `plusOnesAllowed`,
+  `allowedEmailDomains`). Day ids are the only ids in it (the form sends
+  them back as `dayIds`). One rule decides open or not for the view,
+  registration and the organiser's settings: `resolveRegistrationState`
+  (`event-public/registration-rules.util.ts`).
+- **Registering** (`POST /api/public-events/:shareToken/register`: name,
+  email, optional phone, `dayIds` from the open days, default all, and
+  `plusOneNames` up to the allowance). Email is required and normalised
+  before every check. Success creates the guest (`Guest.selfRegisteredAt`
+  set) with an ACCEPTED invite offering every open day and attending the
+  chosen ones, and each plus-one as an accepted Guest+Invite pair, exactly
+  as RSVP creates them; then emails the personal link. **The invite token
+  is never in the response**: only the email can open the invitation, or
+  the domain restriction would mean nothing and a repeat registration
+  would hand over someone else's invitation. Counting and writing happen
+  under a row lock on the event, so two registrations can't both take the
+  last seat or both create one email.
+- **The same email again** creates no guest: that person's own link is
+  emailed again (200, `ALREADY_REGISTERED`), and the response says nothing
+  else about them. A cancelled or finished event refuses before this,
+  and an email outside the domains gets the domain refusal, never this
+  answer; a closing date or a full cap don't stop the re-send. If the
+  organiser archived every invite the guest had, nothing is re-sent or
+  re-created.
+- **Afterwards a registrant is an ordinary guest.** `selfRegisteredAt` is a
+  marker on the guest list, nothing more: they change their answer through
+  `/rsvp` like anyone, and check-in lists them and their plus-ones like
+  anyone. The one difference: an RSVP edit that asks for more seats than
+  the cap has left (adding plus-ones, or accepting after declining) is
+  refused.
+
 ### Guest contact
 
 Exactly **one** of email or phone at creation. Both fields exist on the
 model so the other can be captured at RSVP time. Supplying both is
-rejected.
+rejected. The exception is public self-registration, where the email is
+required and a phone may sit beside it.
 
 Names are nullable — a guest imported by phone supplies their name when
 they RSVP.
@@ -970,10 +1059,10 @@ first day by date. Publishing refuses an event with a day that has no
 venue. Event create and update take no venue at all (an older client
 still sending one is ignored, not refused). The Event's own `location`,
 `address`, `latitude` and `longitude` columns are dropped
-(`20261004090000_drop_event_venue_columns`). `/rsvp/validate`'s and the
-public event view's `event.location`/`address` (and validate's
-coordinates) remain as compatibility keys, filled from the first day's
-venue.
+(`20261004090000_drop_event_venue_columns`). `/rsvp/validate`'s
+`event.location`/`address` and coordinates remain as compatibility keys,
+filled from the first day's venue. The public event view no longer has
+them: no client ever read it, and it shows each day's venue.
 
 ### Event program
 
@@ -1424,8 +1513,14 @@ Every task ends with a written report covering:
 
 Carried deliberately. Do not treat as bugs to fix opportunistically.
 
-- **Guest self-registration on public RSVP is not built.** Public event
-  share links currently resolve to nothing.
+- **The public registration page is not built on the frontend.** The
+  backend is (see "Public events and self-registration"); the frontend's
+  `/register` route, where share links point, is still a placeholder, and
+  there is no organiser screen for the registration settings yet.
+- **Reminders and organiser resends are refused on public events**
+  (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
+  would skip them anyway; a registrant who lost their link registers again
+  with the same email to have it re-sent.
 - **Announcements are not built.** Cancelling an event does not notify
   guests.
 - **Refunds are not built.** Cancelling a paid event will need a refund
@@ -1516,6 +1611,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     another email or by an existing account; resend rotates; revoke), and
     email normalisation (case-insensitive `USER_EMAIL_TAKEN`, the
     database race as 409, and the lowercase migration's collision skips).
+  - **Public events** (`tests/public-events/`): registration creates an
+    accepted guest with their days and plus-ones and emails the link
+    (never returned); allowed domains; the cap with plus-ones (and at
+    RSVP), the plan's limit in guest words; the closing date and the RSVP
+    deadline default; a cancelled event; the same email re-sent, not
+    duplicated; the view's exact keys and no internal values; settings
+    validation, scoping and the assignment lock; per-email and per-IP
+    rate limits.
   - **Feature flags** (`tests/feature-flags/`): an unknown name fails
     startup, `/api/config/features` reflects the env, a switched-off
     feature's routes 404 for a tenant and work for a `SUPER_ADMIN`, the
@@ -1555,9 +1658,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   passes is off. An `Event.timezone` would fix that and would not change how
   stored dates read back.
 - **The venue compatibility keys are kept.** The Event venue columns are
-  dropped (see "Venue"), but `/rsvp/validate`'s and the public event
-  view's `event.location`/`address` (and validate's coordinates), filled
-  from the first day's venue, are still sent. The current frontend reads
+  dropped (see "Venue"), but `/rsvp/validate`'s `event.location`/`address`
+  and coordinates, filled from the first day's venue, are still sent. The current frontend reads
   none of them. Remove them once no deployed client does.
 - **Check-in by QR is not built.** The check-in endpoint already accepts an
   `inviteToken` in place of a `guestId`, so a scanner is a second input, not a

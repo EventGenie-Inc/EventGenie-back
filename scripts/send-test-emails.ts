@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { buildInviteEmail, buildReminderEmail, buildInviteRsvpLink, type InviteEmailInput } from '../src/modules/invite/invite-message.util.js';
+import { buildInviteEmail, buildReminderEmail, buildRegistrationEmail, buildInviteRsvpLink, type InviteEmailInput } from '../src/modules/invite/invite-message.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from '../src/modules/auth/auth-email.util.js';
 import { sendEmail } from '../src/shared/messaging/email.engine.js';
 import { frontendUrl } from '../src/shared/utils/frontend-url.util.js';
@@ -60,6 +60,7 @@ const input: InviteEmailInput = {
 const emails = {
   invite: buildInviteEmail(input),
   reminder: buildReminderEmail(input),
+  registration: buildRegistrationEmail(input),
   otp: buildOtpEmail({ to, username: 'Test', code: '482913', validMinutes: 10 }),
   reset: buildPasswordResetEmail({ to, username: 'Test', resetLink: frontendUrl('/reset-password?test=1') }),
 };

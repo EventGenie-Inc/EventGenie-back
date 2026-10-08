@@ -21,6 +21,8 @@ import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
+import { eventPublicRepository } from '../event-public/event-public.repository.js';
+import { REGISTRATION_ERROR_CODES } from '../event-public/registration-rules.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
@@ -35,10 +37,6 @@ import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 // language a guest should never see. In practice a guest can only ever
 // hold a token for an event that WAS published (invites can't be sent
 // to a draft event — Task 3), so this branch is defensive, not reachable.
-// Exported — event-public.service.ts's registration flow (G2) reuses
-// the COMPLETED/CANCELLED wording verbatim (they read fine for either
-// context, same reasoning as this comment already gave) and overrides
-// DRAFT with its own text, rather than duplicating the two shared strings.
 export const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
   DRAFT: 'This event is not yet open for RSVPs.',
   COMPLETED: 'This event has already taken place.',
@@ -611,6 +609,32 @@ export const rsvpService = {
         const field = invite.event.rsvpFields.find((f) => f.id === response.rsvpFieldId);
         const message = field ? customAnswerProblem(field.fieldType, field.label, response.value) : null;
         if (message) throw new HttpError(422, message);
+      }
+
+      // A self-registered guest on an event with a registration cap can't
+      // take more seats than are left: someone who registered alone and
+      // later adds plus-ones, or who declined and now accepts, counts
+      // against the cap exactly like a new registrant. Checked only when
+      // the answer asks for MORE seats than they hold, so a guest already
+      // over a cap the organiser lowered can still edit or decline.
+      // Counted under the event's row lock, the same lock registration
+      // takes, so the two can't race past the cap together.
+      if (invite.guest.selfRegisteredAt && invite.event.registrationCap !== null) {
+        const seatsHeld = invite.status !== 'DECLINED' ? 1 + invite.guest.plusOnes.length : 0;
+        const seatsWanted = data.attending ? 1 + (data.plusOneNames?.length ?? 0) : 0;
+        if (seatsWanted > seatsHeld) {
+          await eventPublicRepository.lockEvent(tx, invite.eventId);
+          const { registeredSeats } = await eventPublicRepository.countSeats(invite.eventId, tx);
+          if (registeredSeats - seatsHeld + seatsWanted > invite.event.registrationCap) {
+            throw new HttpError(
+              409,
+              seatsWanted > 1
+                ? "This event is full, so there isn't room for your plus-ones. Please remove some and try again."
+                : 'This event is full, so your answer can’t be changed to attending right now.',
+              REGISTRATION_ERROR_CODES.FULL
+            );
+          }
+        }
       }
 
       if (Object.keys(guestUpdateData).length > 0) {

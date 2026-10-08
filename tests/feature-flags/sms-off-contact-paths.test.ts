@@ -66,11 +66,18 @@ describe('sms off — public self-registration', () => {
     return { ...ctx, register };
   };
 
-  it('flag on: phone-only registration is accepted (the control)', async () => {
-    const { register } = await setupPublicEvent();
+  // Registration emails the registrant their personal link, so it needs an
+  // email whatever the sms flag says (Public events batch); only the wording
+  // differs. Was "phone-only is accepted" while registration returned the
+  // link in its response.
+  it('flag on: phone-only registration is still 422, with wording that doesn\'t mention text messages', async () => {
+    const { event, register } = await setupPublicEvent();
     vi.stubEnv('FEATURES_DISABLED', '');
     const res = await register({ phoneNumber: phone() });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('GUEST_EMAIL_REQUIRED');
+    expect(res.body.message).toBe('Enter your email address: your personal link is sent there.');
+    expect(await prisma.guest.count({ where: { eventId: event.id } })).toBe(0);
   }, 60000);
 
   it('flag off: phone-only is 422 and creates no guest; email registration is accepted', async () => {

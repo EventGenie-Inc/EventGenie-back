@@ -1,5 +1,6 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { hashToken } from '../../modules/auth/device-token.util.js';
+import { normalizeEmail } from '../utils/email.util.js';
 import { MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN } from '../../modules/upload/upload-constants.js';
 
 // ─────────────────────────────────────────
@@ -397,14 +398,24 @@ export const publicEventViewLimiter = rateLimit({
 //  database row (Guest + Invite) on success — closer in risk to
 //  uploadSignatureLimiter (every response is a grant) than to a read
 //  endpoint, except here there's no session at all gating who can call
-//  it. Two limiters stacked, keyed differently, because they guard
+//  it. Three limiters stacked, keyed differently, because they guard
 //  against different abuse shapes:
 //
 //  Per IP — a genuine registrant submits once, maybe a couple of times
-//  if they mistype their contact and get a validation error back. 8 per
-//  15 minutes comfortably covers that (plus a shared-IP household
-//  registering a couple of people back to back) while making a
-//  single-machine script mass-registering fake guests impractical.
+//  if they mistype something. 30 per 15 minutes, raised from 8 for the
+//  case this feature exists for: a company sharing one registration link
+//  with its staff, many of whom register from the same office network
+//  (one public IP), and South African mobile networks putting unrelated
+//  people behind one carrier-grade NAT IP (see the per-credential note
+//  on memoryHubGuestUploadLimiter). Still makes a single-machine script
+//  mass-registering fake guests slow.
+//
+//  Per email (the SHA-256 hash of the NORMALISED email in the body,
+//  never the address itself, so the limiter's store holds no contact
+//  details) — 5 per hour. Registering an address that's already on the
+//  list re-sends that person's link, so without this anyone could flood
+//  someone's inbox from many IPs. A request with no usable email falls
+//  back to its IP (it is refused before anything is sent anyway).
 //
 //  Per event (keyed by the shareToken in the URL, not the IP) — a
 //  script distributed across many IPs would sail through the IP limiter
@@ -427,13 +438,32 @@ export const publicEventViewLimiter = rateLimit({
 // ─────────────────────────────────────────
 export const publicRegistrationIpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 8,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
   message: {
     status: 'error',
     message: 'Too many registration attempts. Please wait a few minutes and try again.',
+  },
+});
+
+export const publicRegistrationEmailKey = (body: unknown, ip: string | undefined): string => {
+  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['email'] : undefined;
+  return typeof raw === 'string' && raw.trim()
+    ? `register-email:${hashToken(normalizeEmail(raw))}`
+    : `register-email-ip:${ipKeyGenerator(ip ?? 'unknown')}`;
+};
+
+export const publicRegistrationEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => publicRegistrationEmailKey(req.body, req.ip),
+  message: {
+    status: 'error',
+    message: 'Too many registration attempts for this email address. Please wait a while and try again.',
   },
 });
 

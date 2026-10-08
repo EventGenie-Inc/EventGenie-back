@@ -1,284 +1,333 @@
-import { type EventStatus, type DeliveryMethod } from '@prisma/client';
 import { eventRepository } from '../event/event.repository.js';
-import { guestRepository } from '../guest/guest.repository.js';
-import { inviteRepository } from '../invite/invite.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
-import { RSVP_BLOCK_MESSAGES } from '../rsvp/rsvp.service.js';
-import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { inviteDispatchService } from '../invite/invite-dispatch.service.js';
+import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import {
   normalizeEmail,
-  assertValidEmail,
+  isValidEmail,
   normalizePhoneToE164,
-  assertExactlyOneContact,
-  assertGuestHasEmail,
-  findDuplicateContact,
+  CONTACT_ERROR_CODES,
+  GUEST_EMAIL_REQUIRED_MESSAGE,
 } from '../guest/guest-validation.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
-import { type RegisterGuestDto } from './event-public.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
+import { eventPublicRepository, type RegistrationSeats } from './event-public.repository.js';
+import {
+  REGISTRATION_ERROR_CODES,
+  resolveRegistrationState,
+  assertRegistrationOpen,
+  assertPartyFits,
+  isEmailInAllowedDomains,
+  describeAllowedDomains,
+  type RegistrationRulesEvent,
+} from './registration-rules.util.js';
+import {
+  type RegisterGuestDto,
+  type PublicEventView,
+  type RegistrationResult,
+  type RegistrationState,
+} from './event-public.types.js';
 
 // Fully public/unauthenticated surface — a registrant holds nothing but
 // the event's shareToken, never platform credentials. Same audience and
 // same rule as rsvp.service.ts's own header comment: every message here
 // is written for a reader with no account and no context, and never
-// leaks tenant names, internal ids, or anything about other guests.
+// leaks tenant names, internal ids, guest counts, plan language, or
+// anything about other guests.
+//
+// A registrant's personal link (their invite token) is only ever EMAILED,
+// never returned: a response carrying it would let anyone register — or
+// "register again" — as someone else's address and walk into their
+// invitation, and would make the organiser's email-domain restriction
+// mean nothing.
 
-// Guest-originated writes have no platform userId — Invite.createdBy/
-// updatedBy is a plain String (not an FK), same convention as
-// rsvp.service.ts's GUEST_ACTOR and memory-hub.service.ts's equivalent.
-const GUEST_ACTOR = 'guest-self-registration';
+type ShareTokenEvent = NonNullable<Awaited<ReturnType<typeof eventRepository.findByShareToken>>>;
 
-// Shares COMPLETED/CANCELLED wording with rsvp.service.ts verbatim (see
-// that file's export comment) — DRAFT gets its own text since a
-// registrant has never RSVP'd yet, "not yet open for RSVPs" reads oddly
-// before they've done anything. In practice DRAFT is defensive-only: a
-// shareToken is only ever minted for an already-PUBLISHED event
-// (event.service.ts's getShareLink), and publish has no reversal.
-const REGISTRATION_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
-  ...RSVP_BLOCK_MESSAGES,
-  DRAFT: 'This event is not yet open for registration.',
+const INVALID_LINK_MESSAGE = "This registration link isn't valid. Check the link, or ask the organiser for a new one.";
+const MALFORMED_MESSAGE = 'Something went wrong with your registration. Please refresh the page and try again.';
+const MAX_NAME_LENGTH = 100;
+const NO_SEATS: RegistrationSeats = { primaryGuests: 0, registeredSeats: 0 };
+
+// A PRIVATE event's link is as dead as an unknown one: its old share token
+// must not keep showing the event to whoever still has the link.
+const findPublicEvent = async (shareToken: string): Promise<ShareTokenEvent> => {
+  const event = await eventRepository.findByShareToken(shareToken);
+  if (!event || event.visibility !== 'PUBLIC') throw new HttpError(404, INVALID_LINK_MESSAGE);
+  return event;
 };
 
-const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const rulesFor = (event: ShareTokenEvent): RegistrationRulesEvent => ({
+  status: resolveEffectiveStatus(event),
+  rsvpDeadline: event.rsvpDeadline,
+  registrationClosesAt: event.registrationClosesAt,
+  registrationCap: event.registrationCap,
+  eventDays: event.eventDays,
+});
 
-// Guards against a malformed/tampered body reaching a normalizer with
-// the wrong type — same reasoning as rsvp.service.ts's
-// assertValidSubmission: every field here arrives straight from an
-// unauthenticated POST body.
-const assertValidRegistration = (data: RegisterGuestDto): void => {
-  if (!isNonEmptyString(data.firstName)) {
-    throw new HttpError(400, "Please tell us your name to register.");
-  }
-  if (data.surname !== undefined && typeof data.surname !== 'string') {
-    throw new HttpError(400, 'Something went wrong with your registration. Please refresh the page and try again.');
-  }
-  if (data.email !== undefined && typeof data.email !== 'string') {
-    throw new HttpError(400, 'Something went wrong with your registration. Please refresh the page and try again.');
-  }
-  if (data.phoneNumber !== undefined && typeof data.phoneNumber !== 'string') {
-    throw new HttpError(400, 'Something went wrong with your registration. Please refresh the page and try again.');
+// Deliberate, hand-picked projection — exactly what the registration page
+// shows (PublicEventView). Built as an explicit allowlist, never a spread
+// of the Prisma row, so a column added to Event or EventDay later can't
+// start leaking by itself (STEERING "Guest-facing responses").
+const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicEventView => ({
+  name: event.name,
+  hostName: event.hostName,
+  description: event.description,
+  coverImageUrl: event.coverImageUrl,
+  // Live days, earliest first (eventRepository.findByShareToken).
+  days: event.eventDays.map((d) => ({
+    id: d.id,
+    label: d.label,
+    date: d.date,
+    startTime: d.startTime,
+    endTime: d.endTime,
+    location: d.location,
+    address: d.address,
+    openForRegistration: d.openForRegistration,
+  })),
+  registration: {
+    isOpen: state.isOpen,
+    reason: state.reason,
+    message: state.message,
+    closesAt: state.closesAt,
+    plusOnesAllowed: event.registrationPlusOnesAllowed,
+    allowedEmailDomains: event.registrationEmailDomains,
+  },
+});
+
+// ─────────────────────────────────────────
+//  THE REGISTRATION FORM, checked
+//
+//  Every field arrives from an unauthenticated POST body. A wrong TYPE is
+//  a tampered or broken request (400, one generic message); a blank or
+//  unacceptable VALUE is something the registrant can fix (422, saying
+//  what to fix). Emails are normalised before every check that follows.
+// ─────────────────────────────────────────
+interface ParsedRegistration {
+  firstName: string;
+  surname: string | null;
+  email: string;
+  phoneNumber: string | null;
+  dayIds: string[] | null;
+  plusOneNames: string[];
+}
+
+const isBlank = (value: unknown): boolean =>
+  value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+
+const optionalText = (value: unknown): string | null => {
+  if (isBlank(value)) return null;
+  if (typeof value !== 'string') throw new HttpError(400, MALFORMED_MESSAGE);
+  return value.trim();
+};
+
+const assertNameLength = (name: string, what: string): void => {
+  if (name.length > MAX_NAME_LENGTH) {
+    throw new HttpError(422, `${what} can be at most ${MAX_NAME_LENGTH} characters.`);
   }
 };
 
-// Shared by the public view AND register — an event whose visibility
-// was flipped back to PRIVATE after a link was already shared, or that
-// has since gone CANCELLED/COMPLETED/past its deadline, must refuse the
-// same way regardless of which endpoint is asked.
-const assertEventAcceptsRegistration = (event: {
-  visibility: string;
-  rsvpDeadline: Date | null;
-  status: EventStatus;
-  eventDays: { date: Date; endTime: Date | null }[];
-}): void => {
-  if (event.visibility !== 'PUBLIC') {
-    throw new HttpError(400, "This is a private event — it doesn't use public registration. Contact the organiser for an invitation.");
+// normalizePhoneToE164's 400s carry the contact codes; a registrant typing
+// a wrong number is a value to fix (422), as at RSVP.
+const parsePhone = (value: unknown): string | null => {
+  const raw = optionalText(value);
+  if (raw === null) return null;
+  try {
+    return normalizePhoneToE164(raw);
+  } catch (err) {
+    if (err instanceof HttpError && err.statusCode === 400) throw new HttpError(422, err.message, err.code);
+    throw err;
   }
+};
 
-  const effectiveStatus = resolveEffectiveStatus(event);
-  if (effectiveStatus !== 'PUBLISHED') {
-    throw new HttpError(403, REGISTRATION_BLOCK_MESSAGES[effectiveStatus] ?? 'This event is not currently accepting registrations.');
-  }
+const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
+  if (typeof data !== 'object' || data === null) throw new HttpError(400, MALFORMED_MESSAGE);
 
-  // Independent of Event.status, same as rsvp.service.ts's own deadline
-  // gate — an event can be perfectly PUBLISHED and still have
-  // registration closed.
-  if (event.rsvpDeadline && event.rsvpDeadline < new Date()) {
+  const firstName = optionalText(data.firstName);
+  if (firstName === null) throw new HttpError(422, 'Please tell us your name to register.');
+  assertNameLength(firstName, 'Your first name');
+  const surname = optionalText(data.surname);
+  if (surname !== null) assertNameLength(surname, 'Your surname');
+
+  // Required whatever the sms flag says: the personal link is emailed.
+  const rawEmail = optionalText(data.email);
+  if (rawEmail === null) {
     throw new HttpError(
-      410,
-      `Registration for this event closed on ${formatGuestDate(event.rsvpDeadline)}. Contact the organiser if you still need to attend.`
+      422,
+      isFeatureEnabled('sms') ? 'Enter your email address: your personal link is sent there.' : GUEST_EMAIL_REQUIRED_MESSAGE,
+      CONTACT_ERROR_CODES.EMAIL_REQUIRED
     );
   }
+  const email = normalizeEmail(rawEmail);
+  if (!isValidEmail(email)) throw new HttpError(422, `'${rawEmail}' is not a valid email address`);
+
+  const phoneNumber = parsePhone(data.phoneNumber);
+
+  let dayIds: string[] | null = null;
+  if (data.dayIds !== undefined && data.dayIds !== null) {
+    if (!Array.isArray(data.dayIds) || !data.dayIds.every((id) => typeof id === 'string' && id.length > 0)) {
+      throw new HttpError(400, MALFORMED_MESSAGE);
+    }
+    if (data.dayIds.length === 0) throw new HttpError(422, 'Choose at least one day you’ll attend.');
+    dayIds = [...new Set(data.dayIds as string[])];
+  }
+
+  let plusOneNames: string[] = [];
+  if (data.plusOneNames !== undefined && data.plusOneNames !== null) {
+    if (!Array.isArray(data.plusOneNames) || !data.plusOneNames.every((n) => typeof n === 'string')) {
+      throw new HttpError(400, MALFORMED_MESSAGE);
+    }
+    plusOneNames = (data.plusOneNames as string[]).map((n) => n.trim());
+    if (plusOneNames.some((n) => n.length === 0)) throw new HttpError(422, "Please give each plus-one's name.");
+    plusOneNames.forEach((n) => assertNameLength(n, "A plus-one's name"));
+  }
+
+  return { firstName, surname, email, phoneNumber, dayIds, plusOneNames };
 };
 
-// Deliberate, hand-picked projection — a guest sees only what belongs
-// on an invitation. No tenant id, no Event.id, no createdBy/updatedBy,
-// no coverImagePublicId, no capacity, no raw status. Built as an
-// explicit allowlist (not a spread of the Prisma row) so this can never
-// silently start leaking a field added to Event later — the same
-// mistake already flagged on rsvp.service.ts's validate().
-const toPublicView = (event: {
-  name: string;
-  description: string | null;
-  hostName: string | null;
-  coverImageUrl: string | null;
-  rsvpDeadline: Date | null;
-  visibility: string;
-  status: EventStatus;
-  eventDays: {
-    id: string;
-    label: string;
-    date: Date;
-    startTime: Date | null;
-    endTime: Date | null;
-    location: string | null;
-    address: string | null;
-    latitude: number | null;
-    longitude: number | null;
-  }[];
-}) => {
-  // Days arrive ordered by date (eventRepository.findByShareToken).
-  const firstDay = event.eventDays[0];
-  const effectiveStatus = resolveEffectiveStatus(event);
-  const isPublic = event.visibility === 'PUBLIC';
-  const isPublished = effectiveStatus === 'PUBLISHED';
-  const isCancelled = effectiveStatus === 'CANCELLED';
-  const isCompleted = effectiveStatus === 'COMPLETED';
-  const isRsvpDeadlinePassed = !!event.rsvpDeadline && event.rsvpDeadline < new Date();
+// Someone already on this event's guest list registering with the same
+// email: no second guest. Their own link is emailed to that address again
+// (only its owner can read it), and the response says so and nothing
+// else — not their name, their answer or their days.
+const resendExistingInvitation = async (
+  event: ShareTokenEvent,
+  guest: { id: string; selfRegisteredAt: Date | null },
+  email: string
+): Promise<RegistrationResult> => {
+  const invite = await eventPublicRepository.findLatestInviteForGuest(guest.id);
+  if (!invite) {
+    // Every invite of theirs was archived by the organiser: that's the
+    // organiser's decision to undo, not this page's. No new invite.
+    return {
+      outcome: 'ALREADY_REGISTERED',
+      emailSent: false,
+      message: "You're already registered for this event. Contact the organiser for your link.",
+    };
+  }
 
+  const attending = invite.attendances.map((a) => a.eventDay);
+  const days = attending.length > 0 ? attending : invite.inviteEventDay.map((d) => d.eventDay);
+  const { ok } = await inviteDispatchService.sendRegistrationEmail(
+    event,
+    invite,
+    email,
+    days,
+    guest.selfRegisteredAt ? 'REGISTRATION' : 'INVITE'
+  );
   return {
-    name: event.name,
-    description: event.description,
-    hostName: event.hostName,
-    // DEPRECATED — rollout compatibility only, same as rsvp.service.ts's
-    // validate(): the FIRST day's venue, not the retired Event columns.
-    // Each day below carries its own venue.
-    location: firstDay?.location ?? null,
-    address: firstDay?.address ?? null,
-    coverImageUrl: event.coverImageUrl,
-    rsvpDeadline: event.rsvpDeadline,
-    eventDays: event.eventDays.map((d) => ({
-      id: d.id,
-      label: d.label,
-      date: d.date,
-      startTime: d.startTime,
-      endTime: d.endTime,
-      location: d.location,
-      address: d.address,
-      latitude: d.latitude,
-      longitude: d.longitude,
-    })),
-    isPublic,
-    isPublished,
-    isCancelled,
-    isCompleted,
-    isRsvpDeadlinePassed,
-    // What the frontend actually gates the registration form on — folds
-    // every rule above into one flag so it doesn't have to re-derive the
-    // combination itself.
-    canRegister: isPublic && isPublished && !isRsvpDeadlinePassed,
+    outcome: 'ALREADY_REGISTERED',
+    emailSent: ok,
+    message: ok
+      ? `You're already registered for this event. We've sent your personal link to ${email} again.`
+      : "You're already registered for this event, but we couldn't send your email just now. Please try again in a few minutes.",
   };
 };
 
 export const eventPublicService = {
   // Public, unauthenticated read — resolved purely from the shareToken.
-  // Returns flags rather than throwing on a closed/cancelled/expired
-  // event (same "return flags, don't throw" design as rsvp.service.ts's
-  // validate() and memory-hub.service.ts's viewByShareToken), so the
-  // page can still show the event's name/cover/description with a
-  // "registration closed" state instead of a bare error. An
-  // unrecognised/revoked token is the one case with nothing to hang
-  // flags off, so it's the one genuine throw.
-  viewByShareToken: async (shareToken: string) => {
-    const event = await eventRepository.findByShareToken(shareToken);
-    if (!event) {
-      throw new HttpError(404, "This registration link isn't valid. Check the link, or ask the organiser for a new one.");
-    }
-    return toPublicView(event);
+  // A closed, full or cancelled event still shows (name, cover, days) with
+  // the reason registration isn't open, rather than a bare error. An
+  // unknown, revoked or private-event token is the one 404.
+  viewByShareToken: async (shareToken: string): Promise<PublicEventView> => {
+    const event = await findPublicEvent(shareToken);
+    const [seats, { limit }] = await Promise.all([eventPublicRepository.countSeats(event.id), resolveGuestLimit(event)]);
+    return toPublicView(event, resolveRegistrationState(rulesFor(event), seats, limit));
   },
 
-  // Creates a Guest + Invite (via the SAME batched transaction
-  // guest.service.ts's organiser create() already uses — see
-  // guest.repository.ts's createWithInvite) and hands back the invite's
-  // token so the registrant can be redirected straight into the
-  // existing /rsvp?token=... flow. Collects only name + one contact;
-  // everything else (day selection, custom fields, plus-ones, tickets)
-  // is answered on that RSVP form, not here.
-  register: async (shareToken: string, data: RegisterGuestDto) => {
-    assertValidRegistration(data);
+  // Creates the guest and their accepted invite (their days, their
+  // plus-ones) and emails them their personal link, so they can change
+  // their answer later like any guest.
+  register: async (shareToken: string, data: RegisterGuestDto): Promise<RegistrationResult> => {
+    const input = parseRegistration(data);
+    const event = await findPublicEvent(shareToken);
+    const rules = rulesFor(event);
 
-    const event = await eventRepository.findByShareToken(shareToken);
-    if (!event) {
-      throw new HttpError(404, "This registration link isn't valid. Check the link, or ask the organiser for a new one.");
+    // Without counts: refuses only on the event's state and dates.
+    const preliminary = resolveRegistrationState(rules, NO_SEATS, null);
+    // Cancelled, over, or not yet open: nothing to register for, and no
+    // link worth re-sending either.
+    if (rules.status !== 'PUBLISHED') assertRegistrationOpen(preliminary);
+
+    // Before the duplicate check, so the response never says whether an
+    // address outside the allowed domains is on the guest list.
+    if (!isEmailInAllowedDomains(input.email, event.registrationEmailDomains)) {
+      throw new HttpError(
+        422,
+        `Register with ${describeAllowedDomains(event.registrationEmailDomains)}.`,
+        REGISTRATION_ERROR_CODES.EMAIL_DOMAIN
+      );
     }
 
-    assertEventAcceptsRegistration(event);
+    // An existing registrant isn't a new registration: the closing date
+    // and the cap don't stop their link being re-sent.
+    const existing = await eventPublicRepository.findGuestByEmail(event.id, input.email);
+    if (existing) return resendExistingInvitation(event, existing, input.email);
 
-    const email = data.email ? normalizeEmail(data.email) : null;
-    if (email) assertValidEmail(email);
-    const phoneNumber = data.phoneNumber ? normalizePhoneToE164(data.phoneNumber) : null;
-    assertExactlyOneContact(email, phoneNumber);
-    // With sms off nothing can reach a phone-only registrant later (a
-    // reminder, a resend), so registration needs an email.
-    if (!isFeatureEnabled('sms')) assertGuestHasEmail(email);
+    assertRegistrationOpen(preliminary); // closing date, no open day
 
-    // Same duplicate rule as guest.service.ts's create() (STEERING: same
-    // email/phone on the same event is a duplicate) — one query, reused
-    // logic (findDuplicateContact), not a re-implementation.
-    const existingContacts = await guestRepository.findContactsForEvent(event.id);
-    const duplicate = findDuplicateContact(
-      existingContacts.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber })),
-      { email, phoneNumber }
-    );
+    const openDayIds = event.eventDays.filter((d) => d.openForRegistration).map((d) => d.id);
+    const attendingDayIds = input.dayIds ?? openDayIds;
+    if (attendingDayIds.some((id) => !openDayIds.includes(id))) {
+      throw new HttpError(422, "One of the days you chose isn't open for registration. Please refresh the page and choose again.");
+    }
 
-    if (duplicate) {
-      // Same person, registering again after losing their link — hand
-      // back their existing RSVP's token rather than stranding them
-      // with no way back in. See the batch report for the full
-      // tradeoff this accepts: anyone who knows this contact detail
-      // could now fetch the same token via this endpoint too. Accepted
-      // for a PUBLIC event specifically — the share link itself is
-      // already circulating in an uncontrolled channel (a WhatsApp
-      // group), and there is today no "resend my link" alternative that
-      // would deliver the token only to its owner instead.
-      const existingInvite = await inviteRepository.findLatestActiveByGuestId(duplicate.guestId);
-      if (existingInvite) {
-        return { token: existingInvite.token, isExistingRegistration: true };
+    const allowance = event.registrationPlusOnesAllowed;
+    if (input.plusOneNames.length > allowance) {
+      throw new HttpError(
+        422,
+        allowance === 0
+          ? "Plus-ones can't be added when registering for this event."
+          : `You can bring up to ${allowance} plus-one${allowance === 1 ? '' : 's'}. Please remove some and try again.`
+      );
+    }
+
+    const { limit } = await resolveGuestLimit(event);
+
+    // Counted and written under the event's row lock, so two registrations
+    // can't both take the last seat or both create the same email.
+    const created = await eventPublicRepository.withEventRegistrationLock(event.id, async (tx) => {
+      const raced = await eventPublicRepository.findGuestByEmail(event.id, input.email, tx);
+      if (raced) return { duplicate: raced } as const;
+
+      const seats = await eventPublicRepository.countSeats(event.id, tx);
+      assertRegistrationOpen(resolveRegistrationState(rules, seats, limit));
+      assertPartyFits(event, seats, limit, 1 + input.plusOneNames.length);
+
+      // Same duplicate rule, and the same words, as a guest changing their
+      // number at RSVP.
+      if (input.phoneNumber && (await eventPublicRepository.findGuestIdByPhone(event.id, input.phoneNumber, tx))) {
+        throw new HttpError(409, 'Another guest on this event is already using this phone number.');
       }
 
-      // Edge case: the guest is still active but every one of their
-      // invites has been individually archived (invite.service.ts's
-      // archive does NOT cascade to the guest) — mint a fresh Invite for
-      // the SAME existing guest rather than fail, or create a second
-      // Guest row for a contact that already exists on this event.
-      const freshInvite = await inviteRepository.create(event.id, GUEST_ACTOR, {
-        guestId: duplicate.guestId,
-        deliveryMethod: (email ? 'EMAIL' : 'SMS') as DeliveryMethod,
-        invitedDayIds: [],
-      });
-      return { token: freshInvite.token, isExistingRegistration: true };
-    }
-
-    // maxGuestsPerEvent is a billing constraint the ORGANISER opted
-    // into — a guest who did nothing wrong must never see plan/tier
-    // language. assertGuestsCreatable's own message names the tier and
-    // talks about upgrading; caught and replaced here with wording
-    // aimed at the actual reader.
-    try {
-      await assertGuestsCreatable(event, 1);
-    } catch (err) {
-      if (err instanceof HttpError && err.statusCode === 403) {
-        throw new HttpError(403, 'Registration for this event is currently full. Please contact the organiser directly if you still want to attend.');
-      }
-      throw err;
-    }
-
-    // Venue capacity (Event.capacity) is deliberately NOT checked here —
-    // it's informational everywhere else in the codebase (see
-    // event-capacity.util.ts: "never blocks anything") and this follows
-    // that existing precedent rather than inventing a new blocking rule
-    // for public events specifically. See the batch report.
-
-    // InviteEventDay is the set of days THIS invite offers as choices —
-    // rsvp.service.ts's submit() rejects any attendingDayId outside it
-    // ("isn't part of this invitation"). An organiser-built guest list
-    // curates this per guest (e.g. some guests invited to the reception
-    // only, not the full weekend); a public self-registrant has no such
-    // curation step, so they're offered every currently published day —
-    // NOT an empty set, which would make the RSVP form's own day
-    // selection unusable for them. (Confirmed by testing: [] here made
-    // submit() reject every day as "not part of this invitation".)
-    // plusOnesAllowed: 0 — no organiser step exists to set an allowance
-    // for a self-registered guest; see the batch report.
-    const { invite } = await guestRepository.createWithInvite(event.id, GUEST_ACTOR, {
-      firstName: data.firstName.trim(),
-      surname: isNonEmptyString(data.surname) ? data.surname.trim() : null,
-      email,
-      phoneNumber,
-      eventDayIds: event.eventDays.map((d) => d.id),
-      plusOnesAllowed: 0,
+      const registrant = await eventPublicRepository.createRegistrant(
+        tx,
+        event.id,
+        {
+          firstName: input.firstName,
+          surname: input.surname,
+          email: input.email,
+          phoneNumber: input.phoneNumber,
+          plusOnesAllowed: allowance,
+          invitedDayIds: openDayIds,
+          attendingDayIds,
+          plusOneNames: input.plusOneNames,
+        },
+        new Date()
+      );
+      return { registrant } as const;
     });
 
-    return { token: invite.token, isExistingRegistration: false };
+    if ('duplicate' in created) return resendExistingInvitation(event, created.duplicate, input.email);
+
+    // After the commit: a failed send leaves a real registration, and
+    // registering again with the same email re-sends it.
+    const days = event.eventDays.filter((d) => attendingDayIds.includes(d.id));
+    const { ok } = await inviteDispatchService.sendRegistrationEmail(event, created.registrant.invite, input.email, days, 'REGISTRATION');
+    return {
+      outcome: 'REGISTERED',
+      emailSent: ok,
+      message: ok
+        ? `You're registered! We've sent your personal link to ${input.email}.`
+        : "You're registered, but we couldn't send your email just now. Register again with the same email address in a few minutes and we'll re-send it.",
+    };
   },
 };

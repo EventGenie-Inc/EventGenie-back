@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   buildInviteEmail,
   buildReminderEmail,
+  buildRegistrationEmail,
   type InviteEmailInput,
 } from '../../src/modules/invite/invite-message.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from '../../src/modules/auth/auth-email.util.js';
@@ -85,6 +86,7 @@ const upload = (over: Partial<NonNullable<InviteEmailInput['design']>> = {}): In
 const allEmails = (over: Partial<InviteEmailInput> = {}) => ({
   invite: buildInviteEmail(input(over)),
   reminder: buildReminderEmail(input(over)),
+  registration: buildRegistrationEmail(input(over)),
   otp: buildOtpEmail({ to: 'a@example.test', username: 'Levy', code: '482913', validMinutes: 10 }),
   reset: buildPasswordResetEmail({ to: 'a@example.test', username: 'Levy', resetLink: RESET_LINK }),
 });
@@ -104,12 +106,15 @@ describe('every email uses the shared layout', () => {
     const emails = allEmails();
     expect(emails.invite.html).toContain(`${BASE}${EMAIL_SEAL_PATH}`);
     expect(emails.reminder.html).toContain(`${BASE}${EMAIL_SEAL_PATH}`);
+    expect(emails.registration.html).toContain(`${BASE}${EMAIL_SEAL_PATH}`);
     expect(emails.otp.html).not.toContain(EMAIL_SEAL_PATH);
     expect(emails.reset.html).not.toContain(EMAIL_SEAL_PATH);
 
     const buttons = (html: string) => html.split('<a ').length - 1;
     expect(buttons(emails.invite.html)).toBe(1);
     expect(buttons(emails.reminder.html)).toBe(1);
+    expect(buttons(emails.registration.html)).toBe(1);
+    expect(emails.registration.html).toContain('>Open your e-velope</a>');
     expect(buttons(emails.reset.html)).toBe(1);
     expect(buttons(emails.otp.html)).toBe(0);
     expect(emails.invite.html).toContain('>Open your e-velope</a>');
@@ -122,6 +127,7 @@ describe('subjects and senders', () => {
     const emails = allEmails();
     expect(emails.invite.subject).toBe("You've received an e-velope from Thandi & Sipho");
     expect(emails.reminder.subject).toBe('Your e-velope from Thandi & Sipho is waiting');
+    expect(emails.registration.subject).toBe("You're registered for Garden Party");
     expect(emails.otp.subject).toBe('Your e-velope sign-in code');
     expect(emails.reset.subject).toBe('Reset your e-velope password');
     for (const email of Object.values(emails)) expect(email.subject).not.toMatch(/rsvp/i);
@@ -156,6 +162,14 @@ describe('subjects and senders', () => {
     // Exactly one address: the display name holds no angle brackets of its own.
     expect(email.from.match(/</g)).toHaveLength(1);
     expect(email.subject).toBe(`You've received an e-velope from Evil "Co" Bcc: victim@example.test boss@bank.example txt\\`);
+  });
+
+  it('a hostile event name cannot break out of the registration subject', () => {
+    const email = buildRegistrationEmail(input({ eventName: 'Party\r\nBcc: victim@example.test\u2028x' }));
+    expect(email.subject).not.toMatch(/[\r\n\u2028]/);
+    expect(email.subject).toBe("You're registered for Party Bcc: victim@example.test x");
+    expect(email.from).toBe(formatFromHeader('Thandi & Sipho via e-velope', INVITE_ADDRESS));
+    expect(email.replyTo).toBe('organiser@example.test');
   });
 
   it('a very long host name is capped', () => {
@@ -205,7 +219,7 @@ describe('every user value is escaped', () => {
       ],
       design: upload({ altText: HOSTILE }),
     });
-    for (const email of [buildInviteEmail(hostile), buildReminderEmail(hostile)]) {
+    for (const email of [buildInviteEmail(hostile), buildReminderEmail(hostile), buildRegistrationEmail(hostile)]) {
       expect(email.html).not.toContain('<script>');
       expect(email.html).not.toContain(HOSTILE);
       // title, host line, footer reason, preheader, day label, venue, address, alt
@@ -245,6 +259,18 @@ describe('every email has a plain-text part with the same content', () => {
     expect(invite.text).toContain("You've received an e-velope");
     expect(reminder.text).toContain('Your e-velope is still waiting for a reply');
     expect(reminder.text).toContain('Replies close on 20 May 2027.');
+  });
+
+  it('registration', () => {
+    const { registration } = allEmails({ design: upload() });
+    expect(registration.text).toContain("You're registered");
+    expect(registration.text).toContain('Garden Party');
+    expect(registration.text).toContain('5 June 2027 · 14:00 – 16:30');
+    expect(registration.text).toContain('St George’s Cathedral');
+    expect(registration.text).toContain(`Open your e-velope:\n${RSVP_LINK}`);
+    expect(registration.text).toContain('Open your e-velope any time to change your answer.');
+    expect(registration.text).toContain('You received this because you registered for Garden Party on e-velope.');
+    expect(registration.text).not.toMatch(/<[a-z]/i);
   });
 
   it('sign-in code and password reset', () => {

@@ -140,7 +140,13 @@ const hostLine = (input: InviteEmailInput): EmailBlock[] =>
 const guestReason = (input: InviteEmailInput): string =>
   `You received this because ${senderFor(input)} added you to their guest list.`;
 
-const buildGuestEmail = (input: InviteEmailInput, subject: string, eyebrow: string, extra: EmailBlock[]): BuiltEmail => {
+const buildGuestEmail = (
+  input: InviteEmailInput,
+  subject: string,
+  eyebrow: string,
+  extra: EmailBlock[],
+  reason: string = guestReason(input)
+): BuiltEmail => {
   const blocks: EmailBlock[] = [
     { kind: 'seal' },
     { kind: 'eyebrow', text: eyebrow },
@@ -151,7 +157,7 @@ const buildGuestEmail = (input: InviteEmailInput, subject: string, eyebrow: stri
     { kind: 'details', groups: dayGroups(input.days, input.fallbackDateLabel) },
     { kind: 'button', label: 'Open your e-velope', href: input.rsvpLink },
   ];
-  const { html, text } = renderEmail({ subject, preheader: preheaderFor(input), blocks, reason: guestReason(input) });
+  const { html, text } = renderEmail({ subject, preheader: preheaderFor(input), blocks, reason });
   return {
     from: buildInviteFromHeader(input),
     ...(input.organiserEmail ? { replyTo: input.organiserEmail } : {}),
@@ -179,6 +185,28 @@ export const buildReminderEmail = (input: InviteEmailInput): BuiltEmail =>
         : 'Open it whenever you’re ready to let your host know whether you can make it.',
     },
   ]);
+
+// ─────────────────────────────────────────
+//  PUBLIC SELF-REGISTRATION
+//
+//  Sent when someone registers through a public event's link, and again
+//  when the same email registers a second time (event-public.service.ts):
+//  the same guest email as an invitation (seal, event, the days they said
+//  they'll attend, one "Open your e-velope" button to their own invite),
+//  so they can change their answer later like any guest. Same From and
+//  Reply-To as an invitation; the footer says they registered themselves.
+// ─────────────────────────────────────────
+export const buildRegistrationEmailSubject = (input: InviteEmailInput): string =>
+  `You're registered for ${sanitizeHeaderText(input.eventName)}`;
+
+export const buildRegistrationEmail = (input: InviteEmailInput): BuiltEmail =>
+  buildGuestEmail(
+    input,
+    buildRegistrationEmailSubject(input),
+    "You're registered",
+    [{ kind: 'paragraph', text: 'Open your e-velope any time to change your answer.' }],
+    `You received this because you registered for ${sanitizeHeaderText(input.eventName)} on e-velope.`
+  );
 
 export const buildInviteSmsBody = (eventName: string, rsvpLink: string): string =>
   `You're invited to ${eventName}! RSVP: ${rsvpLink}`;

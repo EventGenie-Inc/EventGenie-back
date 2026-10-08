@@ -13,6 +13,7 @@ import {
   buildInviteSmsBody,
   buildReminderEmail,
   buildReminderSmsBody,
+  buildRegistrationEmail,
   type InviteDayLine,
   type InviteEmailDesign,
 } from './invite-message.util.js';
@@ -258,6 +259,45 @@ const dispatchOne = async (
 };
 
 export const inviteDispatchService = {
+  // Public self-registration (event-public.service.ts): emails one guest
+  // their own link, right after they register or when the same email
+  // registers again. Not a bulk send and never an SMS (registration
+  // requires an email), but built from the same dispatch context as an
+  // invitation, so the From, Reply-To and design image are the same.
+  // `kind` is REGISTRATION for a guest who registered themselves, INVITE
+  // for one the organiser added (their own email is the invitation).
+  // Marks the invite delivered the first time a send succeeds, exactly as
+  // dispatchOne does, so the guest counts as invited everywhere else.
+  sendRegistrationEmail: async (
+    event: Parameters<typeof buildDispatchContext>[0],
+    invite: { id: string; token: string; deliveredAt: Date | null },
+    to: string,
+    days: InviteDayLine[],
+    kind: 'REGISTRATION' | 'INVITE'
+  ): Promise<{ ok: boolean }> => {
+    const ctx = await buildDispatchContext(event);
+    const input = {
+      eventName: ctx.eventName,
+      hostName: ctx.hostName,
+      days: [...days].sort((a, b) => a.date.getTime() - b.date.getTime()),
+      fallbackDateLabel: ctx.dateLabel,
+      rsvpDeadline: ctx.rsvpDeadline,
+      rsvpLink: buildInviteRsvpLink(invite.token),
+      design: ctx.design,
+      organiserEmail: ctx.organiserEmail,
+    };
+    const email = kind === 'REGISTRATION' ? buildRegistrationEmail(input) : buildInviteEmail(input);
+    const result = await sendEmail({ to, ...email });
+    if (!result.ok) {
+      // The provider's reason stays in the log; the registrant is told
+      // only that the email didn't go.
+      console.error(`[registration] email to invite ${invite.id} failed: ${result.reason ?? 'unknown reason'}`);
+      return { ok: false };
+    }
+    if (!invite.deliveredAt) await inviteRepository.markDelivered(invite.id);
+    return { ok: true };
+  },
+
   sendBulk: async (
     eventId: string,
     guestIds: string[],

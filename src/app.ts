@@ -32,6 +32,7 @@ import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import eventPublicRouter from './modules/event-public/event-public.router.js';
+import registrationSettingsRouter from './modules/registration-settings/registration-settings.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
 import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
@@ -139,6 +140,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/events/:eventId/program/:programId/items
 //  /api/events/:eventId/tickets
 //  /api/events/:eventId/memory-hub
+//  /api/events/:eventId/registration-settings (public events' registration rules)
 //  /api/event-drafts/current
 //  /api/invites/:inviteId/rsvp-responses
 //  /api/ticket-purchases
@@ -176,6 +178,7 @@ app.use('/api/events/:eventId/program/:programId/items', programItemRouter);
 app.use('/api/events/:eventId/tickets', ticketRouter);
 app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
+app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
