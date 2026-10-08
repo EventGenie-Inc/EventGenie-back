@@ -452,25 +452,25 @@ model DeviceToken {
 // ─────────────────────────────────────────
 
 model Event {
-  id                 String          @id @default(cuid())
-  tenantId           String
-  createdByUserId    String
-  name               String
-  description        String?
+  id                          String          @id @default(cuid())
+  tenantId                    String
+  createdByUserId             String
+  name                        String
+  description                 String?
   // No venue here: it belongs to each EventDay (see EventDay.location).
   // The four retired Event venue columns were dropped in
   // 20261004090000_drop_event_venue_columns.
-  coverImageUrl      String?
+  coverImageUrl               String?
   // Cloudinary's asset id for coverImageUrl, when the cover was uploaded
   // through the signed-upload flow (src/modules/upload/) rather than
   // pasted as an external link. Nullable independently of coverImageUrl —
   // an externally-hosted URL has no Cloudinary asset to reference. Needed
   // to delete the old asset on replace and for any future
   // transform/thumbnail generation (see Batch B report).
-  coverImagePublicId String?
-  status             EventStatus     @default(DRAFT)
-  visibility         EventVisibility @default(PRIVATE)
-  ticketing          EventTicketing  @default(FREE)
+  coverImagePublicId          String?
+  status                      EventStatus     @default(DRAFT)
+  visibility                  EventVisibility @default(PRIVATE)
+  ticketing                   EventTicketing  @default(FREE)
   // Organiser-typed display name shown to guests on the invitation/RSVP
   // page and the public Memory Hub gallery — e.g. "The Mashilo Family" or
   // "Sarah & Tom". Deliberately separate from Tenant.name (a workspace
@@ -479,16 +479,16 @@ model Event {
   // shows no host line, since falling back to the tenant name would leak
   // exactly what rsvp.service.ts's guest-facing responses are designed to
   // withhold.
-  hostName           String?
+  hostName                    String?
   // Independent of Event.status — closes guest self-service RSVP only.
   // Organiser guest management is unaffected. Never folded into
   // resolveEffectiveStatus (event-status.util.ts).
-  rsvpDeadline       DateTime?
+  rsvpDeadline                DateTime?
   // The VENUE's physical capacity — informational, not a billing limit.
   // Distinct from SubscriptionTierConfig.maxGuestsPerEvent; never conflate
   // the two. Warns via acceptedGuestCount on the event detail response,
   // never blocks guest creation/import.
-  capacity           Int?
+  capacity                    Int?
   // Public self-registration credential — same shape and purpose as
   // MemoryHub.shareToken (32 random bytes hex, unguessable, unique).
   // Null until the organiser first requests a share link for a PUBLIC
@@ -497,7 +497,20 @@ model Event {
   // the previous link rather than just hiding it. Never the raw Event.id
   // — a cuid in a public URL lets anyone enumerate events by guessing,
   // and could never be revoked once shared somewhere it shouldn't be.
-  shareToken         String?         @unique
+  shareToken                  String?         @unique
+  // Public self-registration settings (event-public.service.ts), set by the
+  // organiser through /api/events/:eventId/registration-settings. Dormant
+  // on a PRIVATE event. Empty domains = anyone may register; otherwise the
+  // registrant's normalised email must be at exactly one of them
+  // (lowercase, no "@"). The cap counts self-registered guests who haven't
+  // declined, plus their plus-ones; null = no cap of its own (the plan's
+  // guest limit still applies). registrationClosesAt null = closes at the
+  // RSVP deadline, and registration never stays open past that deadline.
+  registrationEmailDomains    String[]        @default([])
+  registrationCap             Int?
+  registrationClosesAt        DateTime?
+  // Copied onto each registrant's Guest.plusOnesAllowed at registration.
+  registrationPlusOnesAllowed Int             @default(0)
   // Organiser-chosen, informational only — Ticketing & Payments batch.
   // With split-at-source, a ticket's money lands directly in the
   // organiser's bank account (possibly weeks before a refund request
@@ -505,12 +518,12 @@ model Event {
   // back. This is display copy shown to the guest BEFORE they pay (see
   // rsvp.service.ts's validate() projection), never something this
   // backend acts on. Meaningless (and unused) while ticketing is FREE.
-  ticketsRefundable  Boolean         @default(false)
-  isArchived         Boolean         @default(false)
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  createdBy          String
-  updatedBy          String
+  ticketsRefundable           Boolean         @default(false)
+  isArchived                  Boolean         @default(false)
+  createdAt                   DateTime        @default(now())
+  updatedAt                   DateTime        @updatedAt
+  createdBy                   String
+  updatedBy                   String
 
   tenant                  Tenant                   @relation(fields: [tenantId], references: [id])
   createdByUser           User                     @relation(fields: [createdByUserId], references: [id])
@@ -550,12 +563,12 @@ model Event {
 // ─────────────────────────────────────────
 
 model EventDay {
-  id         String    @id @default(cuid())
-  eventId    String
-  label      String
-  date       DateTime  @db.Date
-  startTime  DateTime?
-  endTime    DateTime?
+  id                  String    @id @default(cuid())
+  eventId             String
+  label               String
+  date                DateTime  @db.Date
+  startTime           DateTime?
+  endTime             DateTime?
   // The venue — per day, not per event: a wedding's ceremony and its
   // brunch the next morning are often in different places. Nullable here
   // only so the migration that introduced them could backfill old events
@@ -563,15 +576,19 @@ model EventDay {
   // every create and update (event-day-venue.util.ts). Coordinates come
   // from the frontend's HERE lookup, both-or-neither, exactly as the
   // event-level ones did.
-  location   String?
-  address    String?
-  latitude   Decimal?  @db.Decimal(10, 7)
-  longitude  Decimal?  @db.Decimal(10, 7)
-  isArchived Boolean   @default(false)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  createdBy  String
-  updatedBy  String
+  location            String?
+  address             String?
+  latitude            Decimal?  @db.Decimal(10, 7)
+  longitude           Decimal?  @db.Decimal(10, 7)
+  // Public self-registration: a registrant can choose (and is invited to)
+  // only the days marked open. On by default, so a single-day event and
+  // every day added later need nothing set.
+  openForRegistration Boolean   @default(true)
+  isArchived          Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  createdBy           String
+  updatedBy           String
 
   event          Event            @relation(fields: [eventId], references: [id])
   inviteEventDay InviteEventDay[]
@@ -597,22 +614,27 @@ model EventDay {
 // ─────────────────────────────────────────
 
 model Guest {
-  id              String   @id @default(cuid())
-  eventId         String
-  firstName       String?
-  surname         String?
-  email           String?
-  phoneNumber     String?
-  isArchived      Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String    @id @default(cuid())
+  eventId          String
+  firstName        String?
+  surname          String?
+  email            String?
+  phoneNumber      String?
+  isArchived       Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
   // A plus-one is a Guest row with hostGuestId set — declared during the
   // host's RSVP, never contacted directly (see assertExactlyOneContact,
   // which relaxes the email/phone requirement exactly for this case).
-  hostGuestId     String?
+  hostGuestId      String?
   // Per-guest allowance, not per-event: a couple gets a plus-one, a single
   // friend gets none. Enforced server-side in rsvp.service.ts's submit().
-  plusOnesAllowed Int      @default(0)
+  plusOnesAllowed  Int       @default(0)
+  // Set when the guest added themselves through a public event's
+  // registration link (event-public.service.ts); null for everyone an
+  // organiser added, and for plus-ones. A marker only: reminders, check-in
+  // and the guest list treat a self-registered guest like any other.
+  selfRegisteredAt DateTime?
 
   event       Event        @relation(fields: [eventId], references: [id])
   invites     Invite[]
