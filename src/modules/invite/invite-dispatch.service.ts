@@ -14,6 +14,7 @@ import {
   buildReminderEmail,
   buildReminderSmsBody,
   buildRegistrationEmail,
+  buildRegistrationResendEmail,
   type InviteDayLine,
   type InviteEmailDesign,
 } from './invite-message.util.js';
@@ -273,7 +274,8 @@ export const inviteDispatchService = {
     invite: { id: string; token: string; deliveredAt: Date | null },
     to: string,
     days: InviteDayLine[],
-    kind: 'REGISTRATION' | 'INVITE'
+    // REGISTRATION_RESEND: the same email registering again.
+    kind: 'REGISTRATION' | 'REGISTRATION_RESEND' | 'INVITE'
   ): Promise<{ ok: boolean }> => {
     const ctx = await buildDispatchContext(event);
     const input = {
@@ -286,7 +288,10 @@ export const inviteDispatchService = {
       design: ctx.design,
       organiserEmail: ctx.organiserEmail,
     };
-    const email = kind === 'REGISTRATION' ? buildRegistrationEmail(input) : buildInviteEmail(input);
+    const email =
+      kind === 'REGISTRATION' ? buildRegistrationEmail(input)
+      : kind === 'REGISTRATION_RESEND' ? buildRegistrationResendEmail(input)
+      : buildInviteEmail(input);
     const result = await sendEmail({ to, ...email });
     if (!result.ok) {
       // The provider's reason stays in the log; the registrant is told

@@ -63,18 +63,30 @@ describe('reading and saving', () => {
     const other = await createPublicEvent();
     const put = (body: Record<string, unknown>) => request(app).put(url(ev.eventId)).set(headersFor(ev.organiser)).send(body);
 
-    expect((await put({ allowedEmailDomains: ['not a domain'] })).status).toBe(422);
+    // Each refusal carries a code the settings form places by.
+    const refused = async (body: Record<string, unknown>, code: string) => {
+      const res = await put(body);
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe(code);
+      return res;
+    };
+    await refused({ allowedEmailDomains: ['not a domain'] }, 'REGISTRATION_SETTINGS_DOMAIN_INVALID');
+    await refused(
+      { allowedEmailDomains: Array.from({ length: 21 }, (_, n) => `company${n}.co.za`) },
+      'REGISTRATION_SETTINGS_TOO_MANY_DOMAINS'
+    );
     expect((await put({ allowedEmailDomains: 'company.co.za' })).status).toBe(400);
-    expect((await put({ cap: 0 })).status).toBe(422);
-    expect((await put({ cap: 2.5 })).status).toBe(422);
-    expect((await put({ plusOnesAllowed: -1 })).status).toBe(422);
-    expect((await put({ closesAt: 'soon' })).status).toBe(422);
-    const afterDeadline = await put({ closesAt: '2027-02-21T09:00:00' });
-    expect(afterDeadline.status).toBe(422);
+    await refused({ cap: 0 }, 'REGISTRATION_SETTINGS_CAP_INVALID');
+    await refused({ cap: 2.5 }, 'REGISTRATION_SETTINGS_CAP_INVALID');
+    await refused({ plusOnesAllowed: -1 }, 'REGISTRATION_SETTINGS_PLUS_ONES_INVALID');
+    await refused({ plusOnesAllowed: 21 }, 'REGISTRATION_SETTINGS_PLUS_ONES_INVALID');
+    await refused({ plusOnesAllowed: 2 ** 31 }, 'REGISTRATION_SETTINGS_PLUS_ONES_INVALID');
+    await refused({ closesAt: 'soon' }, 'REGISTRATION_SETTINGS_CLOSES_AT_INVALID');
+    const afterDeadline = await refused({ closesAt: '2027-02-21T09:00:00' }, 'REGISTRATION_SETTINGS_CLOSES_AT_AFTER_DEADLINE');
     expect(afterDeadline.body.message).toMatch(/can't close after the RSVP deadline \(20 February 2027\)/);
-    expect((await put({ openDayIds: [] })).status).toBe(422);
+    await refused({ openDayIds: [] }, 'REGISTRATION_SETTINGS_NO_OPEN_DAYS');
     // Another event's day (another tenant's here) is not part of this event.
-    expect((await put({ openDayIds: [other.dayIds[0]] })).status).toBe(422);
+    await refused({ openDayIds: [other.dayIds[0]] }, 'REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN');
 
     const unchanged = await prisma.event.findUniqueOrThrow({ where: { id: ev.eventId } });
     expect(unchanged).toMatchObject({ registrationEmailDomains: [], registrationCap: null, registrationClosesAt: null, registrationPlusOnesAllowed: 0 });
@@ -96,6 +108,7 @@ describe('reading and saving', () => {
       const over = await put(101);
       expect(over.status).toBe(422);
       expect(over.body.message).toBe('The CELEBRATE plan allows 100 guests per event, so the registration cap can be at most 100.');
+      expect(over.body.code).toBe('REGISTRATION_SETTINGS_CAP_ABOVE_PLAN_LIMIT');
       const ok = await put(100);
       expect(ok.status).toBe(200);
       expect(ok.body.data.planGuestLimit).toBe(100);

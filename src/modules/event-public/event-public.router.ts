@@ -29,8 +29,8 @@ router.get('/:shareToken', publicEventViewLimiter, async (req: Request, res: Res
 // POST /api/public-events/:shareToken/register
 // { firstName, surname?, email, phoneNumber?, dayIds?, plusOneNames? } —
 // creates the guest and their accepted invite and emails them their
-// personal link (never returned here). 201 for a new registration, 200
-// when the email was already registered (their link is re-sent).
+// personal link (never returned here). 201 whether the email was new or
+// already registered (their link is re-sent): the same answer either way.
 // Three limiters stacked (per IP, per email, per event) — see
 // rate-limit.middleware.ts's comment for why each is needed.
 router.post(
@@ -41,7 +41,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await eventPublicService.register(req.params['shareToken'] as string, req.body);
-      res.status(result.outcome === 'REGISTERED' ? 201 : 200).json({ status: 'ok', data: result });
+      res.status(201).json({ status: 'ok', data: result });
     } catch (err) { next(err); }
   }
 );

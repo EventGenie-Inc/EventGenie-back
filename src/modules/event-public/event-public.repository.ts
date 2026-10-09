@@ -94,9 +94,6 @@ export const eventPublicRepository = {
     return rows[0] ?? null;
   },
 
-  findGuestIdByPhone: async (eventId: string, phoneNumber: string, tx: Tx) =>
-    tx.guest.findFirst({ where: { eventId, isArchived: false, phoneNumber }, select: { id: true } }),
-
   // The guest, their accepted invite (with the days it offers and the days
   // they attend), and any plus-ones (each an accepted Guest+Invite pair
   // attending the same days, exactly as rsvp.service.ts's submit() creates

@@ -270,7 +270,25 @@ that person's link, so this stops anyone flooding an inbox from many
 IPs), per **IP** (30 per 15 minutes, counting successes, since every
 success writes a guest; generous because a company's staff register from
 one office network), and per **event** (30 a minute, a pace guard against
-a script spread across many IPs).
+a script spread across many IPs). The per-email limiter's fallback for a
+request with no email is the IP through `ipKeyGenerator`, like every other
+IP key: **every custom `keyGenerator` that reads `req.ip` calls
+`ipKeyGenerator` itself**, inline, so an IPv6 visitor can't step around a
+limit by moving within their /56. express-rate-limit checks each
+keyGenerator's own source for it when the limiter is created and logs
+`ERR_ERL_KEY_GEN_IPV6` otherwise; that warning must never appear at
+startup. Forgot password's per-email limiter (`forgotPasswordEmailKey`, 3
+per 15 minutes) works the same way: the SHA-256 of the normalised email,
+or for a request with no email its IP through `ipKeyGenerator`. A shared
+fallback bucket (it used to be one `'unknown'` key for every email-less
+request) lets one caller refuse everyone else.
+
+**RSVP submit is limited per invite** (`rsvpSubmitInviteLimiter`, 20 an
+hour, every request counted, keyed by the SHA-256 of the invite token).
+It bounds how fast one invite can test addresses through the email-change
+refusal (see "Guest contact"). Per invite and not per IP, for the shared-IP
+reason above; 20 because a guest replies once and edits rarely, and the
+frontend submits once per tap, never on its own.
 
 ### Client-supplied Cloudinary assets
 
@@ -335,7 +353,11 @@ Every email has a hidden preheader. **Every URL is built from
 `FRONTEND_BASE_URL`** (`frontendUrl`, `shared/utils/frontend-url.util.ts`),
 including the logo and seal under `<base>/brand/`. The only other URLs in an
 email are the ones passed in: a Cloudinary design image and Firebase's reset
-link. Never write a domain into an email.
+link. Never write a domain into an email. The same goes for every other
+link the server hands out (share links, payment callbacks):
+`frontendUrl` is the only reader of `process.env.FRONTEND_BASE_URL`, and
+a missing, blank or non-http(s) value stops the app at load
+(`assertFrontendUrlConfigured` in `app.ts`), never an "undefined/…" link.
 
 **Guest emails (invitation, reminder).** From `"<host name> via e-velope"
 <RESEND_INVITE_EMAIL>`, where the host name is `Event.hostName`, falling
@@ -352,9 +374,12 @@ there is one. **The registration email** (public self-registration, see
 "Public events and self-registration") is the same guest email: subject
 "You're registered for <event>", eyebrow "You're registered", the days
 the registrant said they'll attend, the same one button to their own
-invite, and a footer saying they registered themselves. It goes through
-`inviteDispatchService.sendRegistrationEmail`, so its From, Reply-To and
-design image are an invitation's.
+invite, and a footer saying they registered themselves. The same email
+registering again gets **the re-send**: subject "Your link for <event>",
+eyebrow "Here's your link again", a line saying the address was entered
+again and that nothing changed if it wasn't them, the same button. Both
+go through `inviteDispatchService.sendRegistrationEmail`, so their From,
+Reply-To and design image are an invitation's.
 
 **The design image** is shown only for an `UPLOAD` design, rewritten to an
 explicit JPEG (`f_jpg,w_1200,c_limit`, displayed at 600px) with its alt
@@ -519,7 +544,11 @@ format +27 82 123 4567" when written with a country code), a local number
 missing its country code ("'0825551234' is missing a country code, use
 +27825551234"), and a guest removing their only contact. With `sms` off,
 a guest removing their email (or swapping it for a phone) is 422
-`GUEST_EMAIL_REQUIRED`. The two phone
+`GUEST_EMAIL_REQUIRED`. Changing to an email the guest can't have (another
+guest on the event has it) is 422 `CONTACT_EMAIL_UNAVAILABLE`, "That
+email address can't be used for this invitation. Please use another
+one.", one message and code for every cause (see "Guest contact"). A
+phone is never refused for being another guest's. The two phone
 codes are set by `normalizePhoneToE164` (`guest-validation.util.ts`), so
 organiser guest create and import carry them too, still as 400.
 
@@ -531,10 +560,49 @@ or no day is open to registration), `REGISTRATION_FULL` (409: the cap, or
 the plan's guest limit, never named to a registrant),
 `REGISTRATION_PARTY_TOO_LARGE` (409, vs FULL: room left, but not for this
 many plus-ones; the form marks the plus-ones) and
-`REGISTRATION_EMAIL_DOMAIN` (422, the email field). A missing email is 422
+`REGISTRATION_EMAIL_DOMAIN` (422, the email field; also at RSVP submit,
+see "Public events and self-registration"). The rest of the
+form's 422s say which field: `REGISTRATION_TOO_MANY_PLUS_ONES` (more than
+the organiser allows each registrant, vs PARTY_TOO_LARGE),
+`REGISTRATION_DAY_NOT_OPEN`, and `REGISTRATION_FIRST_NAME_TOO_LONG`,
+`REGISTRATION_SURNAME_TOO_LONG`, `REGISTRATION_PLUS_ONE_NAME_TOO_LONG`,
+`REGISTRATION_FIRST_NAME_REQUIRED`, `REGISTRATION_EMAIL_INVALID`,
+`REGISTRATION_NO_DAYS_CHOSEN` (an empty `dayIds`) and
+`REGISTRATION_PLUS_ONE_NAME_REQUIRED`. A missing email is 422
 `GUEST_EMAIL_REQUIRED`, and a bad phone carries the contact codes, as at
-RSVP. A self-registered guest whose RSVP edit asks for more seats than the
-cap has left gets 409 `REGISTRATION_FULL` too.
+RSVP. Only a malformed body (a wrong type) is an uncoded 400. A phone
+another guest already has is never a refusal. A self-registered
+guest whose RSVP edit asks for more seats than the cap has left gets 409
+`REGISTRATION_FULL` too.
+
+Registration settings (`PUT /api/events/:eventId/registration-settings`):
+every 422 carries a code, one per refusal, named for its field
+(`REGISTRATION_SETTINGS_ERROR_CODES`, `registration-settings.service.ts`):
+`REGISTRATION_SETTINGS_DOMAIN_INVALID`,
+`REGISTRATION_SETTINGS_TOO_MANY_DOMAINS`,
+`REGISTRATION_SETTINGS_CAP_INVALID`,
+`REGISTRATION_SETTINGS_CAP_ABOVE_PLAN_LIMIT`,
+`REGISTRATION_SETTINGS_CLOSES_AT_INVALID`,
+`REGISTRATION_SETTINGS_CLOSES_AT_AFTER_DEADLINE`,
+`REGISTRATION_SETTINGS_PLUS_ONES_INVALID`,
+`REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN` and
+`REGISTRATION_SETTINGS_NO_OPEN_DAYS`. A wrong type (400) and a cancelled
+event (409) have none. Plus-ones per registrant is 0 to 20, the guest
+rule below.
+
+The plus-ones allowance (guest create, update and import, and the
+registration settings' per-registrant one) is a whole number from 0 to 20
+(`MAX_PLUS_ONES_ALLOWED`, `guest-validation.util.ts`). Anything else is
+422 `GUEST_PLUS_ONES_INVALID` ("Plus-ones allowed must be a whole number
+from 0 to 20."), a refused row on import, or
+`REGISTRATION_SETTINGS_PLUS_ONES_INVALID` in the settings, never a value
+that reaches the integer column and comes back a 500.
+
+`GUEST_EMAIL_TAKEN` (`PUT /api/guests/:id`, 409, "Another guest on this
+event already has this email address."): an organiser changing a guest's
+email to another guest's on the same event. A plain message, unlike
+RSVP's neutral `CONTACT_EMAIL_UNAVAILABLE`: the organiser can see their
+own guest list, so it tells them nothing new.
 
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
@@ -644,7 +712,10 @@ codebase: a feature is switched off by configuration, **never deleted**.
     reminder is a per-guest failure the organiser sees, never a silent
     skip. The guest import template asks for an email for every guest and
     its examples are emails. Nobody ends up reachable only by phone: phone-only is 422 on
-    guest create and update (public self-registration needs an email
+    guest create, and on an update that changes the contact (an update
+    that leaves the contact alone, a name or the plus-ones, is never
+    refused for it, so a phone-only guest from before the switch stays
+    editable) (public self-registration needs an email
     whatever the flag says: the link is emailed), phone-only
     rows are refused and listed on import while the rest imports, and at
     RSVP a guest who has an email can't remove it or swap it for a phone
@@ -985,32 +1056,83 @@ their own invitation.
   would hand over someone else's invitation. Counting and writing happen
   under a row lock on the event, so two registrations can't both take the
   last seat or both create one email.
-- **The same email again** creates no guest: that person's own link is
-  emailed again (200, `ALREADY_REGISTERED`), and the response says nothing
-  else about them. A cancelled or finished event refuses before this,
-  and an email outside the domains gets the domain refusal, never this
-  answer; a closing date or a full cap don't stop the re-send. If the
-  organiser archived every invite the guest had, nothing is re-sent or
-  re-created.
+- **The answer never says whether an email or a phone is on the event.**
+  Every check runs in the same order for every request, and a registration
+  is answered the same way whoever is on the guest list: 201,
+  `{ outcome: 'REGISTERED', emailSent, message: "Check your email for your
+  e-velope." }`, byte for byte (a failed send: `emailSent: false` and one
+  "couldn't send" message, also the same either way). A phone another
+  guest has is saved like any other (phones aren't unique, see "Guest
+  contact").
+- **The same email again** creates no guest and gets exactly the answer a
+  new registration with the same request would get: the success, or the
+  same refusal (closed, full, no room for the party). Its own link is
+  emailed to that address anyway, as "Here's your link again"
+  (`buildRegistrationResendEmail`); that email is the only place that
+  says they were already registered, and only its owner reads it. A form
+  a new registration would be refused for (a closed day, too many
+  plus-ones) is refused first and sends nothing. A cancelled or finished
+  event refuses everyone and re-sends nothing, and an email outside the
+  domains gets the domain refusal. If the organiser archived every invite
+  the guest had, nothing is re-sent or re-created, and the answer is
+  still the ordinary success. Accepted residuals: timing (a repeat writes
+  nothing, so it answers a few database round trips sooner), and a
+  registrant who lost their link while registration is closed or full
+  sees that refusal, though the link reaches their inbox.
 - **Afterwards a registrant is an ordinary guest.** `selfRegisteredAt` is a
   marker on the guest list, nothing more: they change their answer through
   `/rsvp` like anyone, and check-in lists them and their plus-ones like
-  anyone. The one difference: an RSVP edit that asks for more seats than
+  anyone. The differences: an RSVP edit that asks for more seats than
   the cap has left (adding plus-ones, or accepting after declining) is
-  refused.
+  refused, and **the allowed domains hold at RSVP too**: changing to an
+  email outside them is 422 `REGISTRATION_EMAIL_DOMAIN` with registration's
+  own message (`emailDomainRefusal`, `registration-rules.util.ts`), for any
+  guest on a public event with domains, or a registrant could register at
+  the company address and swap it afterwards. The domains are on the
+  public page, so the refusal reveals nothing. Only a change is checked:
+  an address the guest already had before the domains were set never
+  blocks their reply.
 
 ### Guest contact
 
-Exactly **one** of email or phone at creation. Both fields exist on the
-model so the other can be captured at RSVP time. Supplying both is
-rejected. The exception is public self-registration, where the email is
-required and a phone may sit beside it.
+Exactly **one** of email or phone **at creation** (organiser create and
+import). Both fields exist on the model so the other can be captured at
+RSVP time. Supplying both at creation is rejected. The exception is
+public self-registration, where the email is required and a phone may sit
+beside it. **The rule is for creation only:** `guestService.update`
+checks only the fields it changes. A name or plus-ones change is never
+refused for the contact the guest already has (both, from RSVP; or
+phone-only while `sms` is off). A contact change is judged on what it
+leaves behind: never no contact, with `sms` off an email, and never
+an email another guest on the event has (409 `GUEST_EMAIL_TAKEN`,
+compared in normal form, `guestRepository.isEmailUsedByOtherGuest`).
 
 Names are nullable — a guest imported by phone supplies their name when
 they RSVP.
 
-Duplicate = same email or phone on the **same event**. The same person
-across two events is two unrelated records.
+Duplicate = same **email** on the **same event**. The same person across
+two events is two unrelated records. **A phone is never anyone's
+identity:** a household, a couple or a PA share one, so two guests on one
+event may hold the same phone, on every path (organiser create, import,
+RSVP, self-registration), and no response refuses or mentions another
+guest's phone (`findDuplicateEmail`, `guest-validation.util.ts`). The one
+check on a phone is inside a single import file: the same phone on two
+phone-only rows is a duplicated row (a list pasted twice), refused and
+listed like a repeated email ("appears more than once in this file (first
+seen on row N)"). It is never compared with existing guests.
+
+**An email another guest on the event has is refused at RSVP with one
+neutral answer:** 422 `CONTACT_EMAIL_UNAVAILABLE`, "That email address
+can't be used for this invitation. Please use another one.", the same
+message, status and code for every cause, compared in normal form on both
+sides (`guestRepository.isEmailUsedByOtherGuest`). **Accepted residual:**
+refused vs accepted still tells whoever holds an invite whether an address
+is on that event's guest list. Accepting the duplicate instead would make
+one email two guests and break email as the identity registration and
+re-sends rely on. The leak is bounded, not closed: 20 tries an hour per
+invite (`rsvpSubmitInviteLimiter`), each successful try really changes
+the guest's own email, and more invites cost an organiser's invitation or,
+on a public event, a real inbox per registration.
 
 **Emails are stored and compared lowercase and trimmed, everywhere** —
 users, tenants, team invites, guests, sign-in lookups — through one
@@ -1513,10 +1635,6 @@ Every task ends with a written report covering:
 
 Carried deliberately. Do not treat as bugs to fix opportunistically.
 
-- **The public registration page is not built on the frontend.** The
-  backend is (see "Public events and self-registration"); the frontend's
-  `/register` route, where share links point, is still a placeholder, and
-  there is no organiser screen for the registration settings yet.
 - **Reminders and organiser resends are refused on public events**
   (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
   would skip them anyway; a registrant who lost their link registers again
@@ -1574,7 +1692,21 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     retired with the columns it read.) Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
     per-day venues on `/rsvp/validate`, `/rsvp/program` and the sent emails.
   - **RSVP contact update** (`tests/rsvp/rsvp-contact-update.test.ts`)
-    and its error codes (`tests/rsvp/rsvp-contact-codes.test.ts`).
+    and its error codes (`tests/rsvp/rsvp-contact-codes.test.ts`); the
+    per-invite submit limit, 20 an hour (`tests/rsvp/rsvp-submit-rate-limit.test.ts`).
+  - **Guest contact rules** (`tests/guest/`): two guests on one event
+    sharing a phone on organiser create, import and RSVP, with nothing
+    mentioning the other guest; an email another guest has refused at RSVP
+    with the neutral `CONTACT_EMAIL_UNAVAILABLE`, in any casing, and by
+    an organiser edit with `GUEST_EMAIL_TAKEN`; a phone repeated within
+    one import file flagged, one an existing guest has imported; update
+    checking only what it changes (a guest with both contacts, and a
+    phone-only guest with sms off, renamed and given plus-ones); the
+    plus-ones allowance 0–20 on create, update and import. Allowed
+    domains at RSVP (`tests/public-events/rsvp-email-domain.test.ts`):
+    registration's refusal for a change outside them, an address held
+    from before never blocking a reply. Forgot password's email limiter
+    keyed per IP without an email (`tests/auth/forgot-password-email-limit.test.ts`).
   - **Required fields** (`tests/validation/`): 422 on blanks for program
     items, tickets, custom RSVP fields, guests, the wizard's materialize,
     and RSVP submit (attending, name, required custom questions). The
@@ -1615,10 +1747,19 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     accepted guest with their days and plus-ones and emails the link
     (never returned); allowed domains; the cap with plus-ones (and at
     RSVP), the plan's limit in guest words; the closing date and the RSVP
-    deadline default; a cancelled event; the same email re-sent, not
-    duplicated; the view's exact keys and no internal values; settings
-    validation, scoping and the assignment lock; per-email and per-IP
-    rate limits.
+    deadline default; a cancelled event; the same email again answered
+    byte for byte as a new registration (success, full, closed, a refused
+    form, all invites archived), re-sent as "Here's your link again" and
+    never duplicated; a phone another guest has saved, with an identical
+    answer and the other guest untouched; the view's exact keys and no
+    internal values; every form and settings error code; settings
+    validation, scoping and the assignment lock; per-email and per-IP rate
+    limits.
+  - **`FRONTEND_BASE_URL`** (`tests/config/`): a missing, blank or
+    non-URL value refuses to load the app; share links are built by
+    `frontendUrl`; no other file in `src/` reads the variable. Loading the
+    rate limiters logs no express-rate-limit validation error
+    (`ERR_ERL_KEY_GEN_IPV6`).
   - **Feature flags** (`tests/feature-flags/`): an unknown name fails
     startup, `/api/config/features` reflects the env, a switched-off
     feature's routes 404 for a tenant and work for a `SUPER_ADMIN`, the
@@ -1644,7 +1785,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   the control center's send/upgrade paths, the Event Pass panel,
   tenant navigation/routes and the vendor space list, and the event
   wizard's day venues, program item days and required fields, program
-  visibility, guest-facing day venues, and RSVP contact editing. Most screens and
+  visibility, guest-facing day venues, RSVP contact editing, the public
+  registration page (each link and registration state, open days,
+  plus-ones up to the allowance, refusals placed by code, never reading
+  a token from the response), the organiser's registration settings panel
+  (status at a glance, the cap against the plan's limit, the closing
+  date, domains, open days, sending only what changed), registrants in
+  the public control centre's guest list and its WhatsApp share, and
+  plus-one allowances on Add Guest, guest details and the guest list. Most screens and
   services have no spec, and nothing runs in a real browser: the
   cross-tab, tab-freezing and Android behaviours in particular are
   verified only by a manual browser run.

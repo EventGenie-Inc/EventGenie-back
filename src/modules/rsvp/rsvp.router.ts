@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { rsvpService } from './rsvp.service.js';
 import { eventProgramService } from '../event-program/event-program.service.js';
-import { ticketQuoteLimiter, rsvpProgramLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import { ticketQuoteLimiter, rsvpProgramLimiter, rsvpSubmitInviteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
 
 // Fully public surface — a guest only has a bare invite token, never a
 // platform session. No auth middleware anywhere in this file.
@@ -39,7 +39,8 @@ router.post('/program', rsvpProgramLimiter, async (req: Request, res: Response, 
 });
 
 // POST /api/rsvp/submit
-router.post('/submit', async (req: Request, res: Response, next: NextFunction) => {
+// Limited per invite (rsvpSubmitInviteLimiter): see rate-limit.middleware.ts.
+router.post('/submit', rsvpSubmitInviteLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await rsvpService.submit(req.body);
     res.status(200).json({ status: 'ok', data: result });

@@ -7,6 +7,7 @@ import {
   normalizeEmailDomain,
   isValidEmailDomain,
 } from '../event-public/registration-rules.util.js';
+import { isValidPlusOnesAllowed, MAX_PLUS_ONES_ALLOWED } from '../guest/guest-validation.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
@@ -25,6 +26,21 @@ import { type UpdateRegistrationSettingsDto, type RegistrationSettingsView } fro
 type ScopedEvent = Awaited<ReturnType<typeof eventService.getScopedWithPass>>;
 
 const MAX_EMAIL_DOMAINS = 20;
+
+// One per refusal, so the settings form marks the field it belongs to.
+export const REGISTRATION_SETTINGS_ERROR_CODES = {
+  DOMAIN_INVALID: 'REGISTRATION_SETTINGS_DOMAIN_INVALID',
+  TOO_MANY_DOMAINS: 'REGISTRATION_SETTINGS_TOO_MANY_DOMAINS',
+  CAP_INVALID: 'REGISTRATION_SETTINGS_CAP_INVALID',
+  CAP_ABOVE_PLAN_LIMIT: 'REGISTRATION_SETTINGS_CAP_ABOVE_PLAN_LIMIT',
+  CLOSES_AT_INVALID: 'REGISTRATION_SETTINGS_CLOSES_AT_INVALID',
+  CLOSES_AT_AFTER_DEADLINE: 'REGISTRATION_SETTINGS_CLOSES_AT_AFTER_DEADLINE',
+  PLUS_ONES_INVALID: 'REGISTRATION_SETTINGS_PLUS_ONES_INVALID',
+  OPEN_DAY_UNKNOWN: 'REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN',
+  NO_OPEN_DAYS: 'REGISTRATION_SETTINGS_NO_OPEN_DAYS',
+} as const;
+
+const CODES = REGISTRATION_SETTINGS_ERROR_CODES;
 
 const toView = async (event: ScopedEvent): Promise<RegistrationSettingsView> => {
   const [seats, { limit }] = await Promise.all([eventPublicRepository.countSeats(event.id), resolveGuestLimit(event)]);
@@ -52,10 +68,14 @@ const parseDomains = (value: unknown): string[] => {
     return d.length > 0 && !isValidEmailDomain(d);
   });
   if (invalid !== undefined) {
-    throw new HttpError(422, `'${invalid.trim()}' isn't an email domain. Use the part after the @, for example company.co.za.`);
+    throw new HttpError(
+      422,
+      `'${invalid.trim()}' isn't an email domain. Use the part after the @, for example company.co.za.`,
+      CODES.DOMAIN_INVALID
+    );
   }
   if (domains.length > MAX_EMAIL_DOMAINS) {
-    throw new HttpError(422, `You can allow at most ${MAX_EMAIL_DOMAINS} email domains.`);
+    throw new HttpError(422, `You can allow at most ${MAX_EMAIL_DOMAINS} email domains.`, CODES.TOO_MANY_DOMAINS);
   }
   return domains;
 };
@@ -88,7 +108,11 @@ export const registrationSettingsService = {
         write.registrationCap = null;
       } else {
         if (typeof data.cap !== 'number' || !Number.isInteger(data.cap) || data.cap < 1) {
-          throw new HttpError(422, 'The registration cap must be a whole number of 1 or more, or empty for no cap.');
+          throw new HttpError(
+            422,
+            'The registration cap must be a whole number of 1 or more, or empty for no cap.',
+            CODES.CAP_INVALID
+          );
         }
         // Never beyond what the plan (or this event's pass) allows. Read at
         // runtime, so a changed tier config is followed.
@@ -97,7 +121,11 @@ export const registrationSettingsService = {
           const source = guestLimit.boundByPass
             ? `This event's ${event.eventPass!.passTier} pass allows ${guestLimit.limit} guests`
             : `The ${guestLimit.tenantTier} plan allows ${guestLimit.limit} guests per event`;
-          throw new HttpError(422, `${source}, so the registration cap can be at most ${guestLimit.limit}.`);
+          throw new HttpError(
+            422,
+            `${source}, so the registration cap can be at most ${guestLimit.limit}.`,
+            CODES.CAP_ABOVE_PLAN_LIMIT
+          );
         }
         write.registrationCap = data.cap;
       }
@@ -109,7 +137,7 @@ export const registrationSettingsService = {
       } else {
         const closesAt = typeof data.closesAt === 'string' ? parseClientDateTime(data.closesAt) : null;
         if (!closesAt || Number.isNaN(closesAt.getTime())) {
-          throw new HttpError(422, 'Enter a valid closing date for registration.');
+          throw new HttpError(422, 'Enter a valid closing date for registration.', CODES.CLOSES_AT_INVALID);
         }
         // A registrant becomes a guest who can change their answer only
         // until the RSVP deadline, so registration can't outlast it.
@@ -117,7 +145,8 @@ export const registrationSettingsService = {
           throw new HttpError(
             422,
             `Registration can't close after the RSVP deadline (${formatGuestDate(event.rsvpDeadline)}). ` +
-              'Choose an earlier date, or leave it empty to close at the deadline.'
+              'Choose an earlier date, or leave it empty to close at the deadline.',
+            CODES.CLOSES_AT_AFTER_DEADLINE
           );
         }
         write.registrationClosesAt = closesAt;
@@ -125,8 +154,14 @@ export const registrationSettingsService = {
     }
 
     if (data.plusOnesAllowed !== undefined) {
-      if (typeof data.plusOnesAllowed !== 'number' || !Number.isInteger(data.plusOnesAllowed) || data.plusOnesAllowed < 0) {
-        throw new HttpError(422, 'Plus-ones per registrant must be a whole number of 0 or more.');
+      // Each registrant's guest gets this as their allowance, so it follows
+      // the guest rule: 0 to MAX_PLUS_ONES_ALLOWED.
+      if (!isValidPlusOnesAllowed(data.plusOnesAllowed)) {
+        throw new HttpError(
+          422,
+          `Plus-ones per registrant must be a whole number from 0 to ${MAX_PLUS_ONES_ALLOWED}.`,
+          CODES.PLUS_ONES_INVALID
+        );
       }
       write.registrationPlusOnesAllowed = data.plusOnesAllowed;
     }
@@ -141,10 +176,10 @@ export const registrationSettingsService = {
       // A day of another event (this tenant's or not) is not part of this
       // one: the same refusal as an unknown id, naming nothing.
       if (openDayIds.some((id) => !liveDayIds.has(id))) {
-        throw new HttpError(422, "One of the chosen days isn't part of this event.");
+        throw new HttpError(422, "One of the chosen days isn't part of this event.", CODES.OPEN_DAY_UNKNOWN);
       }
       if (liveDayIds.size > 0 && openDayIds.length === 0) {
-        throw new HttpError(422, 'Keep at least one day open to registration.');
+        throw new HttpError(422, 'Keep at least one day open to registration.', CODES.NO_OPEN_DAYS);
       }
     }
 

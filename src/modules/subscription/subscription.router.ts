@@ -3,6 +3,7 @@ import { subscriptionService } from './subscription.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 
 const router = Router();
 
@@ -44,7 +45,7 @@ router.post('/subscribe', async (req: Request, res: Response, next: NextFunction
   try {
     const tenantId = requireOwnTenantId(req, res);
     if (!tenantId) return;
-    const callbackUrl = `${process.env.FRONTEND_BASE_URL}/billing/callback`;
+    const callbackUrl = frontendUrl('/billing/callback');
     const result = await subscriptionService.subscribe(tenantId, req.body, callbackUrl);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
