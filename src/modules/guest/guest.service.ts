@@ -13,7 +13,8 @@ import {
   assertExactlyOneContact,
   assertGuestHasEmail,
   assertValidPlusOnesAllowed,
-  findDuplicateContact,
+  findDuplicateEmail,
+  GUEST_EMAIL_TAKEN,
 } from './guest-validation.util.js';
 import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
@@ -98,14 +99,10 @@ export const guestService = {
     const plusOnesAllowed = data.plusOnesAllowed ?? 0;
     assertValidPlusOnesAllowed(plusOnesAllowed);
 
+    // By email only: guests may share a phone (guest-validation.util.ts).
     const existingContacts = await guestRepository.findContactsForEvent(eventId);
-    const duplicate = findDuplicateContact(
-      existingContacts.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber })),
-      { email, phoneNumber }
-    );
-    if (duplicate) {
-      throw new HttpError(409, `A guest with this ${email ? 'email' : 'phone number'} already exists for this event`);
-    }
+    const duplicate = findDuplicateEmail(existingContacts.map((g) => ({ guestId: g.id, email: g.email })), email);
+    if (duplicate) throw new HttpError(409, 'A guest with this email already exists for this event');
 
     await assertGuestsCreatable(event, 1);
 
@@ -124,8 +121,14 @@ export const guestService = {
     return guest;
   },
 
+  // Checks only the fields this update changes. The "exactly one contact"
+  // rule is a creation rule (guest-validation.util.ts): a guest who has
+  // since given both at RSVP, or a phone-only guest kept from before sms
+  // was switched off, can still have their name or plus-ones changed.
   update: async (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateGuestDto) => {
     const guest = await guestService.getById(id, requestingRole, tenantId);
+
+    if (data.plusOnesAllowed !== undefined) assertValidPlusOnesAllowed(data.plusOnesAllowed);
 
     // A blank value clears the field like null does — it used to be
     // stored as "", which then passed as "has a contact" nowhere and as a
@@ -137,16 +140,26 @@ export const guestService = {
       ? (data.phoneNumber === null || !data.phoneNumber.trim() ? null : normalizePhoneToE164(data.phoneNumber))
       : guest.phoneNumber;
 
-    if (nextEmail) assertValidEmail(nextEmail);
-    // Pass the guest's OWN hostGuestId — a plus-one being edited (e.g. just
-    // their name) must not be rejected for having no contact, which they
-    // never have and never will.
-    assertExactlyOneContact(nextEmail, nextPhone, guest.hostGuestId);
-    // Judged on the guest the update leaves behind, so an existing
-    // phone-only guest can't be saved again without an email either.
-    if (!isFeatureEnabled('sms')) assertGuestHasEmail(nextEmail, guest.hostGuestId);
-
-    if (data.plusOnesAllowed !== undefined) assertValidPlusOnesAllowed(data.plusOnesAllowed);
+    // Only when a contact field changes is the contact judged, on the
+    // guest the change leaves behind. Plus-ones (hostGuestId set) never
+    // have a contact and are exempt.
+    if (data.email !== undefined || data.phoneNumber !== undefined) {
+      if (data.email !== undefined && nextEmail) assertValidEmail(nextEmail);
+      // The same duplicate rule as create: one email, one guest per event.
+      // Checked only when the email actually changes.
+      if (
+        data.email !== undefined && nextEmail && nextEmail !== guest.email &&
+        (await guestRepository.isEmailUsedByOtherGuest(guest.eventId, nextEmail, guest.id))
+      ) {
+        throw new HttpError(409, 'Another guest on this event already has this email address.', GUEST_EMAIL_TAKEN);
+      }
+      if (!guest.hostGuestId && !nextEmail && !nextPhone) {
+        throw new HttpError(422, 'A guest must have either an email or a phone number');
+      }
+      // With sms off, a contact change can't leave a guest reachable only
+      // by phone.
+      if (!isFeatureEnabled('sms')) assertGuestHasEmail(nextEmail, guest.hostGuestId);
+    }
 
     return guestRepository.update(id, {
       ...data,
@@ -220,7 +233,7 @@ export const guestService = {
     const rows = await parseImportFile(file.buffer, file.originalname, file.mimetype);
     const eventDays = await eventDayRepository.findAll(eventId);
     const existingGuests = await guestRepository.findContactsForEvent(eventId);
-    const existingContacts = existingGuests.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber }));
+    const existingContacts = existingGuests.map((g) => ({ guestId: g.id, email: g.email }));
 
     const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts, {
       requireEmail: !isFeatureEnabled('sms'),

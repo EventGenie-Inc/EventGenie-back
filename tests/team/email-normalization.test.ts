@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import app from '../../src/app.js';
 import { userRepository } from '../../src/modules/user/user.repository.js';
-import { findDuplicateContact } from '../../src/modules/guest/guest-validation.util.js';
+import { findDuplicateEmail } from '../../src/modules/guest/guest-validation.util.js';
 import {
   createTenant,
   createActor,
@@ -78,8 +78,7 @@ describe('POST /api/users', () => {
 
 describe('guest duplicate detection', () => {
   it('matches an email whatever its stored case', () => {
-    expect(findDuplicateContact([{ guestId: 'g1', email: 'Thandi@Example.com', phoneNumber: null }], { email: 'thandi@example.com', phoneNumber: null }))
-      .toEqual({ guestId: 'g1' });
+    expect(findDuplicateEmail([{ guestId: 'g1', email: 'Thandi@Example.com' }], 'thandi@example.com')).toEqual({ guestId: 'g1' });
   });
 });
 

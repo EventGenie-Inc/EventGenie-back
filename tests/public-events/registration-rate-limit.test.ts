@@ -37,7 +37,8 @@ describe('per email', () => {
     const email = freshEmail();
     for (let i = 1; i <= 5; i++) {
       const res = await register(ev.shareToken, { email: i % 2 ? email.toUpperCase() : email });
-      expect(res.status, `attempt ${i}`).toBe(i === 1 ? 201 : 200);
+      // A repeat is answered exactly as a new registration (201).
+      expect(res.status, `attempt ${i}`).toBe(201);
     }
     const sixth = await register(ev.shareToken, { email: `  ${email} ` });
     expect(sixth.status).toBe(429);

@@ -16,8 +16,9 @@ import {
 
 // ─────────────────────────────────────────
 //  LAUNCH MODE — with sms off, every organiser-managed guest needs an
-//  email address. Phone-only is 422 on create and on update (judged on
-//  what the update leaves behind); on import, phone-only rows are refused
+//  email address. Phone-only is 422 on create, and on an update that
+//  changes the contact (judged on what it leaves behind; an update that
+//  leaves the contact alone isn't refused for it); on import, phone-only rows are refused
 //  and listed with the same reason, and the rest of the file imports.
 //  Each case also runs with sms ON, so the difference is the flag.
 // ─────────────────────────────────────────
@@ -91,14 +92,16 @@ describe('sms off — guest update', () => {
     expect(swapped.email).toBeNull();
   }, 60000);
 
-  it('flag off: an existing phone-only guest is saved once an email replaces the phone', async () => {
+  it('flag off: an existing phone-only guest can be renamed, refused a new phone alone, and saved once an email replaces the phone', async () => {
     const { tenant, create } = await setup();
     vi.stubEnv('FEATURES_DISABLED', '');
     const guest = await create({ phoneNumber: phone() });
 
     vi.stubEnv('FEATURES_DISABLED', 'sms');
+    const renamed = await guestService.update(guest.id, 'TENANT_ADMIN', tenant.id, { firstName: 'Renamed' });
+    expect(renamed.firstName).toBe('Renamed');
     await expect(
-      guestService.update(guest.id, 'TENANT_ADMIN', tenant.id, { firstName: 'Renamed' })
+      guestService.update(guest.id, 'TENANT_ADMIN', tenant.id, { phoneNumber: phone() })
     ).rejects.toMatchObject({ statusCode: 422, message: GUEST_EMAIL_REQUIRED_MESSAGE });
     const fixed = await guestService.update(guest.id, 'TENANT_ADMIN', tenant.id, { email: email(), phoneNumber: null });
     expect(fixed.email).toMatch(/@test\.invalid$/);

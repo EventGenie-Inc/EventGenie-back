@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type UpdateGuestDto } from './guest.types.js';
-import { type DeliveryMethod } from '@prisma/client';
+import { type DeliveryMethod, type Prisma } from '@prisma/client';
 
 // Guest has no tenantId column of its own — ownership is transitive
 // through its direct eventId -> Event -> tenantId. Repository methods
@@ -62,6 +62,20 @@ export const guestRepository = {
 
   // Feeds both the dedup check (Task 4) and the tier-limit count — one
   // query, non-archived guests currently on this event, contacts only.
+  // Is this email held by any OTHER live guest on the event (an email
+  // change at RSVP submit, or by the organiser in guestService.update).
+  // Compared in normal form on both sides, so a row the lowercase_emails
+  // migration skipped still matches its other casing. `email` must already
+  // be normalised.
+  isEmailUsedByOtherGuest: async (eventId: string, email: string, guestId: string, tx?: Prisma.TransactionClient) => {
+    const rows = await (tx ?? prisma).$queryRaw<{ id: string }[]>`
+      SELECT "id" FROM "Guest"
+      WHERE "eventId" = ${eventId} AND "isArchived" = false AND "id" <> ${guestId}
+        AND lower(regexp_replace("email", '^\\s+|\\s+$', '', 'g')) = ${email}
+      LIMIT 1`;
+    return rows.length > 0;
+  },
+
   findContactsForEvent: (eventId: string) =>
     prisma.guest.findMany({
       where: { eventId, isArchived: false },

@@ -58,7 +58,10 @@ export interface PublicEventView {
   };
 }
 
-export type RegistrationOutcome = 'REGISTERED' | 'ALREADY_REGISTERED';
+// One outcome: a repeat registration answers exactly as a new one does
+// (event-public.service.ts's registrationAnswer), so nothing in the
+// response says whether the email was already a guest.
+export type RegistrationOutcome = 'REGISTERED';
 
 // POST /api/public-events/:shareToken/register. Never the invite token:
 // the link goes only to the email address, so a registration (or a

@@ -3,6 +3,7 @@ import {
   buildInviteEmail,
   buildReminderEmail,
   buildRegistrationEmail,
+  buildRegistrationResendEmail,
   type InviteEmailInput,
 } from '../../src/modules/invite/invite-message.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from '../../src/modules/auth/auth-email.util.js';
@@ -87,6 +88,7 @@ const allEmails = (over: Partial<InviteEmailInput> = {}) => ({
   invite: buildInviteEmail(input(over)),
   reminder: buildReminderEmail(input(over)),
   registration: buildRegistrationEmail(input(over)),
+  registrationResend: buildRegistrationResendEmail(input(over)),
   otp: buildOtpEmail({ to: 'a@example.test', username: 'Levy', code: '482913', validMinutes: 10 }),
   reset: buildPasswordResetEmail({ to: 'a@example.test', username: 'Levy', resetLink: RESET_LINK }),
 });
@@ -219,7 +221,7 @@ describe('every user value is escaped', () => {
       ],
       design: upload({ altText: HOSTILE }),
     });
-    for (const email of [buildInviteEmail(hostile), buildReminderEmail(hostile), buildRegistrationEmail(hostile)]) {
+    for (const email of [buildInviteEmail(hostile), buildReminderEmail(hostile), buildRegistrationEmail(hostile), buildRegistrationResendEmail(hostile)]) {
       expect(email.html).not.toContain('<script>');
       expect(email.html).not.toContain(HOSTILE);
       // title, host line, footer reason, preheader, day label, venue, address, alt

@@ -18,7 +18,7 @@ import {
   assertRegistrationOpen,
   assertPartyFits,
   isEmailInAllowedDomains,
-  describeAllowedDomains,
+  emailDomainRefusal,
   type RegistrationRulesEvent,
 } from './registration-rules.util.js';
 import {
@@ -120,9 +120,9 @@ const optionalText = (value: unknown): string | null => {
   return value.trim();
 };
 
-const assertNameLength = (name: string, what: string): void => {
+const assertNameLength = (name: string, what: string, code: string): void => {
   if (name.length > MAX_NAME_LENGTH) {
-    throw new HttpError(422, `${what} can be at most ${MAX_NAME_LENGTH} characters.`);
+    throw new HttpError(422, `${what} can be at most ${MAX_NAME_LENGTH} characters.`, code);
   }
 };
 
@@ -143,10 +143,12 @@ const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
   if (typeof data !== 'object' || data === null) throw new HttpError(400, MALFORMED_MESSAGE);
 
   const firstName = optionalText(data.firstName);
-  if (firstName === null) throw new HttpError(422, 'Please tell us your name to register.');
-  assertNameLength(firstName, 'Your first name');
+  if (firstName === null) {
+    throw new HttpError(422, 'Please tell us your name to register.', REGISTRATION_ERROR_CODES.FIRST_NAME_REQUIRED);
+  }
+  assertNameLength(firstName, 'Your first name', REGISTRATION_ERROR_CODES.FIRST_NAME_TOO_LONG);
   const surname = optionalText(data.surname);
-  if (surname !== null) assertNameLength(surname, 'Your surname');
+  if (surname !== null) assertNameLength(surname, 'Your surname', REGISTRATION_ERROR_CODES.SURNAME_TOO_LONG);
 
   // Required whatever the sms flag says: the personal link is emailed.
   const rawEmail = optionalText(data.email);
@@ -158,7 +160,9 @@ const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
     );
   }
   const email = normalizeEmail(rawEmail);
-  if (!isValidEmail(email)) throw new HttpError(422, `'${rawEmail}' is not a valid email address`);
+  if (!isValidEmail(email)) {
+    throw new HttpError(422, `'${rawEmail}' is not a valid email address`, REGISTRATION_ERROR_CODES.EMAIL_INVALID);
+  }
 
   const phoneNumber = parsePhone(data.phoneNumber);
 
@@ -167,7 +171,9 @@ const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
     if (!Array.isArray(data.dayIds) || !data.dayIds.every((id) => typeof id === 'string' && id.length > 0)) {
       throw new HttpError(400, MALFORMED_MESSAGE);
     }
-    if (data.dayIds.length === 0) throw new HttpError(422, 'Choose at least one day you’ll attend.');
+    if (data.dayIds.length === 0) {
+      throw new HttpError(422, 'Choose at least one day you’ll attend.', REGISTRATION_ERROR_CODES.NO_DAYS_CHOSEN);
+    }
     dayIds = [...new Set(data.dayIds as string[])];
   }
 
@@ -177,32 +183,49 @@ const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
       throw new HttpError(400, MALFORMED_MESSAGE);
     }
     plusOneNames = (data.plusOneNames as string[]).map((n) => n.trim());
-    if (plusOneNames.some((n) => n.length === 0)) throw new HttpError(422, "Please give each plus-one's name.");
-    plusOneNames.forEach((n) => assertNameLength(n, "A plus-one's name"));
+    if (plusOneNames.some((n) => n.length === 0)) {
+      throw new HttpError(422, "Please give each plus-one's name.", REGISTRATION_ERROR_CODES.PLUS_ONE_NAME_REQUIRED);
+    }
+    plusOneNames.forEach((n) => assertNameLength(n, "A plus-one's name", REGISTRATION_ERROR_CODES.PLUS_ONE_NAME_TOO_LONG));
   }
 
   return { firstName, surname, email, phoneNumber, dayIds, plusOneNames };
 };
 
+// ─────────────────────────────────────────
+//  THE ANSWER
+//
+//  One answer, whether the email was new or already a guest: the same
+//  status (201), outcome and message, byte for byte. A different answer
+//  for an address already on the list would let anyone with the link test
+//  addresses against the guest list. Only the email differs, and only
+//  its owner reads it: a new registrant gets "You're registered", someone
+//  already registered gets their link again.
+// ─────────────────────────────────────────
+const REGISTERED_MESSAGE = 'Check your email for your e-velope.';
+const SEND_FAILED_MESSAGE =
+  "We couldn't send your email just now. Register again with the same email address in a few minutes and we'll send it.";
+
+const registrationAnswer = (emailSent: boolean): RegistrationResult => ({
+  outcome: 'REGISTERED',
+  emailSent,
+  message: emailSent ? REGISTERED_MESSAGE : SEND_FAILED_MESSAGE,
+});
+
 // Someone already on this event's guest list registering with the same
 // email: no second guest. Their own link is emailed to that address again
-// (only its owner can read it), and the response says so and nothing
-// else — not their name, their answer or their days.
+// (only its owner can read it). Returns whether it was sent.
 const resendExistingInvitation = async (
   event: ShareTokenEvent,
   guest: { id: string; selfRegisteredAt: Date | null },
   email: string
-): Promise<RegistrationResult> => {
+): Promise<boolean> => {
   const invite = await eventPublicRepository.findLatestInviteForGuest(guest.id);
-  if (!invite) {
-    // Every invite of theirs was archived by the organiser: that's the
-    // organiser's decision to undo, not this page's. No new invite.
-    return {
-      outcome: 'ALREADY_REGISTERED',
-      emailSent: false,
-      message: "You're already registered for this event. Contact the organiser for your link.",
-    };
-  }
+  // Every invite of theirs was archived by the organiser: that's the
+  // organiser's decision to undo, not this page's. Nothing is sent, and
+  // the answer is still the ordinary one (STEERING "Public events and
+  // self-registration").
+  if (!invite) return true;
 
   const attending = invite.attendances.map((a) => a.eventDay);
   const days = attending.length > 0 ? attending : invite.inviteEventDay.map((d) => d.eventDay);
@@ -211,15 +234,9 @@ const resendExistingInvitation = async (
     invite,
     email,
     days,
-    guest.selfRegisteredAt ? 'REGISTRATION' : 'INVITE'
+    guest.selfRegisteredAt ? 'REGISTRATION_RESEND' : 'INVITE'
   );
-  return {
-    outcome: 'ALREADY_REGISTERED',
-    emailSent: ok,
-    message: ok
-      ? `You're already registered for this event. We've sent your personal link to ${email} again.`
-      : "You're already registered for this event, but we couldn't send your email just now. Please try again in a few minutes.",
-  };
+  return ok;
 };
 
 export const eventPublicService = {
@@ -236,38 +253,33 @@ export const eventPublicService = {
   // Creates the guest and their accepted invite (their days, their
   // plus-ones) and emails them their personal link, so they can change
   // their answer later like any guest.
+  //
+  // Every check runs in the same order whether or not the email is
+  // already a guest, and an existing guest gets exactly the answer a new
+  // registration with the same request would: the success, or the same
+  // refusal. Nothing a registrant can see depends on whether the address
+  // is on the list (registrationAnswer above).
   register: async (shareToken: string, data: RegisterGuestDto): Promise<RegistrationResult> => {
     const input = parseRegistration(data);
     const event = await findPublicEvent(shareToken);
     const rules = rulesFor(event);
 
-    // Without counts: refuses only on the event's state and dates.
-    const preliminary = resolveRegistrationState(rules, NO_SEATS, null);
     // Cancelled, over, or not yet open: nothing to register for, and no
     // link worth re-sending either.
-    if (rules.status !== 'PUBLISHED') assertRegistrationOpen(preliminary);
+    if (rules.status !== 'PUBLISHED') assertRegistrationOpen(resolveRegistrationState(rules, NO_SEATS, null));
 
-    // Before the duplicate check, so the response never says whether an
-    // address outside the allowed domains is on the guest list.
     if (!isEmailInAllowedDomains(input.email, event.registrationEmailDomains)) {
-      throw new HttpError(
-        422,
-        `Register with ${describeAllowedDomains(event.registrationEmailDomains)}.`,
-        REGISTRATION_ERROR_CODES.EMAIL_DOMAIN
-      );
+      throw emailDomainRefusal(event.registrationEmailDomains);
     }
-
-    // An existing registrant isn't a new registration: the closing date
-    // and the cap don't stop their link being re-sent.
-    const existing = await eventPublicRepository.findGuestByEmail(event.id, input.email);
-    if (existing) return resendExistingInvitation(event, existing, input.email);
-
-    assertRegistrationOpen(preliminary); // closing date, no open day
 
     const openDayIds = event.eventDays.filter((d) => d.openForRegistration).map((d) => d.id);
     const attendingDayIds = input.dayIds ?? openDayIds;
     if (attendingDayIds.some((id) => !openDayIds.includes(id))) {
-      throw new HttpError(422, "One of the days you chose isn't open for registration. Please refresh the page and choose again.");
+      throw new HttpError(
+        422,
+        "One of the days you chose isn't open for registration. Please refresh the page and choose again.",
+        REGISTRATION_ERROR_CODES.DAY_NOT_OPEN
+      );
     }
 
     const allowance = event.registrationPlusOnesAllowed;
@@ -276,7 +288,8 @@ export const eventPublicService = {
         422,
         allowance === 0
           ? "Plus-ones can't be added when registering for this event."
-          : `You can bring up to ${allowance} plus-one${allowance === 1 ? '' : 's'}. Please remove some and try again.`
+          : `You can bring up to ${allowance} plus-one${allowance === 1 ? '' : 's'}. Please remove some and try again.`,
+        REGISTRATION_ERROR_CODES.TOO_MANY_PLUS_ONES
       );
     }
 
@@ -284,20 +297,26 @@ export const eventPublicService = {
 
     // Counted and written under the event's row lock, so two registrations
     // can't both take the last seat or both create the same email.
-    const created = await eventPublicRepository.withEventRegistrationLock(event.id, async (tx) => {
-      const raced = await eventPublicRepository.findGuestByEmail(event.id, input.email, tx);
-      if (raced) return { duplicate: raced } as const;
-
+    const outcome = await eventPublicRepository.withEventRegistrationLock(event.id, async (tx) => {
+      const existing = await eventPublicRepository.findGuestByEmail(event.id, input.email, tx);
       const seats = await eventPublicRepository.countSeats(event.id, tx);
-      assertRegistrationOpen(resolveRegistrationState(rules, seats, limit));
-      assertPartyFits(event, seats, limit, 1 + input.plusOneNames.length);
 
-      // Same duplicate rule, and the same words, as a guest changing their
-      // number at RSVP.
-      if (input.phoneNumber && (await eventPublicRepository.findGuestIdByPhone(event.id, input.phoneNumber, tx))) {
-        throw new HttpError(409, 'Another guest on this event is already using this phone number.');
+      // What a new registration gets here: closed (the closing date, no
+      // open day), full, or no room for this party.
+      let refusal: HttpError | null = null;
+      try {
+        assertRegistrationOpen(resolveRegistrationState(rules, seats, limit));
+        assertPartyFits(event, seats, limit, 1 + input.plusOneNames.length);
+      } catch (err) {
+        if (!(err instanceof HttpError)) throw err;
+        refusal = err;
       }
 
+      if (existing) return { existing, refusal } as const;
+      if (refusal) throw refusal;
+
+      // A phone is saved as given, even if another guest on the event has
+      // the same one: guests may share a phone (guest-validation.util.ts).
       const registrant = await eventPublicRepository.createRegistrant(
         tx,
         event.id,
@@ -316,18 +335,19 @@ export const eventPublicService = {
       return { registrant } as const;
     });
 
-    if ('duplicate' in created) return resendExistingInvitation(event, created.duplicate, input.email);
+    // Already a guest: they're sent their own link whatever the answer
+    // (a closing date or a full cap still re-sends it), and get the answer
+    // a new registration would. Nothing about them changes.
+    if ('existing' in outcome) {
+      const sent = await resendExistingInvitation(event, outcome.existing, input.email);
+      if (outcome.refusal) throw outcome.refusal;
+      return registrationAnswer(sent);
+    }
 
     // After the commit: a failed send leaves a real registration, and
     // registering again with the same email re-sends it.
     const days = event.eventDays.filter((d) => attendingDayIds.includes(d.id));
-    const { ok } = await inviteDispatchService.sendRegistrationEmail(event, created.registrant.invite, input.email, days, 'REGISTRATION');
-    return {
-      outcome: 'REGISTERED',
-      emailSent: ok,
-      message: ok
-        ? `You're registered! We've sent your personal link to ${input.email}.`
-        : "You're registered, but we couldn't send your email just now. Register again with the same email address in a few minutes and we'll re-send it.",
-    };
+    const { ok } = await inviteDispatchService.sendRegistrationEmail(event, outcome.registrant.invite, input.email, days, 'REGISTRATION');
+    return registrationAnswer(ok);
   },
 };

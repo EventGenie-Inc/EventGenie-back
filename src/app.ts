@@ -4,6 +4,7 @@ import { HttpError } from './shared/errors/http-error.js';
 import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
 import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
 import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
+import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
 
 // ─────────────────────────────────────────
 //  ROUTERS
@@ -51,6 +52,14 @@ import featureConfigRouter from './modules/feature-config/feature-config.router.
 //  See shared/features/feature-flags.ts.
 // ─────────────────────────────────────────
 assertFeatureConfigValid();
+
+// ─────────────────────────────────────────
+//  FRONTEND_BASE_URL
+//  Every link this server sends (emails, share links, payment callbacks)
+//  is built from it. Missing or not an absolute URL stops the app here,
+//  instead of sending "undefined/…" links. See frontend-url.util.ts.
+// ─────────────────────────────────────────
+assertFrontendUrlConfigured();
 
 const app: Application = express();
 

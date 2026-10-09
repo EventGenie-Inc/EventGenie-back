@@ -208,6 +208,30 @@ export const buildRegistrationEmail = (input: InviteEmailInput): BuiltEmail =>
     `You received this because you registered for ${sanitizeHeaderText(input.eventName)} on e-velope.`
   );
 
+// The same email registering again (event-public.service.ts): their own
+// link once more, said plainly as a re-send. The page answered exactly as
+// it does for a new registration, so this email is the only place that
+// says they were already registered, and only its owner reads it. Someone
+// else may have typed their address, so it says nothing changed.
+export const buildRegistrationResendEmailSubject = (input: InviteEmailInput): string =>
+  `Your link for ${sanitizeHeaderText(input.eventName)}`;
+
+export const buildRegistrationResendEmail = (input: InviteEmailInput): BuiltEmail =>
+  buildGuestEmail(
+    input,
+    buildRegistrationResendEmailSubject(input),
+    "Here's your link again",
+    [
+      {
+        kind: 'paragraph',
+        text:
+          "You're already registered, and your email address was entered on the registration page again, so here is your e-velope. " +
+          'Open it any time to change your answer. If that wasn’t you, you can ignore this email: nothing has changed.',
+      },
+    ],
+    `You received this because you registered for ${sanitizeHeaderText(input.eventName)} on e-velope.`
+  );
+
 export const buildInviteSmsBody = (eventName: string, rsvpLink: string): string =>
   `You're invited to ${eventName}! RSVP: ${rsvpLink}`;
 

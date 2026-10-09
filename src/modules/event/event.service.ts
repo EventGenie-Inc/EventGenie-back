@@ -14,6 +14,7 @@ import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforc
 import { guestRepository } from '../guest/guest.repository.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from './public-events-availability.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
@@ -329,7 +330,7 @@ export const eventService = {
     }
 
     const shareToken = event.shareToken ?? (await eventRepository.generateShareToken(id, userId)).shareToken;
-    return { url: `${process.env.FRONTEND_BASE_URL}/register?token=${shareToken}` };
+    return { url: frontendUrl(`/register?token=${shareToken}`) };
   },
 
   // Explicit regenerate (Task-parallel to Memory Hub's regenerateShareLink)
@@ -346,7 +347,7 @@ export const eventService = {
     }
 
     const updated = await eventRepository.generateShareToken(id, userId);
-    return { url: `${process.env.FRONTEND_BASE_URL}/register?token=${updated.shareToken}` };
+    return { url: frontendUrl(`/register?token=${updated.shareToken}`) };
   },
 
   // ─────────────────────────────────────────

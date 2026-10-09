@@ -24,6 +24,20 @@ export const REGISTRATION_ERROR_CODES = {
   // Room left, but not for this many people: the form marks the plus-ones.
   PARTY_TOO_LARGE: 'REGISTRATION_PARTY_TOO_LARGE',
   EMAIL_DOMAIN: 'REGISTRATION_EMAIL_DOMAIN',
+  // More plus-ones than the organiser allows each registrant (vs
+  // PARTY_TOO_LARGE, which is the cap): the form marks the plus-ones.
+  TOO_MANY_PLUS_ONES: 'REGISTRATION_TOO_MANY_PLUS_ONES',
+  // A chosen day isn't open to registration (the page is out of date).
+  DAY_NOT_OPEN: 'REGISTRATION_DAY_NOT_OPEN',
+  // One per name field, so the form marks the right one.
+  FIRST_NAME_TOO_LONG: 'REGISTRATION_FIRST_NAME_TOO_LONG',
+  SURNAME_TOO_LONG: 'REGISTRATION_SURNAME_TOO_LONG',
+  PLUS_ONE_NAME_TOO_LONG: 'REGISTRATION_PLUS_ONE_NAME_TOO_LONG',
+  // The form's remaining refusals, one per field.
+  FIRST_NAME_REQUIRED: 'REGISTRATION_FIRST_NAME_REQUIRED',
+  EMAIL_INVALID: 'REGISTRATION_EMAIL_INVALID',
+  NO_DAYS_CHOSEN: 'REGISTRATION_NO_DAYS_CHOSEN',
+  PLUS_ONE_NAME_REQUIRED: 'REGISTRATION_PLUS_ONE_NAME_REQUIRED',
 } as const;
 
 const CODE_FOR_REASON: Record<RegistrationClosedReason, string> = {
@@ -146,3 +160,8 @@ export const describeAllowedDomains = (domains: string[]): string =>
   domains.length === 1
     ? `your ${domains[0]} email address`
     : `an email address at ${domains.slice(0, -1).join(', ')} or ${domains[domains.length - 1]}`;
+
+// The one refusal for an email outside the domains: at registration and
+// when a guest changes their email at RSVP (rsvp.service.ts).
+export const emailDomainRefusal = (domains: string[]): HttpError =>
+  new HttpError(422, `Register with ${describeAllowedDomains(domains)}.`, REGISTRATION_ERROR_CODES.EMAIL_DOMAIN);

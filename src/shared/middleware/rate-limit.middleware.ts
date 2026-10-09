@@ -36,12 +36,25 @@ export const forgotPasswordLimiter = rateLimit({
 // varied IPs, which the IP limiter above wouldn't catch). Uses the
 // same response message as the IP limiter so a 429 here reveals
 // nothing about whether the email is real vs. just IP-rate-limited.
+//
+// Keyed by the SHA-256 of the normalised email, never the address. A
+// request with no usable email falls back to its IP through
+// ipKeyGenerator, like publicRegistrationEmailKey: it used to share one
+// 'unknown' bucket with every other such request from anywhere, so three
+// of them in 15 minutes refused the next one for everybody.
+export const forgotPasswordEmailKey = (body: unknown, ipKey: string): string => {
+  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['email'] : undefined;
+  return typeof raw === 'string' && raw.trim()
+    ? `forgot-email:${hashToken(normalizeEmail(raw))}`
+    : `forgot-email-ip:${ipKey}`;
+};
+
 export const forgotPasswordEmailLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 3,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.body?.email ?? 'unknown').toLowerCase().trim(),
+  keyGenerator: (req) => forgotPasswordEmailKey(req.body, ipKeyGenerator(req.ip ?? 'unknown')),
   message: {
     status: 'error',
     message: 'Too many password reset requests. Please try again later.',
@@ -332,6 +345,50 @@ export const rsvpProgramLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITER — RSVP SUBMIT (POST /api/rsvp/submit), per invite
+//
+//  Keyed by the SHA-256 hash of the invite token in the body (never the
+//  raw token, same rule as memoryHubGuestUploadTokenKey); a request with
+//  no token falls back to its IP and is refused by the service anyway.
+//
+//  Why per invite: submit is where a guest changes their email, and an
+//  email another guest on the event already has is refused. That refusal
+//  says no more than "this address can't be used here", but refused vs
+//  accepted still tells the holder of an invite whether an address is on
+//  the guest list. This bounds how fast one invite can ask. Per invite,
+//  not per IP, for the reason memoryHubGuestUploadLimiter gives: a venue's
+//  WiFi or a carrier-grade NAT puts many guests on one IP.
+//
+//  The number, 20 an hour, counting every request (a success answers the
+//  question as well as a refusal does): a guest replies once and edits
+//  rarely; the frontend submits once per tap of the reply button, never
+//  on its own. Twenty leaves room for a guest to fix a refused form many
+//  times over and come back to change their answer, while capping one
+//  invite at twenty addresses an hour. More invites don't come cheap: a
+//  private event's come only from the organiser, and a public event's
+//  each need a real inbox to receive the link (registration is limited
+//  per email and per IP). Accepted residual: see STEERING "Guest contact".
+// ─────────────────────────────────────────
+export const RSVP_SUBMITS_PER_INVITE_PER_HOUR = 20;
+
+export const rsvpSubmitInviteKey = (rawToken: string): string => `rsvp-invite:${hashToken(rawToken)}`;
+
+export const rsvpSubmitInviteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: RSVP_SUBMITS_PER_INVITE_PER_HOUR,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    typeof req.body?.token === 'string' && req.body.token
+      ? rsvpSubmitInviteKey(req.body.token as string)
+      : `rsvp-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: "You've sent a lot of replies in a short time. Please wait a while and try again.",
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — MEMORY HUB GUEST VIEW (POST /api/memory-hub/guest-view)
 //
 //  Unauthenticated, token-only, fired once per page load to decide
@@ -448,11 +505,16 @@ export const publicRegistrationIpLimiter = rateLimit({
   },
 });
 
-export const publicRegistrationEmailKey = (body: unknown, ip: string | undefined): string => {
+// `ipKey` is the caller's ipKeyGenerator(req.ip) — the IPv6-safe form, so a
+// visitor can't step around the fallback by moving within their /56.
+// Called with it inline in the keyGenerator below: express-rate-limit
+// checks a keyGenerator's own source for ipKeyGenerator whenever it reads
+// req.ip, and warns at startup (ERR_ERL_KEY_GEN_IPV6) if it isn't there.
+export const publicRegistrationEmailKey = (body: unknown, ipKey: string): string => {
   const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['email'] : undefined;
   return typeof raw === 'string' && raw.trim()
     ? `register-email:${hashToken(normalizeEmail(raw))}`
-    : `register-email-ip:${ipKeyGenerator(ip ?? 'unknown')}`;
+    : `register-email-ip:${ipKey}`;
 };
 
 export const publicRegistrationEmailLimiter = rateLimit({
@@ -460,7 +522,7 @@ export const publicRegistrationEmailLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => publicRegistrationEmailKey(req.body, req.ip),
+  keyGenerator: (req) => publicRegistrationEmailKey(req.body, ipKeyGenerator(req.ip ?? 'unknown')),
   message: {
     status: 'error',
     message: 'Too many registration attempts for this email address. Please wait a while and try again.',

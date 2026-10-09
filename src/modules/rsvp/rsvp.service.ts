@@ -7,6 +7,7 @@ import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
@@ -16,13 +17,19 @@ import {
   CONTACT_ERROR_CODES,
   PHONE_FORMAT_MESSAGE,
   GUEST_EMAIL_REQUIRED_MESSAGE,
+  CONTACT_EMAIL_UNAVAILABLE_MESSAGE,
 } from '../guest/guest-validation.util.js';
+import { guestRepository } from '../guest/guest.repository.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { eventPublicRepository } from '../event-public/event-public.repository.js';
-import { REGISTRATION_ERROR_CODES } from '../event-public/registration-rules.util.js';
+import {
+  REGISTRATION_ERROR_CODES,
+  isEmailInAllowedDomains,
+  emailDomainRefusal,
+} from '../event-public/registration-rules.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
@@ -508,7 +515,21 @@ export const rsvpService = {
       if (emailIntent.kind === 'set') {
         const normalizedEmail = normalizeEmail(emailIntent.value);
         asUnprocessable(() => assertValidEmail(normalizedEmail));
-        if (normalizedEmail !== invite.guest.email) guestUpdateData.email = normalizedEmail;
+        if (normalizedEmail !== invite.guest.email) {
+          // A public event's allowed domains hold at RSVP too, or a
+          // registrant could register at the company address and then
+          // swap it for any other. The same refusal registration gives;
+          // the domains are on the public page, so it reveals nothing.
+          // Only a change is checked: an address the guest already has
+          // (from before the domains were set) never blocks a reply.
+          if (
+            invite.event.visibility === 'PUBLIC' &&
+            !isEmailInAllowedDomains(normalizedEmail, invite.event.registrationEmailDomains)
+          ) {
+            throw emailDomainRefusal(invite.event.registrationEmailDomains);
+          }
+          guestUpdateData.email = normalizedEmail;
+        }
       } else if (emailIntent.kind === 'remove' && invite.guest.email !== null) {
         guestUpdateData.email = null;
       }
@@ -547,29 +568,14 @@ export const rsvpService = {
         : invite.deliveryMethod === 'EMAIL' && !finalEmail ? ('SMS' as const)
         : null;
 
-      // Same duplicate rule as guest.service.ts's create/import paths
-      // (STEERING: same email/phone on the same event is a duplicate) —
-      // only queried when a contact is actually changing, since this is
-      // the one extra read this whole block can't avoid.
-      if (guestUpdateData.email || guestUpdateData.phoneNumber) {
-        const duplicate = await tx.guest.findFirst({
-          where: {
-            eventId: invite.eventId,
-            isArchived: false,
-            id: { not: invite.guestId },
-            OR: [
-              ...(guestUpdateData.email ? [{ email: guestUpdateData.email }] : []),
-              ...(guestUpdateData.phoneNumber ? [{ phoneNumber: guestUpdateData.phoneNumber }] : []),
-            ],
-          },
-          select: { id: true },
-        });
-        if (duplicate) {
-          throw new HttpError(
-            409,
-            `Another guest on this event is already using this ${guestUpdateData.email ? 'email address' : 'phone number'}.`
-          );
-        }
+      // An email another guest on the event already has can't be taken
+      // (the same rule as organiser create and import). Refused with one
+      // neutral message and code whatever the cause, so the answer never
+      // says that another guest holds the address; how often one invite
+      // can ask is bounded by rsvpSubmitInviteLimiter (STEERING "Guest
+      // contact"). A phone is never checked: guests may share one.
+      if (guestUpdateData.email && (await guestRepository.isEmailUsedByOtherGuest(invite.eventId, guestUpdateData.email, invite.guestId, tx))) {
+        throw new HttpError(422, CONTACT_EMAIL_UNAVAILABLE_MESSAGE, CONTACT_ERROR_CODES.EMAIL_UNAVAILABLE);
       }
 
       // Required only when attending, and only when the guest has no name
@@ -1007,7 +1013,7 @@ export const rsvpService = {
       // otherwise), and that's exactly what guestEmailForReservation is.
       guestEmail: guestEmailForReservation as string,
       subaccountCode: freshReservation.subaccountCode,
-      callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(data.token)}`,
+      callbackUrl: frontendUrl(`/rsvp/payment-callback?token=${encodeURIComponent(data.token)}`),
     });
 
     if ('failed' in checkout) {
@@ -1062,7 +1068,7 @@ export const rsvpService = {
       platformChargeCents: outcome.platformChargeCents,
       guestEmail,
       subaccountCode: outcome.subaccountCode,
-      callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(token)}`,
+      callbackUrl: frontendUrl(`/rsvp/payment-callback?token=${encodeURIComponent(token)}`),
     });
 
     if ('failed' in checkout) {
