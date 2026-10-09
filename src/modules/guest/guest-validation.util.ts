@@ -1,6 +1,7 @@
 import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { normalizeEmail, isValidEmail } from '../../shared/utils/email.util.js';
+import { isUniqueViolationOfIndex } from '../../shared/utils/prisma-error.util.js';
 
 const DEFAULT_COUNTRY: CountryCode = 'ZA';
 
@@ -146,6 +147,18 @@ export const GUEST_PLUS_ONES_INVALID = 'GUEST_PLUS_ONES_INVALID';
 // own guest list, so there's nothing to hide from them (unlike RSVP's
 // neutral CONTACT_EMAIL_UNAVAILABLE).
 export const GUEST_EMAIL_TAKEN = 'GUEST_EMAIL_TAKEN';
+export const GUEST_EMAIL_TAKEN_MESSAGE = 'Another guest on this event already has this email address.';
+
+// The database's own guarantee of the same rule: a partial unique index on
+// (eventId, lower(email)) over live guests, created only in
+// 20261009091000_guest_email_unique (Prisma can't express it). Every path
+// that writes a guest's email maps a violation (two writes racing past the
+// pre-check) to that path's own refusal, never a 500.
+export const GUEST_EMAIL_UNIQUE_INDEX = 'Guest_eventId_email_live_key';
+
+export const isGuestEmailUniqueViolation = (err: unknown): boolean => isUniqueViolationOfIndex(err, GUEST_EMAIL_UNIQUE_INDEX);
+
+export const guestEmailTaken = (): HttpError => new HttpError(409, GUEST_EMAIL_TAKEN_MESSAGE, GUEST_EMAIL_TAKEN);
 export const PLUS_ONES_ALLOWED_MESSAGE = `Plus-ones allowed must be a whole number from 0 to ${MAX_PLUS_ONES_ALLOWED}.`;
 
 export const isValidPlusOnesAllowed = (value: unknown): value is number =>

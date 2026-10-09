@@ -317,10 +317,14 @@ already stored on a record is not re-checked when re-sent unchanged.
 `sendEmail` (`shared/messaging/email.engine.ts`). Never call Resend
 directly, and never hand-write email HTML. A builder describes its message
 as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
-`image`, `details`, `code`, `button`). The layout turns the same blocks
+`message`, `image`, `details`, `code`, `button`). `message` is an
+organiser's own multi-line words (an announcement, a cancellation note):
+left-aligned, escaped like everything else, its line breaks turned into
+`<br>` only after escaping. The layout turns the same blocks
 into the HTML part and the plain-text part, so the two always match.
 `sendEmail` requires `text`, so no email leaves without a plain-text part.
-Builders: `invite-message.util.ts` (invitation, reminder, registration),
+Builders: `invite-message.util.ts` (invitation, reminder, registration,
+announcement, cancellation),
 `auth-email.util.ts` (sign-in code, password reset) and
 `user-invite-email.util.ts` (team invitation).
 
@@ -381,6 +385,17 @@ again and that nothing changed if it wasn't them, the same button. Both
 go through `inviteDispatchService.sendRegistrationEmail`, so their From,
 Reply-To and design image are an invitation's.
 
+**The announcement and cancellation emails** (see "Announcements") are
+guest emails too, sent through `inviteDispatchService.sendGuestMessages`
+with an invitation's From and Reply-To (`resolveReplyTo`). An
+announcement: the organiser's subject as given (header-safe), the seal,
+"A message from <host>", the event name, their body as a `message` block,
+and the one "Open your e-velope" button to that guest's own invitation.
+The cancellation email: subject "<event> has been cancelled", no seal, the
+event name, its dates (every live day, labelled when several), the
+organiser's note when there is one, and **no button**. A self-registered
+guest gets the registration footer line on both.
+
 **The design image** is shown only for an `UPLOAD` design, rewritten to an
 explicit JPEG (`f_jpg,w_1200,c_limit`, displayed at 600px) with its alt
 text. **Never `f_auto` in email**: image proxies fetch with their own
@@ -435,8 +450,11 @@ Six documented exceptions:
   never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
   deliberately no update/delete method anywhere in
   `payment-ledger.repository.ts`.
-- The append-only send logs `SmsSendLog` and `InviteReminderLog` — a message
-  was sent, or failed to be, recorded once and never edited or archived.
+- The append-only send logs `SmsSendLog`, `InviteReminderLog`,
+  `Announcement` and `AnnouncementDelivery` — a message was sent, or failed
+  to be, recorded once and never edited or archived. An `Announcement` is
+  written when its send is claimed, so its failure count is summed from
+  its delivery rows at read time, never written back onto it.
 - Membership join rows, `VendorSpaceUser` and `EventAssignment` — "this
   person is on this space/event" is a current fact, set and unset as a
   whole; removing a membership deletes the row. The person and the
@@ -478,6 +496,7 @@ reason survives only in the server log.
 | 404 | Not found — **also** the correct response for cross-tenant access |
 | 409 | State conflict (already published, duplicate) |
 | 422 | Valid shape, unsatisfied preconditions |
+| 429 | A product limit on how often (announcements per event per day), always with a code |
 
 Messages are read by non-technical organisers. Write
 "This event is still a draft. Publish it before sending invitations." —
@@ -598,11 +617,31 @@ from 0 to 20."), a refused row on import, or
 `REGISTRATION_SETTINGS_PLUS_ONES_INVALID` in the settings, never a value
 that reaches the integer column and comes back a 500.
 
-`GUEST_EMAIL_TAKEN` (`PUT /api/guests/:id`, 409, "Another guest on this
-event already has this email address."): an organiser changing a guest's
-email to another guest's on the same event. A plain message, unlike
-RSVP's neutral `CONTACT_EMAIL_UNAVAILABLE`: the organiser can see their
-own guest list, so it tells them nothing new.
+`GUEST_EMAIL_TAKEN` (409, "Another guest on this event already has this
+email address."): an organiser adding a guest (`POST
+/api/events/:eventId/guests`) with, or changing one (`PUT /api/guests/:id`)
+to, an email another guest on the same event has; restoring an archived
+guest whose email a live guest now has; and the database's own unique
+index on a guest's email, on those paths and import (see "Guest
+contact"). A plain message, unlike RSVP's neutral
+`CONTACT_EMAIL_UNAVAILABLE`: the organiser can see their own guest list, so
+it tells them nothing new.
+
+`PLUS_ONES_OVER_ALLOWANCE` (`POST /api/rsvp/submit`, 422, "You can bring up
+to N plus-one(s)…"): more plus-ones named than the guest's own allowance;
+the form marks the plus-ones. It was an uncoded 400.
+
+Announcements (`/api/events/:eventId/announcements`, see "Announcements"):
+every 422 carries a code naming its field (`ANNOUNCEMENT_ERROR_CODES`,
+`announcement.service.ts`): `ANNOUNCEMENT_SUBJECT_REQUIRED`,
+`ANNOUNCEMENT_SUBJECT_TOO_LONG`, `ANNOUNCEMENT_BODY_REQUIRED`,
+`ANNOUNCEMENT_BODY_TOO_LONG`, `ANNOUNCEMENT_AUDIENCE_INVALID`,
+`ANNOUNCEMENT_DAY_INVALID`, and `ANNOUNCEMENT_NO_RECIPIENTS` (nobody in the
+audience has an email). The daily limit is 429
+`ANNOUNCEMENT_DAILY_LIMIT`, its message saying when the next one can go.
+Cancelling with a note over 1000 characters is 422
+`CANCELLATION_NOTE_TOO_LONG` (`POST /api/events/:id/cancel`). A wrong type
+(400) and a cancelled event (409) have none.
 
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
@@ -675,7 +714,8 @@ codebase: a feature is switched off by configuration, **never deleted**.
 - **Every new optional feature registers a flag** in the one registry,
   `FEATURE_NAMES` (`src/shared/features/feature-flags.ts`), under a
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
-  `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`.
+  `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
+  `announcements`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -726,6 +766,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
   - `teamMembers` off: `/api/users` (team management, assignments,
     invitations) and `/api/team-invites` are 404. Members already added,
     their assignments and the assignment lock carry on unchanged.
+  - `announcements` off: `/api/events/:eventId/announcements` is 404, and
+    cancelling an event emails nobody (`guestNotification: null`); the
+    cancel itself works as before.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -977,7 +1020,9 @@ DRAFT ──publish──> PUBLISHED ──(last day passes)──> COMPLETED (d
 - Every path returning an event returns the **effective** status. A list
   showing `PUBLISHED` while the detail shows `COMPLETED` is a bug.
 - `CANCELLED` is stored and has no reversal. Guests may already have been
-  told.
+  told. Cancelling emails every invited guest who hasn't declined (see
+  "Announcements"); the status write is conditional, so two cancels racing
+  email guests once.
 - `Event.status` has exactly one writer: `eventRepository.updateStatus()`.
   Do not add another.
 
@@ -1106,6 +1151,20 @@ phone-only while `sms` is off). A contact change is judged on what it
 leaves behind: never no contact, with `sms` off an email, and never
 an email another guest on the event has (409 `GUEST_EMAIL_TAKEN`,
 compared in normal form, `guestRepository.isEmailUsedByOtherGuest`).
+
+**The database guarantees it too:** a partial unique index,
+`Guest_eventId_email_live_key`, on `("eventId", lower("email"))` for live
+guests (`isArchived = false`, email set), created only in
+`20261009091000_guest_email_unique` (Prisma can't express it). The
+migration refuses to run while any duplicate exists;
+`scripts/report-guest-email-duplicates.ts` lists them, read-only. Two
+writes racing past the app's check trip the index, and each path answers
+with its own refusal, never a 500 (`isGuestEmailUniqueViolation`,
+`guest-validation.util.ts`): organiser create, update, import and restore
+409 `GUEST_EMAIL_TAKEN`, RSVP 422 `CONTACT_EMAIL_UNAVAILABLE`, and
+self-registration the ordinary "couldn't send" answer (identical either
+way; registering again re-sends the link). Archiving a guest frees their
+address; restoring them while a live guest has it is 409.
 
 Names are nullable — a guest imported by phone supplies their name when
 they RSVP.
@@ -1246,6 +1305,49 @@ The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`)
 and released if the send fails, so overlapping requests cannot double-send
 and a failed send never starts it. Every attempt, failures included, is
 written to `InviteReminderLog`.
+
+### Announcements
+
+Behind `announcements`. An organiser emails their guests ("Buses leave at
+18:00"): `POST /api/events/:eventId/announcements/preview` (`audience`,
+optional `eventDayId`: how many will receive it, and who can't be
+reached), `POST /api/events/:eventId/announcements` (`subject` up to 150
+characters, `body` up to 5000, plain text, both required) and `GET` for
+the history, newest first. Organiser only, tenant-scoped and under the
+assignment lock (`eventService.getScoped`).
+
+- **Who is invited.** Live (never archived) guests with a live invite who
+  are **not plus-ones** (covered by their host; their token is never given
+  out), whose invitation reached them (`deliveredAt`) or who registered
+  themselves. A guest still waiting on their invitation, or on a draft,
+  hasn't heard of the event, so no announcement reaches them.
+- **Audiences** (`announcement-audience.util.ts`, the one place):
+  `EVERYONE` (hasn't declined), `ATTENDING`, `NOT_REPLIED`,
+  `NOT_ATTENDING`. Narrowed to one live day, only guests invited to that
+  day count, and ATTENDING means said they'll come that day; NOT_ATTENDING
+  is declined, or accepted without that day; EVERYONE is ATTENDING or
+  NOT_REPLIED for it.
+- **Email only**, whatever `sms` says. A guest in the audience without an
+  email is counted and listed as unreachable (with their phone), never
+  silently skipped. An audience with nobody to email is 422.
+- **The daily limit:** 5 announcements per event in any rolling 24 hours
+  (`ANNOUNCEMENTS_PER_EVENT_PER_DAY`), then 429. Counted and claimed under
+  a row lock on the event, so racing sends can't pass it. The sender
+  address is shared by every tenant, so one organiser flooding inboxes
+  costs everyone's deliverability.
+- **A cancelled event can't send** (409, preview too); its history still
+  lists.
+- **History** (`Announcement`, append-only): event, kind, subject, body,
+  audience, day, sent by, sent at, recipients and unreachable counted when
+  the send is claimed; one `AnnouncementDelivery` per guest emailed, and
+  the failure count summed from those.
+- **Cancellation.** `POST /api/events/:id/cancel` takes an optional `note`
+  (up to 1000 characters, checked before anything is cancelled). Once
+  cancelled, every invited guest who hasn't declined is emailed (no day,
+  no limit) and it is recorded as kind `CANCELLATION`, unless nobody was in
+  the audience. Emails failing never undoes the cancel: the response is
+  the event plus `guestNotification` (sent, failed, each failure, the
+  unreachable guests, the record).
 
 ### Check-in
 
@@ -1639,8 +1741,11 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
   would skip them anyway; a registrant who lost their link registers again
   with the same email to have it re-sent.
-- **Announcements are not built.** Cancelling an event does not notify
-  guests.
+- **Announcements are email only and sent in the request.** A guest
+  without an email can't be reached (they are listed to the organiser),
+  and a large event's announcement or cancellation sends one email at a
+  time before the response returns, as invitations do. A crash mid-send
+  leaves fewer delivery rows than the announcement's recipient count.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
 - **Automated test coverage is thin.** The backend has a Vitest suite
@@ -1755,6 +1860,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     internal values; every form and settings error code; settings
     validation, scoping and the assignment lock; per-email and per-IP rate
     limits.
+  - **Announcements** (`tests/announcements/`): every audience with and
+    without a day, sent for real and checked against who got an email and
+    who was listed unreachable (archived guests and invites, guests never
+    invited and plus-ones never reached); the body escaped with its line
+    breaks kept, From, Reply-To and the one button to the guest's own
+    invitation; the history and its failure counts; the daily limit, also
+    under racing sends; every validation code; a cancelled event 409;
+    another tenant's event and a locked member's unassigned event 404; the
+    flag. The cancellation email: who gets it, no button, the note
+    escaped, recorded, failures reported while the cancel stands, a
+    too-long note cancelling nothing, a second or racing cancel emailing
+    nobody again, never refused by the limit, a draft emailing nobody, and
+    the flag off. Guest email uniqueness (`tests/guest/guest-email-unique.test.ts`):
+    RSVP's `PLUS_ONES_OVER_ALLOWANCE`, organiser add's `GUEST_EMAIL_TAKEN`,
+    the unique index and each path's answer to a violation, and the
+    migration refusing to run over duplicates.
   - **`FRONTEND_BASE_URL`** (`tests/config/`): a missing, blank or
     non-URL value refuses to load the app; share links are built by
     `frontendUrl`; no other file in `src/` reads the variable. Loading the

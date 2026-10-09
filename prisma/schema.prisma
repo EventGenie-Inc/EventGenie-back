@@ -186,6 +186,23 @@ enum SmsSendSource {
 // the same as FAILED. FAILED and EXPIRED both remain retryable via the
 // same TicketPurchase row (ticket-purchase.service.ts's retryPayment) —
 // only PAID is terminal.
+// Who an organiser's announcement goes to (announcement-audience.util.ts).
+// EVERYONE is every invited guest who hasn't declined; the others follow
+// the invite's reply. Narrowed to one day, each is judged on that day.
+enum AnnouncementAudience {
+  EVERYONE
+  ATTENDING
+  NOT_REPLIED
+  NOT_ATTENDING
+}
+
+// ANNOUNCEMENT: an organiser's message, counted against the daily limit.
+// CANCELLATION: the automatic email sent when the event is cancelled.
+enum AnnouncementKind {
+  ANNOUNCEMENT
+  CANCELLATION
+}
+
 enum TicketPurchaseStatus {
   PENDING
   PAID
@@ -542,6 +559,7 @@ model Event {
   eventSmsBundlePurchases EventSmsBundlePurchase[]
   smsSendLogs             SmsSendLog[]
   inviteReminderLogs      InviteReminderLog[]
+  announcements           Announcement[]
   // A list only because Prisma cannot express "unique among non-archived":
   // at most ONE non-archived row per event, enforced by the partial unique
   // index in the invitation_design migration. Read it through
@@ -595,6 +613,7 @@ model EventDay {
   attendances    Attendance[]
   checkIns       CheckIn[]
   programItems   ProgramItem[]
+  announcements  Announcement[]
 
   @@unique([eventId, label])
 }
@@ -636,11 +655,12 @@ model Guest {
   // and the guest list treat a self-registered guest like any other.
   selfRegisteredAt DateTime?
 
-  event       Event        @relation(fields: [eventId], references: [id])
-  invites     Invite[]
-  memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
-  hostGuest   Guest?       @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
-  plusOnes    Guest[]      @relation("GuestPlusOnes")
+  event                  Event                  @relation(fields: [eventId], references: [id])
+  invites                Invite[]
+  memoryItems            MemoryItem[]           @relation("MemoryItemUploadedByGuest")
+  hostGuest              Guest?                 @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
+  plusOnes               Guest[]                @relation("GuestPlusOnes")
+  announcementDeliveries AnnouncementDelivery[]
 }
 
 // ─────────────────────────────────────────
@@ -1230,6 +1250,61 @@ model InviteReminderLog {
 //  switched-away-from upload is NOT destroyed in Cloudinary (no hard
 //  delete); it stays findable by folder.
 // ─────────────────────────────────────────
+
+// ─────────────────────────────────────────
+//  ANNOUNCEMENTS — append-only, like InviteReminderLog: never edited or
+//  archived. An organiser's message to their guests, or the automatic
+//  email sent when the event is cancelled (kind). Written when the send is
+//  CLAIMED, before any email goes out, under a row lock on the event, so
+//  the daily limit (announcement.service.ts) holds when two sends race;
+//  recipientCount (guests emailed) and unreachableCount (guests in the
+//  audience with no email) are known at that point. What happened to each
+//  email is an AnnouncementDelivery row, and the failure count is summed
+//  from those at read time, the way PaymentLedgerEntry is: the row itself
+//  is never updated afterwards.
+// ─────────────────────────────────────────
+model Announcement {
+  id               String               @id @default(cuid())
+  eventId          String
+  kind             AnnouncementKind
+  // As sent: header-safe (sanitizeHeaderText), at most 150 characters.
+  subject          String
+  // Plain text, line breaks kept; escaped by the email layout. Null only
+  // for a cancellation sent without a note.
+  body             String?
+  audience         AnnouncementAudience
+  // Set when the organiser narrowed the audience to one day.
+  eventDayId       String?
+  // The organiser who sent it — a User.id (no relation, same as
+  // InviteReminderLog.sentBy).
+  sentBy           String
+  sentAt           DateTime             @default(now())
+  recipientCount   Int
+  unreachableCount Int
+
+  event      Event                  @relation(fields: [eventId], references: [id])
+  eventDay   EventDay?              @relation(fields: [eventDayId], references: [id])
+  deliveries AnnouncementDelivery[]
+
+  @@index([eventId, sentAt])
+}
+
+// One row per guest an announcement was emailed to, written once the
+// email has gone (or failed to). Append-only.
+model AnnouncementDelivery {
+  id             String   @id @default(cuid())
+  announcementId String
+  guestId        String
+  succeeded      Boolean
+  failureReason  String?
+  createdAt      DateTime @default(now())
+
+  announcement Announcement @relation(fields: [announcementId], references: [id])
+  guest        Guest        @relation(fields: [guestId], references: [id])
+
+  @@index([announcementId])
+  @@index([guestId])
+}
 
 model InvitationDesign {
   id                 String               @id @default(cuid())

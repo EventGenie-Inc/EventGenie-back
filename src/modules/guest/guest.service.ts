@@ -14,7 +14,8 @@ import {
   assertGuestHasEmail,
   assertValidPlusOnesAllowed,
   findDuplicateEmail,
-  GUEST_EMAIL_TAKEN,
+  guestEmailTaken,
+  isGuestEmailUniqueViolation,
 } from './guest-validation.util.js';
 import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
@@ -36,6 +37,13 @@ const assertEventAcceptsOrganiserGuestList = (visibility: string): void => {
       "Public events don't use an organiser-built guest list — guests add themselves when they RSVP."
     );
   }
+};
+
+// The unique index on a live guest's email (guest-validation.util.ts) is
+// the same refusal as the pre-checks: 409 GUEST_EMAIL_TAKEN, never a 500.
+const rethrowGuestEmailTaken = (err: unknown): never => {
+  if (isGuestEmailUniqueViolation(err)) throw guestEmailTaken();
+  throw err;
 };
 
 export const guestService = {
@@ -102,7 +110,7 @@ export const guestService = {
     // By email only: guests may share a phone (guest-validation.util.ts).
     const existingContacts = await guestRepository.findContactsForEvent(eventId);
     const duplicate = findDuplicateEmail(existingContacts.map((g) => ({ guestId: g.id, email: g.email })), email);
-    if (duplicate) throw new HttpError(409, 'A guest with this email already exists for this event');
+    if (duplicate) throw guestEmailTaken();
 
     await assertGuestsCreatable(event, 1);
 
@@ -117,7 +125,7 @@ export const guestService = {
       phoneNumber,
       eventDayIds: data.eventDayIds,
       plusOnesAllowed,
-    });
+    }).catch(rethrowGuestEmailTaken);
     return guest;
   },
 
@@ -151,7 +159,7 @@ export const guestService = {
         data.email !== undefined && nextEmail && nextEmail !== guest.email &&
         (await guestRepository.isEmailUsedByOtherGuest(guest.eventId, nextEmail, guest.id))
       ) {
-        throw new HttpError(409, 'Another guest on this event already has this email address.', GUEST_EMAIL_TAKEN);
+        throw guestEmailTaken();
       }
       if (!guest.hostGuestId && !nextEmail && !nextPhone) {
         throw new HttpError(422, 'A guest must have either an email or a phone number');
@@ -165,7 +173,7 @@ export const guestService = {
       ...data,
       ...(data.email !== undefined && { email: nextEmail }),
       ...(data.phoneNumber !== undefined && { phoneNumber: nextPhone }),
-    });
+    }).catch(rethrowGuestEmailTaken);
   },
 
   // Archiving a guest cascades to every one of their Invites — a bulk
@@ -204,12 +212,15 @@ export const guestService = {
     // precedent's documented simplification.
     const invites = await prisma.invite.findMany({ where: { guestId: id, isArchived: true } });
 
+    // A live guest may have this guest's email by now (archiving freed it):
+    // restoring would make two, so it is refused, by the unique index if
+    // not before.
     await prisma.$transaction(async (tx) => {
       await tx.guest.update({ where: { id }, data: { isArchived: false } });
       for (const invite of invites) {
         await tx.invite.update({ where: { id: invite.id }, data: { isArchived: false } });
       }
-    });
+    }).catch(rethrowGuestEmailTaken);
 
     return guestRepository.findById(id, true);
   },
@@ -241,7 +252,9 @@ export const guestService = {
 
     if (validRows.length > 0) {
       await assertGuestsCreatable(event, validRows.length);
-      await guestRepository.bulkCreateWithInvites(eventId, userId, validRows);
+      // A violation here is a guest added with one of these emails while
+      // the file was being checked: nothing was imported (one transaction).
+      await guestRepository.bulkCreateWithInvites(eventId, userId, validRows).catch(rethrowGuestEmailTaken);
     }
 
     return { totalRows, created: validRows.length, failed: failures.length, failures };

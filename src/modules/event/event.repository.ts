@@ -254,10 +254,14 @@ export const eventRepository = {
   // generic update() above (which no longer accepts a status field at
   // all) so a status transition can never be smuggled through a plain
   // PUT /api/events/:id alongside unrelated field edits.
-  updateStatus: (id: string, userId: string, status: EventStatus) =>
+  // `unlessStatus` makes the write conditional: it throws P2025 (Prisma's
+  // record-not-found) when the event is already in that status. Cancel
+  // passes CANCELLED, so of two cancels racing only one succeeds, and
+  // guests get one cancellation email, not two.
+  updateStatus: (id: string, userId: string, status: EventStatus, unlessStatus?: EventStatus) =>
     prisma.event
       .update({
-        where: { id },
+        where: { id, ...(unlessStatus ? { status: { not: unlessStatus } } : {}) },
         data: { status, updatedBy: userId },
       })
       .then(withPlainCoordinates),

@@ -1,5 +1,14 @@
 import 'dotenv/config';
-import { buildInviteEmail, buildReminderEmail, buildRegistrationEmail, buildRegistrationResendEmail, buildInviteRsvpLink, type InviteEmailInput } from '../src/modules/invite/invite-message.util.js';
+import {
+  buildInviteEmail,
+  buildReminderEmail,
+  buildRegistrationEmail,
+  buildRegistrationResendEmail,
+  buildAnnouncementEmail,
+  buildCancellationEmail,
+  buildInviteRsvpLink,
+  type InviteEmailInput,
+} from '../src/modules/invite/invite-message.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from '../src/modules/auth/auth-email.util.js';
 import { sendEmail } from '../src/shared/messaging/email.engine.js';
 import { frontendUrl } from '../src/shared/utils/frontend-url.util.js';
@@ -7,8 +16,9 @@ import { frontendUrl } from '../src/shared/utils/frontend-url.util.js';
 // ─────────────────────────────────────────
 //  SEND ONE OF EACH EMAIL, FOR A HUMAN TO LOOK AT
 //
-//  One invitation, one reminder, one sign-in code and one password reset,
-//  through Resend, to the address in TEST_EMAIL_TO and nowhere else.
+//  One of every email: invitation, reminder, registration and its re-send,
+//  an announcement, the cancellation email, sign-in code and password
+//  reset, through Resend, to the address in TEST_EMAIL_TO and nowhere else.
 //  Sample content only: no database, and the links lead nowhere real.
 //  The Reply-To is TEST_EMAIL_TO too, so replying to the test invite can
 //  be checked from the same inbox.
@@ -62,6 +72,27 @@ const emails = {
   reminder: buildReminderEmail(input),
   registration: buildRegistrationEmail(input),
   registrationResend: buildRegistrationResendEmail(input),
+  // A multi-line body with markup in it: the lines stay lines, and the
+  // markup arrives as text.
+  announcement: buildAnnouncementEmail({
+    eventName: input.eventName,
+    hostName: input.hostName,
+    organiserEmail: to,
+    selfRegistered: false,
+    subject: 'Buses leave at 18:00',
+    body:
+      'Hi everyone,\n\nThe buses to the reception leave from the cathedral at 18:00 sharp.\n' +
+      'Look for the <b>blue</b> signs.\n\nSee you there!',
+    rsvpLink: input.rsvpLink,
+  }),
+  cancellation: buildCancellationEmail({
+    eventName: input.eventName,
+    hostName: input.hostName,
+    organiserEmail: to,
+    selfRegistered: false,
+    days: input.days,
+    note: "We're so sorry to let you know.\nWe'll be in touch about a new date.",
+  }),
   otp: buildOtpEmail({ to, username: 'Test', code: '482913', validMinutes: 10 }),
   reset: buildPasswordResetEmail({ to, username: 'Test', resetLink: frontendUrl('/reset-password?test=1') }),
 };
@@ -69,9 +100,9 @@ const emails = {
 let failed = false;
 for (const [kind, email] of Object.entries(emails)) {
   const result = await sendEmail({ ...email, to });
-  console.log(`${kind.padEnd(8)} ${result.ok ? `sent  id=${result.messageId ?? '(none returned)'}` : `FAILED ${result.reason}`}`);
-  console.log(`         From: ${email.from}`);
-  console.log(`         Subject: ${email.subject}`);
+  console.log(`${kind.padEnd(18)} ${result.ok ? `sent  id=${result.messageId ?? '(none returned)'}` : `FAILED ${result.reason}`}`);
+  console.log(`${''.padEnd(19)}From: ${email.from}`);
+  console.log(`${''.padEnd(19)}Subject: ${email.subject}`);
   if (!result.ok) failed = true;
 }
 process.exit(failed ? 1 : 0);

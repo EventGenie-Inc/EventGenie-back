@@ -15,6 +15,7 @@ import {
   buildReminderSmsBody,
   buildRegistrationEmail,
   buildRegistrationResendEmail,
+  type BuiltEmail,
   type InviteDayLine,
   type InviteEmailDesign,
 } from './invite-message.util.js';
@@ -259,7 +260,51 @@ const dispatchOne = async (
   return { ok: true };
 };
 
+// One guest an announcement or the cancellation email goes to
+// (announcement.service.ts). Only guests with an email get here: a guest
+// without one is reported as unreachable before anything is sent.
+export interface GuestMessageRecipient {
+  guestId: string;
+  name: string;
+  email: string;
+  inviteToken: string;
+  selfRegistered: boolean;
+}
+
+export interface GuestMessageOutcome {
+  guestId: string;
+  name: string;
+  email: string;
+  ok: boolean;
+  reason?: string;
+}
+
 export const inviteDispatchService = {
+  // Announcements and the cancellation email: one email per guest, built
+  // by `build` with the event's Reply-To (resolved once, as for a batch of
+  // invitations), sent through sendEmail in sequence for the same reasons
+  // as sendBulk. Email only, whatever sms says: an announcement is never
+  // texted. A failed send is that guest's outcome, never an abort.
+  sendGuestMessages: async (
+    event: { tenantId: string; createdByUserId: string },
+    recipients: GuestMessageRecipient[],
+    build: (recipient: GuestMessageRecipient, organiserEmail: string | null) => BuiltEmail
+  ): Promise<GuestMessageOutcome[]> => {
+    const organiserEmail = await resolveReplyTo(event);
+    const outcomes: GuestMessageOutcome[] = [];
+    for (const recipient of recipients) {
+      const result = await sendEmail({ to: recipient.email, ...build(recipient, organiserEmail) });
+      outcomes.push({
+        guestId: recipient.guestId,
+        name: recipient.name,
+        email: recipient.email,
+        ok: result.ok,
+        ...(result.ok ? {} : { reason: result.reason ?? 'Delivery failed' }),
+      });
+    }
+    return outcomes;
+  },
+
   // Public self-registration (event-public.service.ts): emails one guest
   // their own link, right after they register or when the same email
   // registers again. Not a bulk send and never an SMS (registration
