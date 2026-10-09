@@ -8,6 +8,7 @@ import {
   normalizePhoneToE164,
   CONTACT_ERROR_CODES,
   GUEST_EMAIL_REQUIRED_MESSAGE,
+  isGuestEmailUniqueViolation,
 } from '../guest/guest-validation.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -333,7 +334,17 @@ export const eventPublicService = {
         new Date()
       );
       return { registrant } as const;
+    }).catch((err: unknown) => {
+      // The unique index on a live guest's email: an organiser (who takes no
+      // registration lock) added this address a moment ago.
+      if (isGuestEmailUniqueViolation(err)) return null;
+      throw err;
     });
+
+    // That address is on the list now, so this gets an answer that's the
+    // same either way, the "couldn't send" one; registering again re-sends
+    // their link.
+    if (!outcome) return registrationAnswer(false);
 
     // Already a guest: they're sent their own link whatever the answer
     // (a closing date or a full cap still re-sends it), and get the answer

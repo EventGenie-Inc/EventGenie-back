@@ -28,3 +28,23 @@ export const isUniqueViolationOn = (err: unknown, model: string, field: string):
 
   return false;
 };
+
+// True when err is a unique-constraint violation (P2002) of the named index:
+// for an index Prisma's schema can't express (a partial or expression index,
+// created only in a migration), where there is no model field to match on.
+// Same two places to look as above.
+export const isUniqueViolationOfIndex = (err: unknown, indexName: string): boolean => {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') return false;
+  const meta = (err.meta ?? {}) as {
+    target?: unknown;
+    driverAdapterError?: { cause?: { constraint?: { index?: unknown } } };
+  };
+  if (meta.target === indexName || (Array.isArray(meta.target) && meta.target.includes(indexName))) return true;
+  return meta.driverAdapterError?.cause?.constraint?.index === indexName;
+};
+
+// True when err is Prisma's "the record to update was not found" (P2025),
+// which a conditional update (a `where` beyond the id) throws when the
+// condition no longer holds.
+export const isRecordNotFound = (err: unknown): boolean =>
+  err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025';

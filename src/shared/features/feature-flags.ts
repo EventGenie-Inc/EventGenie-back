@@ -27,6 +27,7 @@ export const FEATURE_NAMES = [
   'invitationDesigns',
   'teamMembers',
   'publicEvents',
+  'announcements',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

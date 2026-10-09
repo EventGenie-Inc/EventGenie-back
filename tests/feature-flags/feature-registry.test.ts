@@ -69,6 +69,7 @@ describe('GET /api/config/features', () => {
       invitationDesigns: false,
       teamMembers: true,
       publicEvents: true,
+      announcements: true,
     });
   });
 

@@ -20,6 +20,7 @@ import { assertPublicEventsAvailable } from './public-events-availability.util.j
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { eventAssignmentLock, eventIdsFilter } from '../event-assignment/event-assignment-lock.util.js';
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
+import { isRecordNotFound } from '../../shared/utils/prisma-error.util.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -412,10 +413,11 @@ export const eventService = {
   //  been told, so recovering from a mistaken cancel is a support
   //  matter, not a self-service one. Cancelling does not archive the
   //  event or its guests and does not delete anything; it only blocks
-  //  outbound actions (Task 3) and marks the event. Guests are not
-  //  notified here — that needs the (unbuilt) Announcements feature —
-  //  and ticketed events don't trigger a refund here either — that
-  //  needs the (unbuilt) payment integration. Both are out of scope.
+  //  outbound actions (Task 3) and marks the event. Guests are emailed
+  //  by the caller, announcement.service.ts's cancelEvent (the cancel
+  //  route goes through it), once this has succeeded. Ticketed events
+  //  don't trigger a refund here — that needs the (unbuilt) payment
+  //  integration.
   // ─────────────────────────────────────────
   cancel: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const event = await eventService.getById(id, requestingRole, tenantId); // effective status
@@ -424,7 +426,15 @@ export const eventService = {
       throw new HttpError(409, 'This event has already been cancelled.');
     }
 
-    await eventRepository.updateStatus(id, userId, 'CANCELLED');
+    // Conditional: a second cancel racing this one past the check above is
+    // refused here, so the guests' cancellation email
+    // (announcement.service.ts's cancelEvent) goes out once.
+    try {
+      await eventRepository.updateStatus(id, userId, 'CANCELLED', 'CANCELLED');
+    } catch (err) {
+      if (isRecordNotFound(err)) throw new HttpError(409, 'This event has already been cancelled.');
+      throw err;
+    }
     return eventService.getById(id, requestingRole, tenantId);
   },
 };

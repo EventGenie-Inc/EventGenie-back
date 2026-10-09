@@ -34,6 +34,7 @@ import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.rout
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import eventPublicRouter from './modules/event-public/event-public.router.js';
 import registrationSettingsRouter from './modules/registration-settings/registration-settings.router.js';
+import announcementRouter from './modules/announcement/announcement.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
 import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
@@ -188,6 +189,7 @@ app.use('/api/events/:eventId/tickets', ticketRouter);
 app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
 app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
+app.use('/api/events/:eventId/announcements', announcementRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);

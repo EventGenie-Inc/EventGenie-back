@@ -120,10 +120,13 @@ export interface InviteEmailInput {
 
 export type BuiltEmail = Omit<OutgoingEmail, 'to'>;
 
-const senderFor = (input: InviteEmailInput): string =>
+// Who a guest email is from: the host, else the event name.
+type SenderSource = Pick<InviteEmailInput, 'eventName' | 'hostName'>;
+
+const senderFor = (input: SenderSource): string =>
   sanitizeDisplayName(input.hostName?.trim() || input.eventName);
 
-export const buildInviteFromHeader = (input: InviteEmailInput): string =>
+export const buildInviteFromHeader = (input: SenderSource): string =>
   formatFromHeader(`${senderFor(input)} via e-velope`, inviteSenderAddress());
 
 const preheaderFor = (input: InviteEmailInput): string => {
@@ -134,11 +137,14 @@ const preheaderFor = (input: InviteEmailInput): string => {
   return parts.filter((p): p is string => !!p).join(' · ');
 };
 
-const hostLine = (input: InviteEmailInput): EmailBlock[] =>
+const hostLine = (input: SenderSource): EmailBlock[] =>
   input.hostName?.trim() ? [{ kind: 'paragraph', text: `From ${input.hostName.trim()}`, muted: true }] : [];
 
-const guestReason = (input: InviteEmailInput): string =>
+const guestReason = (input: SenderSource): string =>
   `You received this because ${senderFor(input)} added you to their guest list.`;
+
+const registrantReason = (input: SenderSource): string =>
+  `You received this because you registered for ${sanitizeHeaderText(input.eventName)} on e-velope.`;
 
 const buildGuestEmail = (
   input: InviteEmailInput,
@@ -205,7 +211,7 @@ export const buildRegistrationEmail = (input: InviteEmailInput): BuiltEmail =>
     buildRegistrationEmailSubject(input),
     "You're registered",
     [{ kind: 'paragraph', text: 'Open your e-velope any time to change your answer.' }],
-    `You received this because you registered for ${sanitizeHeaderText(input.eventName)} on e-velope.`
+    registrantReason(input)
   );
 
 // The same email registering again (event-public.service.ts): their own
@@ -229,8 +235,106 @@ export const buildRegistrationResendEmail = (input: InviteEmailInput): BuiltEmai
           'Open it any time to change your answer. If that wasn’t you, you can ignore this email: nothing has changed.',
       },
     ],
-    `You received this because you registered for ${sanitizeHeaderText(input.eventName)} on e-velope.`
+    registrantReason(input)
   );
+
+// ─────────────────────────────────────────
+//  ANNOUNCEMENTS AND THE CANCELLATION EMAIL
+//
+//  Guest emails like an invitation: the same From ("<host> via e-velope")
+//  and Reply-To (resolveReplyTo), the same layout. An announcement is the
+//  organiser's subject as given and their body as plain text (the layout's
+//  `message` block escapes it and keeps its line breaks), then the one
+//  "Open your e-velope" button to that guest's own invitation. The
+//  cancellation email has no seal and no button: there's nothing left to
+//  reply to. It names the event and its dates, and the organiser's note
+//  when there is one.
+// ─────────────────────────────────────────
+export interface GuestMessageInput {
+  eventName: string;
+  hostName: string | null;
+  organiserEmail: string | null;
+  // A guest who registered themselves gets the registration footer line.
+  selfRegistered: boolean;
+}
+
+export interface AnnouncementEmailInput extends GuestMessageInput {
+  subject: string;
+  body: string;
+  rsvpLink: string;
+}
+
+export interface CancellationEmailInput extends GuestMessageInput {
+  // The event's live days, earliest first.
+  days: InviteDayLine[];
+  note: string | null;
+}
+
+const PREHEADER_LENGTH = 110;
+
+const firstLine = (text: string): string => {
+  const line = text.split(/\r\n?|\n/).map((l) => l.trim()).find(Boolean) ?? '';
+  return line.length > PREHEADER_LENGTH ? `${line.slice(0, PREHEADER_LENGTH - 1).trimEnd()}…` : line;
+};
+
+const guestMessageEmail = (input: GuestMessageInput, subject: string, preheader: string, blocks: EmailBlock[]): BuiltEmail => {
+  const reason = input.selfRegistered ? registrantReason(input) : guestReason(input);
+  const { html, text } = renderEmail({ subject, preheader, blocks, reason });
+  return {
+    from: buildInviteFromHeader(input),
+    ...(input.organiserEmail ? { replyTo: input.organiserEmail } : {}),
+    subject,
+    html,
+    text,
+  };
+};
+
+export const buildAnnouncementEmail = (input: AnnouncementEmailInput): BuiltEmail => {
+  const host = input.hostName?.trim();
+  return guestMessageEmail(input, sanitizeHeaderText(input.subject), firstLine(input.body) || input.eventName, [
+    { kind: 'seal' },
+    { kind: 'eyebrow', text: host ? `A message from ${host}` : 'A message about your e-velope' },
+    { kind: 'title', text: input.eventName },
+    { kind: 'message', text: input.body },
+    { kind: 'button', label: 'Open your e-velope', href: input.rsvpLink },
+  ]);
+};
+
+export const buildCancellationEmailSubject = (eventName: string): string =>
+  `${sanitizeHeaderText(eventName)} has been cancelled`;
+
+export const buildCancellationEmail = (input: CancellationEmailInput): BuiltEmail => {
+  const dates = input.days.map((day) => ({
+    heading: input.days.length > 1 ? day.label.trim() : null,
+    lines: [whenText(day)],
+  }));
+  const first = input.days[0];
+  const note = input.note?.trim();
+  return guestMessageEmail(
+    input,
+    buildCancellationEmailSubject(input.eventName),
+    [`${input.eventName} has been cancelled`, first ? formatGuestDate(first.date) : null].filter(Boolean).join(' · '),
+    [
+      { kind: 'eyebrow', text: 'This event has been cancelled' },
+      { kind: 'title', text: input.eventName },
+      ...hostLine(input),
+      ...(dates.length ? [{ kind: 'details' as const, groups: dates }] : []),
+      ...(note
+        ? [
+            { kind: 'paragraph' as const, text: `A note from ${senderFor(input)}:`, muted: true },
+            { kind: 'message' as const, text: note },
+          ]
+        : []),
+      {
+        kind: 'paragraph',
+        text: input.organiserEmail
+          ? 'There’s nothing you need to do. If you have a question, reply to this email.'
+          : 'There’s nothing you need to do.',
+        muted: true,
+      },
+    ]
+  );
+};
 
 export const buildInviteSmsBody = (eventName: string, rsvpLink: string): string =>
   `You're invited to ${eventName}! RSVP: ${rsvpLink}`;

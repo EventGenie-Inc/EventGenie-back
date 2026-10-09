@@ -18,6 +18,7 @@ import {
   PHONE_FORMAT_MESSAGE,
   GUEST_EMAIL_REQUIRED_MESSAGE,
   CONTACT_EMAIL_UNAVAILABLE_MESSAGE,
+  isGuestEmailUniqueViolation,
 } from '../guest/guest-validation.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
@@ -94,6 +95,10 @@ const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null, isEdit: boolean)
 // a non-platform actor. Invite.updatedBy is a plain String (not an FK to
 // User), so this sentinel documents the convention for guest-originated writes.
 const GUEST_ACTOR = 'guest-rsvp';
+
+// More plus-ones named than the guest's own allowance: the form marks the
+// plus-ones (it was an uncoded 400 before).
+export const PLUS_ONES_OVER_ALLOWANCE = 'PLUS_ONES_OVER_ALLOWANCE';
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
@@ -644,7 +649,14 @@ export const rsvpService = {
       }
 
       if (Object.keys(guestUpdateData).length > 0) {
-        await tx.guest.update({ where: { id: invite.guestId }, data: guestUpdateData });
+        // Another guest taking the same email between the check above and
+        // here trips the unique index: the same neutral refusal.
+        await tx.guest.update({ where: { id: invite.guestId }, data: guestUpdateData }).catch((err: unknown) => {
+          if (isGuestEmailUniqueViolation(err)) {
+            throw new HttpError(422, CONTACT_EMAIL_UNAVAILABLE_MESSAGE, CONTACT_ERROR_CODES.EMAIL_UNAVAILABLE);
+          }
+          throw err;
+        });
       }
       if (nextDeliveryMethod) {
         await tx.invite.update({ where: { id: invite.id }, data: { deliveryMethod: nextDeliveryMethod, updatedBy: GUEST_ACTOR } });
@@ -712,8 +724,9 @@ export const rsvpService = {
         const plusOneNames = data.plusOneNames ?? [];
         if (plusOneNames.length > invite.guest.plusOnesAllowed) {
           throw new HttpError(
-            400,
-            `You can bring up to ${invite.guest.plusOnesAllowed} plus-one(s). Please remove some and try again.`
+            422,
+            `You can bring up to ${invite.guest.plusOnesAllowed} plus-one(s). Please remove some and try again.`,
+            PLUS_ONES_OVER_ALLOWANCE
           );
         }
 
