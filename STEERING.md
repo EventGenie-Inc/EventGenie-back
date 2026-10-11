@@ -313,9 +313,23 @@ already stored on a record is not re-checked when re-sent unchanged.
 ### Email
 
 **Every email is rendered by one layout,** `renderEmail`
-(`shared/messaging/email-layout.ts`), and sent by one function,
-`sendEmail` (`shared/messaging/email.engine.ts`). Never call Resend
-directly, and never hand-write email HTML. A builder describes its message
+(`shared/messaging/email-layout.ts`), and sent by the email engine
+(`shared/messaging/email.engine.ts`): `sendEmail` for one message,
+`sendEmailBatch` for many. Never call Resend directly, and never
+hand-write email HTML.
+
+**Guest sends are batched.** Invitations, reminders, announcements and
+the cancellation email go through `sendEmailBatch`: Resend's batch
+endpoint, up to 100 emails per call (`RESEND_BATCH_LIMIT`), one call after
+another, never one email at a time. Each email is still its own message to
+one guest, with their own link, From and Reply-To. Permissive validation:
+an email Resend refuses fails alone, by its index, and the rest of its
+batch goes. A batch call that is refused or throws fails exactly that
+batch's emails, and the next batch still goes. Results come back one per
+email, so every guest's success or failure is recorded exactly as before
+(delivered, reminder log and cooldown, announcement delivery rows). SMS
+still goes one at a time; a single resend, registration and auth emails
+use `sendEmail`. A builder describes its message
 as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
 `message`, `image`, `details`, `code`, `button`). `message` is an
 organiser's own multi-line words (an announcement, a cancellation note):
@@ -640,7 +654,9 @@ every 422 carries a code naming its field (`ANNOUNCEMENT_ERROR_CODES`,
 audience has an email). The daily limit is 429
 `ANNOUNCEMENT_DAILY_LIMIT`, its message saying when the next one can go.
 Cancelling with a note over 1000 characters is 422
-`CANCELLATION_NOTE_TOO_LONG` (`POST /api/events/:id/cancel`). A wrong type
+`CANCELLATION_NOTE_TOO_LONG` (`POST /api/events/:id/cancel`), and
+cancelling an event whose last day has passed is 409
+`EVENT_ALREADY_HAPPENED` (vs the uncoded 409 for one already cancelled). A wrong type
 (400) and a cancelled event (409) have none.
 
 A code must never subdivide a case that is already deliberately generic
@@ -1015,6 +1031,10 @@ DRAFT ──publish──> PUBLISHED ──(last day passes)──> COMPLETED (d
   └──────cancel────────┴──> CANCELLED (stored, irreversible)
 ```
 
+A COMPLETED event can't be cancelled: 409 `EVENT_ALREADY_HAPPENED`, and
+nobody is emailed. There's nothing left to call off, and guests must not
+be told an event they attended was cancelled.
+
 - `COMPLETED` is **never stored** — derived at read time from the last
   event day. The database row still reads `PUBLISHED`.
 - Every path returning an event returns the **effective** status. A list
@@ -1301,9 +1321,10 @@ invite has not expired, and they were not reminded in the last 24 hours
 plus-ones are excluded at query level. Refused outright when the event is
 not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
 
-The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`)
-and released if the send fails, so overlapping requests cannot double-send
-and a failed send never starts it. Every attempt, failures included, is
+The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`,
+for the whole batch in one conditional write, `claimReminders`) and
+released for each guest whose send failed, so overlapping requests cannot
+double-send and a failed send never starts it. Every attempt, failures included, is
 written to `InviteReminderLog`.
 
 ### Announcements
@@ -1313,8 +1334,8 @@ Behind `announcements`. An organiser emails their guests ("Buses leave at
 optional `eventDayId`: how many will receive it, and who can't be
 reached), `POST /api/events/:eventId/announcements` (`subject` up to 150
 characters, `body` up to 5000, plain text, both required) and `GET` for
-the history, newest first. Organiser only, tenant-scoped and under the
-assignment lock (`eventService.getScoped`).
+the history: `{ announcements, dailyLimit }`, newest first. Organiser only,
+tenant-scoped and under the assignment lock (`eventService.getScoped`).
 
 - **Who is invited.** Live (never archived) guests with a live invite who
   are **not plus-ones** (covered by their host; their token is never given
@@ -1334,20 +1355,30 @@ assignment lock (`eventService.getScoped`).
   (`ANNOUNCEMENTS_PER_EVENT_PER_DAY`), then 429. Counted and claimed under
   a row lock on the event, so racing sends can't pass it. The sender
   address is shared by every tenant, so one organiser flooding inboxes
-  costs everyone's deliverability.
+  costs everyone's deliverability. The history's `dailyLimit` (`perDay`,
+  `windowHours`, `sentInWindow`, `remaining`, and `nextAvailableAt` once
+  none are left) is the same count the send enforces: **the frontend keeps
+  no copy of the number**, it shows these.
 - **A cancelled event can't send** (409, preview too); its history still
   lists.
 - **History** (`Announcement`, append-only): event, kind, subject, body,
   audience, day, sent by, sent at, recipients and unreachable counted when
-  the send is claimed; one `AnnouncementDelivery` per guest emailed, and
-  the failure count summed from those.
+  the send is claimed; one `AnnouncementDelivery` per guest emailed. Each
+  entry's `sentCount` and `failureCount` are both counted from those rows,
+  never `recipientCount` minus failures: after a crash mid-send some
+  recipients have no row, and they weren't reached.
 - **Cancellation.** `POST /api/events/:id/cancel` takes an optional `note`
   (up to 1000 characters, checked before anything is cancelled). Once
   cancelled, every invited guest who hasn't declined is emailed (no day,
   no limit) and it is recorded as kind `CANCELLATION`, unless nobody was in
   the audience. Emails failing never undoes the cancel: the response is
   the event plus `guestNotification` (sent, failed, each failure, the
-  unreachable guests, the record).
+  unreachable guests, the record). If the email couldn't be sent at all
+  (a database failure before any went), `guestNotification.error` tells the
+  organiser to **contact their guests directly**, never to send an
+  announcement (a cancelled event refuses them), and `failures` and
+  `unreachable` list every guest who wasn't reached; if even the audience
+  couldn't be loaded, the message says so and points at the guest list.
 
 ### Check-in
 
@@ -1742,10 +1773,11 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   would skip them anyway; a registrant who lost their link registers again
   with the same email to have it re-sent.
 - **Announcements are email only and sent in the request.** A guest
-  without an email can't be reached (they are listed to the organiser),
-  and a large event's announcement or cancellation sends one email at a
-  time before the response returns, as invitations do. A crash mid-send
-  leaves fewer delivery rows than the announcement's recipient count.
+  without an email can't be reached (they are listed to the organiser).
+  Every guest send still finishes before the response returns: batched,
+  300 guests are three Resend calls rather than 300, but there is no queue
+  behind it, and SMS is still one call per guest. A crash mid-send leaves
+  fewer delivery rows than the announcement's recipient count.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
 - **Automated test coverage is thin.** The backend has a Vitest suite
@@ -1781,7 +1813,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     the guest program contract, archived event days hidden from guests
     and refused at submit (`tests/rsvp/`); Memory Hub guest view,
     guest-safe wording and the per-invite upload rate limit
-    (`tests/memory-hub/`); invite email escaping (`tests/invite/`).
+    (`tests/memory-hub/`); invite email escaping (`tests/invite/`, which
+    sets its own `FRONTEND_BASE_URL` so it runs alone).
+  - **Batched sending** (`tests/invite/batch-sending.test.ts`): 100 per
+    Resend call in order, one refused email failing alone, a refused or
+    thrown batch call failing only its own recipients while the next batch
+    goes; over HTTP on a 205-guest event, invitations (each guest's own
+    link, delivered marked), reminders (cooldown and log per guest) and an
+    announcement (delivery rows) across three batches, with one batch
+    failing. How long a 300-guest send takes is measured, opt-in, by
+    `MEASURE_SEND_TIMING=1 npx vitest run tests/perf/send-timing.test.ts`.
   - **Emails** (`tests/email/`): every email through the shared layout,
     with a plain-text part, every user value escaped, the sender name
     sanitised, no "RSVP" in a subject, the design image only for UPLOAD,
@@ -1871,8 +1912,11 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     flag. The cancellation email: who gets it, no button, the note
     escaped, recorded, failures reported while the cancel stands, a
     too-long note cancelling nothing, a second or racing cancel emailing
-    nobody again, never refused by the limit, a draft emailing nobody, and
-    the flag off. Guest email uniqueness (`tests/guest/guest-email-unique.test.ts`):
+    nobody again, a completed event refused with `EVENT_ALREADY_HAPPENED`, never refused by the limit, a draft emailing nobody, and
+    the flag off; when it can't be sent at all, the message (contact
+    guests directly, never "send an announcement") and every guest not
+    reached listed. The history's `dailyLimit` and `sentCount` counted
+    from delivery rows (a crashed send). Guest email uniqueness (`tests/guest/guest-email-unique.test.ts`):
     RSVP's `PLUS_ONES_OVER_ALLOWANCE`, organiser add's `GUEST_EMAIL_TAKEN`,
     the unique index and each path's answer to a violation, and the
     migration refusing to run over duplicates.

@@ -20,7 +20,9 @@ import {
 } from './announcement-audience.util.js';
 import {
   type AnnouncementAudienceDto,
+  type AnnouncementDailyLimit,
   type AnnouncementDeliveryReport,
+  type AnnouncementHistory,
   type AnnouncementPreview,
   type AnnouncementView,
   type CancelEventDto,
@@ -179,7 +181,9 @@ const toView = (
     unreachableCount: number;
   },
   eventDayLabel: string | null,
-  failureCount: number
+  // Counted from the delivery rows (or, for the send just made, from the
+  // same outcomes those rows were written from).
+  counts: { sent: number; failed: number }
 ): AnnouncementView => ({
   id: row.id,
   kind: row.kind,
@@ -191,9 +195,28 @@ const toView = (
   sentBy: row.sentBy,
   sentAt: row.sentAt.toISOString(),
   recipientCount: row.recipientCount,
-  failureCount,
+  sentCount: counts.sent,
+  failureCount: counts.failed,
   unreachableCount: row.unreachableCount,
 });
+
+const countOutcomes = (outcomes: GuestMessageOutcome[]) => {
+  const failed = outcomes.filter((o) => !o.ok).length;
+  return { sent: outcomes.length - failed, failed };
+};
+
+// The window's announcements, oldest first (findSentSince), as the limit the
+// organiser sees: the same count and rule the send's claim enforces.
+const dailyLimitFrom = (recent: { sentAt: Date }[]): AnnouncementDailyLimit => {
+  const remaining = Math.max(0, ANNOUNCEMENTS_PER_EVENT_PER_DAY - recent.length);
+  return {
+    perDay: ANNOUNCEMENTS_PER_EVENT_PER_DAY,
+    windowHours: ANNOUNCEMENT_WINDOW_MS / (60 * 60 * 1000),
+    sentInWindow: recent.length,
+    remaining,
+    nextAvailableAt: remaining === 0 ? new Date(recent[0]!.sentAt.getTime() + ANNOUNCEMENT_WINDOW_MS).toISOString() : null,
+  };
+};
 
 const dailyLimitRefusal = (oldestInWindow: Date): HttpError => {
   const next = new Date(oldestInWindow.getTime() + ANNOUNCEMENT_WINDOW_MS);
@@ -251,9 +274,9 @@ const report = (
 const notifyCancellation = async (
   event: ScopedEvent,
   userId: string,
-  note: string | null
+  note: string | null,
+  selection: AudienceSelection
 ): Promise<AnnouncementDeliveryReport> => {
-  const selection = await resolveAudience(event.id, 'EVERYONE', null);
   if (!selection.reachable.length && !selection.unreachable.length) return report(null, [], selection);
 
   const subject = buildCancellationEmailSubject(event.name);
@@ -280,7 +303,38 @@ const notifyCancellation = async (
       note,
     })
   );
-  return report(toView(row, null, outcomes.filter((o) => !o.ok).length), outcomes, selection);
+  return report(toView(row, null, countOutcomes(outcomes)), outcomes, selection);
+};
+
+// The cancellation email couldn't be sent at all (a database read or write
+// failed before any email went: sending itself never throws). Cancelled
+// events refuse announcements, so the organiser is told to contact guests
+// directly, and every guest who should have been told is listed: those
+// with an email as failures, those without as unreachable. If even the
+// audience couldn't be loaded, the message says so and points at the guest
+// list instead.
+const CANCELLATION_NOT_SENT_REASON = "The cancellation email couldn't be sent.";
+
+const cancellationNotSent = (selection: AudienceSelection | null): AnnouncementDeliveryReport => {
+  const failures = (selection?.reachable ?? []).map((g) => ({
+    guestId: g.guestId,
+    name: g.name,
+    email: g.email,
+    reason: CANCELLATION_NOT_SENT_REASON,
+  }));
+  return {
+    announcement: null,
+    sent: 0,
+    failed: failures.length,
+    failures,
+    unreachableCount: selection?.unreachable.length ?? 0,
+    unreachable: selection?.unreachable ?? [],
+    error: selection
+      ? "Your event is cancelled, but we couldn't email your guests about it. Please contact them directly: " +
+        'every guest who wasn\'t reached is listed.'
+      : "Your event is cancelled, but we couldn't email your guests about it, or load the list of who should " +
+        'have been told. Please contact your guests directly, using your guest list.',
+  };
 };
 
 export const announcementService = {
@@ -362,15 +416,23 @@ export const announcementService = {
     );
 
     const dayLabel = eventDayId ? (event.eventDays.find((d) => d.id === eventDayId)?.label ?? null) : null;
-    return report(toView(row, dayLabel, outcomes.filter((o) => !o.ok).length), outcomes, selection);
+    return report(toView(row, dayLabel, countOutcomes(outcomes)), outcomes, selection);
   },
 
-  // Newest first. Cancelled events keep their history (the cancellation
-  // email is in it).
-  list: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<AnnouncementView[]> => {
+  // Newest first, each with what was sent and what failed counted from its
+  // delivery rows, and the daily limit as it stands. Cancelled events keep
+  // their history (the cancellation email is in it).
+  list: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<AnnouncementHistory> => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
-    const rows = await announcementRepository.findAllForEvent(event.id);
-    return rows.map((r) => toView(r, r.eventDay?.label ?? null, r._count.deliveries));
+    const [rows, counts, recent] = await Promise.all([
+      announcementRepository.findAllForEvent(event.id),
+      announcementRepository.countDeliveriesForEvent(event.id),
+      announcementRepository.findSentSince(event.id, new Date(Date.now() - ANNOUNCEMENT_WINDOW_MS)),
+    ]);
+    return {
+      announcements: rows.map((r) => toView(r, r.eventDay?.label ?? null, counts.get(r.id) ?? { sent: 0, failed: 0 })),
+      dailyLimit: dailyLimitFrom(recent),
+    };
   },
 
   // POST /api/events/:id/cancel. The note is checked BEFORE the event is
@@ -391,15 +453,14 @@ export const announcementService = {
     if (!isFeatureEnabled('announcements')) return { ...cancelled, guestNotification: null };
 
     let guestNotification: AnnouncementDeliveryReport;
+    let selection: AudienceSelection | null = null;
     try {
-      guestNotification = await notifyCancellation(cancelled, userId, note);
+      selection = await resolveAudience(cancelled.id, 'EVERYONE', null);
+      guestNotification = await notifyCancellation(cancelled, userId, note, selection);
     } catch (err) {
       // The event IS cancelled; an answer of 500 would say it wasn't.
       console.error(`[announcements] cancellation email for event ${eventId} failed:`, err);
-      guestNotification = {
-        ...report(null, [], { reachable: [], unreachable: [] }),
-        error: "Your event is cancelled, but we couldn't email your guests about it. Send them an announcement from the event page instead.",
-      };
+      guestNotification = cancellationNotSent(selection);
     }
     return { ...cancelled, guestNotification };
   },

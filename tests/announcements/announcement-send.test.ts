@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import app from '../../src/app.js';
-import { mockResendSend } from '../setup.js';
 import { installFirebaseMock, headersFor, createActor, assign, createEventWithDay, type Actor } from '../helpers/team.js';
 import { ANNOUNCEMENTS_PER_EVENT_PER_DAY } from '../../src/modules/announcement/announcement.service.js';
 import {
@@ -10,6 +9,9 @@ import {
   addGuest,
   cleanupAnnouncementFixtures,
   sentEmails,
+  clearSentEmails,
+  failEmailsTo,
+  acceptAllEmails,
   prisma,
   type AnnouncementEventFixture,
   type FixtureGuest,
@@ -98,9 +100,7 @@ describe('the email', () => {
 describe('the history', () => {
   it('records each announcement once, with its outcome, and lists newest first', async () => {
     // Ben's email fails at the provider; Ana's goes.
-    mockResendSend.mockImplementation(async (msg: { to: string }) =>
-      msg.to === ben.email ? { data: null, error: { message: 'Mailbox unavailable' } } : { data: { id: 'ok' }, error: null }
-    );
+    failEmailsTo([ben.email!], 'Mailbox unavailable');
     const first = await send({ ...base, subject: 'First' });
     expect(first.status).toBe(201);
     expect(first.body.data).toMatchObject({
@@ -118,20 +118,23 @@ describe('the history', () => {
       eventDayId: null,
       sentBy: fx.organiser.id,
       recipientCount: 2,
+      sentCount: 1,
       failureCount: 1,
       unreachableCount: 0,
     });
 
-    mockResendSend.mockResolvedValue({ data: { id: 'ok' }, error: null });
+    acceptAllEmails();
     await new Promise((r) => setTimeout(r, 20));
     const second = await send({ ...base, subject: 'Second', audience: 'ATTENDING' });
     expect(second.status).toBe(201);
 
     const res = await list();
     expect(res.status).toBe(200);
-    expect(res.body.data.map((a: { subject: string }) => a.subject)).toEqual(['Second', 'First']);
-    expect(res.body.data[1]).toEqual({ ...first.body.data.announcement });
-    expect(res.body.data[0]).toMatchObject({ audience: 'ATTENDING', recipientCount: 1, failureCount: 0 });
+    const history = res.body.data.announcements;
+    expect(history.map((a: { subject: string }) => a.subject)).toEqual(['Second', 'First']);
+    expect(history[1]).toEqual({ ...first.body.data.announcement });
+    expect(history[1]).toMatchObject({ recipientCount: 2, sentCount: 1, failureCount: 1 });
+    expect(history[0]).toMatchObject({ audience: 'ATTENDING', recipientCount: 1, sentCount: 1, failureCount: 0 });
 
     // One delivery row per guest emailed.
     const deliveries = await prisma.announcementDelivery.findMany({ where: { announcementId: first.body.data.announcement.id } });
@@ -141,17 +144,67 @@ describe('the history', () => {
   }, 60000);
 });
 
+describe('the history counts what was really sent', () => {
+  it("sentCount is the delivery rows that succeeded, not recipients minus failures (a send that crashed midway)", async () => {
+    // Claimed for 3 guests; the process died after one email went: one
+    // delivery row, no failures recorded.
+    const row = await prisma.announcement.create({
+      data: {
+        eventId: fx.eventId, kind: 'ANNOUNCEMENT', subject: 'Crashed', body: 'x', audience: 'EVERYONE',
+        sentBy: fx.organiser.id, recipientCount: 3, unreachableCount: 0,
+      },
+    });
+    await prisma.announcementDelivery.create({ data: { announcementId: row.id, guestId: ana.guestId, succeeded: true } });
+
+    const res = await list();
+    expect(res.status).toBe(200);
+    expect(res.body.data.announcements).toEqual([
+      expect.objectContaining({ id: row.id, recipientCount: 3, sentCount: 1, failureCount: 0 }),
+    ]);
+  }, 30000);
+});
+
+describe('the daily limit, as the history reports it', () => {
+  const limitNow = async () => (await list()).body.data.dailyLimit;
+
+  it('says how many are left in the rolling 24 hours, and when the next one can go once none are', async () => {
+    expect(await limitNow()).toEqual({ perDay: ANNOUNCEMENTS_PER_EVENT_PER_DAY, windowHours: 24, sentInWindow: 0, remaining: 5, nextAvailableAt: null });
+
+    // Neither an announcement older than 24 hours nor the cancellation email counts.
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await prisma.announcement.create({
+      data: { eventId: fx.eventId, kind: 'ANNOUNCEMENT', subject: 'Old', body: 'x', audience: 'EVERYONE', sentBy: fx.organiser.id, sentAt: old, recipientCount: 2, unreachableCount: 0 },
+    });
+    await prisma.announcement.create({
+      data: { eventId: fx.eventId, kind: 'CANCELLATION', subject: 'Cancelled', body: null, audience: 'EVERYONE', sentBy: fx.organiser.id, recipientCount: 2, unreachableCount: 0 },
+    });
+    expect((await send({ ...base, subject: 'One' })).status).toBe(201);
+    expect((await send({ ...base, subject: 'Two' })).status).toBe(201);
+    expect(await limitNow()).toMatchObject({ sentInWindow: 2, remaining: 3, nextAvailableAt: null });
+
+    for (const n of [3, 4, 5]) expect((await send({ ...base, subject: `Update ${n}` })).status).toBe(201);
+    const oldest = await prisma.announcement.findFirstOrThrow({ where: { eventId: fx.eventId, subject: 'One' } });
+    const limit = await limitNow();
+    expect(limit).toEqual({
+      perDay: 5, windowHours: 24, sentInWindow: 5, remaining: 0,
+      nextAvailableAt: new Date(oldest.sentAt.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    });
+    // The list agrees with the send: the next one is refused.
+    expect((await send({ ...base, subject: 'Six' })).status).toBe(429);
+  }, 120000);
+});
+
 describe('the daily limit', () => {
   it(`allows ${ANNOUNCEMENTS_PER_EVENT_PER_DAY} in 24 hours, then 429 with a code, sending and recording nothing`, async () => {
     for (let i = 1; i <= ANNOUNCEMENTS_PER_EVENT_PER_DAY; i++) {
       expect((await send({ ...base, subject: `Update ${i}` })).status).toBe(201);
     }
-    mockResendSend.mockClear();
+    clearSentEmails();
     const refused = await send({ ...base, subject: 'One too many' });
     expect(refused.status).toBe(429);
     expect(refused.body.code).toBe('ANNOUNCEMENT_DAILY_LIMIT');
     expect(refused.body.message).toMatch(/You can send the next one from \d\d:\d\d UTC on /);
-    expect(mockResendSend).not.toHaveBeenCalled();
+    expect(sentEmails()).toHaveLength(0);
     expect(await prisma.announcement.count({ where: { eventId: fx.eventId } })).toBe(ANNOUNCEMENTS_PER_EVENT_PER_DAY);
   }, 120000);
 
@@ -218,7 +271,7 @@ describe('refusals', () => {
     expect(res.body.message).toBe("This event has been cancelled, so announcements can't be sent.");
     expect((await preview(cancelled.organiser, cancelled.eventId)).status).toBe(409);
     expect((await list(cancelled.organiser, cancelled.eventId)).status).toBe(200);
-    expect(mockResendSend).not.toHaveBeenCalled();
+    expect(sentEmails()).toHaveLength(0);
   }, 60000);
 });
 
@@ -229,7 +282,7 @@ describe('who may send', () => {
     expect((await sendAs(stranger, fx.eventId, base)).status).toBe(404);
     expect((await preview(stranger)).status).toBe(404);
     expect((await list(stranger)).status).toBe(404);
-    expect(mockResendSend).not.toHaveBeenCalled();
+    expect(sentEmails()).toHaveLength(0);
     expect(await prisma.announcement.count({ where: { eventId: fx.eventId } })).toBe(0);
   }, 60000);
 
@@ -242,7 +295,7 @@ describe('who may send', () => {
     expect((await sendAs(member, fx.eventId, base)).status).toBe(404);
     expect((await preview(member)).status).toBe(404);
     expect((await list(member)).status).toBe(404);
-    expect(mockResendSend).not.toHaveBeenCalled();
+    expect(sentEmails()).toHaveLength(0);
 
     await assign(fx.tenantId, member.id, fx.eventId, fx.organiser.id);
     expect((await sendAs(member, fx.eventId, base)).status).toBe(201);
@@ -253,6 +306,6 @@ describe('who may send', () => {
     expect((await send()).status).toBe(404);
     expect((await preview()).status).toBe(404);
     expect((await list()).status).toBe(404);
-    expect(mockResendSend).not.toHaveBeenCalled();
+    expect(sentEmails()).toHaveLength(0);
   }, 30000);
 });

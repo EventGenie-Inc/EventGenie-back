@@ -101,6 +101,10 @@ export const resolveEventScope = async (requestingRole: PlatformRole, tenantId: 
 // promotion), so any rows at all means a locked EVENT_ADMIN. An unlocked
 // creator stays unlocked: assigning them would narrow them to one event.
 // Shared with the wizard's materialize (event-draft.service.ts).
+// Cancel on an event whose last day has passed. Its own code, apart from the
+// "already cancelled" 409, so the organiser's screen can say which.
+export const EVENT_ALREADY_HAPPENED = 'EVENT_ALREADY_HAPPENED';
+
 export const isCreatorLocked = async (userId: string): Promise<boolean> =>
   (await eventAssignmentRepository.countForUser(userId)) > 0;
 
@@ -407,7 +411,7 @@ export const eventService = {
   },
 
   // ─────────────────────────────────────────
-  //  CANCEL — DRAFT/PUBLISHED/(effectively-)COMPLETED → CANCELLED
+  //  CANCEL — DRAFT/PUBLISHED → CANCELLED (never a COMPLETED one)
   //
   //  Not reversible — there is no un-cancel. Guests may already have
   //  been told, so recovering from a mistaken cancel is a support
@@ -424,6 +428,12 @@ export const eventService = {
 
     if (event.status === 'CANCELLED') {
       throw new HttpError(409, 'This event has already been cancelled.');
+    }
+    // Its last day has passed (the derived COMPLETED): there is nothing left
+    // to call off, and guests must not be told an event they attended was
+    // cancelled.
+    if (event.status === 'COMPLETED') {
+      throw new HttpError(409, 'This event has already taken place, so it can no longer be cancelled.', EVENT_ALREADY_HAPPENED);
     }
 
     // Conditional: a second cancel racing this one past the check above is

@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import app from '../../src/app.js';
-import { mockResendSend } from '../setup.js';
 import { installFirebaseMock, headersFor } from '../helpers/team.js';
 import {
   createAnnouncementEvent,
   addGuest,
   cleanupAnnouncementFixtures,
   sentTo,
+  clearSentEmails,
   prisma,
   type AnnouncementEventFixture,
   type FixtureGuest,
@@ -67,7 +67,7 @@ const emailsOf = (...names: string[]) => names.map((n) => g[n]!.email!).sort();
 const send = async (audience: string, eventDayId?: string) => {
   await prisma.announcementDelivery.deleteMany({ where: { announcement: { eventId: fx.eventId } } });
   await prisma.announcement.deleteMany({ where: { eventId: fx.eventId } });
-  mockResendSend.mockClear();
+  clearSentEmails();
   const res = await request(app)
     .post(`/api/events/${fx.eventId}/announcements`)
     .set(headersFor(fx.organiser))

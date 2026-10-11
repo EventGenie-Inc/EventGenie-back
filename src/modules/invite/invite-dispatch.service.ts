@@ -6,7 +6,7 @@ import { assertSmsSendable, type SmsSendPool } from '../subscription-tier-config
 import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
 import { inviteReminderLogRepository } from '../invite-reminder-log/invite-reminder-log.repository.js';
 import { sendSms } from '../../shared/messaging/sms.engine.js';
-import { sendEmail } from '../../shared/messaging/email.engine.js';
+import { sendEmail, sendEmailBatch } from '../../shared/messaging/email.engine.js';
 import {
   buildInviteRsvpLink,
   buildInviteEmail,
@@ -42,10 +42,17 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 // dependency set: engines, tier enforcement, message builders, sms log.
 // Never touches the Twilio/Resend SDKs directly — only sendSms/sendEmail.
 //
-// Reminders (remindBulk) go through this SAME dispatchOne — one dispatch
+// Reminders (remindBulk) go through this SAME dispatch — one dispatch
 // path, one place a message reaches an engine and an SMS is counted. The
 // only differences between an invitation and a reminder are the words, and
 // that a reminder must not touch Invite.deliveredAt.
+//
+// A batch (invitations, reminders, announcements, the cancellation email)
+// sends its emails through sendEmailBatch, up to 100 per Resend call, so a
+// few hundred guests take a few calls instead of a few hundred one after
+// another inside the request. Every guest still gets their own message and
+// their own link, and their own success or failure. SMS still goes one at
+// a time (dispatchOne). A single resend uses dispatchOne too.
 
 export interface InviteDispatchFailure {
   guestId: string;
@@ -260,6 +267,43 @@ const dispatchOne = async (
   return { ok: true };
 };
 
+type DispatchResult = { ok: true } | { ok: false; reason: string };
+
+// A whole batch: every EMAIL invite in one sendEmailBatch, then every SMS
+// invite through dispatchOne as before. What success means afterwards is
+// dispatchOne's: an INVITE marks the delivered ones delivered (one write
+// for all of them), a REMINDER never does. Each invite's result goes into
+// `results` by id as soon as it is known, so if a write throws partway the
+// caller can still tell who was reached; callers report them in their own
+// order.
+const dispatchMany = async (
+  ctx: DispatchContext,
+  invites: DispatchableInvite[],
+  smsSource: SmsSendPool,
+  kind: DispatchKind,
+  results: Map<string, DispatchResult> = new Map()
+): Promise<Map<string, DispatchResult>> => {
+  const emailInvites = invites.filter((i) => i.deliveryMethod === 'EMAIL');
+  const sent = await sendEmailBatch(
+    emailInvites.map((invite) => ({
+      to: invite.guest.email ?? '',
+      ...buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token)).email,
+    }))
+  );
+  emailInvites.forEach((invite, i) => {
+    const result = sent[i]!;
+    results.set(invite.id, result.ok ? { ok: true } : { ok: false, reason: result.reason ?? 'Delivery failed' });
+  });
+  if (kind === 'INVITE') {
+    await inviteRepository.markDeliveredMany(emailInvites.filter((i) => results.get(i.id)?.ok).map((i) => i.id));
+  }
+
+  for (const invite of invites.filter((i) => i.deliveryMethod !== 'EMAIL')) {
+    results.set(invite.id, await dispatchOne(ctx, invite, smsSource, kind));
+  }
+  return results;
+};
+
 // One guest an announcement or the cancellation email goes to
 // (announcement.service.ts). Only guests with an email get here: a guest
 // without one is reported as unreachable before anything is sent.
@@ -282,27 +326,26 @@ export interface GuestMessageOutcome {
 export const inviteDispatchService = {
   // Announcements and the cancellation email: one email per guest, built
   // by `build` with the event's Reply-To (resolved once, as for a batch of
-  // invitations), sent through sendEmail in sequence for the same reasons
-  // as sendBulk. Email only, whatever sms says: an announcement is never
-  // texted. A failed send is that guest's outcome, never an abort.
+  // invitations), sent through sendEmailBatch. Email only, whatever sms
+  // says: an announcement is never texted. A failed send (one email, or a
+  // whole batch call) is those guests' outcome, never an abort.
   sendGuestMessages: async (
     event: { tenantId: string; createdByUserId: string },
     recipients: GuestMessageRecipient[],
     build: (recipient: GuestMessageRecipient, organiserEmail: string | null) => BuiltEmail
   ): Promise<GuestMessageOutcome[]> => {
     const organiserEmail = await resolveReplyTo(event);
-    const outcomes: GuestMessageOutcome[] = [];
-    for (const recipient of recipients) {
-      const result = await sendEmail({ to: recipient.email, ...build(recipient, organiserEmail) });
-      outcomes.push({
+    const results = await sendEmailBatch(recipients.map((recipient) => ({ to: recipient.email, ...build(recipient, organiserEmail) })));
+    return recipients.map((recipient, i) => {
+      const result = results[i]!;
+      return {
         guestId: recipient.guestId,
         name: recipient.name,
         email: recipient.email,
         ok: result.ok,
         ...(result.ok ? {} : { reason: result.reason ?? 'Delivery failed' }),
-      });
-    }
-    return outcomes;
+      };
+    });
   },
 
   // Public self-registration (event-public.service.ts): emails one guest
@@ -391,13 +434,13 @@ export const inviteDispatchService = {
     const failures: InviteDispatchFailure[] = [];
     let sent = 0;
 
-    // Sequential, not Promise.all — avoids bursting Twilio/Resend rate
-    // limits and keeps SmsSendLog writes ordered per tenant. Partial
-    // failure is expected and fine here (a different category from the
-    // pre-flight rejects above): one bad phone number must not abort the
-    // rest of the batch.
+    // Emails in batches, SMS one at a time (dispatchMany). Partial failure
+    // is expected and fine here (a different category from the pre-flight
+    // rejects above): one bad address or number must not abort the rest.
+    // Reported in the order the invites were loaded, as before.
+    const results = await dispatchMany(ctx, invites, smsSource, 'INVITE');
     for (const invite of invites) {
-      const result = await dispatchOne(ctx, invite, smsSource);
+      const result = results.get(invite.id)!;
       if (result.ok) {
         sent += 1;
       } else {
@@ -569,53 +612,69 @@ export const inviteDispatchService = {
     const failures: InviteDispatchFailure[] = [];
     let sent = 0;
 
-    // Sequential, for the same reasons as sendBulk.
-    for (const invite of toRemind) {
-      const claimedAt = new Date();
-      const claimed = await inviteRepository.claimReminder(
-        invite.id,
-        new Date(claimedAt.getTime() - REMINDER_COOLDOWN_MS),
+    // Claimed together, in one conditional write: only invites still
+    // pending and outside the cooldown are claimed. One that changed since
+    // it was classified (answered, or reminded by an overlapping request) is
+    // skipped and reported, as before.
+    const claimedAt = new Date();
+    const claimedIds = await inviteRepository.claimReminders(
+      toRemind.map((i) => i.id),
+      new Date(claimedAt.getTime() - REMINDER_COOLDOWN_MS),
+      claimedAt
+    );
+    const claimed = toRemind.filter((i) => claimedIds.has(i.id));
+    for (const invite of toRemind.filter((i) => !claimedIds.has(i.id))) {
+      skipReasons.push('STATE_CHANGED');
+      skippedGuests.push({
+        guestId: invite.guestId,
+        name: guestDisplayName(invite.guest),
+        contact: contactFor(invite),
+        reason: 'STATE_CHANGED',
+        message: SKIP_MESSAGES.STATE_CHANGED,
+      });
+    }
+
+    // A failed send must not start the cooldown: they never got it. The
+    // same if the batch throws partway: everyone not known to have been
+    // reached is released, and those who were keep their claim.
+    const releaseUnreached = () =>
+      inviteRepository.releaseReminderClaims(
+        claimed.filter((i) => !results.get(i.id)?.ok).map((i) => ({ id: i.id, previous: i.lastRemindedAt })),
         claimedAt
       );
-      if (!claimed) {
-        skipReasons.push('STATE_CHANGED');
-        skippedGuests.push({
-          guestId: invite.guestId,
-          name: guestDisplayName(invite.guest),
-          contact: contactFor(invite),
-          reason: 'STATE_CHANGED',
-          message: SKIP_MESSAGES.STATE_CHANGED,
-        });
-        continue;
-      }
+    const results = new Map<string, DispatchResult>();
+    try {
+      await dispatchMany(ctx, claimed, smsSource, 'REMINDER', results);
+    } catch (err) {
+      await releaseUnreached();
+      throw err;
+    }
+    await releaseUnreached();
 
-      let result: { ok: true } | { ok: false; reason: string };
-      try {
-        result = await dispatchOne(ctx, invite, smsSource, 'REMINDER');
-      } catch (err) {
-        await inviteRepository.releaseReminderClaim(invite.id, claimedAt, invite.lastRemindedAt);
-        throw err;
-      }
-      // A failed send must not start the cooldown: they never got it.
-      if (!result.ok) await inviteRepository.releaseReminderClaim(invite.id, claimedAt, invite.lastRemindedAt);
+    // The audit rows must never abort a batch that has already reached
+    // people — losing the per-guest results is worse than missing log rows,
+    // which are reported loudly instead.
+    try {
+      await inviteReminderLogRepository.createMany(
+        claimed.map((invite) => {
+          const result = results.get(invite.id)!;
+          return {
+            tenantId: event.tenantId,
+            eventId: event.id,
+            inviteId: invite.id,
+            deliveryMethod: invite.deliveryMethod,
+            succeeded: result.ok,
+            failureReason: result.ok ? null : result.reason,
+            sentBy: userId,
+          };
+        })
+      );
+    } catch (err) {
+      console.error(`[reminders] could not write the reminder log rows for event ${event.id}:`, err);
+    }
 
-      // The audit row must never abort a batch that has already texted
-      // people — losing the per-guest result mid-way is worse than a
-      // missing log row, which is reported loudly instead.
-      try {
-        await inviteReminderLogRepository.create({
-          tenantId: event.tenantId,
-          eventId: event.id,
-          inviteId: invite.id,
-          deliveryMethod: invite.deliveryMethod,
-          succeeded: result.ok,
-          failureReason: result.ok ? null : result.reason,
-          sentBy: userId,
-        });
-      } catch (err) {
-        console.error(`[reminders] could not write the reminder log row for invite ${invite.id}:`, err);
-      }
-
+    for (const invite of claimed) {
+      const result = results.get(invite.id)!;
       if (result.ok) {
         sent += 1;
       } else {

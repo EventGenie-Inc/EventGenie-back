@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
-import { mockResendSend } from '../setup.js';
+import { sentEmails, clearSentEmails } from '../helpers/sent-emails.js';
 import { rsvpService } from '../../src/modules/rsvp/rsvp.service.js';
 import { eventService } from '../../src/modules/event/event.service.js';
 import { inviteDispatchService, SMS_UNAVAILABLE_REASON } from '../../src/modules/invite/invite-dispatch.service.js';
@@ -102,7 +102,7 @@ describe('invitationDesigns off — /rsvp/validate', () => {
 });
 
 describe('invitationDesigns off — invite emails', () => {
-  const sentHtml = () => mockResendSend.mock.calls.map((c) => JSON.stringify(c[0])).join('\n');
+  const sentHtml = () => sentEmails().map((e) => JSON.stringify(e)).join('\n');
 
   it('the email carries the design image only while the feature is on', async () => {
     const { event, organiser, guest, addDesign } = await setup();
@@ -113,11 +113,11 @@ describe('invitationDesigns off — invite emails', () => {
     expect(on.sent).toBe(1);
     expect(sentHtml()).toContain('launch-mode-design.png');
 
-    mockResendSend.mockClear();
+    clearSentEmails();
     vi.stubEnv('FEATURES_DISABLED', 'invitationDesigns');
     const off = await inviteDispatchService.sendBulk(event.id, [guest.id], 'TENANT_ADMIN', organiser.tenantId);
     expect(off.sent).toBe(1);
-    expect(mockResendSend).toHaveBeenCalledTimes(1);
+    expect(sentEmails()).toHaveLength(1);
     expect(sentHtml()).not.toContain('launch-mode-design');
   }, 90000);
 });
@@ -144,7 +144,7 @@ describe('sms off — invite sending', () => {
       { guestId: phoneGuest.id, name: 'Phone Only', contact: '+27825550123', reason: SMS_UNAVAILABLE_REASON },
     ]);
     expect(mockTwilioCreate).not.toHaveBeenCalled();
-    expect(mockResendSend).toHaveBeenCalledTimes(1);
+    expect(sentEmails()).toHaveLength(1);
     // Not delivered, so it can be sent again once the guest has an email.
     const smsInvite = await prisma.invite.findFirstOrThrow({ where: { guestId: phoneGuest.id } });
     expect(smsInvite.deliveredAt).toBeNull();

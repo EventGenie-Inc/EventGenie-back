@@ -7,14 +7,18 @@ import { type DeliveryMethod } from '@prisma/client';
 // invite-dispatch.service.ts is the only writer. Cooldown is NOT read from
 // here — that is Invite.lastRemindedAt, claimed atomically; this table is
 // the record of what actually happened.
+interface ReminderLogEntry {
+  tenantId: string;
+  eventId: string;
+  inviteId: string;
+  deliveryMethod: DeliveryMethod;
+  succeeded: boolean;
+  failureReason: string | null;
+  sentBy: string;
+}
+
 export const inviteReminderLogRepository = {
-  create: (entry: {
-    tenantId: string;
-    eventId: string;
-    inviteId: string;
-    deliveryMethod: DeliveryMethod;
-    succeeded: boolean;
-    failureReason: string | null;
-    sentBy: string;
-  }) => prisma.inviteReminderLog.create({ data: entry }),
+  // A whole reminder batch's rows, in one write.
+  createMany: (entries: ReminderLogEntry[]) =>
+    entries.length ? prisma.inviteReminderLog.createMany({ data: entries }) : Promise.resolve({ count: 0 }),
 };

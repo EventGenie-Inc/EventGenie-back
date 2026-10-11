@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildInviteEmail, buildReminderEmail, type InviteEmailInput } from '../../src/modules/invite/invite-message.util.js';
 
 // ─────────────────────────────────────────
@@ -9,6 +9,17 @@ import { buildInviteEmail, buildReminderEmail, type InviteEmailInput } from '../
 //  already did. Escaping now lives in the shared layout (email-layout.ts),
 //  which the builders hand plain text; this guards the same promise.
 // ─────────────────────────────────────────
+
+// Every email links to the frontend (the logo, the seal, the button), and
+// frontendUrl refuses to build a link without FRONTEND_BASE_URL. Nothing in
+// this file loads .env, so it sets its own; run alone, it used to fail on
+// the missing variable before reaching a single assertion.
+beforeEach(() => {
+  vi.stubEnv('FRONTEND_BASE_URL', 'https://frontend.example.test');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const HOSTILE_NAME = `<script>alert(1)</script> "&'`;
 const ESCAPED_NAME = '&lt;script&gt;alert(1)&lt;/script&gt; &quot;&amp;&#39;';
