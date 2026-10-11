@@ -76,17 +76,30 @@ export const announcementRepository = {
   createDeliveries: (rows: { announcementId: string; guestId: string; succeeded: boolean; failureReason: string | null }[]) =>
     rows.length ? prisma.announcementDelivery.createMany({ data: rows }) : Promise.resolve({ count: 0 }),
 
-  // Newest first, with the failures summed from the delivery rows.
+  // Newest first.
   findAllForEvent: (eventId: string) =>
     prisma.announcement.findMany({
       where: { eventId },
       orderBy: { sentAt: 'desc' },
-      include: {
-        eventDay: { select: { label: true } },
-        _count: { select: { deliveries: { where: { succeeded: false } } } },
-      },
+      include: { eventDay: { select: { label: true } } },
     }),
 
-  countFailedDeliveries: (announcementId: string) =>
-    prisma.announcementDelivery.count({ where: { announcementId, succeeded: false } }),
+  // How many of each announcement's emails went and how many failed, from
+  // the delivery rows (one query for the whole event).
+  countDeliveriesForEvent: async (eventId: string) => {
+    const groups = await prisma.announcementDelivery.groupBy({
+      by: ['announcementId', 'succeeded'],
+      where: { announcement: { eventId } },
+      _count: { _all: true },
+    });
+    const counts = new Map<string, { sent: number; failed: number }>();
+    for (const g of groups) {
+      const c = counts.get(g.announcementId) ?? { sent: 0, failed: 0 };
+      if (g.succeeded) c.sent = g._count._all;
+      else c.failed = g._count._all;
+      counts.set(g.announcementId, c);
+    }
+    return counts;
+  },
+
 };

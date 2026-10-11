@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { type InviteStatus } from '@prisma/client';
 import prisma from '../../src/shared/prisma/prisma.client.js';
-import { mockResendSend } from '../setup.js';
+import { sentEmails } from '../helpers/sent-emails.js';
 import { createTenant, createActor, createEventWithDay, deleteTenantsDeep, type Actor } from '../helpers/team.js';
 
 // ─────────────────────────────────────────
@@ -128,18 +128,7 @@ export const addGuest = async (fx: AnnouncementEventFixture, spec: GuestSpec): P
   return { guestId: guest.id, inviteId: invite.id, token, email };
 };
 
-// Every email the suite "sent" (Resend is mocked in tests/setup.ts).
-export interface SentEmail {
-  to: string;
-  from: string;
-  replyTo?: string;
-  subject: string;
-  html: string;
-  text: string;
-}
-
-export const sentEmails = (): SentEmail[] => mockResendSend.mock.calls.map((call) => call[0] as SentEmail);
-
 export const sentTo = (): string[] => sentEmails().map((e) => e.to).sort();
 
+export { sentEmails, clearSentEmails, failEmailsTo, acceptAllEmails, type SentEmail } from '../helpers/sent-emails.js';
 export { prisma };

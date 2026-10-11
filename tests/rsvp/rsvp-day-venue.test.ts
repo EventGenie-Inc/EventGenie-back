@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import app from '../../src/app.js';
-import { mockResendSend } from '../setup.js';
+import { sentEmails } from '../helpers/sent-emails.js';
 import { inviteDispatchService } from '../../src/modules/invite/invite-dispatch.service.js';
 import {
   createTestTenant,
@@ -120,8 +120,7 @@ describe('guest responses carry per-day venues', () => {
 
     const sentTo = async (guestId: string) => {
       const guest = await prisma.guest.findUniqueOrThrow({ where: { id: guestId } });
-      const call = mockResendSend.mock.calls.find(([arg]) => (arg as { to: string }).to === guest.email);
-      return call?.[0] as { html: string; text: string; from: string; replyTo?: string; subject: string };
+      return sentEmails().find((e) => e.to === guest.email)!;
     };
     const organiser = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
 
