@@ -1359,6 +1359,15 @@ model SubscriptionTierConfig {
   // Guest list export (.xlsx) — Celebrate and above. All-or-nothing
   // capability gate, same shape as memoryHubEnabled/dragDropBuilder.
   guestExportEnabled        Boolean          @default(false)
+  // Free Pilot — capabilities that used to be tied to a tier by name in
+  // code (tier-capabilities.util.ts). Set per tier by their migration to
+  // exactly what the code did: Spark had none of the first three, only
+  // Elevate had priority placement.
+  publicEventsEnabled       Boolean          @default(false)
+  paidTicketingEnabled      Boolean          @default(false)
+  customRsvpFieldsEnabled   Boolean          @default(false)
+  // Vendor spaces owned by a tenant on this tier rank first in discovery.
+  vendorPriorityPlacement   Boolean          @default(false)
   isAvailable               Boolean          @default(true)
   updatedAt                 DateTime         @updatedAt
 }

@@ -13,6 +13,11 @@ import {
 } from './vendor.types.js';
 import { type PlatformRole } from '@prisma/client';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { tiersWithCapability } from '../subscription-tier-config/tier-capabilities.util.js';
+
+// The tiers whose vendor spaces rank first in discovery: a tier setting
+// (vendorPriorityPlacement), read once per search.
+const priorityTiers = () => tiersWithCapability('vendorPriorityPlacement');
 
 // ─────────────────────────────────────────
 //  VENDOR SERVICE
@@ -114,7 +119,7 @@ export const vendorService = {
     // a SPARK tenant is blocked from the marketplace both as a vendor
     // (assertVendorSpaceCreatable) and as a searcher (here).
     await assertVendorMarketplaceAccessible(requestingTenantId);
-    return vendorRepository.findSpacesNearLocation(latitude, longitude, radiusKm);
+    return vendorRepository.findSpacesNearLocation(latitude, longitude, await priorityTiers(), radiusKm);
   },
 
   // ─────────────────────────────────────────
@@ -127,7 +132,7 @@ export const vendorService = {
   // ─────────────────────────────────────────
   getBrowseVendors: async (requestingTenantId: string | null) => {
     await assertVendorMarketplaceAccessible(requestingTenantId);
-    return vendorRepository.findSpacesForBrowse();
+    return vendorRepository.findSpacesForBrowse(await priorityTiers());
   },
 
   // ─────────────────────────────────────────
@@ -168,7 +173,7 @@ export const vendorService = {
     }
     const { latitude, longitude } = firstDay;
 
-    return vendorRepository.findSpacesNearLocation(latitude, longitude, radiusKm);
+    return vendorRepository.findSpacesNearLocation(latitude, longitude, await priorityTiers(), radiusKm);
   },
 
   createSpace: async (

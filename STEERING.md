@@ -261,7 +261,9 @@ traffic on a shared IP never approaches it. The budget itself is never
 hardcoded on the frontend — `POST /api/memory-hub/guest-view`'s
 `limits.uploadRequestsPer5Min` reports the same constant the limiter
 enforces (`upload-constants.ts`'s
-`MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`).
+`MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`). The same `limits` carry
+what may be uploaded right now (`videosAllowed`, `videoMaxBytes`,
+`allowedFormats`), so the picker never offers a file the signature refuses.
 
 Public self-registration has no credential before it succeeds, so it is
 limited three ways: per **email** (5 an hour, keyed by the SHA-256 of the
@@ -652,12 +654,22 @@ every 422 carries a code naming its field (`ANNOUNCEMENT_ERROR_CODES`,
 `ANNOUNCEMENT_BODY_TOO_LONG`, `ANNOUNCEMENT_AUDIENCE_INVALID`,
 `ANNOUNCEMENT_DAY_INVALID`, and `ANNOUNCEMENT_NO_RECIPIENTS` (nobody in the
 audience has an email). The daily limit is 429
-`ANNOUNCEMENT_DAILY_LIMIT`, its message saying when the next one can go.
+`ANNOUNCEMENT_DAILY_LIMIT`, "You've sent the most announcements allowed in
+24 hours. Try again later.": no clock time, because the server could only
+write UTC. The frontend shows when the next one can go, in the organiser's
+own time zone, from the history's `dailyLimit.nextAvailableAt`.
 Cancelling with a note over 1000 characters is 422
 `CANCELLATION_NOTE_TOO_LONG` (`POST /api/events/:id/cancel`), and
 cancelling an event whose last day has passed is 409
 `EVENT_ALREADY_HAPPENED` (vs the uncoded 409 for one already cancelled). A wrong type
 (400) and a cancelled event (409) have none.
+
+`MEMORY_HUB_VIDEO_UNAVAILABLE` (422): a Memory Hub upload signature for a
+video while `memoryHubVideo` is off, on the organiser path (`POST
+/api/uploads/signature`, purpose `MEMORY_ITEM`) and the guest path (`POST
+/api/memory-hub/guest-upload-signature`, "Videos can't be added to this
+photo album right now. You can still add photos."). The uploader tells the
+person to pick a photo; any other 422 there is a bad file.
 
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
@@ -681,6 +693,35 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 Enforcement points differ: `maxGuestsPerEvent` is checked at **import
 time**; `maxSmsPerMonth` at **send time**, all-or-nothing.
 
+**No feature is tied to a tier by name in code.** Every paid-only feature
+is a `SubscriptionTierConfig` setting a `SUPER_ADMIN` can switch on for any
+tier, the free one included: `memoryHubEnabled`, `guestExportEnabled`,
+`vendorMarketplace`, `smsEnabled` (already settings), and
+`publicEventsEnabled`, `paidTicketingEnabled`, `customRsvpFieldsEnabled` and
+`vendorPriorityPlacement` (`tier-capabilities.util.ts`; they were Spark-
+and Elevate-by-name until the free pilot). Their migration set every tier
+to what the code did before. A tier with **no config row** keeps that old
+rule for these four rather than switching them off, so a database the
+seed never reached behaves as before. A new paid-only feature is a new
+setting, never a tier name in an `if`.
+
+**The frontend decides from settings, never from the plan's name.**
+`GET /api/tenants/me` carries `planSettings`: the limits (`maxEvents`,
+`maxGuestsPerEvent`, `maxSmsPerMonth`, `maxVendorSpaces`,
+`maxMemoryHubBytesPerEvent`, `null` = unlimited) and the on/off settings
+(`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
+`vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
+`customRsvpFieldsEnabled`, `vendorPriorityPlacement`) of the tenant's
+effective plan. One function resolves them, `resolvePlanSettings`
+(`plan-settings.util.ts`), with exactly the server's fallback when the
+tier has no config row; change an enforcement point's fallback and it
+changes too. A setting of a switched-off feature is left out, not sent as
+false. Whether to show, lock or badge a feature comes from these;
+`subscriptionTier` is for display (the plan's name on a billing screen)
+and is never compared in code. They are the tenant's plan: an event's own
+numbers, which an Event Pass can raise, come with the event (its
+`guestLimit`).
+
 **A new tier column needs a per-tier `UPDATE` in its migration.** `null` on a
 numeric limit means unlimited, so a migration that only does `ADD COLUMN`
 leaves every existing row unlimited — it fails **open**. Follow the `ADD
@@ -693,6 +734,10 @@ the seed has never run against they are `null`, i.e. unlimited. There is no
 production database yet, so nothing is broken today — the first one must be
 populated by hand.
 
+**While `payments` is off there is no upgrade path** (see "Feature
+flags"): tier refusals carry launch wording and the contact address, never
+a plan or a price.
+
 **Role gates hide. Tier gates show, with an upgrade path.** A role
 mismatch (an `EVENT_ADMIN` opening User Management) is an authorization
 boundary — they will never have access, so hide it entirely. A tier
@@ -704,6 +749,9 @@ to nav items, routes, and buttons alike; a tier-gated route must never
 
 Where "act on it" leads depends on who is asking and what is gated — and
 it is **never the public Pricing page for someone who is signed in**:
+
+Whether a feature is locked at all is read from `/me`'s `planSettings`
+(above), never from the plan's name.
 
 - **Signed-in tenant, tenant-scoped feature** (Vendor Space, Vendor
   Discovery). A locked click, or a direct URL hit, raises a confirmation
@@ -731,7 +779,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `FEATURE_NAMES` (`src/shared/features/feature-flags.ts`), under a
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
-  `announcements`.
+  `announcements`, `payments`, `memoryHubVideo`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -746,7 +794,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
 - **A shared path belongs to the feature it serves, not to whatever it
   touches.** The Paystack webhook, subscriptions and Event Pass use
   Paystack but are not ticketing; only the ticket routes and the payout
-  bank-details (subaccount) routes are.
+  bank-details (subaccount) routes are. Subscriptions, Event Pass and SMS
+  bundle purchases belong to `payments`; the webhook belongs to nothing
+  and is never switched off.
 - **Beyond its routes, a switched-off feature can't be reached by any
   other path.** Every refusal is a 422 checked BEFORE any tier check, so
   a tenant never hears an upgrade pitch for a feature that isn't on offer:
@@ -785,6 +835,24 @@ codebase: a feature is switched off by configuration, **never deleted**.
   - `announcements` off: `/api/events/:eventId/announcements` is 404, and
     cancelling an event emails nobody (`guestNotification: null`); the
     cancel itself works as before.
+  - `payments` off (the free launch pilot; switched back on when billing
+    returns): every route that starts or changes a payment is 404:
+    `/api/subscriptions` subscribe, change-tier, cancel and
+    update-card-link, and `/api/events/:eventId/pass` purchase, SMS bundle
+    purchase and both reconciles. The Paystack webhook keeps working, so a
+    payment started before the switch still lands, and so do the read-only
+    routes (current plan, plans, billing history, pass status). Every tier
+    refusal is then worded without plans, tiers, passes, upgrading, buying
+    or prices, with the launch contact instead ("You've reached the limit of
+    50 guest(s) for this event during our launch period. Contact us at
+    admin@e-velope.co.za if you need more."), keeping its status and code.
+    One place picks the wording: `tierRefusalMessage`
+    (`subscription-tier-config/tier-refusal-wording.util.ts`); a new tier
+    refusal goes through it.
+  - `memoryHubVideo` off: no Memory Hub upload signature for a video,
+    organiser or guest (422 `MEMORY_HUB_VIDEO_UNAVAILABLE`), and guest-view's
+    `limits` say so (`videosAllowed: false`, `videoMaxBytes: null`,
+    `allowedFormats` images only). Videos already uploaded stay and show.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1731,6 +1799,12 @@ is still a real remote Postgres, which is what catches round-trip bugs
 like the Prisma transaction timeout at 50 rows that a fast local database
 or a 5-row fixture would never show.
 
+**Every feature flag is on in tests,** whatever `.env`'s
+`FEATURES_DISABLED` says: `tests/setup.ts` sets it empty before anything
+loads `.env`, so a developer's launch-mode `.env` can't make a test pass or
+fail. A test about a switched-off feature sets the flag itself
+(`vi.stubEnv('FEATURES_DISABLED', …)`, undone by `vi.unstubAllEnvs()`).
+
 **Manual smoke runs use the dev database** with the seed accounts
 (`npm run seed`). They exist specifically so authenticated and
 cross-tenant flows can be clicked through, and two tenants exist
@@ -1936,7 +2010,25 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     email-only with SMS off, an `EVENT_VENDOR` user is 422, an SMS-only guest is a reported failure
     on send, resend and reminder, and with SMS off a phone-only guest is
     422 on create, update and public registration, refused per row on
-    import, and can't be left by an RSVP that removes the email.
+    import, and can't be left by an RSVP that removes the email. With
+    `payments` off (`payments-off-routes.test.ts`,
+    `payments-off-tier-wording.test.ts`): each payment route 404s, the
+    read-only billing routes answer, a pass bought before the switch is
+    confirmed by the webhook after it, and every tier refusal (events,
+    public, paid ticketing on both sides, custom questions, guests, export,
+    SMS three ways, Memory Hub three ways, vendors, the registration cap)
+    keeps its status and code with no plan wording. With `memoryHubVideo`
+    off (`tests/memory-hub/memory-hub-video-flag.test.ts`): video
+    signatures 422 for guests and organisers, photos still sign, and
+    guest-view's limits offer photos only.
+  - **Tier settings** (`tests/subscription/tier-capability-settings.test.ts`):
+    public events, paid ticketing, custom RSVP questions and vendor priority
+    placement each switched on for Spark and shown to change access; no
+    config row keeps the old rule; the super admin screen saves them and
+    refuses a non-boolean. `/api/tenants/me`'s `planSettings`
+    (`tests/tenant/tenant-me-plan-settings.test.ts`): a SPARK setting
+    changed shows in `/me`, no config row gives the enforcement fallback,
+    and a switched-off feature's settings are left out.
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and

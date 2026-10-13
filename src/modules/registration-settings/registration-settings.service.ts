@@ -1,6 +1,7 @@
 import { type PlatformRole } from '@prisma/client';
 import { eventService } from '../event/event.service.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { LAUNCH_CONTACT_EMAIL, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 import { eventPublicRepository } from '../event-public/event-public.repository.js';
 import {
   resolveRegistrationState,
@@ -123,7 +124,11 @@ export const registrationSettingsService = {
             : `The ${guestLimit.tenantTier} plan allows ${guestLimit.limit} guests per event`;
           throw new HttpError(
             422,
-            `${source}, so the registration cap can be at most ${guestLimit.limit}.`,
+            tierRefusalMessage(
+              `${source}, so the registration cap can be at most ${guestLimit.limit}.`,
+              `This event can have up to ${guestLimit.limit} guests during our launch period, so the registration cap ` +
+                `can be at most ${guestLimit.limit}. Contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.`
+            ),
             CODES.CAP_ABOVE_PLAN_LIMIT
           );
         }

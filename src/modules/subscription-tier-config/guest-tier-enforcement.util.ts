@@ -6,6 +6,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import { isEventPassActive, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { EVENT_PASS_GUEST_CAP } from '../event-pass/event-pass-plans.config.js';
+import { launchLimitMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 
 export interface GuestLimitInfo {
   limit: number | null; // effective limit for this event; null = unlimited
@@ -103,10 +104,16 @@ export const assertGuestsCreatable = async (
       : `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} guest(s) per event.`;
     const upgradeHint = resolved.boundByPass ? 'upgrade the pass' : 'upgrade the plan';
 
+    const counts =
+      `This event currently has ${existingCount} guest(s), and this would add ${additionalCount} more ` +
+      `(${projected} total) — ${over} over the limit.`;
+
     throw new HttpError(
       403,
-      `${source} This event currently has ${existingCount} guest(s), and this would add ${additionalCount} more ` +
-        `(${projected} total) — ${over} over the limit. Remove guests or ${upgradeHint} to continue.`
+      tierRefusalMessage(
+        `${source} ${counts} Remove guests or ${upgradeHint} to continue.`,
+        launchLimitMessage(`You've reached the limit of ${resolved.limit} guest(s) for this event`) + ` ${counts}`
+      )
     );
   }
 };

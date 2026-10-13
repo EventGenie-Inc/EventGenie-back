@@ -18,6 +18,12 @@ export interface CreateSubscriptionTierConfigDto {
   memoryHubEnabled: boolean;
   dragDropBuilder: boolean;
   guestExportEnabled: boolean;
+  // Free Pilot — tier-capabilities.util.ts. Optional on create: an omitted
+  // one gets that tier's old in-code default.
+  publicEventsEnabled?: boolean;
+  paidTicketingEnabled?: boolean;
+  customRsvpFieldsEnabled?: boolean;
+  vendorPriorityPlacement?: boolean;
 }
 
 export interface UpdateSubscriptionTierConfigDto {
@@ -33,5 +39,9 @@ export interface UpdateSubscriptionTierConfigDto {
   memoryHubEnabled?: boolean;
   dragDropBuilder?: boolean;
   guestExportEnabled?: boolean;
+  publicEventsEnabled?: boolean;
+  paidTicketingEnabled?: boolean;
+  customRsvpFieldsEnabled?: boolean;
+  vendorPriorityPlacement?: boolean;
   isAvailable?: boolean;
 }

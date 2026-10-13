@@ -36,7 +36,9 @@ router.get('/sms-bundle', requireFeature('sms'), requireEventAdmin, async (req: 
 
 // Purchase / reconcile routes — money-moving, gated requireTenantAdmin,
 // same convention as subscription.router.ts / payment-account.router.ts.
-router.post('/purchase', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+// Behind `payments` too (off for the free launch pilot), before the role
+// gate; the status reads above stay up either way.
+router.post('/purchase', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
@@ -46,7 +48,7 @@ router.post('/purchase', requireTenantAdmin, async (req: Request, res: Response,
   } catch (err) { next(err); }
 });
 
-router.post('/purchases/:purchaseId/reconcile', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/purchases/:purchaseId/reconcile', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const result = await eventPassService.reconcilePassPurchase(
@@ -59,7 +61,7 @@ router.post('/purchases/:purchaseId/reconcile', requireTenantAdmin, async (req: 
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchase', requireFeature('sms'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchase', requireFeature('sms'), requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
@@ -69,7 +71,7 @@ router.post('/sms-bundle/purchase', requireFeature('sms'), requireTenantAdmin, a
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireFeature('sms'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireFeature('sms'), requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const result = await eventPassService.reconcileSmsBundlePurchase(

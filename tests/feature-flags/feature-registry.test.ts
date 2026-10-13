@@ -70,6 +70,8 @@ describe('GET /api/config/features', () => {
       teamMembers: true,
       publicEvents: true,
       announcements: true,
+      payments: true,
+      memoryHubVideo: true,
     });
   });
 

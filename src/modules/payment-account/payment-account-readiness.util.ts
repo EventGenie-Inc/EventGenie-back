@@ -4,6 +4,8 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { paymentAccountRepository } from './payment-account.repository.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { isTierCapabilityEnabled } from '../subscription-tier-config/tier-capabilities.util.js';
+import { paidTicketingRefusal } from '../subscription-tier-config/event-tier-enforcement.util.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -30,8 +32,9 @@ export const assertTenantReadyToSellTickets = async (tenantId: string, db: Db = 
   const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId, db);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  if (resolveEffectiveTier(tenant) === 'SPARK') {
-    throw new HttpError(403, 'The SPARK plan does not support paid ticketing. Upgrade to CELEBRATE or ELEVATE to sell tickets.');
+  const tier = resolveEffectiveTier(tenant);
+  if (!(await isTierCapabilityEnabled(tier, 'paidTicketingEnabled'))) {
+    throw new HttpError(403, paidTicketingRefusal(tier));
   }
 
   if (tenant.paystackSubaccountStatus !== 'ACTIVE' || !tenant.paystackSubaccountCode) {
@@ -65,11 +68,9 @@ export const assertEventReadyToSellTickets = async (event: EntitlementDerivableE
   const tenant = await paymentAccountRepository.findStatusByTenantId(event.tenantId, db);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  if (resolveEventEntitlement(tenant, event) === 'SPARK') {
-    throw new HttpError(
-      403,
-      'The SPARK plan does not support paid ticketing. Upgrade to CELEBRATE or ELEVATE, or buy an Event Pass for this event, to sell tickets.'
-    );
+  const tier = resolveEventEntitlement(tenant, event);
+  if (!(await isTierCapabilityEnabled(tier, 'paidTicketingEnabled'))) {
+    throw new HttpError(403, paidTicketingRefusal(tier, true));
   }
 
   if (tenant.paystackSubaccountStatus !== 'ACTIVE' || !tenant.paystackSubaccountCode) {

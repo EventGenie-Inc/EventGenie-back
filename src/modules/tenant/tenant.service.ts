@@ -5,6 +5,7 @@ import { vendorRepository } from '../vendor/vendor.repository.js';
 import { withEffectiveStatus } from '../event/event-status.util.js';
 import { withEffectiveTier } from '../subscription/effective-tier.util.js';
 import { resolveVendorSpaceLimit } from '../vendor/vendor-tier-enforcement.util.js';
+import { resolvePlanSettings } from '../subscription-tier-config/plan-settings.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type ClientTenantDto, type ClientTenantDetailDto } from './tenant.types.js';
 import {
@@ -80,9 +81,13 @@ export const tenantService = {
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
     const effectiveTenant = withEffectiveTier(tenant);
+    // What the tenant's effective plan allows, resolved exactly as the
+    // server enforces it (plan-settings.util.ts). The frontend decides what
+    // to show from these, never from subscriptionTier's name.
+    const planSettings = await resolvePlanSettings(effectiveTenant.subscriptionTier);
     // A switched-off feature's limit is never shown to a tenant: with
     // vendors off there is no vendorSpaceLimit at all.
-    if (!isFeatureEnabled('vendors')) return toClientTenant(effectiveTenant);
+    if (!isFeatureEnabled('vendors')) return { ...toClientTenant(effectiveTenant), planSettings };
 
     const [limitInfo, currentCount] = await Promise.all([
       resolveVendorSpaceLimit(tenant),
@@ -91,6 +96,7 @@ export const tenantService = {
 
     return {
       ...toClientTenant(effectiveTenant),
+      planSettings,
       vendorSpaceLimit: {
         limit: limitInfo.limit, // null = unlimited; present whenever the vendors feature is on
         currentCount,

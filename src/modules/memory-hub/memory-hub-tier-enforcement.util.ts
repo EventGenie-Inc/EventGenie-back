@@ -3,6 +3,7 @@ import { subscriptionTierConfigRepository } from '../subscription-tier-config/su
 import { memoryHubRepository } from './memory-hub.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { launchLimitMessage, launchUnavailableMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 
 // Called before issuing an upload signature (organiser AND guest paths)
 // and before viewing/managing a hub in ways that assume the tier
@@ -54,7 +55,10 @@ export const assertMemoryHubAccessible = async (
       403,
       audience === 'guest'
         ? "This event doesn't have a photo album available."
-        : `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`
+        : tierRefusalMessage(
+            `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`,
+            launchUnavailableMessage('Memory Hub')
+          )
     );
   }
 };
@@ -119,9 +123,14 @@ export const assertMemoryHubQuotaAvailable = async (
     }
     const tenant = await tenantRepository.findById(event.tenantId);
     const effectiveTier = tenant ? resolveEventEntitlement(tenant, event) : 'current';
+    const limitMb = Math.round(maxBytes / (1024 * 1024));
     throw new HttpError(
       403,
-      `This event's Memory Hub has reached its ${Math.round(maxBytes / (1024 * 1024))}MB storage limit for the ${effectiveTier} plan. Remove items or upgrade the plan to add more.`
+      tierRefusalMessage(
+        `This event's Memory Hub has reached its ${limitMb}MB storage limit for the ${effectiveTier} plan. Remove items or upgrade the plan to add more.`,
+        launchLimitMessage(`This event's Memory Hub has reached its ${limitMb}MB storage limit`) +
+          ' Removing items also frees up space.'
+      )
     );
   }
 };

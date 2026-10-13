@@ -28,6 +28,12 @@ export const FEATURE_NAMES = [
   'teamMembers',
   'publicEvents',
   'announcements',
+  // Everything that starts or changes a payment (subscriptions, Event Pass
+  // and SMS bundle purchases). Off for the free launch pilot; the Paystack
+  // webhook and the read-only billing routes stay up either way.
+  'payments',
+  // Video in Memory Hub. Off: upload signatures are for photos only.
+  'memoryHubVideo',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];
