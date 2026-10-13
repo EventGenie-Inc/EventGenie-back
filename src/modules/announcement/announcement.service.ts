@@ -10,7 +10,6 @@ import {
 import { sanitizeHeaderText } from '../../shared/messaging/email-address.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
-import { formatGuestDate, formatGuestTime } from '../../shared/utils/guest-date.util.js';
 import { announcementRepository } from './announcement.repository.js';
 import {
   ANNOUNCEMENT_AUDIENCES,
@@ -218,15 +217,16 @@ const dailyLimitFrom = (recent: { sentAt: Date }[]): AnnouncementDailyLimit => {
   };
 };
 
-const dailyLimitRefusal = (oldestInWindow: Date): HttpError => {
-  const next = new Date(oldestInWindow.getTime() + ANNOUNCEMENT_WINDOW_MS);
-  return new HttpError(
+// No clock time in the message: the frontend shows when the next one can
+// go from the history's dailyLimit.nextAvailableAt, in the organiser's own
+// time zone. A time written here could only be UTC, which is wrong for
+// most of them.
+const dailyLimitRefusal = (): HttpError =>
+  new HttpError(
     429,
-    `You've sent ${ANNOUNCEMENTS_PER_EVENT_PER_DAY} announcements for this event in the last 24 hours, the most ` +
-      `allowed. You can send the next one from ${formatGuestTime(next)} UTC on ${formatGuestDate(next)}.`,
+    "You've sent the most announcements allowed in 24 hours. Try again later.",
     CODES.DAILY_LIMIT
   );
-};
 
 // Sends to the selection's reachable guests and writes one delivery row
 // each. The row writes must never turn a send that already reached guests
@@ -386,7 +386,7 @@ export const announcementService = {
     const row = await announcementRepository.withEventAnnouncementLock(event.id, async (tx, status) => {
       assertNotCancelled(status);
       const recent = await announcementRepository.findSentSince(event.id, new Date(Date.now() - ANNOUNCEMENT_WINDOW_MS), tx);
-      if (recent.length >= ANNOUNCEMENTS_PER_EVENT_PER_DAY) throw dailyLimitRefusal(recent[0]!.sentAt);
+      if (recent.length >= ANNOUNCEMENTS_PER_EVENT_PER_DAY) throw dailyLimitRefusal();
       return announcementRepository.create(
         {
           eventId: event.id,

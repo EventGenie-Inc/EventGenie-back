@@ -24,6 +24,18 @@ process.env.NODE_ENV = 'test';
 process.env.PRISMA_TEST_ADAPTER = 'pg';
 
 // ─────────────────────────────────────────
+//  FEATURE FLAGS — every feature ON, whatever .env says.
+//
+//  .env's FEATURES_DISABLED is the developer's own launch-mode setup
+//  (e.g. ticketing and sms off), and a test must not pass or fail by it.
+//  Set here, before any test file's imports, so dotenv (which never
+//  overwrites a variable that already exists, an empty one included)
+//  leaves it alone. A test that needs a flag off sets it itself with
+//  vi.stubEnv('FEATURES_DISABLED', …); vi.unstubAllEnvs() comes back here.
+// ─────────────────────────────────────────
+process.env.FEATURES_DISABLED = '';
+
+// ─────────────────────────────────────────
 //  FIREBASE ADMIN — stubbed at ONE boundary: verifyIdToken.
 //
 //  Every real call site (auth.service.ts's verifyFirebaseToken and

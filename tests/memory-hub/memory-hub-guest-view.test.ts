@@ -219,7 +219,9 @@ describe('POST /api/memory-hub/guest-view — memoryHubService.getGuestView (Con
       expect(result.requiresApproval).toBe(true);
       expect(result.limits).toEqual({
         imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES,
+        videosAllowed: true,
         videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES,
+        allowedFormats: 'jpg,png,webp,heic,mp4,mov,webm',
         uploadRequestsPer5Min: MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
       });
 

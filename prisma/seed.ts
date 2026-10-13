@@ -152,6 +152,10 @@ const TIER_CONFIGS = [
     memoryHubEnabled: false,
     dragDropBuilder: false,
     guestExportEnabled: false,
+    publicEventsEnabled: false,
+    paidTicketingEnabled: false,
+    customRsvpFieldsEnabled: false,
+    vendorPriorityPlacement: false,
     isAvailable: true,
   },
   {
@@ -171,6 +175,10 @@ const TIER_CONFIGS = [
     memoryHubEnabled: true,
     dragDropBuilder: false,
     guestExportEnabled: true,
+    publicEventsEnabled: true,
+    paidTicketingEnabled: true,
+    customRsvpFieldsEnabled: true,
+    vendorPriorityPlacement: false,
     isAvailable: true,
   },
   {
@@ -186,6 +194,10 @@ const TIER_CONFIGS = [
     memoryHubEnabled: true,
     dragDropBuilder: true,
     guestExportEnabled: true,
+    publicEventsEnabled: true,
+    paidTicketingEnabled: true,
+    customRsvpFieldsEnabled: true,
+    vendorPriorityPlacement: true,
     isAvailable: true,
   },
 ];

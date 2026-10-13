@@ -1,5 +1,5 @@
 import prisma from '../../shared/prisma/prisma.client.js';
-import { type Prisma } from '@prisma/client';
+import { type Prisma, type SubscriptionTier } from '@prisma/client';
 import { isPriorityTier } from './vendor-priority.util.js';
 import { resolveEffectiveTier, type TenantSubscriptionState } from '../subscription/effective-tier.util.js';
 import {
@@ -51,10 +51,11 @@ const withPlainPrice = <T extends { price: Prisma.Decimal | null }>(
 // tenant's tier directly. A null tenant (platform-level, tenant-less
 // space) is never priority.
 const withPriority = <T extends { tenant: TenantSubscriptionState | null }>(
-  space: T
+  space: T,
+  priorityTiers: ReadonlySet<SubscriptionTier>
 ): Omit<T, 'tenant'> & { isPriority: boolean } => {
   const { tenant, ...rest } = space;
-  return { ...rest, isPriority: isPriorityTier(tenant ? resolveEffectiveTier(tenant) : undefined) };
+  return { ...rest, isPriority: isPriorityTier(tenant ? resolveEffectiveTier(tenant) : undefined, priorityTiers) };
 };
 
 // ─────────────────────────────────────────
@@ -171,7 +172,14 @@ export const vendorRepository = {
   //  filter anywhere in this query, on purpose. isArchived/isActive ARE
   //  still applied — this is "cross-tenant", not "cross-status".
   // ─────────────────────────────────────────
-  findSpacesNearLocation: async (latitude: number, longitude: number, radiusKm = DEFAULT_RADIUS_KM) => {
+  // priorityTiers: the tiers whose vendor spaces rank first (the tier
+  // setting vendorPriorityPlacement, read by vendor.service.ts).
+  findSpacesNearLocation: async (
+    latitude: number,
+    longitude: number,
+    priorityTiers: ReadonlySet<SubscriptionTier>,
+    radiusKm = DEFAULT_RADIUS_KM
+  ) => {
     const clampedRadiusKm = Math.min(radiusKm, MAX_RADIUS_KM);
     const latDelta = clampedRadiusKm / 111;
     const lngDelta = clampedRadiusKm / (111 * Math.cos((latitude * Math.PI) / 180));
@@ -198,7 +206,7 @@ export const vendorRepository = {
 
     return candidates
       .map((space) => {
-        const plain = withPriority(withPlainCoords(space));
+        const plain = withPriority(withPlainCoords(space), priorityTiers);
         const distanceKm = haversineDistanceKm(latitude, longitude, plain.latitude, plain.longitude);
         return { ...plain, distanceKm };
       })
@@ -213,7 +221,7 @@ export const vendorRepository = {
   //  safely be the PRIMARY sort here (no "distant ELEVATE vendor beats
   //  a near CELEBRATE one" risk exists without a distance signal).
   // ─────────────────────────────────────────
-  findSpacesForBrowse: async () => {
+  findSpacesForBrowse: async (priorityTiers: ReadonlySet<SubscriptionTier>) => {
     const spaces = await prisma.vendorSpace.findMany({
       where: { isArchived: false, isActive: true },
       include: {
@@ -230,7 +238,7 @@ export const vendorRepository = {
     });
 
     return spaces
-      .map((space) => withPriority(withPlainCoords(space)))
+      .map((space) => withPriority(withPlainCoords(space), priorityTiers))
       .sort((a, b) => {
         if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
         return a.name.localeCompare(b.name);

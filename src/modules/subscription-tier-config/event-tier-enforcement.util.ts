@@ -5,6 +5,8 @@ import { eventRepository } from '../event/event.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { resolveTierCapability } from './tier-capabilities.util.js';
+import { launchLimitMessage, launchUnavailableMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 
 export interface EventTierCheckInput {
   visibility?: EventVisibility;
@@ -12,22 +14,38 @@ export interface EventTierCheckInput {
   hasCustomRsvpFields?: boolean;
 }
 
-// SPARK-only capability gates. These are not modeled as columns on
-// SubscriptionTierConfig — they're binary restrictions tied to the free
-// tier by name, not a numeric limit a Super Admin would tune per tier.
-const assertSparkCapabilityGates = (tier: SubscriptionTier, input: EventTierCheckInput): void => {
-  if (tier !== 'SPARK') return;
+// Capability gates. These used to be tied to SPARK by name; they are now
+// per-tier settings on SubscriptionTierConfig (tier-capabilities.util.ts),
+// so a Super Admin can switch any of them on for any tier. The config is
+// read only when the input actually asks for one of them.
+const assertCapabilityGates = async (tier: SubscriptionTier, input: EventTierCheckInput): Promise<void> => {
+  if (input.visibility !== 'PUBLIC' && input.ticketing !== 'PAID' && !input.hasCustomRsvpFields) return;
+  const config = await subscriptionTierConfigRepository.findByTier(tier);
 
-  if (input.visibility === 'PUBLIC') {
-    throw new HttpError(403, 'The SPARK plan only supports private events. Upgrade to CELEBRATE or ELEVATE to make this event public.');
+  if (input.visibility === 'PUBLIC' && !resolveTierCapability(config, tier, 'publicEventsEnabled')) {
+    throw new HttpError(403, tierRefusalMessage(
+      `The ${tier} plan only supports private events. Upgrade your plan to make this event public.`,
+      launchUnavailableMessage('Public events')
+    ));
   }
-  if (input.ticketing === 'PAID') {
-    throw new HttpError(403, 'The SPARK plan does not support paid ticketing. Upgrade to CELEBRATE or ELEVATE to sell tickets.');
+  if (input.ticketing === 'PAID' && !resolveTierCapability(config, tier, 'paidTicketingEnabled')) {
+    throw new HttpError(403, paidTicketingRefusal(tier));
   }
-  if (input.hasCustomRsvpFields) {
-    throw new HttpError(403, 'The SPARK plan does not support custom RSVP fields. Upgrade to CELEBRATE or ELEVATE to add them.');
+  if (input.hasCustomRsvpFields && !resolveTierCapability(config, tier, 'customRsvpFieldsEnabled')) {
+    throw new HttpError(403, tierRefusalMessage(
+      `The ${tier} plan does not support custom RSVP fields. Upgrade your plan to add them.`,
+      launchUnavailableMessage('Custom RSVP questions')
+    ));
   }
 };
+
+// Shared with payment-account-readiness.util.ts, which refuses the same
+// capability on the bank-details side.
+export const paidTicketingRefusal = (tier: SubscriptionTier, passHint = false): string =>
+  tierRefusalMessage(
+    `The ${tier} plan does not support paid ticketing. Upgrade your plan${passHint ? ', or buy an Event Pass for this event,' : ''} to sell tickets.`,
+    launchUnavailableMessage('Paid ticketing')
+  );
 
 // Called before creating a new event (POST /api/events and event-draft
 // materialize). CREATION-TIME: correctly bound by the tenant's CURRENT
@@ -40,7 +58,7 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
   const effectiveTier = resolveEffectiveTier(tenant);
-  assertSparkCapabilityGates(effectiveTier, input);
+  await assertCapabilityGates(effectiveTier, input);
 
   // maxEvents is read from SubscriptionTierConfig for every tier (including
   // SPARK) rather than hardcoded, so a Super Admin changing the config
@@ -51,7 +69,11 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
     if (activeCount >= config.maxEvents) {
       throw new HttpError(
         403,
-        `The ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`
+        tierRefusalMessage(
+          `The ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`,
+          launchLimitMessage(`You've reached the limit of ${config.maxEvents} active event(s)`) +
+            ' Archiving an event you no longer need also frees up a place.'
+        )
       );
     }
   }
@@ -69,7 +91,7 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 // than silently falling back to tenant-only resolution.
 //
 // Still CREATION-adjacent, not access-time, and safe on effective
-// entitlement: assertSparkCapabilityGates only fires when
+// entitlement: assertCapabilityGates only fires when
 // visibility/ticketing is EXPLICITLY part of THIS update payload (see
 // the conditional spreads at every call site — event.service.ts never
 // includes a field the caller didn't send), so editing an unrelated
@@ -90,5 +112,5 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 export const assertEventUpdatable = async (event: EntitlementDerivableEvent, input: EventTierCheckInput): Promise<void> => {
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  assertSparkCapabilityGates(resolveEventEntitlement(tenant, event), input);
+  await assertCapabilityGates(resolveEventEntitlement(tenant, event), input);
 };

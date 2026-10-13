@@ -2,12 +2,18 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { subscriptionService } from './subscription.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 
 const router = Router();
 
-router.use(authenticate, requireTenantAdmin);
+router.use(authenticate);
+
+// Everything that starts or changes a payment is behind `payments` (off for
+// the free launch pilot): guarded per route, before the role gate, so a
+// switched-off route 404s for every non-SUPER_ADMIN caller. The read-only
+// routes (plans, current status) stay up either way.
 
 // Every route below operates on the CALLER's own tenant (from the JWT),
 // never a route param — same self-service shape as payment-account.router.ts.
@@ -25,14 +31,14 @@ const requireOwnTenantId = (req: Request, res: Response): string | undefined => 
 // generic convention used across the other routers. Not tenant-scoped
 // (see subscriptionService.getPricing's own comment): every tenant
 // reads the exact same four prices.
-router.get('/plans', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/plans', requireTenantAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const pricing = subscriptionService.getPricing();
     res.status(200).json({ status: 'ok', data: pricing });
   } catch (err) { next(err); }
 });
 
-router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = requireOwnTenantId(req, res);
     if (!tenantId) return;
@@ -41,7 +47,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
-router.post('/subscribe', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/subscribe', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = requireOwnTenantId(req, res);
     if (!tenantId) return;
@@ -51,7 +57,7 @@ router.post('/subscribe', async (req: Request, res: Response, next: NextFunction
   } catch (err) { next(err); }
 });
 
-router.get('/update-card-link', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/update-card-link', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = requireOwnTenantId(req, res);
     if (!tenantId) return;
@@ -60,7 +66,7 @@ router.get('/update-card-link', async (req: Request, res: Response, next: NextFu
   } catch (err) { next(err); }
 });
 
-router.put('/change-tier', async (req: Request, res: Response, next: NextFunction) => {
+router.put('/change-tier', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = requireOwnTenantId(req, res);
     if (!tenantId) return;
@@ -69,7 +75,7 @@ router.put('/change-tier', async (req: Request, res: Response, next: NextFunctio
   } catch (err) { next(err); }
 });
 
-router.post('/cancel', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/cancel', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = requireOwnTenantId(req, res);
     if (!tenantId) return;

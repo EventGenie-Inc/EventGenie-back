@@ -203,7 +203,10 @@ describe('the daily limit', () => {
     const refused = await send({ ...base, subject: 'One too many' });
     expect(refused.status).toBe(429);
     expect(refused.body.code).toBe('ANNOUNCEMENT_DAILY_LIMIT');
-    expect(refused.body.message).toMatch(/You can send the next one from \d\d:\d\d UTC on /);
+    // No clock time: the frontend shows when the next one can go, in the
+    // organiser's own time zone, from the history's dailyLimit.
+    expect(refused.body.message).toBe("You've sent the most announcements allowed in 24 hours. Try again later.");
+    expect(refused.body.message).not.toMatch(/\d\d?:\d\d|UTC|\b(AM|PM)\b/i);
     expect(sentEmails()).toHaveLength(0);
     expect(await prisma.announcement.count({ where: { eventId: fx.eventId } })).toBe(ANNOUNCEMENTS_PER_EVENT_PER_DAY);
   }, 120000);

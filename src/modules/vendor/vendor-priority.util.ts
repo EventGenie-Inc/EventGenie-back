@@ -9,11 +9,15 @@ import { type SubscriptionTier } from '@prisma/client';
 //  status (event-status.util.ts): deriving means no drift when a tenant
 //  upgrades or downgrades, and no backfill the day tier rules change.
 //
-//  This is the ONLY place the ELEVATE comparison is hardcoded — every
-//  discovery query/response reads priority by calling this, never by
-//  comparing the enum value a second time. Kept in its own leaf file
-//  (no other imports) so both vendor.repository.ts and
+//  Which tiers get it is a tier setting, vendorPriorityPlacement (Free
+//  Pilot; it used to be ELEVATE by name). vendor.service.ts reads the set
+//  of tiers that have it once per search (tiersWithCapability) and passes
+//  it in; every discovery query/response reads priority by calling this.
+//  Kept in its own leaf file so both vendor.repository.ts and
 //  vendor-tier-enforcement.util.ts can use it without an import cycle —
 //  the latter already imports vendorRepository the other way.
 // ─────────────────────────────────────────
-export const isPriorityTier = (tier: SubscriptionTier | null | undefined): boolean => tier === 'ELEVATE';
+export const isPriorityTier = (
+  tier: SubscriptionTier | null | undefined,
+  priorityTiers: ReadonlySet<SubscriptionTier>
+): boolean => !!tier && priorityTiers.has(tier);

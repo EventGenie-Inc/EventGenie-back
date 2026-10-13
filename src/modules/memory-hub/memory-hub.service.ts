@@ -22,7 +22,14 @@ import {
   isMemoryHubTierEnabled,
 } from './memory-hub-tier-enforcement.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
-import { isMemoryItemTooLarge, memoryItemTooLargeMessage } from './memory-item-limits.util.js';
+import {
+  assertMemoryItemMediaTypeAvailable,
+  isMemoryHubVideoEnabled,
+  isMemoryItemTooLarge,
+  memoryItemAllowedFormats,
+  memoryItemTooLargeMessage,
+} from './memory-item-limits.util.js';
+import { launchLimitMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 import {
   MEMORY_ITEM_IMAGE_MAX_BYTES,
   MEMORY_ITEM_VIDEO_MAX_BYTES,
@@ -116,7 +123,11 @@ const assertItemAcceptableOrDestroy = async (
         403,
         audience === 'guest'
           ? "This event's photo album is full, so new photos can't be added right now."
-          : `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`
+          : tierRefusalMessage(
+              `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`,
+              launchLimitMessage(`This upload would push the event's Memory Hub over its storage limit, so it has not been saved. You've reached the storage limit for this event`) +
+                ' Removing items also frees up space.'
+            )
       );
     }
   }
@@ -464,6 +475,7 @@ export const memoryHubService = {
       throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
     }
 
+    assertMemoryItemMediaTypeAvailable(mediaType, 'guest');
     await assertMemoryHubAccessible(invite.event, 'guest');
     await assertMemoryHubQuotaAvailable(invite.event, 'guest');
 
@@ -530,7 +542,11 @@ export const memoryHubService = {
       })),
       limits: {
         imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES,
-        videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES,
+        // With `memoryHubVideo` off a video upload signature is refused, so
+        // videos aren't offered: no video size, and formats are images only.
+        videosAllowed: isMemoryHubVideoEnabled(),
+        videoMaxBytes: isMemoryHubVideoEnabled() ? MEMORY_ITEM_VIDEO_MAX_BYTES : null,
+        allowedFormats: memoryItemAllowedFormats(),
         // The real per-invite upload budget (memoryHubGuestUploadLimiter,
         // rate-limit.middleware.ts) — reported here so the frontend reads
         // the actual enforced number instead of hardcoding its own copy.
