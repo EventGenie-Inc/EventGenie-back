@@ -2,9 +2,11 @@ import express, { type Application, type Request, type Response, type NextFuncti
 import cors from 'cors';
 import { HttpError } from './shared/errors/http-error.js';
 import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
+import { rejectBodyParseErrors, REQUEST_BODY_LIMIT_MB } from './shared/middleware/body-parse-errors.middleware.js';
 import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
 import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
 import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
+import { reportError, reportUnreportedServerErrors } from './shared/monitoring/error-reporting.js';
 
 // ─────────────────────────────────────────
 //  ROUTERS
@@ -45,6 +47,7 @@ import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
 import featureConfigRouter from './modules/feature-config/feature-config.router.js';
+import systemHealthRouter from './modules/system-health/system-health.router.js';
 
 // ─────────────────────────────────────────
 //  FEATURE FLAGS
@@ -81,12 +84,24 @@ const app: Application = express();
 app.set('trust proxy', 1);
 
 // ─────────────────────────────────────────
+//  ERROR MONITORING
+//  Reports any 5xx a handler sent itself, without the error reaching the
+//  global handler below (which reports its own). First, so it sees every
+//  response. A no-op without SENTRY_DSN. See shared/monitoring/.
+// ─────────────────────────────────────────
+app.use(reportUnreportedServerErrors);
+
+// ─────────────────────────────────────────
 //  CORS
 //  Env-driven allowlist. Requests with no
 //  Origin header (Postman, curl, server-to-
 //  server) are always allowed through — only
 //  browser cross-origin requests carry Origin.
+//  Any other origin is a 403 (an HttpError, so
+//  never a 500 and never reported to Sentry).
 // ─────────────────────────────────────────
+export const CORS_REFUSED_MESSAGE = "Requests from this website aren't allowed.";
+
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
   .split(',')
   .map(origin => origin.trim())
@@ -97,7 +112,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new HttpError(403, CORS_REFUSED_MESSAGE));
     }
   },
   credentials: false,
@@ -115,8 +130,11 @@ app.use(cors({
 // req.rawBody as it parses — needed so payment-webhook.router.ts can
 // verify Paystack's HMAC signature against the real bytes sent, not a
 // re-serialised copy. See raw-body.middleware.ts.
-app.use(express.json({ limit: '10mb', verify: captureRawBody }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: `${REQUEST_BODY_LIMIT_MB}mb`, verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, limit: `${REQUEST_BODY_LIMIT_MB}mb` }));
+// A body that isn't valid JSON is a coded 400, one over the limit a coded
+// 413; neither is a 500.
+app.use(rejectBodyParseErrors);
 
 // ─────────────────────────────────────────
 //  HEALTH CHECK
@@ -259,6 +277,12 @@ app.use('/api/event-passes', eventPassSignalRouter);
 app.use('/api/config', featureConfigRouter);
 
 // ─────────────────────────────────────────
+//  SYSTEM HEALTH (super admin only; anyone else gets the global 404)
+//  /api/admin/system/errors — Sentry issues for both projects, plus health
+// ─────────────────────────────────────────
+app.use('/api/admin/system', systemHealthRouter);
+
+// ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
@@ -279,7 +303,11 @@ app.use((_req: Request, res: Response) => {
 // ─────────────────────────────────────────
 export const GENERIC_ERROR_MESSAGE = 'Something went wrong on our side. Please try again in a moment.';
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  // Every unexpected error and every 5xx goes to Sentry; an HttpError
+  // below 500 is an expected refusal and does not (error-reporting.ts).
+  reportError(err, req, res);
+
   if (err instanceof HttpError) {
     console.error(`[ERROR] ${err.message}`);
     res.status(err.statusCode).json({

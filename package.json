@@ -31,6 +31,7 @@
   "dependencies": {
     "@prisma/adapter-neon": "^7.8.0",
     "@prisma/client": "^7.8.0",
+    "@sentry/node": "^11.7.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "csv-parse": "^7.0.2",
