@@ -1,6 +1,7 @@
 import { type Request, type Response, type NextFunction } from 'express';
 import { PlatformRole } from '@prisma/client';
 import prisma from '../prisma/prisma.client.js';
+import { ROUTE_NOT_FOUND_BODY } from './feature.middleware.js';
 
 // ─────────────────────────────────────────
 //  ROLE MIDDLEWARE
@@ -53,6 +54,18 @@ export const requireRole = (...allowedRoles: PlatformRole[]) => {
 
 // Only the platform owner
 export const requireSuperAdmin = requireRole(PlatformRole.SUPER_ADMIN);
+
+// Only the platform owner, and hidden from everyone else: the global 404
+// body rather than a 403, so the route's existence isn't confirmed (the
+// way requireFeature hides a switched-off feature). For platform
+// operations screens a tenant never has, like system health.
+export const requireSuperAdminHidden = (req: Request, res: Response, next: NextFunction): void => {
+  if (req.user?.role === PlatformRole.SUPER_ADMIN) {
+    next();
+    return;
+  }
+  res.status(404).json(ROUTE_NOT_FOUND_BODY);
+};
 
 // Platform owner or tenant admin
 export const requireTenantAdmin = requireRole(

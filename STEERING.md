@@ -671,6 +671,10 @@ video while `memoryHubVideo` is off, on the organiser path (`POST
 photo album right now. You can still add photos."). The uploader tells the
 person to pick a photo; any other 422 there is a bad file.
 
+System health (`GET /api/admin/system/errors`, super admin only):
+`SENTRY_NOT_CONFIGURED` and `SENTRY_UNAVAILABLE` (both 503: fix the
+server's configuration, or wait and retry). See "Error monitoring".
+
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
 wrong-user, revoked, **and** expired device tokens — one code, matching
@@ -679,6 +683,67 @@ apart is exactly the oracle the single message exists to avoid.
 `FIREBASE_TOKEN_INVALID` is safe to keep as its own code precisely
 because whoever holds a Firebase ID token can already check its
 validity directly with Firebase; there's nothing to leak.
+
+### Error monitoring
+
+**Sentry, permanent infrastructure, not a feature:** no flag. On when
+`SENTRY_DSN` is set; without it nothing is initialised and nothing is sent.
+`src/instrument.ts` is `server.ts`'s **first import**, so Sentry starts
+before the app loads (keep it first). Environment from
+`SENTRY_ENVIRONMENT` (falls back to `NODE_ENV`), release from
+`RENDER_GIT_COMMIT`. All of it lives in `src/shared/monitoring/`.
+
+**What is reported:** every unexpected error and every 5xx, an `HttpError`
+503 included. **An `HttpError` below 500 never is**: a 404, 409, 422 or 429
+is the app working as designed. One rule decides, `shouldReportError`
+(`error-reporting.ts`); the global handler calls `reportError` for every
+error it sees, and a handler that sends a 5xx itself is caught by the
+`reportUnreportedServerErrors` safety net (or calls `reportError` with the
+exception, as the Paystack webhook does). A deliberate, explained 5xx (the
+system health endpoint's 503) calls `skipServerErrorReport`. Uncaught
+exceptions and unhandled rejections are captured by Sentry's own handlers
+and flushed before the process exits. **Tracing is off**: errors are what
+we need, Render shows latency, and a span would carry URLs and query text
+past the scrubber and spend the quota. Turn it on only for a specific
+performance question, at a very low rate.
+
+**Privacy rules for error data.** Error data leaves our infrastructure, so
+every event and breadcrumb goes through one scrubber (`sentry-scrub.ts`,
+wired as `beforeSend`/`beforeBreadcrumb`), and most of it is never
+collected in the first place: Sentry v11's `dataCollection` defaults to
+collecting everything (cookies, headers, bodies, query strings, user info,
+local variables), so `sentry.config.ts` switches every category off, and
+`maxRequestBodySize: 'none'` keeps the body out of the HTTP integration
+too. Never sent: request bodies, cookies, query
+strings, any header outside a short allowlist (`Authorization` and
+`X-Session-Token` included), device and session tokens, invite, share and
+team-invite tokens (in a URL path too: `/rsvp/validate/:token` is masked),
+oobCodes, OTP codes, passwords, and **any email address or phone number
+anywhere** (message, URL, exception text, breadcrumb, extra, tags), all
+masked. A JSON parse error's message is withheld whole, since it quotes the
+body. The user is `id`, `role` and `tenantId`, never email, name or phone.
+A new kind of credential is a new scrubber rule and a new value in
+`tests/monitoring/sentry-scrub.test.ts`, never "it won't be logged".
+
+**System health** (`GET /api/admin/system/errors?environment=&project=&status=`,
+`src/modules/system-health/`): `SUPER_ADMIN` only, and everyone else gets
+the global 404 (`requireSuperAdminHidden`), not a 403. It reads Sentry's
+API with `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECTS`
+("`<backend slug>,<frontend slug>`", in that order; `SENTRY_API_URL`
+optional, defaulting to the DSN's region, e.g. `https://de.sentry.io`), and
+returns both projects' issues merged, newest activity first, unresolved
+unless `status` says `resolved` or `ignored`: `title`, `project`
+(`backend`/`frontend`), `environment` (the filter, or `null` when the list
+spans every environment: Sentry's list doesn't name one per issue),
+`level`, `count`, `usersAffected`, `firstSeen`, `lastSeen`, `status`,
+`link`. With it, `health`: the deployed `commit`, `environment`,
+`uptimeSeconds`, `startedAt` and whether the database answers. Each answer,
+a failure included, is **cached 60 seconds** per filter, so the screen
+can't exhaust Sentry's API limits. Sentry not configured is 503
+`SENTRY_NOT_CONFIGURED`; Sentry failing, timing out or refusing is 503
+`SENTRY_UNAVAILABLE`; never a 500. Both 503s still carry `data.health`.
+**The auth token never leaves the server**: not in a response, a log line
+or an error message.
 
 ### Tier enforcement
 
@@ -2021,6 +2086,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     off (`tests/memory-hub/memory-hub-video-flag.test.ts`): video
     signatures 422 for guests and organisers, photos still sign, and
     guest-view's limits offer photos only.
+  - **Error monitoring** (`tests/monitoring/`, `tests/system-health/`): one
+    event carrying every forbidden value (body, cookies, Authorization,
+    device/session/invite/share/team tokens, oobCode, OTP, password, emails
+    and phones in every field) leaves the scrubber with none of them; a
+    real Sentry client (sending nothing) captures no `HttpError` 4xx and
+    does capture a 500 and an `HttpError` 503, with the user as id, role
+    and tenant only; the 5xx safety net. System health: tenant and event
+    admins 404, the 503 codes with health attached, both projects merged
+    newest first, the filters, the 60-second cache, the token never in a
+    response.
   - **Tier settings** (`tests/subscription/tier-capability-settings.test.ts`):
     public events, paid ticketing, custom RSVP questions and vendor priority
     placement each switched on for Spark and shown to change access; no

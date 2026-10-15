@@ -5,6 +5,7 @@ import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
 import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
 import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
 import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
+import { reportError, reportUnreportedServerErrors } from './shared/monitoring/error-reporting.js';
 
 // ─────────────────────────────────────────
 //  ROUTERS
@@ -45,6 +46,7 @@ import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
 import featureConfigRouter from './modules/feature-config/feature-config.router.js';
+import systemHealthRouter from './modules/system-health/system-health.router.js';
 
 // ─────────────────────────────────────────
 //  FEATURE FLAGS
@@ -79,6 +81,14 @@ const app: Application = express();
 //  entries.
 // ─────────────────────────────────────────
 app.set('trust proxy', 1);
+
+// ─────────────────────────────────────────
+//  ERROR MONITORING
+//  Reports any 5xx a handler sent itself, without the error reaching the
+//  global handler below (which reports its own). First, so it sees every
+//  response. A no-op without SENTRY_DSN. See shared/monitoring/.
+// ─────────────────────────────────────────
+app.use(reportUnreportedServerErrors);
 
 // ─────────────────────────────────────────
 //  CORS
@@ -259,6 +269,12 @@ app.use('/api/event-passes', eventPassSignalRouter);
 app.use('/api/config', featureConfigRouter);
 
 // ─────────────────────────────────────────
+//  SYSTEM HEALTH (super admin only; anyone else gets the global 404)
+//  /api/admin/system/errors — Sentry issues for both projects, plus health
+// ─────────────────────────────────────────
+app.use('/api/admin/system', systemHealthRouter);
+
+// ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
@@ -279,7 +295,11 @@ app.use((_req: Request, res: Response) => {
 // ─────────────────────────────────────────
 export const GENERIC_ERROR_MESSAGE = 'Something went wrong on our side. Please try again in a moment.';
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  // Every unexpected error and every 5xx goes to Sentry; an HttpError
+  // below 500 is an expected refusal and does not (error-reporting.ts).
+  reportError(err, req, res);
+
   if (err instanceof HttpError) {
     console.error(`[ERROR] ${err.message}`);
     res.status(err.statusCode).json({
