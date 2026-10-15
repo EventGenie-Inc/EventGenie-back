@@ -2,6 +2,7 @@ import express, { type Application, type Request, type Response, type NextFuncti
 import cors from 'cors';
 import { HttpError } from './shared/errors/http-error.js';
 import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
+import { rejectMalformedJson } from './shared/middleware/malformed-json.middleware.js';
 import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
 import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
 import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
@@ -96,7 +97,11 @@ app.use(reportUnreportedServerErrors);
 //  Origin header (Postman, curl, server-to-
 //  server) are always allowed through — only
 //  browser cross-origin requests carry Origin.
+//  Any other origin is a 403 (an HttpError, so
+//  never a 500 and never reported to Sentry).
 // ─────────────────────────────────────────
+export const CORS_REFUSED_MESSAGE = "Requests from this website aren't allowed.";
+
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
   .split(',')
   .map(origin => origin.trim())
@@ -107,7 +112,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new HttpError(403, CORS_REFUSED_MESSAGE));
     }
   },
   credentials: false,
@@ -127,6 +132,8 @@ app.use(cors({
 // re-serialised copy. See raw-body.middleware.ts.
 app.use(express.json({ limit: '10mb', verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// A body that isn't valid JSON is a coded 400, not a 500.
+app.use(rejectMalformedJson);
 
 // ─────────────────────────────────────────
 //  HEALTH CHECK

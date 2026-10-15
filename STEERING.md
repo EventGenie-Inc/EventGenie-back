@@ -10,6 +10,12 @@ Conventions every contributor and AI coding agent must follow.
 > which is why the copy exists; if you find the two differ, say so
 > before relying on either.
 
+> **Where the repos are** (moved out of OneDrive; ignore any older path
+> in notes or memory, such as a OneDrive or `C:\Users\Levy\…` one):
+> backend `C:\dev\EventGenie-back`; frontend `C:\dev\eventgenie-front`,
+> with this file's copy at its root (`C:\dev\eventgenie-front\STEERING.md`)
+> and the Angular app in its `eventgenie-front` subfolder.
+
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
 prompt wins for that task only — flag the contradiction rather than
@@ -671,6 +677,12 @@ video while `memoryHubVideo` is off, on the organiser path (`POST
 photo album right now. You can still add photos."). The uploader tells the
 person to pick a photo; any other 422 there is a bad file.
 
+Before any route: a body that isn't valid JSON is 400 `MALFORMED_JSON`
+("The request body isn't valid JSON.", `malformed-json.middleware.ts`;
+the parser's own message quotes the body and is never sent), and a
+browser origin outside `ALLOWED_ORIGINS` is an uncoded 403. Both used to
+be 500s.
+
 System health (`GET /api/admin/system/errors`, super admin only):
 `SENTRY_NOT_CONFIGURED` and `SENTRY_UNAVAILABLE` (both 503: fix the
 server's configuration, or wait and retry). See "Error monitoring".
@@ -721,7 +733,8 @@ team-invite tokens (in a URL path too: `/rsvp/validate/:token` is masked),
 oobCodes, OTP codes, passwords, and **any email address or phone number
 anywhere** (message, URL, exception text, breadcrumb, extra, tags), all
 masked. A JSON parse error's message is withheld whole, since it quotes the
-body. The user is `id`, `role` and `tenantId`, never email, name or phone.
+body (a malformed request body is now a 400 and never reported; the rule
+stays for any other parse error). The user is `id`, `role` and `tenantId`, never email, name or phone.
 A new kind of credential is a new scrubber rule and a new value in
 `tests/monitoring/sentry-scrub.test.ts`, never "it won't be logged".
 
@@ -821,9 +834,12 @@ Whether a feature is locked at all is read from `/me`'s `planSettings`
 - **Signed-in tenant, tenant-scoped feature** (Vendor Space, Vendor
   Discovery). A locked click, or a direct URL hit, raises a confirmation
   — nobody is moved somewhere unannounced — and confirming goes to
-  `/subscription`, carrying the reason as `feature` and `requiredTier`
-  query params. A direct hit lands on the dashboard with that
-  confirmation open. (`TierGateService`, `tierGuard`.)
+  `/subscription`, carrying the reason as the `feature` query param only.
+  There is no `requiredTier` param: no plan is named, since the gate is
+  read from `planSettings` and any tier can have the setting switched on.
+  A direct hit lands on the dashboard with that confirmation open. With
+  `payments` off it shows the launch wording and contact address instead,
+  and confirming goes nowhere. (`TierGateService`, `tierGuard`.)
 - **Signed-in tenant, event-scoped feature** (Memory Hub, which an Event
   Pass on that event also unlocks). No confirmation: the user goes to the
   event's Control Center with `?upgrade=<feature>`, which opens a

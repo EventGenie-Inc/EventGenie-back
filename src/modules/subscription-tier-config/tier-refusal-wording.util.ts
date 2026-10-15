@@ -15,15 +15,17 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 export const LAUNCH_CONTACT_EMAIL = 'admin@e-velope.co.za';
 
 const CONTACT_FOR_MORE = `Contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.`;
-const CONTACT_FOR_ACCESS = `Contact us at ${LAUNCH_CONTACT_EMAIL} if you need it.`;
 
 // A limit was reached: "<what>. Contact us … if you need more."
 export const launchLimitMessage = (what: string): string =>
   `${what} during our launch period. ${CONTACT_FOR_MORE}`;
 
-// A feature isn't available on this account: "<feature> isn't available …"
-export const launchUnavailableMessage = (feature: string): string =>
-  `${feature} isn't available on your account during our launch period. ${CONTACT_FOR_ACCESS}`;
+// A feature isn't available on this account: "<feature> isn't available …".
+// A plural name ("Public events") takes `plural`, so the verb and pronoun
+// agree: "Public events aren't available … if you need them."
+export const launchUnavailableMessage = (feature: string, { plural = false }: { plural?: boolean } = {}): string =>
+  `${feature} ${plural ? "aren't" : "isn't"} available on your account during our launch period. ` +
+  `Contact us at ${LAUNCH_CONTACT_EMAIL} if you need ${plural ? 'them' : 'it'}.`;
 
 export const tierRefusalMessage = (planMessage: string, launchMessage: string): string =>
   isFeatureEnabled('payments') ? planMessage : launchMessage;

@@ -154,9 +154,20 @@ describe('payments off — every tier refusal is worded without plans, upgrades 
     await expectLaunchWording(403, () => assertEventCreatable(tenantId, {}));
 
     await setConfig('SPARK', {});
-    await expectLaunchWording(403, () => assertEventCreatable(tenantId, { visibility: 'PUBLIC' }));
-    await expectLaunchWording(403, () => assertEventCreatable(tenantId, { ticketing: 'PAID' }));
-    await expectLaunchWording(403, () => assertEventUpdatable(eventFor(), { hasCustomRsvpFields: true }));
+    // The verb and pronoun agree with the feature's name: plural names
+    // "aren't … them", singular ones "isn't … it".
+    const publicEvents = await expectLaunchWording(403, () => assertEventCreatable(tenantId, { visibility: 'PUBLIC' }));
+    expect(publicEvents.message).toBe(
+      "Public events aren't available on your account during our launch period. Contact us at admin@e-velope.co.za if you need them."
+    );
+    const paidTicketing = await expectLaunchWording(403, () => assertEventCreatable(tenantId, { ticketing: 'PAID' }));
+    expect(paidTicketing.message).toBe(
+      "Paid ticketing isn't available on your account during our launch period. Contact us at admin@e-velope.co.za if you need it."
+    );
+    const customQuestions = await expectLaunchWording(403, () => assertEventUpdatable(eventFor(), { hasCustomRsvpFields: true }));
+    expect(customQuestions.message).toBe(
+      "Custom RSVP questions aren't available on your account during our launch period. Contact us at admin@e-velope.co.za if you need them."
+    );
   }, 60000);
 
   it('the guest limit (with its counts still given)', async () => {
