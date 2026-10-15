@@ -2,7 +2,7 @@ import express, { type Application, type Request, type Response, type NextFuncti
 import cors from 'cors';
 import { HttpError } from './shared/errors/http-error.js';
 import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
-import { rejectMalformedJson } from './shared/middleware/malformed-json.middleware.js';
+import { rejectBodyParseErrors, REQUEST_BODY_LIMIT_MB } from './shared/middleware/body-parse-errors.middleware.js';
 import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
 import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
 import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
@@ -130,10 +130,11 @@ app.use(cors({
 // req.rawBody as it parses — needed so payment-webhook.router.ts can
 // verify Paystack's HMAC signature against the real bytes sent, not a
 // re-serialised copy. See raw-body.middleware.ts.
-app.use(express.json({ limit: '10mb', verify: captureRawBody }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-// A body that isn't valid JSON is a coded 400, not a 500.
-app.use(rejectMalformedJson);
+app.use(express.json({ limit: `${REQUEST_BODY_LIMIT_MB}mb`, verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, limit: `${REQUEST_BODY_LIMIT_MB}mb` }));
+// A body that isn't valid JSON is a coded 400, one over the limit a coded
+// 413; neither is a 500.
+app.use(rejectBodyParseErrors);
 
 // ─────────────────────────────────────────
 //  HEALTH CHECK

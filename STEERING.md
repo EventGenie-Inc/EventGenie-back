@@ -677,11 +677,14 @@ video while `memoryHubVideo` is off, on the organiser path (`POST
 photo album right now. You can still add photos."). The uploader tells the
 person to pick a photo; any other 422 there is a bad file.
 
-Before any route: a body that isn't valid JSON is 400 `MALFORMED_JSON`
-("The request body isn't valid JSON.", `malformed-json.middleware.ts`;
-the parser's own message quotes the body and is never sent), and a
-browser origin outside `ALLOWED_ORIGINS` is an uncoded 403. Both used to
-be 500s.
+Before any route (`body-parse-errors.middleware.ts`, mounted right after
+the body parsers): a body that isn't valid JSON is 400 `MALFORMED_JSON`
+("The request body isn't valid JSON."; the parser's own message quotes
+the body and is never sent); a JSON or URL-encoded body over the parsers'
+10MB limit (`REQUEST_BODY_LIMIT_MB`) is 413 `REQUEST_TOO_LARGE` ("The
+request is too large. It must be 10MB or smaller."); and a browser origin
+outside `ALLOWED_ORIGINS` is an uncoded 403. All three used to be 500s
+reported to Sentry; none is reported now.
 
 System health (`GET /api/admin/system/errors`, super admin only):
 `SENTRY_NOT_CONFIGURED` and `SENTRY_UNAVAILABLE` (both 503: fix the

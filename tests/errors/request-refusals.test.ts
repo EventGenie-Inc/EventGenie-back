@@ -4,15 +4,19 @@ import * as Sentry from '@sentry/node';
 import type { ErrorEvent, EventHint } from '@sentry/node';
 import app, { CORS_REFUSED_MESSAGE } from '../../src/app.js';
 import { buildSentryOptions } from '../../src/shared/monitoring/sentry.config.js';
-import { MALFORMED_JSON_CODE, MALFORMED_JSON_MESSAGE } from '../../src/shared/middleware/malformed-json.middleware.js';
+import {
+  MALFORMED_JSON_CODE, MALFORMED_JSON_MESSAGE,
+  REQUEST_TOO_LARGE_CODE, REQUEST_TOO_LARGE_MESSAGE, REQUEST_BODY_LIMIT_MB,
+} from '../../src/shared/middleware/body-parse-errors.middleware.js';
 
 // ─────────────────────────────────────────
-//  REFUSALS BEFORE ANY ROUTE — malformed JSON and a CORS-refused origin
+//  REFUSALS BEFORE ANY ROUTE — malformed JSON, an oversized body and a
+//  CORS-refused origin
 //
-//  Both used to fall through to the global handler as plain errors: a 500
+//  All used to fall through to the global handler as plain errors: a 500
 //  with the generic message, reported to Sentry as if the server had
-//  failed. They are the client's problem: a coded 400 and a 403, neither
-//  reported. A real Sentry client records what it would send (nothing
+//  failed. They are the client's problem: a coded 400, a coded 413 and a
+//  403, none reported. A real Sentry client records what it would send (nothing
 //  leaves the process), as in tests/monitoring/error-capture.test.ts.
 // ─────────────────────────────────────────
 
@@ -60,6 +64,37 @@ describe('malformed JSON', () => {
     expect(MALFORMED_JSON_CODE).toBe('MALFORMED_JSON');
     // The parser's own message quotes the body; none of it comes back.
     expect(JSON.stringify(res.body)).not.toContain('tru');
+    expect(captured).toEqual([]);
+  });
+});
+
+describe('a body over the limit', () => {
+  // Just over the parsers' limit, in a body that is otherwise valid.
+  const filler = 'x'.repeat(REQUEST_BODY_LIMIT_MB * 1024 * 1024);
+
+  it('JSON: is a 413 with a clear message and a code, not reported', async () => {
+    const res = await request(app)
+      .post('/api/rsvp/submit')
+      .set('Content-Type', 'application/json')
+      .send(`{"token":"${filler}"}`);
+    await settle();
+
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({ status: 'error', message: REQUEST_TOO_LARGE_MESSAGE, code: REQUEST_TOO_LARGE_CODE });
+    expect(REQUEST_TOO_LARGE_CODE).toBe('REQUEST_TOO_LARGE');
+    expect(REQUEST_TOO_LARGE_MESSAGE).toBe('The request is too large. It must be 10MB or smaller.');
+    expect(captured).toEqual([]);
+  });
+
+  it('URL-encoded: the same 413', async () => {
+    const res = await request(app)
+      .post('/api/rsvp/submit')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send(`token=${filler}`);
+    await settle();
+
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({ status: 'error', message: REQUEST_TOO_LARGE_MESSAGE, code: REQUEST_TOO_LARGE_CODE });
     expect(captured).toEqual([]);
   });
 });
