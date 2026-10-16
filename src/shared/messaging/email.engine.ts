@@ -30,7 +30,7 @@ export interface OutgoingEmail {
 // The two sender addresses, from env config. Read at call time.
 export const inviteSenderAddress = (): string => process.env.RESEND_INVITE_EMAIL ?? 'onboarding@resend.dev';
 export const authSenderAddress = (): string => process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev';
-
+export const eventSenderAddress = (): string => process.env.RESEND_EVENT_EMAIL ?? 'onboarding@resend.dev';
 const toResendPayload = (email: OutgoingEmail) => ({
   from: email.from,
   to: email.to,

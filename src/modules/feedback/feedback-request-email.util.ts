@@ -1,6 +1,6 @@
 import { renderEmail } from '../../shared/messaging/email-layout.js';
 import { formatFromHeader, sanitizeDisplayName } from '../../shared/messaging/email-address.util.js';
-import { authSenderAddress, type OutgoingEmail } from '../../shared/messaging/email.engine.js';
+import { authSenderAddress, eventSenderAddress, type OutgoingEmail } from '../../shared/messaging/email.engine.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 
 // ─────────────────────────────────────────
@@ -35,5 +35,5 @@ export const buildFeedbackRequestEmail = (input: { to: string; eventId: string; 
     reason: `You received this because you organised ${input.eventName} on e-velope.`,
   });
 
-  return { to: input.to, from: formatFromHeader('e-velope', authSenderAddress()), subject, html, text };
+  return { to: input.to, from: formatFromHeader('e-velope', eventSenderAddress()), subject, html, text };
 };
