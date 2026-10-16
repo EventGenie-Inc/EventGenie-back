@@ -47,7 +47,7 @@ type ShareTokenEvent = NonNullable<Awaited<ReturnType<typeof eventRepository.fin
 const INVALID_LINK_MESSAGE = "This registration link isn't valid. Check the link, or ask the organiser for a new one.";
 const MALFORMED_MESSAGE = 'Something went wrong with your registration. Please refresh the page and try again.';
 const MAX_NAME_LENGTH = 100;
-const NO_SEATS: RegistrationSeats = { primaryGuests: 0, registeredSeats: 0 };
+const NO_SEATS: RegistrationSeats = { primaryGuests: 0, registeredSeats: 0, totalGuests: 0 };
 
 // A PRIVATE event's link is as dead as an unknown one: its old share token
 // must not keep showing the event to whoever still has the link.

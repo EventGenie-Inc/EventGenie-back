@@ -26,6 +26,7 @@ import { toGuestDesign } from '../invitation-design/invitation-design-guest.util
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { eventPublicRepository } from '../event-public/event-public.repository.js';
+import { exceedsGuestCeiling } from '../guest/guest-ceiling.util.js';
 import {
   REGISTRATION_ERROR_CODES,
   isEmailInAllowedDomains,
@@ -744,6 +745,24 @@ export const rsvpService = {
             data: attendingDayIds.map((eventDayId) => ({ inviteId: invite.id, eventDayId })),
           });
           attendances.push(...attendingDayIds.map((eventDayId) => ({ inviteId: invite.id, eventDayId })));
+        }
+
+        // The hard guest ceiling, plus-ones included (guest-ceiling.util.ts):
+        // checked only when this answer adds plus-ones beyond the ones it
+        // just archived, so re-sending the same party is never refused.
+        // Counted after the archive above and under the event's row lock
+        // (the lock registration takes), so the count is this answer's own.
+        // A guest hears "full", the same answer and code as a registrant's
+        // party that doesn't fit the cap, never the number.
+        if (plusOneNames.length > (isEdit ? invite.guest.plusOnes.length : 0)) {
+          await eventPublicRepository.lockEvent(tx, invite.eventId);
+          if (exceedsGuestCeiling(await guestRepository.countAllForEvent(invite.eventId, tx), plusOneNames.length)) {
+            throw new HttpError(
+              409,
+              "This event is full, so there isn't room for your plus-ones. Please remove some and try again.",
+              REGISTRATION_ERROR_CODES.FULL
+            );
+          }
         }
 
         // Each plus-one is a real Guest+Invite pair (mirrors

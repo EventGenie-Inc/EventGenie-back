@@ -35,6 +35,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { formatEarliestDay } from '../../shared/utils/guest-date.util.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { claimEventEmails } from './event-email-limit.util.js';
 
 // Bulk invite orchestrator — knows guests/invites/tiers and routes each
 // guest to whichever engine matches their contact. Kept separate from
@@ -157,6 +158,11 @@ export const SMS_UNAVAILABLE_REASON =
 // message about SMS to show.
 const smsCountFor = (invites: { deliveryMethod: DeliveryMethod }[]): number =>
   isFeatureEnabled('sms') ? invites.filter((i) => i.deliveryMethod === 'SMS').length : 0;
+
+// How many emails a batch would send, for the daily email limit
+// (event-email-limit.util.ts).
+const emailCountFor = (invites: { deliveryMethod: DeliveryMethod }[]): number =>
+  invites.filter((i) => i.deliveryMethod === 'EMAIL').length;
 
 interface DispatchContext {
   eventId: string;
@@ -394,6 +400,7 @@ export const inviteDispatchService = {
   sendBulk: async (
     eventId: string,
     guestIds: string[],
+    userId: string,
     requestingRole: PlatformRole,
     tenantId: string | null
   ): Promise<SendInvitesResult> => {
@@ -430,6 +437,10 @@ export const inviteDispatchService = {
     // that decision is made once per batch, never per guest.
     const { source: smsSource } = await assertSmsSendable(event, smsCountFor(invites));
 
+    // The daily email limit, all-or-nothing, last before anything goes:
+    // a refusal above claims nothing against it.
+    await claimEventEmails(event.id, 'INVITATION', emailCountFor(invites), userId);
+
     const ctx = await buildDispatchContext(event);
     const failures: InviteDispatchFailure[] = [];
     let sent = 0;
@@ -458,6 +469,7 @@ export const inviteDispatchService = {
 
   resend: async (
     inviteId: string,
+    userId: string,
     requestingRole: PlatformRole,
     tenantId: string | null
   ): Promise<InviteDispatchOutcome> => {
@@ -486,6 +498,7 @@ export const inviteDispatchService = {
     // 'QUOTA' is just a harmless placeholder, never written anywhere.
     const smsSource: SmsSendPool =
       smsCountFor([invite]) ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
+    await claimEventEmails(event.id, 'INVITATION', emailCountFor([invite]), userId);
 
     const ctx = await buildDispatchContext(event);
     // Dispatches using the invite's EXISTING token — never regenerated,
@@ -643,6 +656,18 @@ export const inviteDispatchService = {
         claimedAt
       );
     const results = new Map<string, DispatchResult>();
+
+    // The daily email limit, on the emails this round will actually send
+    // (after the cooldown claim above, so a guest another request just
+    // reminded isn't counted twice). Refused, nobody is reminded and every
+    // cooldown just claimed is given back.
+    try {
+      await claimEventEmails(event.id, 'REMINDER', emailCountFor(claimed), userId);
+    } catch (err) {
+      await releaseUnreached();
+      throw err;
+    }
+
     try {
       await dispatchMany(ctx, claimed, smsSource, 'REMINDER', results);
     } catch (err) {

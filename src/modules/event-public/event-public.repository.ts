@@ -17,6 +17,9 @@ export interface RegistrationSeats {
   // What the organiser's registration cap counts: live self-registered
   // guests who haven't declined, plus their live plus-ones.
   registeredSeats: number;
+  // Every live guest, plus-ones included: what the hard guest ceiling
+  // counts (guest-ceiling.util.ts, guestRepository.countAllForEvent's rule).
+  totalGuests: number;
 }
 
 export interface CreateRegistrantInput {
@@ -56,9 +59,9 @@ export const eventPublicRepository = {
     await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
   },
 
-  // One round trip for both counts (see RegistrationSeats).
+  // One round trip for every count (see RegistrationSeats).
   countSeats: async (eventId: string, tx?: Tx): Promise<RegistrationSeats> => {
-    const rows = await db(tx).$queryRaw<{ primaryGuests: bigint; registeredSeats: bigint }[]>`
+    const rows = await db(tx).$queryRaw<{ primaryGuests: bigint; registeredSeats: bigint; totalGuests: bigint }[]>`
       SELECT
         (SELECT COUNT(*) FROM "Guest" g
           WHERE g."eventId" = ${eventId} AND g."isArchived" = false AND g."hostGuestId" IS NULL
@@ -76,9 +79,16 @@ export const eventPublicRepository = {
           JOIN "Guest" h ON h."id" = p."hostGuestId"
           WHERE p."eventId" = ${eventId} AND p."isArchived" = false
             AND h."isArchived" = false AND h."selfRegisteredAt" IS NOT NULL
-        ) AS "registeredSeats"`;
+        ) AS "registeredSeats",
+        (SELECT COUNT(*) FROM "Guest" g
+          WHERE g."eventId" = ${eventId} AND g."isArchived" = false
+        ) AS "totalGuests"`;
     const row = rows[0];
-    return { primaryGuests: Number(row?.primaryGuests ?? 0), registeredSeats: Number(row?.registeredSeats ?? 0) };
+    return {
+      primaryGuests: Number(row?.primaryGuests ?? 0),
+      registeredSeats: Number(row?.registeredSeats ?? 0),
+      totalGuests: Number(row?.totalGuests ?? 0),
+    };
   },
 
   // The live guest on this event with this email, compared in normal form

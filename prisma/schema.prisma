@@ -203,6 +203,13 @@ enum AnnouncementKind {
   CANCELLATION
 }
 
+// What an EventEmailClaim counted: an invitation send (bulk or a single
+// resend) or a round of reminders.
+enum EventEmailKind {
+  INVITATION
+  REMINDER
+}
+
 enum TicketPurchaseStatus {
   PENDING
   PAID
@@ -560,6 +567,7 @@ model Event {
   smsSendLogs             SmsSendLog[]
   inviteReminderLogs      InviteReminderLog[]
   announcements           Announcement[]
+  emailClaims             EventEmailClaim[]
   // A list only because Prisma cannot express "unique among non-archived":
   // at most ONE non-archived row per event, enforced by the partial unique
   // index in the invitation_design migration. Read it through
@@ -1304,6 +1312,33 @@ model AnnouncementDelivery {
 
   @@index([announcementId])
   @@index([guestId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT EMAIL CLAIM — append-only, like InviteReminderLog: never edited
+//  or archived. One row per invitation or reminder send that emails
+//  anyone, written BEFORE the emails go, under a row lock on the event,
+//  with how many emails it is about to send. The daily email limit
+//  (event-email-limit.util.ts) sums emailCount over the last 24 hours, so
+//  two sends racing can't pass it together. A claim counts attempts, not
+//  deliveries: an email Resend refuses still used the request.
+//
+//  ON DELETE CASCADE only so a hard-deleted test fixture event takes its
+//  claims with it; product code never hard-deletes an event.
+// ─────────────────────────────────────────
+model EventEmailClaim {
+  id         String         @id @default(cuid())
+  eventId    String
+  kind       EventEmailKind
+  emailCount Int
+  // The organiser who pressed the button — a User.id (no relation, same
+  // as InviteReminderLog.sentBy).
+  claimedBy  String
+  claimedAt  DateTime       @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, claimedAt])
 }
 
 model InvitationDesign {

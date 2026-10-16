@@ -3,6 +3,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { type RegistrationClosedReason, type RegistrationState } from './event-public.types.js';
 import { type RegistrationSeats } from './event-public.repository.js';
+import { MAX_GUESTS_PER_EVENT, exceedsGuestCeiling } from '../guest/guest-ceiling.util.js';
 
 // ─────────────────────────────────────────
 //  PUBLIC REGISTRATION RULES — one place, three readers
@@ -101,12 +102,18 @@ export const resolveRegistrationState = (
   if (!event.eventDays.some((d) => d.openForRegistration)) {
     return closed('CLOSED', 'Registration for this event is not open.');
   }
-  const capReached = event.registrationCap !== null && seats.registeredSeats >= event.registrationCap;
-  const planReached = guestLimit !== null && seats.primaryGuests >= guestLimit;
-  if (capReached || planReached) return closed('FULL', REGISTRATION_FULL_MESSAGE);
+  if (isFull(event, seats, guestLimit)) return closed('FULL', REGISTRATION_FULL_MESSAGE);
 
   return { isOpen: true, reason: null, message: null, closesAt };
 };
+
+// The organiser's cap, the plan's guest limit, or the hard guest ceiling
+// (guest-ceiling.util.ts, plus-ones included): to a registrant all three
+// are the one state, full.
+const isFull = (event: { registrationCap: number | null }, seats: RegistrationSeats, guestLimit: number | null): boolean =>
+  (event.registrationCap !== null && seats.registeredSeats >= event.registrationCap) ||
+  (guestLimit !== null && seats.primaryGuests >= guestLimit) ||
+  seats.totalGuests >= MAX_GUESTS_PER_EVENT;
 
 export const assertRegistrationOpen = (state: RegistrationState): void => {
   if (state.isOpen || !state.reason) return;
@@ -114,20 +121,22 @@ export const assertRegistrationOpen = (state: RegistrationState): void => {
 };
 
 // Can a party of `partySize` (the registrant plus their plus-ones) fit.
-// The cap counts every seat; the plan's limit counts primary guests only
-// (guestRepository.countForEvent's rule), so a party adds one there.
+// The cap and the hard ceiling count every seat; the plan's limit counts
+// primary guests only (guestRepository.countForEvent's rule), so a party
+// adds one there.
 export const assertPartyFits = (
   event: { registrationCap: number | null },
   seats: RegistrationSeats,
   guestLimit: number | null,
   partySize: number
 ): void => {
-  const capReached = event.registrationCap !== null && seats.registeredSeats >= event.registrationCap;
-  const planReached = guestLimit !== null && seats.primaryGuests >= guestLimit;
-  if (capReached || planReached) {
+  if (isFull(event, seats, guestLimit)) {
     throw new HttpError(409, REGISTRATION_FULL_MESSAGE, REGISTRATION_ERROR_CODES.FULL);
   }
-  if (event.registrationCap !== null && seats.registeredSeats + partySize > event.registrationCap) {
+  if (
+    (event.registrationCap !== null && seats.registeredSeats + partySize > event.registrationCap) ||
+    exceedsGuestCeiling(seats.totalGuests, partySize)
+  ) {
     throw new HttpError(
       409,
       "There isn't room for everyone in your party. Try registering with fewer plus-ones.",

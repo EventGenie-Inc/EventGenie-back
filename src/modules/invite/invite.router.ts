@@ -65,7 +65,7 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     const auth = req as AuthenticatedRequest;
     const { guestIds } = req.body as { guestIds: string[] };
     const result = await inviteDispatchService.sendBulk(
-      req.params['eventId'] as string, guestIds, auth.user.role, auth.user.tenantId
+      req.params['eventId'] as string, guestIds, auth.user.id, auth.user.role, auth.user.tenantId
     );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
@@ -89,7 +89,7 @@ router.post('/:id/resend', async (req: Request, res: Response, next: NextFunctio
   try {
     const auth = req as AuthenticatedRequest;
     const result = await inviteDispatchService.resend(
-      req.params['id'] as string, auth.user.role, auth.user.tenantId
+      req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId
     );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }

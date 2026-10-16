@@ -473,8 +473,8 @@ Six documented exceptions:
   deliberately no update/delete method anywhere in
   `payment-ledger.repository.ts`.
 - The append-only send logs `SmsSendLog`, `InviteReminderLog`,
-  `Announcement` and `AnnouncementDelivery` — a message was sent, or failed
-  to be, recorded once and never edited or archived. An `Announcement` is
+  `Announcement`, `AnnouncementDelivery` and `EventEmailClaim` — a message
+  was sent, or failed to be, recorded once and never edited or archived. An `Announcement` is
   written when its send is claimed, so its failure count is summed from
   its delivery rows at read time, never written back onto it.
 - Membership join rows, `VendorSpaceUser` and `EventAssignment` — "this
@@ -690,6 +690,20 @@ System health (`GET /api/admin/system/errors`, super admin only):
 `SENTRY_NOT_CONFIGURED` and `SENTRY_UNAVAILABLE` (both 503: fix the
 server's configuration, or wait and retry). See "Error monitoring".
 
+Safety limits (see "Safety limits" under Domain rules): venue capacity
+outside 1 to 100,000 is 422 `EVENT_CAPACITY_INVALID` (event create, update
+and the wizard's materialize); a guest past the 5,000-per-event ceiling is
+422 `EVENT_GUEST_CEILING` for an organiser (add, import, restore), while a
+registrant or an RSVP gets registration's own `REGISTRATION_FULL` /
+`REGISTRATION_PARTY_TOO_LARGE`, never the number; an import file of more
+than 2,000 rows is 422 `GUEST_IMPORT_TOO_MANY_ROWS` and one over 5 MB is 413
+`GUEST_IMPORT_FILE_TOO_LARGE`; invitation and reminder emails past the
+event's daily allowance are 429 `EVENT_EMAIL_DAILY_LIMIT`.
+
+Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
+`MEMORY_HUB_NOTHING_TO_DOWNLOAD` (no approved items) and 429
+`MEMORY_HUB_DOWNLOAD_RATE_LIMIT`.
+
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
 wrong-user, revoked, **and** expired device tokens — one code, matching
@@ -772,7 +786,9 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 `null` means unlimited.
 
 Enforcement points differ: `maxGuestsPerEvent` is checked at **import
-time**; `maxSmsPerMonth` at **send time**, all-or-nothing.
+time**; `maxSmsPerMonth` at **send time**, all-or-nothing. A plan's limit is
+never the last word: the hard limits under "Safety limits" (Domain rules)
+apply after it, whatever a `SUPER_ADMIN` sets, `null` included.
 
 **No feature is tied to a tier by name in code.** Every paid-only feature
 is a `SubscriptionTierConfig` setting a `SUPER_ADMIN` can switch on for any
@@ -863,7 +879,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `FEATURE_NAMES` (`src/shared/features/feature-flags.ts`), under a
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
-  `announcements`, `payments`, `memoryHubVideo`.
+  `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -936,7 +952,10 @@ codebase: a feature is switched off by configuration, **never deleted**.
   - `memoryHubVideo` off: no Memory Hub upload signature for a video,
     organiser or guest (422 `MEMORY_HUB_VIDEO_UNAVAILABLE`), and guest-view's
     `limits` say so (`videosAllowed: false`, `videoMaxBytes: null`,
-    `allowedFormats` images only). Videos already uploaded stay and show.
+    `allowedFormats` images only). Videos already uploaded stay and show,
+    and are left out of a Memory Hub download.
+  - `memoryHubDownload` off: `POST /api/events/:eventId/memory-hub/download`
+    is 404. Nothing else changes.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1532,6 +1551,84 @@ tenant-scoped and under the assignment lock (`eventService.getScoped`).
   `unreachable` list every guest who wasn't reached; if even the audience
   couldn't be loaded, the message says so and points at the guest list.
 
+### Safety limits
+
+Hard limits in code, for mistakes and runaway clients rather than for
+pricing. They are not tier settings and a `SUPER_ADMIN` can't raise them;
+each refusal carries a code (see "Machine-readable codes" under Errors).
+
+- **Venue capacity** (`Event.capacity`, `event-capacity.util.ts`): a whole
+  number from 1 to 100,000, or none. Anything else is 422
+  `EVENT_CAPACITY_INVALID`, never a value that reaches the integer column
+  and comes back a 500 (a tester's 100,000,000,000 did).
+- **5,000 guests per event, plus-ones included** (`MAX_GUESTS_PER_EVENT`,
+  `guest-ceiling.util.ts`). Checked after the plan's own guest limit, so a
+  limited plan's refusal is still the plan's, and a plan left unlimited
+  stops here. Unlike the plan's limit it counts plus-ones: it bounds the
+  rows an event holds, not what was sold. Every path that makes a live
+  guest goes through it: organiser add, import and restore (422
+  `EVENT_GUEST_CEILING`), self-registration (FULL / PARTY_TOO_LARGE, also on
+  the public view) and plus-ones named at RSVP (409 `REGISTRATION_FULL`,
+  "This event is full, so there isn't room for your plus-ones", checked under
+  the event's row lock, only when an answer adds plus-ones). Organiser add,
+  import and restore are not under a lock, so two racing can pass it by a
+  few; it is a safety bound, not an exact count.
+- **Guest import:** at most 2,000 rows per file (`MAX_IMPORT_ROWS`), refused
+  whole before any row is validated (422 `GUEST_IMPORT_TOO_MANY_ROWS`), and
+  at most 5 MB (413 `GUEST_IMPORT_FILE_TOO_LARGE`). The import's write
+  transaction allows 30 seconds: a full 2,000-row file took about 11 against
+  the remote test database, past Prisma's 5-second default.
+- **Invitation and reminder emails: 2,000 per event in any rolling 24 hours**
+  (`EVENT_EMAILS_PER_DAY`, `event-email-limit.util.ts`). A 300-guest event's
+  invitations and a reminder round are 600; a 1,000-guest event still fits
+  both in a day; a runaway loop stops at 2,000 instead of draining the shared
+  Resend quota. Every invitation email (bulk or a single resend) and
+  reminder email counts, claimed before anything goes under a row lock on
+  the event (`EventEmailClaim`, append-only, one row per send with its
+  count), so a refused email still counts and racing sends can't pass it.
+  All-or-nothing: 429 `EVENT_EMAIL_DAILY_LIMIT`, nothing sent, no reminder
+  cooldown started, saying how many could still go. SMS, announcements
+  (their own limit), the cancellation email and registration emails are not
+  counted.
+
+### Memory Hub download
+
+Behind `memoryHubDownload`. `POST /api/events/:eventId/memory-hub/download`
+(organiser only, tenant-scoped, under the assignment lock, the plan's Memory
+Hub gate; `memory-hub-download.service.ts`) returns links to zip files of the
+event's **approved, live** items in original quality: `{ itemCount,
+photoCount, videoCount, expiresAt, parts: [{ part, partCount, mediaType,
+itemCount, bytes, fileName, url }] }`.
+
+- **Never through this server.** Each `url` is a signed Cloudinary
+  `generate_archive` URL in `download` mode
+  (`shared/cloudinary/cloudinary-archive.util.ts`): the browser fetches it,
+  Cloudinary zips the originals and streams them back, nothing is stored.
+- **By exact public id**, never by folder prefix (the folder holds pending
+  and rejected uploads too). Only ids in this event's own folder
+  (`isSignedPublicIdInFolder`). Videos only while `memoryHubVideo` is on.
+- **Parts.** One archive holds one resource type, so photos and videos are
+  separate parts, photos first, oldest first. A part closes at 1,000 files
+  (Cloudinary's limit), 95 MB of originals (its limit is at least 100 MB) or
+  a 12,000-character URL, whichever comes first. The URL is what binds:
+  every id is in it, and Cloudinary refuses a request line past about 16 KB
+  with a 414 (measured: a 16,336-character URL worked, 16,628 did not), so a
+  part holds about 80 photos.
+- **Names.** Each zip is `<event name>-photos[-part-N-of-M].zip`, the name
+  reduced to letters, digits and hyphens with anything like an email
+  address or a phone number removed. Inside, each file is named by its
+  public id's random UUID: Cloudinary's archive API can't name files one
+  by one (only the public id, or the original upload filename, which is
+  whatever the guest's phone called it and is never used).
+- **Links last 30 minutes.** Every fetch rebuilds the zip at Cloudinary's
+  cost, so a link should die before it can be forwarded and reused, yet
+  live long enough to start every part on a slow connection (Cloudinary
+  checks the expiry when a download starts).
+- **Rate limited per event:** 5 sets of links an hour
+  (`memoryHubDownloadLimiter`), counting only successes, then 429
+  `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`. Nothing approved is 422
+  `MEMORY_HUB_NOTHING_TO_DOWNLOAD`.
+
 ### Check-in
 
 Recorded **per event day**, never as one "arrived" flag on the guest: someone
@@ -2123,6 +2220,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     (`tests/tenant/tenant-me-plan-settings.test.ts`): a SPARK setting
     changed shows in `/me`, no config row gives the enforcement fallback,
     and a switched-off feature's settings are left out.
+  - **Safety limits** (`tests/safety-limits/`): venue capacity outside
+    1–100,000 refused on create, update and materialize with nothing
+    written; the guest ceiling on real 4,999-guest events (plus-ones
+    counted) for add, restore, import, RSVP plus-ones and self-registration
+    (view, FULL and PARTY_TOO_LARGE), after the plan's own limit; import
+    refusing 2,001 rows before any row is checked, taking exactly 2,000, and
+    the coded 413; the daily email limit on invitations, resends and
+    reminders (nothing sent, no cooldown started), the rolling window, other
+    events not counting, and two racing claims.
+  - **Memory Hub download** (`tests/memory-hub/memory-hub-download.test.ts`):
+    exactly the approved, live items by public id (never pending, rejected,
+    archived or another folder), videos only with the flag on, the signed
+    URL re-signed and its 30-minute expiry, safe zip names, 200 photos in
+    three parts under the URL budget, the file-count and size budgets, the
+    flag, other tenants and the assignment lock, and the per-event rate
+    limit counting successes only.
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and

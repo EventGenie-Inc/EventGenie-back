@@ -72,6 +72,7 @@ describe('GET /api/config/features', () => {
       announcements: true,
       payments: true,
       memoryHubVideo: true,
+      memoryHubDownload: true,
     });
   });
 

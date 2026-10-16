@@ -217,9 +217,9 @@ describe('sms off — resend and reminders to an SMS-only guest', () => {
   };
 
   it('resend: a reported failure, nothing sent, nothing logged', async () => {
-    const { tenant, event, invite } = await smsGuest();
+    const { tenant, organiser, event, invite } = await smsGuest();
     vi.stubEnv('FEATURES_DISABLED', 'sms');
-    const outcome = await inviteDispatchService.resend(invite.id, 'TENANT_ADMIN', tenant.id);
+    const outcome = await inviteDispatchService.resend(invite.id, organiser.id, 'TENANT_ADMIN', tenant.id);
     expect(outcome).toMatchObject({ ok: false, reason: SMS_UNAVAILABLE_REASON, deliveryMethod: 'SMS' });
     expect(mockTwilioCreate).not.toHaveBeenCalled();
     expect(await prisma.smsSendLog.count({ where: { eventId: event.id } })).toBe(0);
@@ -227,9 +227,9 @@ describe('sms off — resend and reminders to an SMS-only guest', () => {
   }, 60000);
 
   it('resend, flag on: refused with the plan message instead (the control)', async () => {
-    const { tenant, invite } = await smsGuest();
+    const { tenant, organiser, invite } = await smsGuest();
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(inviteDispatchService.resend(invite.id, 'TENANT_ADMIN', tenant.id)).rejects.toMatchObject(planRefusal);
+    await expect(inviteDispatchService.resend(invite.id, organiser.id, 'TENANT_ADMIN', tenant.id)).rejects.toMatchObject(planRefusal);
   }, 60000);
 
   it('reminder: a reported failure, nothing sent, the cooldown not started, the attempt logged', async () => {
