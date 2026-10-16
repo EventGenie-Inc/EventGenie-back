@@ -90,6 +90,11 @@ export const guestRepository = {
   countForEvent: (eventId: string) =>
     prisma.guest.count({ where: { eventId, isArchived: false, hostGuestId: null } }),
 
+  // Every live guest, plus-ones included: what the hard guest ceiling
+  // (guest-ceiling.util.ts) counts, unlike countForEvent above.
+  countAllForEvent: (eventId: string, tx?: Prisma.TransactionClient) =>
+    (tx ?? prisma).guest.count({ where: { eventId, isArchived: false } }),
+
   // Feeds guest-export.util.ts — every non-archived guest (primary AND
   // plus-one, both live in this same table) with everything a row needs:
   // hostGuest (for the "Plus-One Of" column, blank on primaries), and
@@ -219,7 +224,10 @@ export const guestRepository = {
       });
 
       return tx.guest.findMany({ where: { id: { in: guestIds } } });
-    }),
+    // Still four statements, but each carries every row: a full 2,000-row
+    // file (MAX_IMPORT_ROWS) took about 11 seconds against the remote test
+    // database, past Prisma's 5-second default, and came back as a 500.
+    }, { maxWait: 10_000, timeout: 30_000 }),
 
   update: (id: string, data: UpdateGuestDto) =>
     prisma.guest.update({

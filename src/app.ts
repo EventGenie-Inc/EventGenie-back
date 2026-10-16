@@ -23,6 +23,7 @@ import attendanceRouter from './modules/attendance/attendance.router.js';
 import checkInRouter from './modules/check-in/check-in.router.js';
 import authRouter from './modules/auth/auth.router.js';
 import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
+import memoryHubDownloadRouter from './modules/memory-hub/memory-hub-download.router.js';
 import memoryHubPublicRouter from './modules/memory-hub/memory-hub-public.router.js';
 import vendorRouter from './modules/vendor/vendor.router.js';
 import subscriptionTierConfigRouter from './modules/subscription-tier-config/subscription-tier-config.router.js';
@@ -160,6 +161,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/events/:eventId/program/:programId/items
 //  /api/events/:eventId/tickets
 //  /api/events/:eventId/memory-hub
+//  /api/events/:eventId/memory-hub/download (zip links for every approved item)
 //  /api/events/:eventId/registration-settings (public events' registration rules)
 //  /api/event-drafts/current
 //  /api/invites/:inviteId/rsvp-responses
@@ -212,6 +214,7 @@ app.use('/api/auth', authRouter);
 // ─────────────────────────────────────────
 //  MEMORY HUB ROUTES
 // ─────────────────────────────────────────
+app.use('/api/events/:eventId/memory-hub/download', memoryHubDownloadRouter);
 app.use('/api/events/:eventId/memory-hub', memoryHubRouter);
 app.use('/api/memory-hub', memoryHubPublicRouter);
 

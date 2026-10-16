@@ -8,6 +8,7 @@ import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 
 const MAX_IMPORT_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
+export const GUEST_IMPORT_FILE_TOO_LARGE = 'GUEST_IMPORT_FILE_TOO_LARGE';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -63,7 +64,12 @@ router.post('/import', (req: Request, res: Response, next: NextFunction) => {
   // lost, every EVENT_ADMIN's import would fail closed with a 404.
   upload.single('file')(req, res, bindRequestViewer((err: unknown) => {
     if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      next(new HttpError(413, `File exceeds the maximum upload size of ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)}MB`));
+      next(new HttpError(
+        413,
+        `This file is larger than ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)} MB, the most one import can take. ` +
+          'Nothing was imported. Remove empty rows and extra sheets, or split the list into smaller files.',
+        GUEST_IMPORT_FILE_TOO_LARGE
+      ));
       return;
     }
     if (err) { next(err); return; }

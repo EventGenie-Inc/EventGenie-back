@@ -34,6 +34,8 @@ export const FEATURE_NAMES = [
   'payments',
   // Video in Memory Hub. Off: upload signatures are for photos only.
   'memoryHubVideo',
+  // Memory Hub "download all": zip links for every approved item.
+  'memoryHubDownload',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

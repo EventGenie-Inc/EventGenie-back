@@ -596,3 +596,39 @@ export const teamInviteIpLimiter = rateLimit({
     message: 'Too many requests. Please wait a few minutes and try again.',
   },
 });
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — MEMORY HUB DOWNLOAD ALL
+//  (POST /api/events/:eventId/memory-hub/download)
+//
+//  Keyed by the EVENT in the URL, not the user or IP: what it protects is
+//  Cloudinary's usage, which every fresh set of zip links can spend again,
+//  whoever asks. 5 an hour per event: one organiser downloading after the
+//  function needs one, a retry after a dropped connection or a colleague
+//  doing the same needs a couple more, and a looping client or a
+//  double-clicking button stops at five. Only successful requests count
+//  (skipFailedRequests): a 404 for another tenant's event, the flag off or
+//  a hub with nothing approved spends nothing at Cloudinary, so it must not
+//  use up the real organiser's budget either. Each link is also short-lived
+//  (memory-hub-download.service.ts), which bounds how often one set can be
+//  fetched.
+// ─────────────────────────────────────────
+export const MEMORY_HUB_DOWNLOADS_PER_EVENT_PER_HOUR = 5;
+export const MEMORY_HUB_DOWNLOAD_RATE_LIMIT = 'MEMORY_HUB_DOWNLOAD_RATE_LIMIT';
+
+export const memoryHubDownloadKey = (eventId: string): string => `memory-hub-download:${eventId}`;
+
+export const memoryHubDownloadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: MEMORY_HUB_DOWNLOADS_PER_EVENT_PER_HOUR,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipFailedRequests: true,
+  keyGenerator: (req) => memoryHubDownloadKey(String(req.params['eventId'] ?? 'unknown')),
+  message: {
+    status: 'error',
+    message:
+      "You've prepared this event's download several times in the last hour. Use the links you already have, or try again in an hour.",
+    code: MEMORY_HUB_DOWNLOAD_RATE_LIMIT,
+  },
+});

@@ -6,6 +6,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { eventService, resolveEventScope } from '../event/event.service.js';
 import { eventDayRepository } from '../event-day/event-day.repository.js';
 import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { assertWithinGuestCeiling } from './guest-ceiling.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
@@ -200,7 +201,11 @@ export const guestService = {
   reactivate: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
     // to find a guest that is currently archived and un-archive them.
-    await guestService.getById(id, requestingRole, tenantId, true);
+    const guest = await guestService.getById(id, requestingRole, tenantId, true);
+    // Restoring adds a live guest back, so it can't take the event past the
+    // hard ceiling either (guest-ceiling.util.ts). The plan's own limit is
+    // not checked here (it never was on restore).
+    if (guest.isArchived) await assertWithinGuestCeiling(guest.eventId, 1);
 
     // Per the same v1 approach as tenant.service.ts's reactivate: this
     // uniformly reactivates every archived invite under this guest,

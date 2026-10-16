@@ -20,7 +20,13 @@ import {
 // database, fetching what this module needs (event days, existing
 // contacts) up front.
 
-const MAX_IMPORT_ROWS = 5000;
+// At most this many data rows per file, refused whole (422) before any row
+// is validated or written. 2,000 covers the guest list of a private event
+// of any realistic size in one file, and keeps one import (validation and
+// a single write transaction) well inside a request's time; a bigger list
+// goes in as several files. Was 5,000, an uncoded 400.
+export const MAX_IMPORT_ROWS = 2000;
+export const GUEST_IMPORT_TOO_MANY_ROWS = 'GUEST_IMPORT_TOO_MANY_ROWS';
 
 export interface ParsedImportRow {
   rowNumber: number; // the actual row the user sees in Excel (header = row 1)
@@ -112,8 +118,10 @@ export const parseImportFile = async (
   }
   if (dataRows.length > MAX_IMPORT_ROWS) {
     throw new HttpError(
-      400,
-      `This file has ${dataRows.length} data rows, exceeding the maximum of ${MAX_IMPORT_ROWS} rows per import — split it into smaller batches`
+      422,
+      `This file has ${dataRows.length.toLocaleString('en-US')} guest rows, but one import can take at most ` +
+        `${MAX_IMPORT_ROWS.toLocaleString('en-US')}. Nothing was imported. Split the list into smaller files and import each one.`,
+      GUEST_IMPORT_TOO_MANY_ROWS
     );
   }
 

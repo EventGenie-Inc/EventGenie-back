@@ -109,13 +109,13 @@ describe('invitationDesigns off — invite emails', () => {
     await addDesign();
 
     vi.stubEnv('FEATURES_DISABLED', '');
-    const on = await inviteDispatchService.sendBulk(event.id, [guest.id], 'TENANT_ADMIN', organiser.tenantId);
+    const on = await inviteDispatchService.sendBulk(event.id, [guest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId);
     expect(on.sent).toBe(1);
     expect(sentHtml()).toContain('launch-mode-design.png');
 
     clearSentEmails();
     vi.stubEnv('FEATURES_DISABLED', 'invitationDesigns');
-    const off = await inviteDispatchService.sendBulk(event.id, [guest.id], 'TENANT_ADMIN', organiser.tenantId);
+    const off = await inviteDispatchService.sendBulk(event.id, [guest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId);
     expect(off.sent).toBe(1);
     expect(sentEmails()).toHaveLength(1);
     expect(sentHtml()).not.toContain('launch-mode-design');
@@ -128,7 +128,7 @@ describe('sms off — invite sending', () => {
     const phoneGuest = await addPhoneGuest();
     vi.stubEnv('FEATURES_DISABLED', '');
     await expect(
-      inviteDispatchService.sendBulk(event.id, [phoneGuest.id], 'TENANT_ADMIN', organiser.tenantId)
+      inviteDispatchService.sendBulk(event.id, [phoneGuest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId)
     ).rejects.toMatchObject({ statusCode: 403, message: expect.stringMatching(/plan/) });
   }, 60000);
 
@@ -137,7 +137,7 @@ describe('sms off — invite sending', () => {
     const phoneGuest = await addPhoneGuest();
     vi.stubEnv('FEATURES_DISABLED', 'sms');
 
-    const result = await inviteDispatchService.sendBulk(event.id, [guest.id, phoneGuest.id], 'TENANT_ADMIN', organiser.tenantId);
+    const result = await inviteDispatchService.sendBulk(event.id, [guest.id, phoneGuest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId);
 
     expect(result).toMatchObject({ totalSelected: 2, sent: 1, failed: 1 });
     expect(result.failures).toEqual([

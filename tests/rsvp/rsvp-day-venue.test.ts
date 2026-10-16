@@ -115,7 +115,7 @@ describe('guest responses carry per-day venues', () => {
   }, 60000);
 
   it('invitation emails name the guest\'s own day(s) and venue(s)', async () => {
-    const result = await inviteDispatchService.sendBulk(eventId, [bothGuest.guestId, oneDayGuest.guestId], 'TENANT_ADMIN', tenantId);
+    const result = await inviteDispatchService.sendBulk(eventId, [bothGuest.guestId, oneDayGuest.guestId], userId, 'TENANT_ADMIN', tenantId);
     expect(result).toMatchObject({ sent: 2, failed: 0 });
 
     const sentTo = async (guestId: string) => {
