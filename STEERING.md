@@ -315,7 +315,8 @@ the same treatment: `isCloudinaryDeliveryUrlFor` ties it to exactly the
 checked publicId, so a vetted id can't sit next to a URL pointing
 anywhere else. Found missing on Memory Hub guest and organiser uploads,
 event covers (create, update, wizard materialize) and Memory Hub
-`mediaUrl`; invitation designs were built with both checks. An id
+`mediaUrl`; invitation designs and feedback logos were built with both
+checks. An id
 already stored on a record is not re-checked when re-sent unchanged.
 
 ### Email
@@ -347,8 +348,9 @@ into the HTML part and the plain-text part, so the two always match.
 `sendEmail` requires `text`, so no email leaves without a plain-text part.
 Builders: `invite-message.util.ts` (invitation, reminder, registration,
 announcement, cancellation),
-`auth-email.util.ts` (sign-in code, password reset) and
-`user-invite-email.util.ts` (team invitation).
+`auth-email.util.ts` (sign-in code, password reset),
+`user-invite-email.util.ts` (team invitation) and
+`feedback-request-email.util.ts` (the feedback request).
 
 **Escaping lives in the layout.** Every text and every URL in a block goes
 through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
@@ -430,6 +432,12 @@ subject "You've been invited to join <company> on e-velope", one button
 validity, the ignore line. The company name goes through
 `sanitizeDisplayName` on its way into the subject.
 
+**The feedback request** (see "Feedback and sharing permissions") reads
+like the team invitation: From `"e-velope" <RESEND_FROM_EMAIL>`, no seal,
+subject "How did <event> go?" (the event name header-safe), one button
+"Share your feedback" to `<FRONTEND_BASE_URL>/events/<id>/feedback`, and a
+line that every permission is optional and can be changed later.
+
 **Auth emails** use the same layout, calm and functional: no seal, no
 wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
 code" (the code, its validity from `OTP_TTL_MINUTES`, the ignore line) and
@@ -459,7 +467,7 @@ nowhere else.
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Six documented exceptions:
+Seven documented exceptions:
 
 - `Attendance` — a guest's **RSVP answer per day** ("will attend"), NOT
   arrival. RSVP submit rebuilds these wholesale on every edit, which is why
@@ -473,10 +481,16 @@ Six documented exceptions:
   deliberately no update/delete method anywhere in
   `payment-ledger.repository.ts`.
 - The append-only send logs `SmsSendLog`, `InviteReminderLog`,
-  `Announcement`, `AnnouncementDelivery` and `EventEmailClaim` — a message
-  was sent, or failed to be, recorded once and never edited or archived. An `Announcement` is
+  `Announcement`, `AnnouncementDelivery`, `EventEmailClaim` and
+  `FeedbackRequestClaim` — a message was sent, or failed to be, recorded
+  once and never edited or archived. An `Announcement` is
   written when its send is claimed, so its failure count is summed from
   its delivery rows at read time, never written back onto it.
+- `ConsentRecord` — every permission given or withdrawn, append-only like
+  the ledger: no `isArchived`, no `updatedAt`, no update or delete method
+  in `consent.repository.ts`, and the database refuses an `UPDATE` of a
+  row (the `ConsentRecord_no_update` trigger). Withdrawing is a new record.
+  See "Feedback and sharing permissions".
 - Membership join rows, `VendorSpaceUser` and `EventAssignment` — "this
   person is on this space/event" is a current fact, set and unset as a
   whole; removing a membership deletes the row. The person and the
@@ -704,6 +718,18 @@ Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
 `MEMORY_HUB_NOTHING_TO_DOWNLOAD` (no approved items) and 429
 `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`.
 
+Feedback (`PUT /api/events/:eventId/feedback`, see "Feedback and sharing
+permissions"): every 422 carries a code naming its field
+(`FEEDBACK_ERROR_CODES`, `feedback-validation.util.ts`):
+`FEEDBACK_EVENT_NOT_COMPLETED` (also on the logo signature),
+`FEEDBACK_SCORE_INVALID` (missing on the first save, or not a whole number
+0–10), `FEEDBACK_WORKED_BEST_TOO_LONG`, `FEEDBACK_TO_IMPROVE_TOO_LONG`,
+`FEEDBACK_PHOTO_NOT_ELIGIBLE`, `FEEDBACK_LOGO_INVALID` and
+`FEEDBACK_LOGO_TOO_LARGE`. A wrong type (400) and a `SUPER_ADMIN` saving
+(403) have none. A guest asking to share a video publicly (`POST
+/api/memory-hub/guest-items` and the public-sharing toggle) is 422
+`PUBLIC_SHARING_PHOTOS_ONLY`.
+
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
 wrong-user, revoked, **and** expired device tokens — one code, matching
@@ -879,7 +905,8 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `FEATURE_NAMES` (`src/shared/features/feature-flags.ts`), under a
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
-  `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`.
+  `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
+  `feedback`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -956,6 +983,12 @@ codebase: a feature is switched off by configuration, **never deleted**.
     and are left out of a Memory Hub download.
   - `memoryHubDownload` off: `POST /api/events/:eventId/memory-hub/download`
     is 404. Nothing else changes.
+  - `feedback` off: `/api/events/:eventId/feedback`, `/api/admin/feedback`
+    and the guest's public-sharing toggle are 404; a guest upload's
+    `allowPublicSharing` is ignored (nothing recorded, and the upload goes
+    through); guest-view has no `publicSharing`; the feedback request sweep
+    sends nothing (an event asked later still gets its one email, while
+    inside the window). Consent records already given stay.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1478,8 +1511,10 @@ is honoured (absent means visible). No follow-up calls are needed.
 
 ### Reminders
 
-Manual only — the organiser presses a button; this codebase has no
-scheduler by deliberate choice. They go through the same dispatch path as
+Manual only — the organiser presses a button. Nothing here runs on a
+timer by deliberate choice, with one exception, the feedback request sweep
+(see "Feedback and sharing permissions"), which is built to be correct
+whether or not its timer fires. They go through the same dispatch path as
 invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
@@ -1628,6 +1663,98 @@ itemCount, bytes, fileName, url }] }`.
   (`memoryHubDownloadLimiter`), counting only successes, then 429
   `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`. Nothing approved is 422
   `MEMORY_HUB_NOTHING_TO_DOWNLOAD`.
+
+### Feedback and sharing permissions
+
+Behind `feedback`. After an event we ask its organisers how it went and
+whether e-velope may feature their company, quote them, contact them about
+a case study and share photos they choose. Guests decide for their own
+photos.
+
+**Consent records.** Every permission given or withdrawn is one
+`ConsentRecord` (`src/modules/consent/`), append-only (see "Soft delete"):
+who (exactly one of an organiser's `userId` or the uploading guest's
+`guestId`), the event, the kind (`COMPANY_NAME_LOGO`, `QUOTE`,
+`CASE_STUDY_CONTACT` for the whole event; `PHOTO_ORGANISER_SELECTED` and
+`PHOTO_GUEST_PUBLIC_SHARING` per photo, with its `memoryItemId`),
+`GRANTED` or `WITHDRAWN`, the exact wording shown and its version, and
+when. **The current state of a subject (event + kind, + photo) is its
+latest record by `seq`**, `NOT_GIVEN` when it has none
+(`foldConsentStates`, `consent.service.ts`); never read a single record as
+the state. Only a change is recorded: re-sending what is current appends
+nothing. CHECK constraints keep a guest to `PHOTO_GUEST_PUBLIC_SHARING`
+only, and an organiser off it.
+
+**All consent wording lives in `consent-wording.ts`** (`src/modules/consent/`),
+one list of versions per kind; the current wording is the last. The server
+stores the current text and version on each record, and sends the same
+text to the frontend (the feedback GET's `wording`, guest-view's
+`publicSharing.wording`), which shows it and keeps no copy. **Changing the
+words means a new version appended to the list**, never an edit: old
+records keep the wording they were given.
+
+**The guest's opt-in.** `POST /api/memory-hub/guest-items` takes an optional
+`allowPublicSharing`, **off unless it is exactly `true`**; true records a
+`PHOTO_GUEST_PUBLIC_SHARING` grant for the new photo in the same
+transaction ("Happy for this photo to be shared publicly by the organiser
+and e-velope."). Photos only (a video: 422 `PUBLIC_SHARING_PHOTOS_ONLY`).
+The guest changes it later through their invite token, `POST
+/api/memory-hub/guest-items/:itemId/public-sharing` (`{ token,
+allowPublicSharing }`, their own live photos only, anything else 404,
+allowed whatever the event's state so they can always withdraw; the upload
+limiters). Guest-view's `publicSharing.myItems` lists each of their pending
+and approved photos with its current setting. Organiser uploads carry no
+opt-in, so they are never eligible.
+
+**Organiser feedback** (`/api/events/:eventId/feedback`, organiser only,
+tenant-scoped and under the assignment lock through `getScoped`): one per
+event (`EventFeedback`), saved only once the event is `COMPLETED`, editable
+afterwards. `GET` returns the feedback (or null), `available`, each
+event-level permission's state, the eligible photos and the current
+selection, the wording of every tick and the logo limits. `PUT` takes
+`score` (0–10, required on the first save), `workedBest` and `toImprove`
+(up to 2000 characters, blank stored as null), `permissions` (the three
+event-level kinds, true/false), `selectedPhotoIds` (the whole selection:
+added photos are granted, missing ones withdrawn) and `logo` (`{ url,
+publicId, bytes }` from `POST .../feedback/logo-signature`, signed into the
+tenant's own `feedback-logos` folder and checked like every Cloudinary
+asset; null removes it). One transaction under a row lock on the event.
+**A photo newly selected must be eligible now**, or nothing is saved (422).
+A `SUPER_ADMIN` can read it but not save it (403): a permission is the
+company's to give.
+
+**Eligible and shareable — one rule** (`feedback-photos.util.ts`).
+Eligible (the organiser may select it): approved, not archived, a photo, a
+guest's upload to the event's live album, in the event's own folder, AND
+its guest's opt-in currently granted. **Shareable** (the super admin may
+use it): eligible AND the organiser's selection currently granted. **Every
+condition, every time it is read**: a photo rejected or archived since, or
+whose guest or organiser has since withdrawn, drops out with no other step.
+A selection whose guest later withdraws stands as the organiser's record
+but is not shareable.
+
+**Super admin** (`/api/admin/feedback`, `SUPER_ADMIN` only, the global 404
+for everyone else): the list (event, company, dates, score, answers, logo,
+each permission's status with when it was given, the wording version and,
+when withdrawn, when; selected and shareable photo counts), `GET
+/:eventId/shareable-photos` (each shareable photo with both consents, and
+Memory Hub download-style zip links of the originals, 30 minutes) and `GET
+/export` (the list as CSV; every cell an organiser typed is defused for
+spreadsheets, a leading `=`, `+`, `-`, `@`, tab or CR prefixed with `'`).
+
+**The request email** (`feedback-request.service.ts`) is **the one
+scheduled job**: a periodic in-process sweep, started by `server.ts` (never
+`app.ts`, so tests start no timer), every 15 minutes. From 08:00 UTC the
+day after an event's last day, once it is `COMPLETED`, its organisers (the
+creator and the members assigned to it, active and able to open it; none
+left, the tenant's active `TENANT_ADMIN`s) are emailed once. **Once is the
+claim, not the timer:** a `FeedbackRequestClaim` row, unique per event, is
+inserted before anything is sent, so two sweeps racing (on one server or
+several) or a restart email once; a send that fails after the claim is not
+retried. It catches up: a server asleep at the due time sends on its next
+sweep, for events whose last day was within the last 7 days, and never for
+older ones. Never for a cancelled, draft or archived event, an archived
+tenant, an event with feedback already given, or with `feedback` off.
 
 ### Check-in
 
@@ -2229,6 +2356,25 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     the coded 413; the daily email limit on invitations, resends and
     reminders (nothing sent, no cooldown started), the rolling window, other
     events not counting, and two racing claims.
+  - **Feedback and sharing permissions** (`tests/feedback/`): consent
+    records append-only (a withdrawal is a new row, the repository has no
+    update or delete, the database refuses an `UPDATE`) with the state
+    following the latest record (seq breaking a same-millisecond tie);
+    the wording stored per record and the history in order; a guest's
+    opt-in off by default, recorded with its wording when true, videos
+    refused, changed later through the token (their own photos only) and
+    shown in guest-view; feedback only on completed events, the score and
+    text rules, permissions recorded only on change, withdrawals; no photo
+    selectable without the guest's opt-in (pending, rejected, archived,
+    organiser, other-event photos refused too); another tenant's event and
+    a locked member's unassigned event 404, a `SUPER_ADMIN` save 403; the
+    logo's folder, URL and size; shareable = every condition, a guest's or
+    organiser's withdrawal, a rejection or an archive each removing the
+    photo; the list, the CSV (formula cells defused) and the download
+    links; the super admin routes 404 for tenants; the request email's
+    recipients and content, once per event even with two sweeps (or two
+    requests) racing, never for cancelled, draft, future, too old,
+    archived or answered events, nor with the flag off.
   - **Memory Hub download** (`tests/memory-hub/memory-hub-download.test.ts`):
     exactly the approved, live items by public id (never pending, rejected,
     archived or another folder), videos only with the flag on, the signed

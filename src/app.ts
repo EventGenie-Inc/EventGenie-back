@@ -49,6 +49,8 @@ import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
 import featureConfigRouter from './modules/feature-config/feature-config.router.js';
 import systemHealthRouter from './modules/system-health/system-health.router.js';
+import feedbackRouter from './modules/feedback/feedback.router.js';
+import feedbackAdminRouter from './modules/feedback/feedback-admin.router.js';
 
 // ─────────────────────────────────────────
 //  FEATURE FLAGS
@@ -210,6 +212,7 @@ app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
 app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
 app.use('/api/events/:eventId/announcements', announcementRouter);
+app.use('/api/events/:eventId/feedback', feedbackRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
@@ -284,6 +287,12 @@ app.use('/api/config', featureConfigRouter);
 //  /api/admin/system/errors — Sentry issues for both projects, plus health
 // ─────────────────────────────────────────
 app.use('/api/admin/system', systemHealthRouter);
+
+// ─────────────────────────────────────────
+//  FEEDBACK (super admin only; anyone else gets the global 404)
+//  /api/admin/feedback — every event's feedback, shareable photos, CSV
+// ─────────────────────────────────────────
+app.use('/api/admin/feedback', feedbackAdminRouter);
 
 // ─────────────────────────────────────────
 //  404 HANDLER

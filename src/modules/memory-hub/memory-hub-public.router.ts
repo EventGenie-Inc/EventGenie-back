@@ -6,6 +6,7 @@ import {
   memoryHubGuestUploadIpLimiter,
   memoryHubGuestViewLimiter,
 } from '../../shared/middleware/rate-limit.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 
 // Fully public/token-only surface — a guest holds either a gallery
 // shareToken or an invite token, never platform credentials, so nothing
@@ -35,8 +36,9 @@ router.post(
 );
 
 // POST /api/memory-hub/guest-items
-// { token, mediaUrl, cloudinaryPublicId, mediaType, bytes, caption? }
-// Persists a guest's already-uploaded item as PENDING. Same two
+// { token, mediaUrl, cloudinaryPublicId, mediaType, bytes, caption?, allowPublicSharing? }
+// Persists a guest's already-uploaded item as PENDING, with the guest's
+// public-sharing opt-in when allowPublicSharing is true (off by default). Same two
 // stacked limiters as guest-upload-signature above.
 router.post(
   '/guest-items',
@@ -46,6 +48,25 @@ router.post(
     try {
       const item = await memoryHubService.createGuestItem(req.body);
       res.status(201).json({ status: 'ok', data: item });
+    } catch (err) { next(err); }
+  }
+);
+
+// POST /api/memory-hub/guest-items/:itemId/public-sharing
+// { token, allowPublicSharing } — a guest changes whether one of their own
+// photos may be shared publicly (memory-hub.service.ts's
+// setGuestPublicSharing). Part of `feedback`: off, a 404 for everyone (a
+// public route). The upload limiters, since it is a guest's write on
+// their invite.
+router.post(
+  '/guest-items/:itemId/public-sharing',
+  requireFeature('feedback'),
+  memoryHubGuestUploadIpLimiter,
+  memoryHubGuestUploadLimiter,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await memoryHubService.setGuestPublicSharing(req.body?.token, req.params['itemId'], req.body?.allowPublicSharing);
+      res.status(200).json({ status: 'ok', data: result });
     } catch (err) { next(err); }
   }
 );

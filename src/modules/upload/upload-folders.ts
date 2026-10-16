@@ -12,8 +12,9 @@
 //  could have this server delete, or claim, another event's or another
 //  tenant's asset, using our API secret.
 //
-//  Signing (upload.service.ts, invitation-design.service.ts) and checking
-//  (event covers, Memory Hub items, invitation designs) both build folders
+//  Signing (upload.service.ts, invitation-design.service.ts,
+//  feedback.service.ts) and checking (event covers, Memory Hub items,
+//  invitation designs, feedback logos) both build folders
 //  here, so the two can never disagree.
 //
 //  Dependency-free, like upload-constants.ts, to stay out of import cycles.
@@ -28,6 +29,10 @@ export const memoryHubFolder = (tenantId: string, eventId: string): string =>
 
 export const invitationDesignFolder = (tenantId: string, eventId: string): string =>
   `eventgenie/${tenantId}/invitation-designs/${eventId}`;
+
+// A company logo given with an event's feedback (feedback.service.ts): the
+// tenant's own folder, since the logo is the company's, not the event's.
+export const feedbackLogoFolder = (tenantId: string): string => `eventgenie/${tenantId}/feedback-logos`;
 
 // crypto.randomUUID() output: lowercase hex, version 4.
 export const SIGNED_PUBLIC_ID_UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';

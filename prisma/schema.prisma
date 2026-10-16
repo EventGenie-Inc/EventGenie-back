@@ -368,6 +368,7 @@ model Tenant {
   eventSmsBundlePurchases EventSmsBundlePurchase[]
   eventAssignments        EventAssignment[]
   teamInvites             TeamInvite[]
+  eventFeedback           EventFeedback[]
 }
 
 // ─────────────────────────────────────────
@@ -568,6 +569,10 @@ model Event {
   inviteReminderLogs      InviteReminderLog[]
   announcements           Announcement[]
   emailClaims             EventEmailClaim[]
+  // Feedback and sharing permissions — see EventFeedback and ConsentRecord.
+  feedback                EventFeedback?
+  consentRecords          ConsentRecord[]
+  feedbackRequestClaim    FeedbackRequestClaim?
   // A list only because Prisma cannot express "unique among non-archived":
   // at most ONE non-archived row per event, enforced by the partial unique
   // index in the invitation_design migration. Read it through
@@ -669,6 +674,7 @@ model Guest {
   hostGuest              Guest?                 @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
   plusOnes               Guest[]                @relation("GuestPlusOnes")
   announcementDeliveries AnnouncementDelivery[]
+  consentRecords         ConsentRecord[]
 }
 
 // ─────────────────────────────────────────
@@ -869,9 +875,10 @@ model MemoryItem {
   createdBy          String
   updatedBy          String
 
-  memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
-  uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
-  uploadedByUser  User?     @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+  memoryHub       MemoryHub       @relation(fields: [memoryHubId], references: [id])
+  uploadedByGuest Guest?          @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
+  uploadedByUser  User?           @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+  consentRecords  ConsentRecord[]
 }
 
 // ─────────────────────────────────────────
@@ -1693,4 +1700,107 @@ model TeamInvite {
   invitedBy User   @relation("TeamInviteInvitedBy", fields: [invitedByUserId], references: [id])
 
   @@index([tenantId, email])
+}
+
+// ─────────────────────────────────────────
+//  FEEDBACK AND SHARING PERMISSIONS (behind the `feedback` flag)
+//
+//  After an event, its organisers are asked how it went and whether
+//  e-velope may feature their company, quote them, contact them about a
+//  case study and share photos they choose. Guests decide for their own
+//  photos. Every permission given or withdrawn is a ConsentRecord.
+// ─────────────────────────────────────────
+
+// What a ConsentRecord is about. The first three are the organiser's, for
+// the whole event; PHOTO_ORGANISER_SELECTED is the organiser's, per photo;
+// PHOTO_GUEST_PUBLIC_SHARING is the uploading guest's, per photo.
+enum ConsentKind {
+  COMPANY_NAME_LOGO
+  QUOTE
+  CASE_STUDY_CONTACT
+  PHOTO_ORGANISER_SELECTED
+  PHOTO_GUEST_PUBLIC_SHARING
+}
+
+enum ConsentAction {
+  GRANTED
+  WITHDRAWN
+}
+
+// APPEND-ONLY, like PaymentLedgerEntry: never updated, never deleted, no
+// isArchived and no updatedAt, and consent.repository.ts has no update or
+// delete method. A withdrawal is a NEW row. The current state of a subject
+// (event + kind, plus the photo for the photo kinds) is its latest row by
+// `seq`; no row at all means never given.
+//
+// Exactly one of userId (an organiser, a User.id with no relation, like
+// Announcement.sentBy) or guestId (the uploading guest) says who. wording
+// and wordingVersion are what that person was shown
+// (consent-wording.ts); a changed wording is a new version, and old rows
+// keep the wording they were given.
+//
+// ON DELETE CASCADE only so a hard-deleted test fixture takes its records
+// with it; product code never hard-deletes an event, guest or photo.
+model ConsentRecord {
+  id             String        @id @default(cuid())
+  // Orders records unambiguously: two in the same millisecond still have
+  // a latest.
+  seq            Int           @unique @default(autoincrement())
+  eventId        String
+  kind           ConsentKind
+  memoryItemId   String?
+  userId         String?
+  guestId        String?
+  action         ConsentAction
+  wording        String
+  wordingVersion Int
+  recordedAt     DateTime      @default(now())
+
+  event      Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  memoryItem MemoryItem? @relation(fields: [memoryItemId], references: [id], onDelete: Cascade)
+  guest      Guest?      @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, seq])
+  @@index([memoryItemId])
+}
+
+// One per event: the organisers' answers. Edited in place (the answers are
+// not consent; the permissions beside them are ConsentRecords). Never
+// deleted; isArchived only by convention, nothing archives one today.
+model EventFeedback {
+  id           String   @id @default(cuid())
+  eventId      String   @unique
+  tenantId     String
+  // 0–10, "How likely are you to recommend e-velope?"
+  score        Int
+  // Up to 2000 characters each; null when left blank.
+  workedBest   String?
+  toImprove    String?
+  // The company's logo, signed into the tenant's own folder
+  // (upload-folders.ts's feedbackLogoFolder) and checked on save.
+  logoUrl      String?
+  logoPublicId String?
+  // User.ids, no relation (same as Announcement.sentBy).
+  submittedBy  String
+  updatedBy    String
+  isArchived   Boolean  @default(false)
+  submittedAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+}
+
+// The "How did <event> go?" email, claimed once per event BEFORE it is
+// sent (feedback-request.service.ts). The unique eventId is the claim: two
+// sweeps racing, on one server or several, can't both insert it, so the
+// email goes at most once, restarts included. Append-only: written once,
+// never edited.
+model FeedbackRequestClaim {
+  id             String   @id @default(cuid())
+  eventId        String   @unique
+  recipientCount Int
+  claimedAt      DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
 }

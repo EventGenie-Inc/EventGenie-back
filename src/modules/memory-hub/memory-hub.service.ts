@@ -30,6 +30,9 @@ import {
   memoryItemTooLargeMessage,
 } from './memory-item-limits.util.js';
 import { launchLimitMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { consentService } from '../consent/consent.service.js';
+import { currentConsentWording } from '../consent/consent-wording.js';
 import {
   MEMORY_ITEM_IMAGE_MAX_BYTES,
   MEMORY_ITEM_VIDEO_MAX_BYTES,
@@ -42,6 +45,18 @@ import {
 // a plain String (not an FK), same convention as rsvp.service.ts's
 // GUEST_ACTOR.
 const GUEST_ACTOR = 'guest-memory-upload';
+
+// A guest asked for a video to be shared publicly: the opt-in (and its
+// wording, "this photo") is for photos only.
+export const PUBLIC_SHARING_PHOTOS_ONLY = 'PUBLIC_SHARING_PHOTOS_ONLY';
+
+const INVALID_INVITE_MESSAGE = "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.";
+
+const assertSharingIsForAPhoto = (mediaType: MediaType): void => {
+  if (mediaType !== 'IMAGE') {
+    throw new HttpError(422, 'Only photos can be shared publicly, not videos.', PUBLIC_SHARING_PHOTOS_ONLY);
+  }
+};
 
 // Checked at PERSIST time (after Cloudinary has already reported the
 // real byte count) — the pre-signature checks in
@@ -524,6 +539,22 @@ export const memoryHubService = {
       memoryHubRepository.findPendingItemsByGuest(hub.id, invite.guestId),
     ]);
 
+    // The guest's own photos (pending and approved) and whether each may be
+    // shared publicly, with the wording they agree to. Left out entirely
+    // while `feedback` is off, like a switched-off feature's settings.
+    let publicSharing: {
+      wording: { version: number; text: string };
+      myItems: { id: string; allowPublicSharing: boolean }[];
+    } | undefined;
+    if (isFeatureEnabled('feedback')) {
+      const mine = await memoryHubRepository.findShareablePhotosByGuest(hub.id, invite.guestId);
+      const sharing = await consentService.guestSharingFor(mine.map((item) => item.id));
+      publicSharing = {
+        wording: currentConsentWording('PHOTO_GUEST_PUBLIC_SHARING'),
+        myItems: mine.map((item) => ({ id: item.id, allowPublicSharing: sharing.get(item.id) === true })),
+      };
+    }
+
     return {
       available: true as const,
       title: hub.title,
@@ -552,6 +583,7 @@ export const memoryHubService = {
         // the actual enforced number instead of hardcoding its own copy.
         uploadRequestsPer5Min: MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
       },
+      ...(publicSharing ? { publicSharing } : {}),
     };
   },
 
@@ -577,10 +609,16 @@ export const memoryHubService = {
     if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || data.bytes <= 0) {
       throw new HttpError(400, 'bytes is required and must be a positive number');
     }
+    if (data.allowPublicSharing !== undefined && typeof data.allowPublicSharing !== 'boolean') {
+      throw new HttpError(400, 'allowPublicSharing must be true or false');
+    }
+    // Off by default: only an explicit true is an opt-in. With `feedback`
+    // off the opt-in isn't offered, so nothing is recorded.
+    const allowPublicSharing = data.allowPublicSharing === true && isFeatureEnabled('feedback');
 
     const invite = await inviteRepository.findByToken(data.token);
     if (!invite) {
-      throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+      throw new HttpError(404, INVALID_INVITE_MESSAGE);
     }
 
     if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
@@ -595,16 +633,33 @@ export const memoryHubService = {
       throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
     }
 
+    // Before the checks below, some of which destroy the upload: a refused
+    // opt-in leaves the file for the guest to save again without it.
+    if (allowPublicSharing) assertSharingIsForAPhoto(data.mediaType);
+
     await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl, 'guest');
 
-    const item = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
-      mediaUrl: data.mediaUrl,
-      cloudinaryPublicId: data.cloudinaryPublicId,
-      mediaType: data.mediaType,
-      bytes: data.bytes,
-      ...(data.caption !== undefined && { caption: data.caption }),
-      status: 'PENDING',
-      uploadedByGuestId: invite.guestId,
+    const item = await memoryHubRepository.withTransaction(async (tx) => {
+      const created = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
+        mediaUrl: data.mediaUrl,
+        cloudinaryPublicId: data.cloudinaryPublicId,
+        mediaType: data.mediaType,
+        bytes: data.bytes,
+        ...(data.caption !== undefined && { caption: data.caption }),
+        status: 'PENDING',
+        uploadedByGuestId: invite.guestId,
+      }, tx);
+      if (allowPublicSharing) {
+        await consentService.record([{
+          eventId: invite.eventId,
+          kind: 'PHOTO_GUEST_PUBLIC_SHARING',
+          memoryItemId: created.id,
+          userId: null,
+          guestId: invite.guestId,
+          action: 'GRANTED',
+        }], tx);
+      }
+      return created;
     });
 
     // Explicit shape, not the raw MemoryItem row — no memoryHubId,
@@ -618,6 +673,48 @@ export const memoryHubService = {
       mediaType: item.mediaType,
       caption: item.caption,
       status: item.status,
+      ...(isFeatureEnabled('feedback') ? { allowPublicSharing } : {}),
     };
+  },
+
+  // GUEST public-sharing toggle (the `feedback` flag) — authenticated by
+  // invite token only, like guest-view. A guest changes their mind about
+  // one of their OWN photos: anyone else's, or one that isn't live, is the
+  // same 404. Allowed whatever the event's or album's state, so a guest
+  // can always withdraw. Only a change is recorded: setting what is
+  // already current appends nothing.
+  setGuestPublicSharing: async (token: unknown, itemId: unknown, allowPublicSharing: unknown) => {
+    if (typeof token !== 'string' || !token) {
+      throw new HttpError(400, 'token is required');
+    }
+    if (typeof itemId !== 'string' || !itemId) {
+      throw new HttpError(400, 'itemId is required');
+    }
+    if (typeof allowPublicSharing !== 'boolean') {
+      throw new HttpError(400, 'allowPublicSharing must be true or false');
+    }
+
+    const invite = await inviteRepository.findByToken(token);
+    if (!invite) {
+      throw new HttpError(404, INVALID_INVITE_MESSAGE);
+    }
+
+    const item = await memoryHubRepository.findGuestItem(itemId, invite.eventId, invite.guestId);
+    if (!item) throw new HttpError(404, "We couldn't find that photo.");
+    if (allowPublicSharing) assertSharingIsForAPhoto(item.mediaType);
+
+    const current = (await consentService.guestSharingFor([item.id])).get(item.id) === true;
+    if (current !== allowPublicSharing) {
+      await consentService.record([{
+        eventId: invite.eventId,
+        kind: 'PHOTO_GUEST_PUBLIC_SHARING',
+        memoryItemId: item.id,
+        userId: null,
+        guestId: invite.guestId,
+        action: allowPublicSharing ? 'GRANTED' : 'WITHDRAWN',
+      }]);
+    }
+
+    return { id: item.id, allowPublicSharing };
   },
 };
