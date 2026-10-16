@@ -63,3 +63,14 @@ export const MEMORY_ITEM_VIDEO_ALLOWED_FORMATS = 'mp4,mov,webm';
 // frontend reads the real budget instead of hardcoding it, and a
 // service file has no business importing from shared/middleware.
 export const MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN = 60;
+
+// ─────────────────────────────────────────
+//  FEEDBACK LOGO (a company's logo, given with an event's feedback)
+//
+//  2MB: a logo is a small graphic, and a larger file is almost always a
+//  print-resolution export the company can shrink. No SVG: an SVG file can
+//  carry script, and these are the same formats as a cover.
+// ─────────────────────────────────────────
+export const FEEDBACK_LOGO_MAX_BYTES = 2 * 1024 * 1024;
+
+export const FEEDBACK_LOGO_ALLOWED_FORMATS = 'jpg,png,webp';

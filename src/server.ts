@@ -5,6 +5,7 @@ import app from './app.js';
 import prisma from './shared/prisma/prisma.client.js';
 import { flushErrorMonitoring } from './shared/monitoring/sentry.config.js';
 import { reportError } from './shared/monitoring/error-reporting.js';
+import { startFeedbackRequestSweeps } from './modules/feedback/feedback-request.service.js';
 
 // ─────────────────────────────────────────
 //  PORT
@@ -15,6 +16,9 @@ const PORT = process.env.PORT ?? 5000;
 //  STARTUP
 //  1. Verify database connection
 //  2. Start Express server
+//  3. Start the feedback-request sweep (feedback-request.service.ts) —
+//     here, not in app.ts, so nothing that imports the app (the tests)
+//     starts a timer
 // ─────────────────────────────────────────
 const start = async (): Promise<void> => {
   try {
@@ -28,6 +32,8 @@ const start = async (): Promise<void> => {
       console.log(`✔  Environment: ${process.env.NODE_ENV ?? 'development'}`);
       console.log(`✔  Health check: http://localhost:${PORT}/health`);
     });
+
+    startFeedbackRequestSweeps();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

@@ -36,6 +36,10 @@ export const FEATURE_NAMES = [
   'memoryHubVideo',
   // Memory Hub "download all": zip links for every approved item.
   'memoryHubDownload',
+  // After an event: the organisers' feedback and sharing permissions, the
+  // guests' own photo opt-in, the "How did it go?" email and the super
+  // admin's feedback screens.
+  'feedback',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];
