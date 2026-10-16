@@ -25,7 +25,7 @@ const assertCapabilityGates = async (tier: SubscriptionTier, input: EventTierChe
   if (input.visibility === 'PUBLIC' && !resolveTierCapability(config, tier, 'publicEventsEnabled')) {
     throw new HttpError(403, tierRefusalMessage(
       `The ${tier} plan only supports private events. Upgrade your plan to make this event public.`,
-      launchUnavailableMessage('Public events')
+      launchUnavailableMessage('Public events', { plural: true })
     ));
   }
   if (input.ticketing === 'PAID' && !resolveTierCapability(config, tier, 'paidTicketingEnabled')) {
@@ -34,7 +34,7 @@ const assertCapabilityGates = async (tier: SubscriptionTier, input: EventTierChe
   if (input.hasCustomRsvpFields && !resolveTierCapability(config, tier, 'customRsvpFieldsEnabled')) {
     throw new HttpError(403, tierRefusalMessage(
       `The ${tier} plan does not support custom RSVP fields. Upgrade your plan to add them.`,
-      launchUnavailableMessage('Custom RSVP questions')
+      launchUnavailableMessage('Custom RSVP questions', { plural: true })
     ));
   }
 };
