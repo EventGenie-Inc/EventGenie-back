@@ -16,6 +16,7 @@ import userRouter from './modules/user/user.router.js';
 import userInvitePublicRouter from './modules/user/user-invite-public.router.js';
 import eventRouter from './modules/event/event.router.js';
 import eventDayRouter from './modules/event-day/event-day.router.js';
+import eventFullUpdateRouter from './modules/event-full-update/event-full-update.router.js';
 import eventDraftRouter from './modules/event-draft/event-draft.router.js';
 import guestRouter from './modules/guest/guest.router.js';
 import guestEventRouter from './modules/guest/guest-event.router.js';
@@ -162,6 +163,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/tenants
 //  /api/users
 //  /api/events
+//  /api/events/:eventId/full (the wizard's edit mode — the whole event at once)
 //  /api/events/:eventId/days
 //  /api/events/:eventId/guests
 //  /api/events/:eventId/invites
@@ -200,6 +202,7 @@ app.use('/api/attendance', attendanceRouter);
 
 // Event router with nested children
 app.use('/api/events', eventRouter);
+app.use('/api/events/:eventId/full', eventFullUpdateRouter);
 app.use('/api/events/:eventId/days', eventDayRouter);
 app.use('/api/events/:eventId/guests', guestEventRouter);
 app.use('/api/events/:eventId/invites', inviteRouter);

@@ -19,3 +19,24 @@ export const requireFieldType = (fieldType: unknown, label: string): RsvpFieldTy
   }
   return fieldType as RsvpFieldType;
 };
+
+export interface RsvpFieldInput {
+  label?: unknown;
+  fieldType?: unknown;
+}
+
+// The label and answer type of a NEW question (POST .../rsvp-fields and the
+// full event update), and of a change to a saved one, omitted fields kept.
+export const resolveNewField = (data: RsvpFieldInput) => {
+  const label = requireFieldLabel(data.label);
+  return { label, fieldType: requireFieldType(data.fieldType, label) };
+};
+
+export const resolveFieldChanges = (data: RsvpFieldInput, existing: { label: string }) => {
+  const label = data.label !== undefined ? requireFieldLabel(data.label) : undefined;
+  const fieldType = data.fieldType !== undefined ? requireFieldType(data.fieldType, label ?? existing.label) : undefined;
+  return {
+    ...(label !== undefined && { label }),
+    ...(fieldType !== undefined && { fieldType }),
+  };
+};

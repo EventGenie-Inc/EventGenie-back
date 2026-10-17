@@ -7,15 +7,17 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
-import { requireDayLabel, requireDayDate, assertDayTimesInOrder } from '../event-day/event-day-validation.util.js';
-import { resolveDayVenueForCreate } from '../event-day/event-day-venue.util.js';
+import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
 import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
 import { requireFieldLabel, requireFieldType } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
   requireItemStartTime,
   optionalItemDuration,
-  itemDayRequiredMessage,
+  assertItemHasDay,
+  resolveItemDayIndex,
+  assertItemStartsOnItsDay,
+  assertProgramVisibilityFlag,
 } from '../program-item/program-item-validation.util.js';
 import { assertValidHostName } from '../event/event-host-name.util.js';
 import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
@@ -62,32 +64,18 @@ export const eventDraftService = {
       throw new HttpError(422, 'Your event needs at least one day.');
     }
 
-    const days = (p.days as Array<Record<string, unknown>>).map((day) => {
-      const label = requireDayLabel(day.label);
-      const startTime = day.startTime ? parseClientDateTime(day.startTime as string) : null;
-      const endTime = day.endTime ? parseClientDateTime(day.endTime as string) : null;
-      assertDayTimesInOrder(startTime, endTime, label);
-      return {
-        label,
-        date: requireDayDate(day.date, label),
-        startTime,
-        endTime,
-        venue: resolveDayVenueForCreate(day, label),
-      };
-    });
+    // The same rules as POST .../days (resolveNewDay), the past-date rule
+    // included: every day here is new.
+    const days = (p.days as Array<Record<string, unknown>>).map((day) => resolveNewDay(day));
 
     // Duplicate day labels within this draft would make the import
     // engine's Day-column matching ambiguous later — checked purely
     // in-memory, before the transaction starts, since the event doesn't
     // exist yet and there's nothing external to race against. Matches
     // event-day-validation.util.ts's case-insensitive rule.
-    const seenLabels = new Set<string>();
-    for (const day of days) {
-      const label = day.label.toLowerCase();
-      if (seenLabels.has(label)) {
-        throw new HttpError(409, `Duplicate day label '${day.label}' — day labels must be unique within an event`);
-      }
-      seenLabels.add(label);
+    const duplicateLabel = findDuplicateDayLabel(days.map((d) => d.label));
+    if (duplicateLabel !== null) {
+      throw new HttpError(409, `Duplicate day label '${duplicateLabel}' — day labels must be unique within an event`);
     }
 
     // Same both-or-neither/plausibility treatment extended to the two
@@ -142,15 +130,9 @@ export const eventDraftService = {
       const title = requireItemTitle(item.title);
       const startTime = requireItemStartTime(item.startTime, title);
       const durationMins = optionalItemDuration(item.durationMins, title);
-      let dayIndex: number | null = null;
-      if (item.dayIndex !== undefined && item.dayIndex !== null) {
-        if (typeof item.dayIndex !== 'number' || !Number.isInteger(item.dayIndex) || item.dayIndex < 0 || item.dayIndex >= days.length) {
-          throw new HttpError(422, `'${title}' is set to a day that isn't part of this event. Choose its day again.`);
-        }
-        dayIndex = item.dayIndex;
-      } else if (days.length > 1) {
-        throw new HttpError(422, itemDayRequiredMessage(title));
-      }
+      const dayIndex = resolveItemDayIndex(item.dayIndex, days.length, title);
+      assertItemHasDay(dayIndex !== null, days.length, title);
+      assertItemStartsOnItsDay(startTime, dayIndex === null ? null : days[dayIndex]!, title);
       return { ...item, title, startTime, durationMins, dayIndex } as Record<string, unknown> & {
         title: string;
         startTime: Date;
@@ -160,9 +142,7 @@ export const eventDraftService = {
     });
     // Visible to guests by default (STEERING "Event program"); the wizard's
     // "hide from guests" sends false.
-    if (program?.isPublished !== undefined && typeof program.isPublished !== 'boolean') {
-      throw new HttpError(422, 'Program visibility must be true or false.');
-    }
+    assertProgramVisibilityFlag(program?.isPublished);
     const programPublished = program?.isPublished !== false;
     const memoryHub = p.memoryHub as Record<string, unknown> | undefined;
 

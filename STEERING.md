@@ -718,6 +718,17 @@ Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
 `MEMORY_HUB_NOTHING_TO_DOWNLOAD` (no approved items) and 429
 `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`.
 
+Dates on days and program items (see "Event days and program items"):
+a new or changed day date before UTC today minus one day is 422
+`EVENT_DAY_DATE_IN_PAST` ("The date of '<label>' has already passed. Choose
+today or a later date."; day create and update, the wizard's materialize
+and the full event update), and a program item whose start isn't on its
+day's UTC date is 422 `PROGRAM_ITEM_DATE_NOT_ON_DAY` ("'<title>' is set to
+'<day>', so it must start on <date>. Change its start date or choose
+another day."; item create and update, materialize and the full update).
+The full event update (`PUT /api/events/:eventId/full`) has no codes of its
+own: every refusal is its part's own endpoint's, code included.
+
 Feedback (`PUT /api/events/:eventId/feedback`, see "Feedback and sharing
 permissions"): every 422 carries a code naming its field
 (`FEEDBACK_ERROR_CODES`, `feedback-validation.util.ts`):
@@ -811,8 +822,11 @@ Read limits from `SubscriptionTierConfig` at runtime. Never hardcode
 them; a `SUPER_ADMIN` can change them and enforcement must follow.
 `null` means unlimited.
 
-Enforcement points differ: `maxGuestsPerEvent` is checked at **import
-time**; `maxSmsPerMonth` at **send time**, all-or-nothing. A plan's limit is
+Enforcement points differ: `maxGuestsPerEvent` is checked whenever a live
+guest is **added** (organiser add, import, and restoring an archived guest,
+a plus-one excepted since the limit doesn't count them), under the event's
+row lock so two at once can't both take the last place;
+`maxSmsPerMonth` at **send time**, all-or-nothing. A plan's limit is
 never the last word: the hard limits under "Safety limits" (Domain rules)
 apply after it, whatever a `SUPER_ADMIN` sets, `null` included.
 
@@ -851,7 +865,14 @@ leaves every existing row unlimited — it fails **open**. Follow the `ADD
 COLUMN` with an `UPDATE "SubscriptionTierConfig" SET … WHERE "tier" = …` for
 each tier, and update `TIER_CONFIGS` in `prisma/seed.ts` to match. The seed
 cannot cover for you: it never touches a database it isn't pointed at, and it
-does not overwrite existing tier configs. `maxVendorSpaces` and
+does not overwrite existing tier configs. `maxMemoryHubBytesPerEvent` (bytes) is a `BIGINT`, so a limit can be above
+2 GB (`20261017090000_memory_hub_bytes_bigint`); Prisma reads it as a JS
+`bigint`, and `subscription-tier-config.repository.ts` hands every row on
+with it as a plain number (a `bigint` can't be written to JSON). Read tier
+configs only through that repository. The tier admin takes it, and
+`guestExportEnabled`, with the other limits and switches: a whole number of
+0 or more within JavaScript's safe-integer range (or null), and true or
+false, else 422. `maxVendorSpaces` and
 `maxMemoryHubBytesPerEvent` were both added without one, so on any database
 the seed has never run against they are `null`, i.e. unlimited. There is no
 production database yet, so nothing is broken today — the first one must be
@@ -1509,6 +1530,108 @@ multi-day draft, optional on a single-day one (left `NULL`), 422 when it
 isn't a whole number naming one of the draft's days. `program.isPublished`
 is honoured (absent means visible). No follow-up calls are needed.
 
+### Event days and program items: dates
+
+Two rules the wizard enforces, enforced on the server too, by one helper
+each that every path calls (`event-day-validation.util.ts`'s
+`assertDayDateNotPast`, `program-item-validation.util.ts`'s
+`assertItemStartsOnItsDay`):
+
+- **A day's date can't be in the past.** A new or changed date earlier than
+  UTC today minus one day is 422 `EVENT_DAY_DATE_IN_PAST`. The one day of
+  slack is for organisers behind UTC, whose today is still UTC yesterday:
+  events have no time zone (see Known gaps), so the server can't know the
+  organiser's own today. **Only a new or changed date is judged:** a saved
+  day re-sent with its date unchanged is never refused, so an event that
+  has already happened stays editable. Day create and update, the wizard's
+  materialize and the full event update.
+- **An item with a day starts on that day.** Its start time's UTC date must
+  equal the day's date, or 422 `PROGRAM_ITEM_DATE_NOT_ON_DAY`. Judged on the
+  item a change leaves behind (stored values filling in what isn't sent),
+  and only when something about it changes: creating it, a new start or a
+  new day, or (in the full update) its day's date moving without it. An
+  older item already off its day can still be renamed. An item with no day
+  (`NULL`) is placed by date as above and has nothing to match. Item create
+  and update, materialize and the full update.
+
+### Editing an event: the full update
+
+**In edit mode, the wizard's steps change nothing on the server. Next only
+moves between steps; every change is held until "Save changes", which
+sends the whole event in one all-or-nothing request. Leaving without
+saving discards everything. "Save changes" is blocked only by invalid
+fields; with nothing changed, it sends nothing and says "No changes to
+save".** (Events being edited may already be live: guests must never see a
+half-applied edit, such as a new date before the organiser has saved.)
+
+That request is `PUT /api/events/:eventId/full` (`src/modules/event-full-update/`),
+organiser only (`requireEventAdmin`), scoped and under the assignment lock
+through `eventService.getById` like every event lookup. The per-part
+endpoints (`PUT /api/events/:id`, `/days`, `/tickets`, `/rsvp-fields`,
+`/program`, `/program/:programId/items`, `/memory-hub/:id`) stay for the
+other screens that use them.
+
+The body, every key optional (a key left out leaves that part alone):
+
+```
+{
+  event?:      { name?, description?, hostName?, coverImageUrl?, coverImagePublicId?,
+                 coverImageBytes?, visibility?, ticketing?, rsvpDeadline?, capacity?,
+                 ticketsRefundable? },                      // PUT /api/events/:id's body
+  days?:       [{ id?, label?, date?, startTime?, endTime?, location?, address?,
+                  latitude?, longitude? }],                 // PUT .../days/:id's body
+  tickets?:    [{ id?, name?, description?, price?, currency?, totalQuantity?, isAvailable? }],
+  rsvpFields?: [{ id?, label?, fieldType?, isRequired?, options? }],  // options: a JSON string, as today
+  program?:    { title?, isPublished?,
+                 items?: [{ id?, title?, description?, startTime?, durationMins?, dayIndex? }] },
+  memoryHub?:  { opensAt?: string | null }
+}
+```
+
+- **Each list is the whole list as the organiser left it.** A row with an
+  `id` is a saved row, updated only where it changed; a row without one is
+  new (and needs what its create endpoint needs); a saved row missing from
+  the list is **archived**, as its DELETE does, never deleted. An `id` that
+  isn't one of this event's live rows is that endpoint's 404 ("Event day
+  not found", "Ticket not found", "RSVP field not found", "Program item not
+  found"). The same id twice, or a list that isn't a list of objects, is an
+  uncoded 400.
+- **Order is position.** A question's and an item's `order` is its place in
+  its list.
+- **An item names its day by `dayIndex`**, its position in this request's
+  `days` (a new day has no id yet), as materialize does; with `days` left
+  out, its position in the event's live days by date (as GET returns them).
+  `null` is no day. Left out on a saved item, its stored day is kept, as
+  `PUT .../items/:id` keeps it. The multi-day rule is the item endpoints'.
+- **Every check is its part's own**, through the same helpers (see "Event
+  days and program items: dates", the venue, label, ticket, question and
+  item helpers, and `event.service.ts`'s `assertEventFieldsValid` and
+  `assertEventUpdateAllowed`), so every refusal has the same status, words
+  and code as the per-part endpoint, and is judged on the event this save
+  leaves: the RSVP deadline against the days it ends with, day labels
+  unique across the resulting days, an item against its resulting day. A
+  new question is the custom-questions tier gate, as on its POST. With
+  `ticketing` off, a change to tickets is 422 with paid ticketing's own
+  message (their routes are 404); re-sending them unchanged is fine.
+- **Removing a day** follows DELETE `.../days/:id`: it is archived, with no
+  refusal of its own. An archived day keeps its label, and the unique
+  `(eventId, label)` index counts archived days, so a new day can't take a
+  label a removed one held (409, the day endpoints' message), exactly as
+  after a DELETE. Two saved days may swap labels in one save.
+- **Cancelled and completed events follow today's rules**, which is none:
+  no per-part edit endpoint refuses them, so this doesn't either.
+- **All or nothing.** Every part is checked first, with nothing written;
+  then only what changed is written, in one transaction holding the event's
+  row lock (`eventRepository.withEventWriteLock`), so a refusal the
+  database gives mid-save rolls back what was already written. A save that
+  changes nothing writes nothing. A replaced cover is destroyed in
+  Cloudinary only after the save commits.
+- **The response** is `200 { status: 'ok', data }`, `data` exactly `GET
+  /api/events/:id`'s (the event with its days, tickets, questions, program
+  and items, Memory Hub and Event Pass, effective status, plus
+  `acceptedGuestCount` and `guestLimit`), so the wizard can re-baseline
+  from it.
+
 ### Reminders
 
 Manual only — the organiser presses a button. Nothing here runs on a
@@ -1606,8 +1729,9 @@ each refusal carries a code (see "Machine-readable codes" under Errors).
   the public view) and plus-ones named at RSVP (409 `REGISTRATION_FULL`,
   "This event is full, so there isn't room for your plus-ones", checked under
   the event's row lock, only when an answer adds plus-ones). Organiser add,
-  import and restore are not under a lock, so two racing can pass it by a
-  few; it is a safety bound, not an exact count.
+  import and restore count and write under the event's row lock
+  (`guestRepository.withEventGuestLock`, the lock registration takes), so
+  two at once can't both pass it, nor the plan's own limit.
 - **Guest import:** at most 2,000 rows per file (`MAX_IMPORT_ROWS`), refused
   whole before any row is validated (422 `GUEST_IMPORT_TOO_MANY_ROWS`), and
   at most 5 MB (413 `GUEST_IMPORT_FILE_TOO_LARGE`). The import's write
@@ -1721,7 +1845,9 @@ tenant's own `feedback-logos` folder and checked like every Cloudinary
 asset; null removes it). One transaction under a row lock on the event.
 **A photo newly selected must be eligible now**, or nothing is saved (422).
 A `SUPER_ADMIN` can read it but not save it (403): a permission is the
-company's to give.
+company's to give. `GET /api/events` carries `feedbackGiven` on every
+event (live feedback exists), read for the whole list in one query, so the
+list's cards never ask one by one; it is left out while `feedback` is off.
 
 **Eligible and shareable — one rule** (`feedback-photos.util.ts`).
 Eligible (the organiser may select it): approved, not archived, a photo, a
@@ -1970,7 +2096,9 @@ Signals and explicit `(input)` handlers, as above; not the Forms API.
   continue." / "No changes to save yet."). Tapping it saves nothing, marks
   every field touched, shows every error and moves focus to the first.
   While saving, the button shows progress and can't be pressed again.
-  A wizard's Next checks its own step only.
+  A wizard's Next checks its own step only. In the event wizard's edit
+  mode, Next saves nothing: see "Editing an event: the full update" under
+  Domain rules.
 - **Pieces:** `createForm()` (valid, dirty, submitting, first invalid
   field; `begin()` at the top of every submit handler, `end()` when the
   save settles), `FormFieldDirective` (`[egField]` on a native control:
@@ -2375,6 +2503,26 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     recipients and content, once per event even with two sweeps (or two
     requests) racing, never for cancelled, draft, future, too old,
     archived or answered events, nor with the flag off.
+  - **The full event update** (`tests/event-full-update/full-update.test.ts`):
+    a whole edit (event fields, days moved, added and removed, tickets,
+    questions, program and items, the album's opening) lands at once, unchanged
+    rows unwritten; removed rows archived, never deleted; two days swapping
+    labels; a save with nothing changed writes nothing; each part's refusal
+    (blank title, item off its day, a day moved without its item, a past
+    day, no venue, capacity, the deadline, unknown ids, a duplicate label, a
+    ticket price, an answer type, a missing item day, a malformed list,
+    ticketing off, the custom-questions tier) leaves every row as it was; a
+    database refusal mid-save rolls back what was written; another tenant
+    and a locked member 404. The date rules on the per-part endpoints and
+    materialize (`tests/validation/day-and-item-dates.test.ts`).
+  - **Guest limits under concurrency** (`tests/guest/guest-limit-serialised.test.ts`):
+    restore refused at the plan's limit (a plus-one allowed), and two adds
+    or two imports racing for the last place: one lands, one is refused.
+  - **Tier limits above 2 GB** (`tests/subscription/memory-hub-bytes-bigint.test.ts`):
+    5 GB saved and returned as a number by the tier admin, its list and
+    `/me`; an event holding 3 GB reported against it; the tier admin's
+    422s for byte counts and guest export. `feedbackGiven` on the events
+    list (`tests/feedback/events-list-feedback.test.ts`).
   - **Memory Hub download** (`tests/memory-hub/memory-hub-download.test.ts`):
     exactly the approved, live items by public id (never pending, rejected,
     archived or another folder), videos only with the flag on, the signed

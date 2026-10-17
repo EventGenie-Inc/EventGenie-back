@@ -198,7 +198,9 @@ describe('program item: a day is required on a multi-day event', () => {
       expect(noDay.status).toBe(422);
       expect(noDay.body.message).toBe("Choose the day 'Speeches' happens on — this event has more than one day.");
 
-      const withDay = await post(path, { title: 'Speeches', startTime: '2030-01-01T12:00', eventDayId: second.id });
+      // On its day's own date (createTestEventDay: 2027-01-01) — an item
+      // filed under a day starts on it (PROGRAM_ITEM_DATE_NOT_ON_DAY).
+      const withDay = await post(path, { title: 'Speeches', startTime: '2027-01-01T12:00', eventDayId: second.id });
       expect(withDay.status).toBe(201);
       const cleared = await put(`${path}/${withDay.body.data.id}`, { eventDayId: null });
       expect(cleared.status).toBe(422);

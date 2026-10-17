@@ -21,8 +21,8 @@ export const ticketRepository = {
       where: { id, isArchived: false },
     }),
 
-  create: (eventId: string, userId: string, data: CreateTicketDto) =>
-    prisma.ticket.create({
+  create: (eventId: string, userId: string, data: CreateTicketDto, db: Db = prisma) =>
+    db.ticket.create({
       data: {
         eventId,
         name: data.name,
@@ -38,8 +38,8 @@ export const ticketRepository = {
       },
     }),
 
-  update: (id: string, userId: string, data: UpdateTicketDto) =>
-    prisma.ticket.update({
+  update: (id: string, userId: string, data: UpdateTicketDto, db: Db = prisma) =>
+    db.ticket.update({
       where: { id },
       data: {
         ...(data.name !== undefined && { name: data.name }),
@@ -52,8 +52,8 @@ export const ticketRepository = {
       },
     }),
 
-  archive: (id: string, userId: string) =>
-    prisma.ticket.update({
+  archive: (id: string, userId: string, db: Db = prisma) =>
+    db.ticket.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
     }),

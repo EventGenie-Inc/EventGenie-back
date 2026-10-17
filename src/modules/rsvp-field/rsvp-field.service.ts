@@ -1,7 +1,7 @@
 import { type PlatformRole } from '@prisma/client';
 import { rsvpFieldRepository } from './rsvp-field.repository.js';
 import { type CreateRsvpFieldDto, type UpdateRsvpFieldDto } from './rsvp-field.types.js';
-import { requireFieldLabel, requireFieldType } from './rsvp-field-validation.util.js';
+import { resolveNewField, resolveFieldChanges } from './rsvp-field-validation.util.js';
 import { eventService } from '../event/event.service.js';
 import { assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -38,21 +38,14 @@ export const rsvpFieldService = {
   // are not gated — a tenant that lapses keeps managing what it has.
   create: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateRsvpFieldDto) => {
     const event = await eventService.getScopedWithPass(eventId, requestingRole, tenantId);
-    const label = requireFieldLabel(data.label);
-    const fieldType = requireFieldType(data.fieldType, label);
+    const resolved = resolveNewField(data);
     await assertEventUpdatable(event, { hasCustomRsvpFields: true });
-    return rsvpFieldRepository.create(eventId, userId, { ...data, label, fieldType });
+    return rsvpFieldRepository.create(eventId, userId, { ...data, ...resolved });
   },
 
   update: async (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateRsvpFieldDto) => {
     const field = await fieldInScope(id, eventId, requestingRole, tenantId);
-    const label = data.label !== undefined ? requireFieldLabel(data.label) : undefined;
-    const fieldType = data.fieldType !== undefined ? requireFieldType(data.fieldType, label ?? field.label) : undefined;
-    return rsvpFieldRepository.update(id, userId, {
-      ...data,
-      ...(label !== undefined && { label }),
-      ...(fieldType !== undefined && { fieldType }),
-    });
+    return rsvpFieldRepository.update(id, userId, { ...data, ...resolveFieldChanges(data, field) });
   },
 
   archive: async (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {

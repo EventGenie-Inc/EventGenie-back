@@ -14,6 +14,8 @@ import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 // eventService.getById() first, exactly like event-day/guest/invite
 // gate through it. See the batch report.
 type Tx = Prisma.TransactionClient;
+// Hub writes take an optional transaction client (the full event update).
+type Db = Tx | typeof prisma;
 
 export const memoryHubRepository = {
 
@@ -61,8 +63,8 @@ export const memoryHubRepository = {
       },
     }),
 
-  create: (eventId: string, userId: string, data: CreateMemoryHubDto) =>
-    prisma.memoryHub.create({
+  create: (eventId: string, userId: string, data: CreateMemoryHubDto, db: Db = prisma) =>
+    db.memoryHub.create({
       data: {
         eventId,
         title: data.title ?? null,
@@ -76,8 +78,8 @@ export const memoryHubRepository = {
       },
     }),
 
-  update: (id: string, userId: string, data: UpdateMemoryHubDto) =>
-    prisma.memoryHub.update({
+  update: (id: string, userId: string, data: UpdateMemoryHubDto, db: Db = prisma) =>
+    db.memoryHub.update({
       where: { id },
       data: {
         ...(data.title !== undefined && { title: data.title ?? null }),

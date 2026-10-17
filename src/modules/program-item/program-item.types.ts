@@ -16,7 +16,7 @@ export interface CreateProgramItemDto {
 
 export interface UpdateProgramItemDto {
   title?: string;
-  description?: string;
+  description?: string | null;
   startTime?: string;
   durationMins?: number | null;
   order?: number;

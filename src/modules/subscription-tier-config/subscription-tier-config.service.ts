@@ -12,10 +12,16 @@ const TIER_CAPABILITY_LABELS: Record<TierCapability, string> = {
   vendorPriorityPlacement: 'Vendor priority placement',
 };
 
-// The capability settings (tier-capabilities.util.ts) are booleans or
-// absent; anything else is a 422 rather than a Prisma type error (a 500).
-const assertCapabilitySettings = (body: Partial<Record<TierCapability, unknown>>): void => {
-  for (const [field, label] of Object.entries(TIER_CAPABILITY_LABELS) as [TierCapability, string][]) {
+// The capability settings (tier-capabilities.util.ts), and guest export,
+// are booleans or absent; anything else is a 422 rather than a Prisma type
+// error (a 500).
+const SWITCH_LABELS: Record<TierCapability | 'guestExportEnabled', string> = {
+  ...TIER_CAPABILITY_LABELS,
+  guestExportEnabled: 'Guest list export',
+};
+
+const assertCapabilitySettings = (body: Partial<Record<TierCapability | 'guestExportEnabled', unknown>>): void => {
+  for (const [field, label] of Object.entries(SWITCH_LABELS) as [TierCapability | 'guestExportEnabled', string][]) {
     if (body[field] !== undefined && typeof body[field] !== 'boolean') {
       throw new HttpError(422, `${label} must be switched on or off (true or false).`);
     }

@@ -6,16 +6,12 @@ import { inviteRepository } from '../invite/invite.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
+import { isSameUtcDate } from '../../shared/utils/date-input.util.js';
 
 // Guest-facing date matching — UTC only, per STEERING's "guest-facing
-// dates are UTC" anchor (guest-date.util.ts). EventDay.date is a
-// @db.Date column (Prisma round-trips it as UTC midnight); ProgramItem.
-// startTime is a full DateTime built by parseClientDateTime, which
-// treats an offset-less client string as literal UTC. Comparing the
-// UTC calendar components of both is therefore the correct "same day"
-// test, not a millisecond/instant comparison.
-const isSameUtcDate = (a: Date, b: Date): boolean =>
-  a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
+// dates are UTC" anchor (guest-date.util.ts): isSameUtcDate compares UTC
+// calendar components, never instants. The same test decides whether a
+// program item's start is on its day (program-item-validation.util.ts).
 
 export const eventProgramService = {
 
