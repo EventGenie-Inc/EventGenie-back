@@ -53,6 +53,32 @@ accounts (see §6).
 revert the fix, confirm the test fails, restore it, confirm it passes.
 Report both runs. A test that only ever passes proves nothing.
 
+### Branches and environments
+
+**Every prompt states which branch to work on.** If it doesn't, ask
+before writing code.
+
+| Branch | Is | Deployed to |
+|---|---|---|
+| `main` | what production runs | staging automatically; production only by hand, after checking staging |
+| `dev` | the bigger picture: everything in progress | the dev environment |
+
+Staging is its own Render service, Neon database and frontend site
+(`staging.e-velope.co.za`), running `main`'s code with production's
+feature flags and `SENTRY_ENVIRONMENT=staging`.
+
+**A bug fix for production** goes on `hotfix/<name>`, branched from
+`main`: fix it, merge it into `main`, check it on staging, deploy
+production, then merge `main` into `dev` **the same day**, so `dev`
+never lacks a fix production has.
+
+**A hotfix never includes a database migration.** If one truly seems
+needed, stop and say so: the human decides first.
+
+**A new feature** branches from `dev`. `dev` is merged into `main` every
+one to two weeks; a feature that isn't finished by then goes in switched
+off by its flag (see "Feature flags").
+
 ---
 
 ## 2. Architecture
@@ -728,7 +754,8 @@ the body parsers): a body that isn't valid JSON is 400 `MALFORMED_JSON`
 the body and is never sent); a JSON or URL-encoded body over the parsers'
 10MB limit (`REQUEST_BODY_LIMIT_MB`) is 413 `REQUEST_TOO_LARGE` ("The
 request is too large. It must be 10MB or smaller."); and a browser origin
-outside `ALLOWED_ORIGINS` is an uncoded 403. All three used to be 500s
+that is neither the frontend's own (`FRONTEND_BASE_URL`'s origin, always
+allowed) nor in `ALLOWED_ORIGINS` is an uncoded 403. All three used to be 500s
 reported to Sentry; none is reported now.
 
 System health (`GET /api/admin/system/errors`, super admin only):
