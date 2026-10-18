@@ -24,6 +24,18 @@ process.env.NODE_ENV = 'test';
 process.env.PRISMA_TEST_ADAPTER = 'pg';
 
 // ─────────────────────────────────────────
+//  FEATURE FLAGS — every feature ON, whatever .env says.
+//
+//  .env's FEATURES_DISABLED is the developer's own launch-mode setup
+//  (e.g. ticketing and sms off), and a test must not pass or fail by it.
+//  Set here, before any test file's imports, so dotenv (which never
+//  overwrites a variable that already exists, an empty one included)
+//  leaves it alone. A test that needs a flag off sets it itself with
+//  vi.stubEnv('FEATURES_DISABLED', …); vi.unstubAllEnvs() comes back here.
+// ─────────────────────────────────────────
+process.env.FEATURES_DISABLED = '';
+
+// ─────────────────────────────────────────
 //  FIREBASE ADMIN — stubbed at ONE boundary: verifyIdToken.
 //
 //  Every real call site (auth.service.ts's verifyFirebaseToken and
@@ -71,9 +83,21 @@ vi.mock('firebase-admin/auth', () => ({
 // email delivery specifically don't need to configure it themselves.
 export const mockResendSend = vi.fn();
 
+// Resend's batch endpoint (email.engine.ts's sendEmailBatch): guest emails
+// to more than one recipient go out up to 100 per call. Defaults to every
+// email in the batch accepted, in permissive mode (errors: [] means none
+// refused). Tests read what was sent through tests/helpers/sent-emails.ts,
+// which covers both endpoints.
+export const mockResendBatchSend = vi.fn();
+export const acceptWholeBatch = async (payload: unknown[]) => ({
+  data: { data: payload.map((_, i) => ({ id: `batch-${i}` })), errors: [] },
+  error: null,
+});
+
 vi.mock('resend', () => ({
   Resend: class {
     emails = { send: mockResendSend };
+    batch = { send: mockResendBatchSend };
   },
 }));
 
@@ -83,4 +107,6 @@ beforeEach(() => {
   mockGeneratePasswordResetLink.mockReset();
   mockResendSend.mockReset();
   mockResendSend.mockResolvedValue({ data: { id: 'test' }, error: null });
+  mockResendBatchSend.mockReset();
+  mockResendBatchSend.mockImplementation(acceptWholeBatch);
 });

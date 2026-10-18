@@ -14,6 +14,7 @@ import {
 } from './upload-constants.js';
 import { coverFolder, memoryHubFolder } from './upload-folders.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable } from '../memory-hub/memory-hub-tier-enforcement.util.js';
+import { assertMemoryItemMediaTypeAvailable } from '../memory-hub/memory-item-limits.util.js';
 import { type RequestUploadSignatureDto, type UploadSignatureResponse } from './upload.types.js';
 
 // ─────────────────────────────────────────
@@ -179,6 +180,10 @@ export const uploadService = {
       tenantId = requestingTenantId;
     }
 
+    // A switched-off feature is refused before any tier check (STEERING
+    // "Feature flags"), after the event lookup so another tenant's event is
+    // still the same 404.
+    assertMemoryItemMediaTypeAvailable(data.mediaType);
     await assertMemoryHubAccessible(event);
     await assertMemoryHubQuotaAvailable(event);
 

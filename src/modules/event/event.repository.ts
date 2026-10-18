@@ -1,9 +1,10 @@
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
-import { type EventStatus } from '@prisma/client';
+import { type EventStatus, type Prisma } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { withPlainCoordinates } from './event-coordinates.util.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 
 // A blank host name means "no host line" — stored as null, never "", the
 // same as the wizard's materialize path (event-draft.service.ts) has always
@@ -19,24 +20,49 @@ export const normalizeHostName = (hostName: string | null | undefined): string |
 // one) is decided in exactly one place and cannot drift between them. This is
 // the tenant-isolation boundary for nearly every organiser endpoint; do not
 // inline a second copy of it.
-const scopedWhere = (id: string, includeArchived: boolean, tenantId?: string) => ({
+//
+// eventIds is the assignment lock (event-assignment-lock.util.ts): when
+// present, the event must ALSO be one of these, so a locked EVENT_ADMIN's
+// unassigned event is the same null (404) as another tenant's. Absent means
+// no lock. Supplied by eventService's resolveEventScope, never by hand.
+const scopedWhere = (id: string, includeArchived: boolean, tenantId?: string, eventIds?: string[]) => ({
   id,
   ...(includeArchived ? {} : { isArchived: false }),
   ...(tenantId ? { tenantId } : {}),
+  ...(eventIds ? { AND: [{ id: { in: eventIds } }] } : {}),
 });
 
+type Tx = Prisma.TransactionClient;
+
 export const eventRepository = {
+
+  // The full event update (event-full-update.service.ts): every part of an
+  // edited event written in one transaction, all or nothing, while holding
+  // the event's row lock (the same lock registration, feedback and
+  // announcements take), so two full saves of one event never interleave.
+  // Generous limits: a save is one write per changed row, and every one is
+  // a round trip to a remote database.
+  withEventWriteLock: <T>(eventId: string, fn: (tx: Tx) => Promise<T>): Promise<T> =>
+    prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
+        return fn(tx);
+      },
+      { maxWait: 10_000, timeout: 30_000 }
+    ),
 
   // Every method below that returns an Event row passes it through
   // withPlainCoordinates (event-coordinates.util.ts — see its header for
   // why): Decimal columns must not reach a caller or a JSON response.
 
-  findAll: async (tenantId?: string, includeArchived = false) =>
+  // eventIds: the assignment lock, as in scopedWhere above.
+  findAll: async (tenantId?: string, includeArchived = false, eventIds?: string[]) =>
     (
       await prisma.event.findMany({
         where: {
           ...(includeArchived ? {} : { isArchived: false }),
           ...(tenantId ? { tenantId } : {}),
+          ...(eventIds ? { id: { in: eventIds } } : {}),
         },
         // Ordered by date so "the first day" — whose venue an organiser
         // list shows, now that the venue belongs to the day — is stable.
@@ -45,9 +71,9 @@ export const eventRepository = {
       })
     ).map(withPlainCoordinates),
 
-  findById: async (id: string, includeArchived = false, tenantId?: string) => {
+  findById: async (id: string, includeArchived = false, tenantId?: string, eventIds?: string[]) => {
     const event = await prisma.event.findFirst({
-      where: scopedWhere(id, includeArchived, tenantId),
+      where: scopedWhere(id, includeArchived, tenantId, eventIds),
       include: {
         eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } },
         memoryHub: true,
@@ -81,9 +107,9 @@ export const eventRepository = {
   // round trips, and would force every caller that reads a scalar
   // (visibility, name, rsvpDeadline, ...) onto the heavy variant. What the
   // lean variant drops is the RELATIONS — that is where the cost is.
-  findScoped: async (id: string, includeArchived = false, tenantId?: string) => {
+  findScoped: async (id: string, includeArchived = false, tenantId?: string, eventIds?: string[]) => {
     const event = await prisma.event.findFirst({
-      where: scopedWhere(id, includeArchived, tenantId),
+      where: scopedWhere(id, includeArchived, tenantId, eventIds),
       include: { eventDays: { where: { isArchived: false } } },
     });
     return event ? withPlainCoordinates(event) : null;
@@ -92,9 +118,9 @@ export const eventRepository = {
   // findScoped plus the Event Pass — what resolveEventEntitlement needs
   // (EntitlementDerivableEvent = tenantId + eventPass + eventDays), so a tier
   // check can run without the other relations.
-  findScopedWithPass: async (id: string, includeArchived = false, tenantId?: string) => {
+  findScopedWithPass: async (id: string, includeArchived = false, tenantId?: string, eventIds?: string[]) => {
     const event = await prisma.event.findFirst({
-      where: scopedWhere(id, includeArchived, tenantId),
+      where: scopedWhere(id, includeArchived, tenantId, eventIds),
       include: { eventDays: { where: { isArchived: false } }, eventPass: true },
     });
     return event ? withPlainCoordinates(event) : null;
@@ -155,7 +181,11 @@ export const eventRepository = {
   // batch found this gap: "an event without a hub would fail silently
   // the moment someone tries to open it" — confirmed 0 live events were
   // missing one only because none had come through this path yet).
-  create: (tenantId: string, userId: string, data: CreateEventDto) =>
+  //
+  // assignCreator: the creator is a locked EVENT_ADMIN (eventService.create
+  // decides), so they're assigned to the new event in the same transaction —
+  // otherwise they'd create an event they can't open.
+  create: (tenantId: string, userId: string, data: CreateEventDto, assignCreator = false) =>
     prisma.$transaction(async (tx) => {
       const event = await tx.event.create({
         data: {
@@ -192,11 +222,15 @@ export const eventRepository = {
         },
       });
 
+      if (assignCreator) {
+        await eventAssignmentRepository.create(tx, tenantId, userId, event.id, userId);
+      }
+
       return withPlainCoordinates(event);
     }),
 
-  update: (id: string, userId: string, data: UpdateEventDto) =>
-    prisma.event.update({
+  update: (id: string, userId: string, data: UpdateEventDto, db: Tx | typeof prisma = prisma) =>
+    db.event.update({
       where: { id },
       data: {
         // Only include fields that are explicitly provided
@@ -237,10 +271,14 @@ export const eventRepository = {
   // generic update() above (which no longer accepts a status field at
   // all) so a status transition can never be smuggled through a plain
   // PUT /api/events/:id alongside unrelated field edits.
-  updateStatus: (id: string, userId: string, status: EventStatus) =>
+  // `unlessStatus` makes the write conditional: it throws P2025 (Prisma's
+  // record-not-found) when the event is already in that status. Cancel
+  // passes CANCELLED, so of two cancels racing only one succeeds, and
+  // guests get one cancellation email, not two.
+  updateStatus: (id: string, userId: string, status: EventStatus, unlessStatus?: EventStatus) =>
     prisma.event
       .update({
-        where: { id },
+        where: { id, ...(unlessStatus ? { status: { not: unlessStatus } } : {}) },
         data: { status, updatedBy: userId },
       })
       .then(withPlainCoordinates),

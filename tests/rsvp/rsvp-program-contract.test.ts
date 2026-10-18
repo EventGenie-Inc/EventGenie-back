@@ -25,7 +25,8 @@ import {
 //  violation.
 // ─────────────────────────────────────────
 
-const cleanup: (() => Promise<void>)[] = [];
+// Each returns whatever its delete returns; only completion matters.
+const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();
@@ -120,7 +121,7 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
 
     // Programs are visible by default now; an organiser hiding one is
     // the remaining way it becomes unavailable.
-    await eventProgramService.update(program.id, user.id, user.role, tenant.id, { isPublished: false });
+    await eventProgramService.update(event.id, program.id, user.id, user.role, tenant.id, { isPublished: false });
     const result = await eventProgramService.getProgramForInvite(invite.token);
     expect(result).toEqual({ available: false });
   });
@@ -132,7 +133,7 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
     const invitedDay = await createDay(event.id, user.id, 'Invited Day', '2027-06-01');
     const otherDay = await createDay(event.id, user.id, 'Other Day', '2027-06-02');
     const program = await eventProgramService.create(event.id, user.id, user.role, tenant.id, {});
-    await eventProgramService.update(program.id, user.id, user.role, tenant.id, { isPublished: true });
+    await eventProgramService.update(event.id, program.id, user.id, user.role, tenant.id, { isPublished: true });
     // Item exists, but only on the day this guest is NOT invited to.
     await programItemService.create(event.id, program.id, user.id, user.role, tenant.id, {
       title: 'Not this guest',
@@ -167,7 +168,7 @@ describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Co
       const day3 = await createDay(event.id, user.id, 'Not Invited Day', '2027-06-03');
 
       const program = await eventProgramService.create(event.id, user.id, user.role, tenant.id, { title: 'Wedding Weekend' });
-      await eventProgramService.update(program.id, user.id, user.role, tenant.id, { isPublished: true });
+      await eventProgramService.update(event.id, program.id, user.id, user.role, tenant.id, { isPublished: true });
 
       // NULL eventDayId, startTime's UTC date equals day1's date — must
       // be matched to day1 ONLY, not shown on day2 too. Deliberately

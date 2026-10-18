@@ -65,6 +65,10 @@ export type EmailBlock =
   // The large serif heading (an event name, "Your sign-in code").
   | { kind: 'title'; text: string }
   | { kind: 'paragraph'; text: string; muted?: boolean }
+  // An organiser's own words, several lines long (an announcement's body, a
+  // cancellation note): left-aligned, with its line breaks kept. Escaped
+  // like every other block; the breaks become <br> only after escaping.
+  | { kind: 'message'; text: string }
   // Full-bleed image across the 600px card. `width`/`height` are the
   // source's own dimensions, used only for the aspect ratio.
   | { kind: 'image'; src: string; alt: string; width: number | null; height: number | null }
@@ -95,6 +99,8 @@ const SIDE = 40;
 const row = (inner: string, padding = `0 ${SIDE}px`): string =>
   `<tr><td class="eg-pad" style="padding:${padding};">${inner}</td></tr>`;
 
+const normalizeLineBreaks = (text: string): string => text.replace(/\r\n?|[\u2028\u2029]/g, '\n');
+
 const blockHtml = (block: EmailBlock): string => {
   switch (block.kind) {
     case 'seal':
@@ -117,6 +123,11 @@ const blockHtml = (block: EmailBlock): string => {
       return row(
         `<p class="${block.muted ? 'eg-muted' : 'eg-ink'}" style="margin:0;font-family:${SANS};font-size:${block.muted ? 14 : 16}px;line-height:1.6;color:${block.muted ? MUTED : INK};text-align:center;">${escapeHtml(block.text)}</p>`,
         `0 ${SIDE}px 20px`
+      );
+    case 'message':
+      return row(
+        `<p class="eg-ink" style="margin:0;font-family:${SANS};font-size:16px;line-height:1.6;color:${INK};text-align:left;">${escapeHtml(normalizeLineBreaks(block.text)).replace(/\n/g, '<br>')}</p>`,
+        `0 ${SIDE}px 24px`
       );
     case 'image': {
       const height = block.width && block.height ? Math.round((CARD_WIDTH * block.height) / block.width) : null;
@@ -167,6 +178,8 @@ const blockText = (block: EmailBlock): string | null => {
     case 'paragraph':
     case 'code':
       return block.text;
+    case 'message':
+      return normalizeLineBreaks(block.text);
     case 'image':
       return block.alt ? `[${block.alt}]` : null;
     case 'details':

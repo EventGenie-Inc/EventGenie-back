@@ -9,7 +9,7 @@ export interface CreateTicketDto {
 
 export interface UpdateTicketDto {
   name?: string;
-  description?: string;
+  description?: string | null;
   price?: number;
   currency?: string;
   totalQuantity?: number | null;

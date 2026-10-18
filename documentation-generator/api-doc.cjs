@@ -4,6 +4,7 @@ const {
   LevelFormat, HeadingLevel, PageBreak
 } = require('docx');
 const fs = require('fs');
+const path = require('path');
 
 const C = {
   dark: '1A1A2E', mid: '2D2D44', muted: '6B6B80', gold: 'C6A43A',
@@ -42,6 +43,13 @@ const h3 = (text) => new Paragraph({
 const body = (text, opts = {}) => new Paragraph({
   children: [new TextRun({ text, size: 20, font: 'Arial', color: opts.color || C.mid, bold: opts.bold || false, italics: opts.italic || false })],
   spacing: { after: opts.after || 100 }
+});
+
+// Uses the document's 'bullets' numbering (configured on the Document below).
+const bullet = (text) => new Paragraph({
+  numbering: { reference: 'bullets', level: 0 },
+  children: [new TextRun({ text, size: 20, font: 'Arial', color: C.mid })],
+  spacing: { after: 60 }
 });
 
 const code = (text) => new Paragraph({
@@ -238,6 +246,10 @@ const doc = new Document({
       code('    "user": { "id", "email", "username", "role", "tenantId" },'),
       code('    "tenant": { "id", "name", "slug", "subscriptionTier" }'),
       code('}}'),
+      body('The email (the Firebase account\'s) is stored lowercase and trimmed, for the user and the tenant alike.'),
+      body('Errors:', { bold: true }),
+      bullet('401 — the Firebase token is missing, expired, revoked or malformed: "Your sign-in has expired or isn\'t valid. Please sign in again, then finish creating your account." (A Firebase outage is a 500, not a 401.)'),
+      bullet('409 — an account already exists for this Firebase user or email, or the tenant slug is taken (also when two registrations race).'),
       spacer(2),
 
       h3('POST /api/auth/request-otp'),
@@ -310,34 +322,136 @@ const doc = new Document({
 
       // ── USER ENDPOINTS ──────────────────────────────
       pageBreak(),
-      h1('User Endpoints'),
+      h1('User and Team Endpoints'),
       body('Base path: /api/users', { bold: true }),
-      body('TENANT_ADMIN and above. Manages platform users within a tenant.'),
+      body('Behind the teamMembers feature flag (off: every route here is a 404). TENANT_ADMIN and above, tenant-scoped: another tenant\'s user is a 404. A tenant always keeps one active TENANT_ADMIN; nobody can suspend themselves or change their own role. Emails are stored and compared lowercase and trimmed.'),
       spacer(),
 
       endpointTable([
-        endpointRow('GET', '/api/users', 'Get all users (scoped to requesting user\'s tenant)', 'TENANT_ADMIN+'),
+        endpointRow('GET', '/api/users', 'List the tenant\'s members, suspended ones included, each with status and assignments', 'TENANT_ADMIN+'),
         endpointRow('GET', '/api/users/:id', 'Get a single user by ID', 'TENANT_ADMIN+'),
-        endpointRow('POST', '/api/users', 'Create a new user under a tenant', 'TENANT_ADMIN+'),
-        endpointRow('PUT', '/api/users/:id', 'Update user details or role', 'TENANT_ADMIN+'),
-        endpointRow('DELETE', '/api/users/:id', 'Archive a user (soft delete)', 'TENANT_ADMIN+'),
+        endpointRow('POST', '/api/users', 'Create a user for an existing Firebase account', 'TENANT_ADMIN+'),
+        endpointRow('PUT', '/api/users/:id', 'Change a user\'s name or role', 'TENANT_ADMIN+'),
+        endpointRow('PUT', '/api/users/:id/assignments', 'Set an event admin\'s event assignments (the whole list)', 'TENANT_ADMIN'),
+        endpointRow('DELETE', '/api/users/:id', 'Suspend a user (same as /suspend)', 'TENANT_ADMIN+'),
+        endpointRow('POST', '/api/users/:id/suspend', 'Suspend a user: signs them out and revokes every trusted device', 'TENANT_ADMIN+'),
+        endpointRow('POST', '/api/users/:id/reactivate', 'Reactivate a suspended user', 'TENANT_ADMIN+'),
+        endpointRow('GET', '/api/users/invites', 'List open invitations (pending or expired)', 'TENANT_ADMIN'),
+        endpointRow('POST', '/api/users/invites', 'Invite someone by email', 'TENANT_ADMIN'),
+        endpointRow('POST', '/api/users/invites/:inviteId/resend', 'Resend: a new link and a new 7-day expiry', 'TENANT_ADMIN'),
+        endpointRow('POST', '/api/users/invites/:inviteId/revoke', 'Revoke an open invitation', 'TENANT_ADMIN'),
       ]),
+      spacer(2),
+
+      h2('Roles and the assignment lock'),
+      bullet('TENANT_ADMIN manages the team, billing and every event. Never locked by assignments.'),
+      bullet('EVENT_ADMIN works on events. With no assignments they see every event in the tenant; with any, only their assigned events. Any other event, and everything under it (days, program, guests, invites, RSVP fields and responses, check-in, Memory Hub, Event Pass, tickets, invitation design, uploads), is a 404, the same as another tenant\'s. A locked member who creates an event is assigned to it.'),
+      spacer(2),
+
+      h3('GET /api/users — Success Response (TENANT_ADMIN)'),
+      body('Each user row as before, plus:'),
+      code('{ ..., "status": "ACTIVE" | "SUSPENDED",'),
+      code('  "assignments": [ { "eventId", "eventName", "eventIsArchived" } ] }'),
+      body('An empty assignments list means the member sees every event. A SUPER_ADMIN gets every user on the platform, unchanged.'),
       spacer(2),
 
       h3('POST /api/users — Request Body'),
       fieldTable([
         fieldRow('firebaseUid', 'string', 'Yes', 'The user\'s Firebase UID — create in Firebase first'),
-        fieldRow('email', 'string', 'Yes', 'User email address'),
+        fieldRow('email', 'string', 'Yes', 'User email address; stored lowercase and trimmed'),
         fieldRow('username', 'string', 'Yes', 'Display name'),
-        fieldRow('role', 'TENANT_ADMIN | EVENT_ADMIN', 'Yes', 'Role within the tenant'),
-        fieldRow('tenantId', 'string', 'No', 'Defaults to the requesting user\'s tenant'),
+        fieldRow('role', 'TENANT_ADMIN | EVENT_ADMIN | EVENT_VENDOR', 'Yes', 'EVENT_VENDOR is 422 while the vendors feature is off'),
+        fieldRow('tenantId', 'string', 'No', 'SUPER_ADMIN only; a TENANT_ADMIN always creates in their own tenant'),
       ]),
+      body('409 USER_EMAIL_TAKEN — the email (in any case) already has an account, including when two creations race.'),
+      spacer(2),
+
+      h3('PUT /api/users/:id — Request Body'),
+      body('Only these two fields are written; anything else in the body is ignored.'),
+      fieldTable([
+        fieldRow('username', 'string', 'No', 'Display name'),
+        fieldRow('role', 'TENANT_ADMIN | EVENT_ADMIN | EVENT_VENDOR', 'No', 'Changing someone to EVENT_VENDOR is 422 while vendors are off. A change to any role but EVENT_ADMIN clears their assignments.'),
+      ]),
+      body('Errors: 403 changing your own role; 409 demoting the tenant\'s only active TENANT_ADMIN.'),
+      spacer(2),
+
+      h3('PUT /api/users/:id/assignments — Request Body'),
+      fieldTable([
+        fieldRow('eventIds', 'string[]', 'Yes', 'The member\'s complete list of assigned events (may be empty). Each must be a live event of this tenant, or one already assigned.'),
+        fieldRow('confirmWidening', 'true', 'No', 'Required to remove the LAST assignment, which gives the member every event'),
+      ]),
+      body('Success — 200: the member row (as in the list).', { bold: true }),
+      body('Errors: 404 an event that isn\'t this tenant\'s; 422 the user isn\'t an EVENT_ADMIN; 409 ASSIGNMENT_LOCK_RELEASE removing the last assignment without confirmWidening.'),
+      spacer(2),
+
+      h3('POST /api/users/:id/suspend'),
+      body('Suspends the user (they can\'t sign in) and revokes every trusted device. 403 suspending yourself; 409 suspending the tenant\'s only active TENANT_ADMIN. DELETE /api/users/:id does the same.'),
+      spacer(2),
+
+      h3('POST /api/users/invites — Request Body'),
+      fieldTable([
+        fieldRow('email', 'string', 'Yes', 'Stored lowercase and trimmed'),
+        fieldRow('role', 'TENANT_ADMIN | EVENT_ADMIN', 'Yes', 'EVENT_VENDOR is 422'),
+        fieldRow('eventIds', 'string[]', 'No', 'EVENT_ADMIN only: events to assign on acceptance (empty = every event). 422 for a TENANT_ADMIN.'),
+      ]),
+      body('Success Response — 201 Created:', { bold: true }),
+      code('{ "status": "ok", "data": { "emailSent": true, "invite": {'),
+      code('    "id", "email", "role", "status": "PENDING" | "EXPIRED",'),
+      code('    "assignments": [ { "eventId", "eventName" } ],'),
+      code('    "expiresAt", "lastSentAt", "createdAt", "invitedBy": { "id", "name" } } } }'),
+      body('Emails "You\'ve been invited to join <company> on e-velope" with an "Accept invitation" button to <FRONTEND_BASE_URL>/join?token=…. The token is valid 7 days, single use, and never stored or returned (only its hash is kept). emailSent false: the invitation exists but the email failed; resend it.'),
+      body('Errors: 409 USER_EMAIL_TAKEN — the address already has an account; 409 TEAM_INVITE_PENDING — an open invitation already exists (resend it). Rate limit: 20 invitations or resends per hour per admin.'),
+      spacer(2),
+
+      h3('Resend and revoke'),
+      body('POST /api/users/invites/:inviteId/resend — 200 { invite, emailSent }. Mints a new token: the previous link stops working. 409 if accepted or revoked; 409 USER_EMAIL_TAKEN if the address has since got an account.'),
+      body('POST /api/users/invites/:inviteId/revoke — 200, the invite. The link stops working. Idempotent; 409 if already accepted (suspend the member instead).'),
+      spacer(2),
+
+      // ── TEAM INVITE (PUBLIC) ENDPOINTS ──────────────────────────────
+      h1('Team Invitation Endpoints (public)'),
+      body('Base path: /api/team-invites', { bold: true }),
+      body('No session: the invitee has no account yet. The invite token from the email link is the credential. Behind the teamMembers flag. Rate-limited per token and per IP.'),
+      spacer(),
+
+      endpointTable([
+        endpointRow('POST', '/api/team-invites/lookup', 'What the /join page shows: the invited email and company', 'Invite token'),
+        endpointRow('POST', '/api/team-invites/accept', 'Create the account in the inviting tenant', 'Invite token + Firebase token'),
+      ]),
+      spacer(2),
+
+      h3('POST /api/team-invites/lookup'),
+      fieldTable([ fieldRow('token', 'string', 'Yes', 'The token from the invitation link') ]),
+      body('Success — 200:', { bold: true }),
+      code('{ "status": "ok", "data": { "email", "companyName", "role", "expiresAt" } }'),
+      spacer(2),
+
+      h3('POST /api/team-invites/accept'),
+      body('Header: Authorization: Bearer <Firebase ID token> — the account the frontend just created for the invited email.'),
+      fieldTable([
+        fieldRow('token', 'string', 'Yes', 'The token from the invitation link'),
+        fieldRow('username', 'string', 'Yes', 'The person\'s name, up to 100 characters'),
+      ]),
+      body('Success Response — 201 Created:', { bold: true }),
+      code('{ "status": "ok", "data": {'),
+      code('    "user": { "id", "email", "username", "role", "tenantId" },'),
+      code('    "tenant": { "id", "name" } } }'),
+      body('The usual device code step follows on first sign-in.'),
+      body('Errors (lookup and accept):', { bold: true }),
+      bullet('404 TEAM_INVITE_INVALID — unknown or revoked link, or the workspace is suspended'),
+      bullet('422 TEAM_INVITE_EXPIRED — past its 7 days'),
+      bullet('409 TEAM_INVITE_USED — already accepted'),
+      bullet('409 USER_EMAIL_TAKEN — the address already has an account (accounts belong to one workspace)'),
+      bullet('403 — signed in with a different email than the invitation\'s'),
+      bullet('401 — the Firebase token is missing, expired or invalid'),
+      bullet('422 — a blank name, or every event the invitation named has since been archived'),
       spacer(2),
 
       // ── EVENT ENDPOINTS ──────────────────────────────
       pageBreak(),
       h1('Event Endpoints'),
       body('Base path: /api/events', { bold: true }),
+      body('A locked EVENT_ADMIN (one with event assignments — see User and Team Endpoints) sees and edits only their assigned events: GET /api/events lists only those, and any other event id, here or under any event sub-resource, is a 404. Creating an event while locked assigns it to the creator.'),
       body('EVENT_ADMIN and above. All events are scoped to the requesting user\'s tenant.'),
       spacer(),
 
@@ -633,7 +747,9 @@ const doc = new Document({
             ['400', 'Bad Request', 'Missing required fields, invalid body format'],
             ['401', 'Unauthorized', 'Missing Authorization header, invalid Firebase token, missing or expired X-Session-Token'],
             ['403', 'Forbidden', 'Valid token but insufficient role for this endpoint'],
-            ['404', 'Not Found', 'Route does not exist'],
+            ['404', 'Not Found', 'Route does not exist, or a record in another tenant (or an event a locked member isn\'t assigned to) — deliberately the same'],
+            ['409', 'Conflict', 'Duplicate (an email that already has an account), or a state conflict (the last tenant admin, an invitation already accepted)'],
+            ['422', 'Unprocessable', 'Valid shape, unmet precondition (a vendor role while vendors are off, an expired invitation)'],
             ['500', 'Server Error', 'Unexpected error — check server logs'],
           ].map(([status, meaning, causes]) => new TableRow({
             children: [
@@ -644,6 +760,15 @@ const doc = new Document({
           }))
         ]
       }),
+      spacer(2),
+
+      h3('Machine-readable codes (team members)'),
+      body('Errors carry { "status": "error", "message", "code"? }. The code is present only where a client must tell two same-status failures apart.'),
+      bullet('USER_EMAIL_TAKEN (409) — POST /api/users, invitation create/resend/accept'),
+      bullet('ASSIGNMENT_LOCK_RELEASE (409) — PUT /api/users/:id/assignments'),
+      bullet('TEAM_INVITE_PENDING (409) — POST /api/users/invites'),
+      bullet('TEAM_INVITE_INVALID (404), TEAM_INVITE_EXPIRED (422), TEAM_INVITE_USED (409) — /api/team-invites'),
+      bullet('GUEST_EMAIL_REQUIRED (422) — POST /api/rsvp/submit, removing an email while SMS is off'),
       spacer(2),
 
       // ── FOOTER ──────────────────────────────
@@ -658,6 +783,8 @@ const doc = new Document({
 });
 
 Packer.toBuffer(doc).then(buf => {
-  fs.writeFileSync('/Users/levymashilo/EventGenie-back/documentation-generator/EventGenie_API_Documentation.docx', buf);
+  // The tracked copy lives in docs/ (this used to write one level up, to an
+  // absolute path on one machine, beside the file it was meant to replace).
+  fs.writeFileSync(path.join(__dirname, 'docs', 'EventGenie_API_Documentation.docx'), buf);
   console.log('API doc done');
 });

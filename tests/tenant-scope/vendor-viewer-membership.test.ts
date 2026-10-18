@@ -20,7 +20,8 @@ import {
 //  in tenant-scope.test.ts).
 // ─────────────────────────────────────────
 
-const cleanup: (() => Promise<void>)[] = [];
+// Each returns whatever its delete returns; only completion matters.
+const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();

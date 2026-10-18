@@ -1,8 +1,10 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { eventPublicService } from './event-public.service.js';
 import {
   publicEventViewLimiter,
   publicRegistrationIpLimiter,
+  publicRegistrationEmailLimiter,
   publicRegistrationEventLimiter,
 } from '../../shared/middleware/rate-limit.middleware.js';
 
@@ -10,6 +12,9 @@ import {
 // shareToken, never a platform session. No `authenticate` anywhere in
 // this file, mirroring memory-hub-public.router.ts / rsvp.router.ts.
 const router = Router();
+
+// The whole public registration surface belongs to publicEvents.
+router.use(requireFeature('publicEvents'));
 
 // GET /api/public-events/:shareToken
 // Public event view, resolved from the share token — lets the page show
@@ -22,19 +27,21 @@ router.get('/:shareToken', publicEventViewLimiter, async (req: Request, res: Res
 });
 
 // POST /api/public-events/:shareToken/register
-// { firstName, surname?, email?, phoneNumber? } — creates a Guest +
-// Invite and returns the invite's token, which the frontend uses to
-// redirect the registrant into the existing /rsvp?token=... flow.
-// Two rate limiters stacked (per IP, per event) — see
-// rate-limit.middleware.ts's comment for why both are needed.
+// { firstName, surname?, email, phoneNumber?, dayIds?, plusOneNames? } —
+// creates the guest and their accepted invite and emails them their
+// personal link (never returned here). 201 whether the email was new or
+// already registered (their link is re-sent): the same answer either way.
+// Three limiters stacked (per IP, per email, per event) — see
+// rate-limit.middleware.ts's comment for why each is needed.
 router.post(
   '/:shareToken/register',
   publicRegistrationIpLimiter,
+  publicRegistrationEmailLimiter,
   publicRegistrationEventLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await eventPublicService.register(req.params['shareToken'] as string, req.body);
-      res.status(result.isExistingRegistration ? 200 : 201).json({ status: 'ok', data: result });
+      res.status(201).json({ status: 'ok', data: result });
     } catch (err) { next(err); }
   }
 );

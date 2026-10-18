@@ -7,8 +7,11 @@ import {
   normalizeEmail,
   assertValidEmail,
   normalizePhoneToE164,
-  findDuplicateContact,
+  findDuplicateEmail,
+  isValidPlusOnesAllowed,
+  PLUS_ONES_ALLOWED_MESSAGE,
   type ExistingContact,
+  GUEST_EMAIL_REQUIRED_MESSAGE,
 } from './guest-validation.util.js';
 
 // Independent, DB-free module: parsing and validation take plain data in
@@ -17,7 +20,13 @@ import {
 // database, fetching what this module needs (event days, existing
 // contacts) up front.
 
-const MAX_IMPORT_ROWS = 5000;
+// At most this many data rows per file, refused whole (422) before any row
+// is validated or written. 2,000 covers the guest list of a private event
+// of any realistic size in one file, and keeps one import (validation and
+// a single write transaction) well inside a request's time; a bigger list
+// goes in as several files. Was 5,000, an uncoded 400.
+export const MAX_IMPORT_ROWS = 2000;
+export const GUEST_IMPORT_TOO_MANY_ROWS = 'GUEST_IMPORT_TOO_MANY_ROWS';
 
 export interface ParsedImportRow {
   rowNumber: number; // the actual row the user sees in Excel (header = row 1)
@@ -109,8 +118,10 @@ export const parseImportFile = async (
   }
   if (dataRows.length > MAX_IMPORT_ROWS) {
     throw new HttpError(
-      400,
-      `This file has ${dataRows.length} data rows, exceeding the maximum of ${MAX_IMPORT_ROWS} rows per import — split it into smaller batches`
+      422,
+      `This file has ${dataRows.length.toLocaleString('en-US')} guest rows, but one import can take at most ` +
+        `${MAX_IMPORT_ROWS.toLocaleString('en-US')}. Nothing was imported. Split the list into smaller files and import each one.`,
+      GUEST_IMPORT_TOO_MANY_ROWS
     );
   }
 
@@ -148,15 +159,23 @@ export interface ImportEngineResult {
 export const validateImportRows = (
   rows: ParsedImportRow[],
   eventDays: EventDayOption[],
-  existingContacts: ExistingContact[]
+  existingContacts: ExistingContact[],
+  // Set while the sms feature is off: a phone-only row is refused with
+  // GUEST_EMAIL_REQUIRED_MESSAGE, and the rest of the file imports.
+  options: { requireEmail?: boolean } = {}
 ): ImportEngineResult => {
   const failures: ImportRowFailure[] = [];
   const validRows: ValidatedGuestRow[] = [];
   // Tracks contacts already accepted from earlier rows in this same file —
   // a DB query can't see sibling rows in an uncommitted batch, so this is
   // necessarily import-specific, but it calls the exact same shared
-  // findDuplicateContact used for the DB check and for manual create.
+  // findDuplicateEmail used for the DB check and for manual create.
   const seenInFile: ExistingContact[] = [];
+  // A phone repeated within this one file is a duplicated row (a list
+  // pasted twice), flagged like a repeated email. Only within the file:
+  // guests may share a phone, so a phone an existing guest already has is
+  // never a duplicate (guest-validation.util.ts).
+  const phonesSeenInFile = new Map<string, number>();
 
   const dayLabelMap = new Map(eventDays.map((d) => [d.label.trim().toLowerCase(), d]));
 
@@ -190,6 +209,11 @@ export const validateImportRows = (
       continue;
     }
 
+    if (options.requireEmail && !email) {
+      fail(GUEST_EMAIL_REQUIRED_MESSAGE);
+      continue;
+    }
+
     let eventDayId: string;
     const dayRaw = row.dayRaw.trim();
     if (!dayRaw) {
@@ -211,22 +235,24 @@ export const validateImportRows = (
     const plusOnesAllowedRaw = row.plusOnesAllowedRaw.trim();
     let plusOnesAllowed = 0;
     if (plusOnesAllowedRaw) {
-      if (!/^\d+$/.test(plusOnesAllowedRaw)) {
-        fail(`'${plusOnesAllowedRaw}' is not a valid plus-ones allowance — it must be a whole number of 0 or more`);
+      plusOnesAllowed = /^\d+$/.test(plusOnesAllowedRaw) ? Number.parseInt(plusOnesAllowedRaw, 10) : Number.NaN;
+      if (!isValidPlusOnesAllowed(plusOnesAllowed)) {
+        fail(`'${plusOnesAllowedRaw}': ${PLUS_ONES_ALLOWED_MESSAGE}`);
         continue;
       }
-      plusOnesAllowed = Number.parseInt(plusOnesAllowedRaw, 10);
     }
 
-    const dbDuplicate = findDuplicateContact(existingContacts, { email, phoneNumber });
+    // By email only: guests may share a phone (guest-validation.util.ts).
+    const dbDuplicate = findDuplicateEmail(existingContacts, email);
     if (dbDuplicate) {
       fail(`Duplicate contact '${contactRaw}' — already exists for this event`);
       continue;
     }
 
-    const fileDuplicate = findDuplicateContact(seenInFile, { email, phoneNumber });
-    if (fileDuplicate) {
-      const firstRow = /^row-(\d+)$/.exec(fileDuplicate.guestId)?.[1] ?? '?';
+    const fileDuplicate = findDuplicateEmail(seenInFile, email);
+    const firstPhoneRow = phoneNumber ? phonesSeenInFile.get(phoneNumber) : undefined;
+    if (fileDuplicate || firstPhoneRow !== undefined) {
+      const firstRow = firstPhoneRow ?? /^row-(\d+)$/.exec(fileDuplicate!.guestId)?.[1] ?? '?';
       fail(`Duplicate contact '${contactRaw}' — appears more than once in this file (first seen on row ${firstRow})`);
       continue;
     }
@@ -241,7 +267,8 @@ export const validateImportRows = (
       eventDayIds: [eventDayId],
       plusOnesAllowed,
     });
-    seenInFile.push({ guestId: `row-${row.rowNumber}`, email, phoneNumber });
+    seenInFile.push({ guestId: `row-${row.rowNumber}`, email });
+    if (phoneNumber) phonesSeenInFile.set(phoneNumber, row.rowNumber);
   }
 
   return { totalRows: rows.length, validRows, failures };

@@ -10,6 +10,12 @@ Conventions every contributor and AI coding agent must follow.
 > which is why the copy exists; if you find the two differ, say so
 > before relying on either.
 
+> **Where the repos are** (moved out of OneDrive; ignore any older path
+> in notes or memory, such as a OneDrive or `C:\Users\Levy\…` one):
+> backend `C:\dev\EventGenie-back`; frontend `C:\dev\eventgenie-front`,
+> with this file's copy at its root (`C:\dev\eventgenie-front\STEERING.md`)
+> and the Angular app in its `eventgenie-front` subfolder.
+
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
 prompt wins for that task only — flag the contradiction rather than
@@ -35,7 +41,11 @@ agreeable; do not manufacture findings to seem thorough. "This area is
 genuinely fine" is a valid, valuable finding.
 
 **A passing build is not a passing test.** `npm run build` proves types
-line up. It proves nothing about behaviour. Automated tests run against
+line up. It proves nothing about behaviour. It also checks `src/` only:
+`npm run typecheck:tests` (`tsconfig.test.json`) checks the tests with the
+same strict settings, and must be clean too. vitest runs a test without
+checking its types, so a changed signature used to leave tests calling the
+old one until they failed at run time. Automated tests run against
 the test database; manual smoke runs use the dev database with real seed
 accounts (see §6).
 
@@ -119,10 +129,37 @@ no scoping at all. Assume it is missing until you have read the code.
 **A sub-resource must belong to the event in its URL, not merely to the
 caller's tenant.** Gate on the URL's `:eventId` first, then 404 unless the
 record's own `eventId` matches it — the same tenant's other event is as
-much a 404 as another tenant's. `program-item.service.ts`,
-`event-day.service.ts`, `ticket.service.ts` and `rsvp-field.service.ts`
-all follow this; a by-id lookup that only checks the record's OWN event is
-the gap to look for.
+much a 404 as another tenant's. A by-id lookup that only checks the
+record's OWN event is the gap to look for. A record two levels down checks
+both: a Memory Hub item under `/memory-hub/:hubId/items/:id` must be that
+hub's, and the hub the URL event's (`hubInScope`/`itemInScope`). An id in a
+**body** is held to the same rule: it must be one of the URL event's own
+records, or the refusal is the endpoint's own (a 422 or 400 naming no other
+event), never a write to another event's.
+
+Every route with a sub-resource id under `/api/events/:eventId`, swept
+before the pilot merge:
+
+| Route | |
+|---|---|
+| `/days/:id` (GET, PUT, DELETE) | safe (`eventDayService.getById`) |
+| `/tickets/:id` (GET, PUT, DELETE) | safe (`ticketInScope`) |
+| `/rsvp-fields/:id` (GET, PUT, DELETE) | safe (`fieldInScope`) |
+| `/program/:programId/items/:id` (all) | safe (`assertProgramInScope`, then the item's own program); a body `eventDayId` must be the event's |
+| `/program/:id` (GET, PUT, DELETE) | **fixed** (gated on the program's own event) |
+| `/invites/:id` (GET, PUT, DELETE), `/:id/reactivate`, `/:id/resend` | **fixed** (`inviteInScope`; gated on the invite's own event) |
+| `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event) |
+| `/memory-hub/:id…`, `/memory-hub/:hubId/items…` | **fixed** in the wave 2 follow-ups |
+| `/check-in/days/:dayId`, `…/guests/:guestId` (and an `inviteToken`) | safe (the day from the event's own days; guest and token looked up by event) |
+| `/guests` create and import (body `eventDayIds`, the file's days) | safe (the event's own days) |
+| `/announcements` (body `eventDayId`) | safe (one of the event's live days, else 422) |
+| `/registration-settings` (body `openDayIds`) | safe (422 `REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN`) |
+| `/feedback` (body `selectedPhotoIds`) | safe (the event's own eligible photos only) |
+| `/pass/purchases/:purchaseId/reconcile` and the SMS bundle's | safe (looked up by id and event) |
+| `/full` (every row id) | safe (matched against the event's own live rows, else that part's 404) |
+
+`/api/guests/:id` has no event in its URL and goes through
+`resolveEventScope` (see "The assignment lock").
 
 **Tickets are organiser-only on `/api/events/:eventId/tickets`.** Guests
 read tickets only through their invite token (`/rsvp/validate`'s
@@ -153,13 +190,52 @@ design) and `EVENT_VENDOR` (scoped by `VendorSpaceUser` membership, not
 `tenantId`) are exempt on purpose — see `ROLES_REQUIRING_TENANT`'s own
 comment. Existing rows are never touched by this; it only gates new ones.
 
-**Vendor space visibility, intended design:** a vendor sees a space if
-they are a member of it, OR if it is in their tenant and has no members
-at all (unassigned spaces are visible to every vendor in the tenant).
-Anything else is a 404. **KNOWN DEBT:** the code currently enforces
-membership only (`getSpaceForViewer`) and applies the same gap to
-services and products. Resolved by the user management feature, which
-assigns users to vendor spaces.
+**The assignment lock — one rule for every resource with assignments.**
+For a locked role, a user with **no** assignments of a kind sees **every**
+resource of that kind in their tenant; a user with **any** sees **only**
+those. Anything else is a 404, the same as another tenant's record. It
+only ever narrows what tenant scoping already allows; it never replaces
+it. Written once, `createAssignmentLock`
+(`shared/utils/assignment-lock.util.ts`), and instantiated per resource:
+
+- **Events** (`event-assignment-lock.util.ts`): `EVENT_ADMIN` locked by
+  `EventAssignment` rows. `TENANT_ADMIN` and `SUPER_ADMIN` are never
+  locked. Enforced in exactly one place, `event.service.ts`'s
+  `resolveEventScope`, which every event lookup (`getById`, `getScoped`,
+  `getScopedWithPass`) and the list (`getAll`) goes through, and through
+  those every event sub-resource: days, program, guests, invites, RSVP
+  fields and responses, check-in, Memory Hub, Event Pass, tickets and
+  purchases, invitation design, uploads. `/api/guests/:id`, which has no
+  event in its URL, calls `resolveEventScope` directly. Never build an
+  event `where` anywhere else.
+- **Vendor spaces**, later: `EVENT_VENDOR` locked by `VendorSpaceUser`,
+  through another `createAssignmentLock` call. This replaces the earlier
+  vendor-visibility convention ("a member, or an unassigned space in their
+  tenant") as the pattern for both spaces. Not switched over yet (vendors
+  are off for the pilot): vendor spaces still enforce membership only
+  (`getSpaceForViewer`), and services and products have the same gap.
+
+The lock needs the signed-in user's id, which routers do not thread (they
+pass `(role, tenantId)`). `authenticate` puts the viewer in a request
+context (`shared/context/request-viewer.context.ts`, `AsyncLocalStorage`),
+and the lock reads it there, so no call site can forget to pass it. It
+supplies identity only; services still decide on the role and tenant they
+are passed. **A locked role with no viewer fails closed**: a lookup 404s
+and a list is empty. That covers a script or a test calling a service
+directly (wrap it in `runAsRequestViewer`), and a callback API that loses
+the async context. Node doesn't guarantee the context through stream-event
+callbacks, so wrap one in `bindRequestViewer`, as the guest import route
+does for multer (multer kept the context in testing; the bind is
+insurance). A new callback-style middleware on an authenticated route
+does the same, and gets a test as a locked member.
+
+**Releasing the lock widens access.** Removing a user's **last**
+assignment moves them from a few resources to all of them, so it is 409
+`ASSIGNMENT_LOCK_RELEASE` unless the request carries `confirmWidening:
+true` (`assertReleaseConfirmed`). A row for an archived resource still
+counts as an assignment, so archiving someone's last event never widens
+them either. A locked member who creates an event (direct create or the
+wizard's materialize) is assigned to it in the same transaction.
 
 ### Guest-facing responses
 
@@ -222,7 +298,36 @@ traffic on a shared IP never approaches it. The budget itself is never
 hardcoded on the frontend — `POST /api/memory-hub/guest-view`'s
 `limits.uploadRequestsPer5Min` reports the same constant the limiter
 enforces (`upload-constants.ts`'s
-`MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`).
+`MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN`). The same `limits` carry
+what may be uploaded right now (`videosAllowed`, `videoMaxBytes`,
+`allowedFormats`), so the picker never offers a file the signature refuses.
+
+Public self-registration has no credential before it succeeds, so it is
+limited three ways: per **email** (5 an hour, keyed by the SHA-256 of the
+normalised address, never the address: a repeat registration re-sends
+that person's link, so this stops anyone flooding an inbox from many
+IPs), per **IP** (30 per 15 minutes, counting successes, since every
+success writes a guest; generous because a company's staff register from
+one office network), and per **event** (30 a minute, a pace guard against
+a script spread across many IPs). The per-email limiter's fallback for a
+request with no email is the IP through `ipKeyGenerator`, like every other
+IP key: **every custom `keyGenerator` that reads `req.ip` calls
+`ipKeyGenerator` itself**, inline, so an IPv6 visitor can't step around a
+limit by moving within their /56. express-rate-limit checks each
+keyGenerator's own source for it when the limiter is created and logs
+`ERR_ERL_KEY_GEN_IPV6` otherwise; that warning must never appear at
+startup. Forgot password's per-email limiter (`forgotPasswordEmailKey`, 3
+per 15 minutes) works the same way: the SHA-256 of the normalised email,
+or for a request with no email its IP through `ipKeyGenerator`. A shared
+fallback bucket (it used to be one `'unknown'` key for every email-less
+request) lets one caller refuse everyone else.
+
+**RSVP submit is limited per invite** (`rsvpSubmitInviteLimiter`, 20 an
+hour, every request counted, keyed by the SHA-256 of the invite token).
+It bounds how fast one invite can test addresses through the email-change
+refusal (see "Guest contact"). Per invite and not per IP, for the shared-IP
+reason above; 20 because a guest replies once and edits rarely, and the
+frontend submits once per tap, never on its own.
 
 ### Client-supplied Cloudinary assets
 
@@ -241,21 +346,42 @@ the same treatment: `isCloudinaryDeliveryUrlFor` ties it to exactly the
 checked publicId, so a vetted id can't sit next to a URL pointing
 anywhere else. Found missing on Memory Hub guest and organiser uploads,
 event covers (create, update, wizard materialize) and Memory Hub
-`mediaUrl`; invitation designs were built with both checks. An id
+`mediaUrl`; invitation designs and feedback logos were built with both
+checks. An id
 already stored on a record is not re-checked when re-sent unchanged.
 
 ### Email
 
 **Every email is rendered by one layout,** `renderEmail`
-(`shared/messaging/email-layout.ts`), and sent by one function,
-`sendEmail` (`shared/messaging/email.engine.ts`). Never call Resend
-directly, and never hand-write email HTML. A builder describes its message
+(`shared/messaging/email-layout.ts`), and sent by the email engine
+(`shared/messaging/email.engine.ts`): `sendEmail` for one message,
+`sendEmailBatch` for many. Never call Resend directly, and never
+hand-write email HTML.
+
+**Guest sends are batched.** Invitations, reminders, announcements and
+the cancellation email go through `sendEmailBatch`: Resend's batch
+endpoint, up to 100 emails per call (`RESEND_BATCH_LIMIT`), one call after
+another, never one email at a time. Each email is still its own message to
+one guest, with their own link, From and Reply-To. Permissive validation:
+an email Resend refuses fails alone, by its index, and the rest of its
+batch goes. A batch call that is refused or throws fails exactly that
+batch's emails, and the next batch still goes. Results come back one per
+email, so every guest's success or failure is recorded exactly as before
+(delivered, reminder log and cooldown, announcement delivery rows). SMS
+still goes one at a time; a single resend, registration and auth emails
+use `sendEmail`. A builder describes its message
 as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
-`image`, `details`, `code`, `button`). The layout turns the same blocks
+`message`, `image`, `details`, `code`, `button`). `message` is an
+organiser's own multi-line words (an announcement, a cancellation note):
+left-aligned, escaped like everything else, its line breaks turned into
+`<br>` only after escaping. The layout turns the same blocks
 into the HTML part and the plain-text part, so the two always match.
 `sendEmail` requires `text`, so no email leaves without a plain-text part.
-Builders: `invite-message.util.ts` (invitation, reminder) and
-`auth-email.util.ts` (sign-in code, password reset).
+Builders: `invite-message.util.ts` (invitation, reminder, registration,
+announcement, cancellation),
+`auth-email.util.ts` (sign-in code, password reset),
+`user-invite-email.util.ts` (team invitation) and
+`feedback-request-email.util.ts` (the feedback request).
 
 **Escaping lives in the layout.** Every text and every URL in a block goes
 through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
@@ -286,7 +412,11 @@ Every email has a hidden preheader. **Every URL is built from
 `FRONTEND_BASE_URL`** (`frontendUrl`, `shared/utils/frontend-url.util.ts`),
 including the logo and seal under `<base>/brand/`. The only other URLs in an
 email are the ones passed in: a Cloudinary design image and Firebase's reset
-link. Never write a domain into an email.
+link. Never write a domain into an email. The same goes for every other
+link the server hands out (share links, payment callbacks):
+`frontendUrl` is the only reader of `process.env.FRONTEND_BASE_URL`, and
+a missing, blank or non-http(s) value stops the app at load
+(`assertFrontendUrlConfigured` in `app.ts`), never an "undefined/…" link.
 
 **Guest emails (invitation, reminder).** From `"<host name> via e-velope"
 <RESEND_INVITE_EMAIL>`, where the host name is `Event.hostName`, falling
@@ -299,13 +429,45 @@ image, each invited day (date and UTC time via `guest-date.util.ts`,
 venue, address; labelled when there are several), and one button, "Open
 your e-velope". The preheader is the event name, plus the date and venue of
 the guest's first invited day. A reminder adds the reply deadline when
-there is one.
+there is one. **The registration email** (public self-registration, see
+"Public events and self-registration") is the same guest email: subject
+"You're registered for <event>", eyebrow "You're registered", the days
+the registrant said they'll attend, the same one button to their own
+invite, and a footer saying they registered themselves. The same email
+registering again gets **the re-send**: subject "Your link for <event>",
+eyebrow "Here's your link again", a line saying the address was entered
+again and that nothing changed if it wasn't them, the same button. Both
+go through `inviteDispatchService.sendRegistrationEmail`, so their From,
+Reply-To and design image are an invitation's.
+
+**The announcement and cancellation emails** (see "Announcements") are
+guest emails too, sent through `inviteDispatchService.sendGuestMessages`
+with an invitation's From and Reply-To (`resolveReplyTo`). An
+announcement: the organiser's subject as given (header-safe), the seal,
+"A message from <host>", the event name, their body as a `message` block,
+and the one "Open your e-velope" button to that guest's own invitation.
+The cancellation email: subject "<event> has been cancelled", no seal, the
+event name, its dates (every live day, labelled when several), the
+organiser's note when there is one, and **no button**. A self-registered
+guest gets the registration footer line on both.
 
 **The design image** is shown only for an `UPLOAD` design, rewritten to an
 explicit JPEG (`f_jpg,w_1200,c_limit`, displayed at 600px) with its alt
 text. **Never `f_auto` in email**: image proxies fetch with their own
 `Accept` header. A URL not in the Cloudinary `image/upload` shape is left
 out, never sent as it is. TEMPLATE designs aren't shown in email.
+
+**The team invitation** reads like an auth email (same From, no seal):
+subject "You've been invited to join <company> on e-velope", one button
+"Accept invitation" to `<FRONTEND_BASE_URL>/join?token=…`, its 7-day
+validity, the ignore line. The company name goes through
+`sanitizeDisplayName` on its way into the subject.
+
+**The feedback request** (see "Feedback and sharing permissions") reads
+like the team invitation: From `"e-velope" <RESEND_FROM_EMAIL>`, no seal,
+subject "How did <event> go?" (the event name header-safe), one button
+"Share your feedback" to `<FRONTEND_BASE_URL>/events/<id>/feedback`, and a
+line that every permission is optional and can be changed later.
 
 **Auth emails** use the same layout, calm and functional: no seal, no
 wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
@@ -336,7 +498,7 @@ nowhere else.
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
 
-Five documented exceptions:
+Seven documented exceptions:
 
 - `Attendance` — a guest's **RSVP answer per day** ("will attend"), NOT
   arrival. RSVP submit rebuilds these wholesale on every edit, which is why
@@ -349,8 +511,21 @@ Five documented exceptions:
   never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
   deliberately no update/delete method anywhere in
   `payment-ledger.repository.ts`.
-- The append-only send logs `SmsSendLog` and `InviteReminderLog` — a message
-  was sent, or failed to be, recorded once and never edited or archived.
+- The append-only send logs `SmsSendLog`, `InviteReminderLog`,
+  `Announcement`, `AnnouncementDelivery`, `EventEmailClaim` and
+  `FeedbackRequestClaim` — a message was sent, or failed to be, recorded
+  once and never edited or archived. An `Announcement` is
+  written when its send is claimed, so its failure count is summed from
+  its delivery rows at read time, never written back onto it.
+- `ConsentRecord` — every permission given or withdrawn, append-only like
+  the ledger: no `isArchived`, no `updatedAt`, no update or delete method
+  in `consent.repository.ts`, and the database refuses an `UPDATE` of a
+  row (the `ConsentRecord_no_update` trigger). Withdrawing is a new record.
+  See "Feedback and sharing permissions".
+- Membership join rows, `VendorSpaceUser` and `EventAssignment` — "this
+  person is on this space/event" is a current fact, set and unset as a
+  whole; removing a membership deletes the row. The person and the
+  resource are each archived (or suspended) on their own.
 
 `EventDraft` is a record that stopped mattering once consumed;
 `PaymentLedgerEntry` and the logs record something that happened, which does
@@ -388,6 +563,7 @@ reason survives only in the server log.
 | 404 | Not found — **also** the correct response for cross-tenant access |
 | 409 | State conflict (already published, duplicate) |
 | 422 | Valid shape, unsatisfied preconditions |
+| 429 | A product limit on how often (announcements per event per day), always with a code |
 
 Messages are read by non-technical organisers. Write
 "This event is still a draft. Publish it before sending invitations." —
@@ -414,7 +590,29 @@ tokens". It keeps the old behaviour (one refresh and retry, then discard)
 only for a 401 with no code, so it stays correct against an older
 backend mid-deploy.
 
-One single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
+One single code: `USER_EMAIL_TAKEN` (`POST /api/users`, 409, "A user
+with this email address already exists. Use a different email
+address."): the admin form marks the email field rather than showing a
+banner. The same code covers the database's own unique-email error when
+two creations race past the check (`isUniqueViolationOn`,
+`shared/utils/prisma-error.util.ts`: never a 500), and an address that
+already has an account on team invitation create, resend and accept
+(the accept message tells the person to sign in instead). Email uniqueness is platform-wide, so this tells a `TENANT_ADMIN`
+that an address has an account somewhere, possibly in another tenant.
+The status already told them that before the code existed (500 instead
+of 201); the code adds nothing to it. Accepted for now, not designed.
+
+Team members: `ASSIGNMENT_LOCK_RELEASE` (`PUT /api/users/:id/assignments`,
+409; see "The assignment lock" under Tenant scoping), `TEAM_INVITE_PENDING`
+(`POST /api/users/invites`, 409, vs `USER_EMAIL_TAKEN`: resend the open
+invite instead), and on `POST /api/team-invites/lookup` and `/accept`:
+`TEAM_INVITE_INVALID` (404 — unknown, revoked, or the workspace is
+suspended; told apart from a route 404), `TEAM_INVITE_EXPIRED` (422, vs a
+blank name), `TEAM_INVITE_USED` (409, vs `USER_EMAIL_TAKEN`). An accept
+signed in with a different email is a plain 403. Unknown and revoked are
+deliberately one code.
+
+Another single code: `OTP_SEND_FAILED` (`POST /api/auth/request-otp`, 503,
 "We couldn't send your code. Try again in a moment."): the sign-in code
 email could not be sent, so the client shows that and offers a retry
 instead of a code step that will never receive one. The provider's reason
@@ -430,9 +628,160 @@ One trio: `CONTACT_PHONE_INVALID`, `CONTACT_PHONE_NOT_INTERNATIONAL` and
 form which contact field to mark: a number that isn't a real one ("Use the
 format +27 82 123 4567" when written with a country code), a local number
 missing its country code ("'0825551234' is missing a country code, use
-+27825551234"), and a guest removing their only contact. The two phone
++27825551234"), and a guest removing their only contact. With `sms` off,
+a guest removing their email (or swapping it for a phone) is 422
+`GUEST_EMAIL_REQUIRED`. Changing to an email the guest can't have (another
+guest on the event has it) is 422 `CONTACT_EMAIL_UNAVAILABLE`, "That
+email address can't be used for this invitation. Please use another
+one.", one message and code for every cause (see "Guest contact"). A
+phone is never refused for being another guest's. The two phone
 codes are set by `normalizePhoneToE164` (`guest-validation.util.ts`), so
 organiser guest create and import carry them too, still as 400.
+
+Public self-registration (`POST /api/public-events/:shareToken/register`)
+tells the registration page which state to show:
+`REGISTRATION_EVENT_CANCELLED` (410), `REGISTRATION_CLOSED` (410: the
+closing date or RSVP deadline passed, the event is over or not yet open,
+or no day is open to registration), `REGISTRATION_FULL` (409: the cap, or
+the plan's guest limit, never named to a registrant),
+`REGISTRATION_PARTY_TOO_LARGE` (409, vs FULL: room left, but not for this
+many plus-ones; the form marks the plus-ones) and
+`REGISTRATION_EMAIL_DOMAIN` (422, the email field; also at RSVP submit,
+see "Public events and self-registration"). The rest of the
+form's 422s say which field: `REGISTRATION_TOO_MANY_PLUS_ONES` (more than
+the organiser allows each registrant, vs PARTY_TOO_LARGE),
+`REGISTRATION_DAY_NOT_OPEN`, and `REGISTRATION_FIRST_NAME_TOO_LONG`,
+`REGISTRATION_SURNAME_TOO_LONG`, `REGISTRATION_PLUS_ONE_NAME_TOO_LONG`,
+`REGISTRATION_FIRST_NAME_REQUIRED`, `REGISTRATION_EMAIL_INVALID`,
+`REGISTRATION_NO_DAYS_CHOSEN` (an empty `dayIds`) and
+`REGISTRATION_PLUS_ONE_NAME_REQUIRED`. A missing email is 422
+`GUEST_EMAIL_REQUIRED`, and a bad phone carries the contact codes, as at
+RSVP. Only a malformed body (a wrong type) is an uncoded 400. A phone
+another guest already has is never a refusal. A self-registered
+guest whose RSVP edit asks for more seats than the cap has left gets 409
+`REGISTRATION_FULL` too.
+
+Registration settings (`PUT /api/events/:eventId/registration-settings`):
+every 422 carries a code, one per refusal, named for its field
+(`REGISTRATION_SETTINGS_ERROR_CODES`, `registration-settings.service.ts`):
+`REGISTRATION_SETTINGS_DOMAIN_INVALID`,
+`REGISTRATION_SETTINGS_TOO_MANY_DOMAINS`,
+`REGISTRATION_SETTINGS_CAP_INVALID`,
+`REGISTRATION_SETTINGS_CAP_ABOVE_PLAN_LIMIT`,
+`REGISTRATION_SETTINGS_CLOSES_AT_INVALID`,
+`REGISTRATION_SETTINGS_CLOSES_AT_AFTER_DEADLINE`,
+`REGISTRATION_SETTINGS_PLUS_ONES_INVALID`,
+`REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN` and
+`REGISTRATION_SETTINGS_NO_OPEN_DAYS`. A wrong type (400) and a cancelled
+event (409) have none. Plus-ones per registrant is 0 to 20, the guest
+rule below.
+
+The plus-ones allowance (guest create, update and import, and the
+registration settings' per-registrant one) is a whole number from 0 to 20
+(`MAX_PLUS_ONES_ALLOWED`, `guest-validation.util.ts`). Anything else is
+422 `GUEST_PLUS_ONES_INVALID` ("Plus-ones allowed must be a whole number
+from 0 to 20."), a refused row on import, or
+`REGISTRATION_SETTINGS_PLUS_ONES_INVALID` in the settings, never a value
+that reaches the integer column and comes back a 500.
+
+`GUEST_EMAIL_TAKEN` (409, "Another guest on this event already has this
+email address."): an organiser adding a guest (`POST
+/api/events/:eventId/guests`) with, or changing one (`PUT /api/guests/:id`)
+to, an email another guest on the same event has; restoring an archived
+guest whose email a live guest now has; and the database's own unique
+index on a guest's email, on those paths and import (see "Guest
+contact"). A plain message, unlike RSVP's neutral
+`CONTACT_EMAIL_UNAVAILABLE`: the organiser can see their own guest list, so
+it tells them nothing new.
+
+`PLUS_ONES_OVER_ALLOWANCE` (`POST /api/rsvp/submit`, 422, "You can bring up
+to N plus-one(s)…"): more plus-ones named than the guest's own allowance;
+the form marks the plus-ones. It was an uncoded 400.
+
+Announcements (`/api/events/:eventId/announcements`, see "Announcements"):
+every 422 carries a code naming its field (`ANNOUNCEMENT_ERROR_CODES`,
+`announcement.service.ts`): `ANNOUNCEMENT_SUBJECT_REQUIRED`,
+`ANNOUNCEMENT_SUBJECT_TOO_LONG`, `ANNOUNCEMENT_BODY_REQUIRED`,
+`ANNOUNCEMENT_BODY_TOO_LONG`, `ANNOUNCEMENT_AUDIENCE_INVALID`,
+`ANNOUNCEMENT_DAY_INVALID`, and `ANNOUNCEMENT_NO_RECIPIENTS` (nobody in the
+audience has an email). The daily limit is 429
+`ANNOUNCEMENT_DAILY_LIMIT`, "You've sent the most announcements allowed in
+24 hours. Try again later.": no clock time, because the server could only
+write UTC. The frontend shows when the next one can go, in the organiser's
+own time zone, from the history's `dailyLimit.nextAvailableAt`.
+Cancelling with a note over 1000 characters is 422
+`CANCELLATION_NOTE_TOO_LONG` (`POST /api/events/:id/cancel`), and
+cancelling an event whose last day has passed is 409
+`EVENT_ALREADY_HAPPENED` (vs the uncoded 409 for one already cancelled). A wrong type
+(400) and a cancelled event (409) have none.
+
+`MEMORY_HUB_VIDEO_UNAVAILABLE` (422): a Memory Hub upload signature for a
+video while `memoryHubVideo` is off, on the organiser path (`POST
+/api/uploads/signature`, purpose `MEMORY_ITEM`) and the guest path (`POST
+/api/memory-hub/guest-upload-signature`, "Videos can't be added to this
+photo album right now. You can still add photos."). The uploader tells the
+person to pick a photo; any other 422 there is a bad file.
+
+Before any route (`body-parse-errors.middleware.ts`, mounted right after
+the body parsers): a body that isn't valid JSON is 400 `MALFORMED_JSON`
+("The request body isn't valid JSON."; the parser's own message quotes
+the body and is never sent); a JSON or URL-encoded body over the parsers'
+10MB limit (`REQUEST_BODY_LIMIT_MB`) is 413 `REQUEST_TOO_LARGE` ("The
+request is too large. It must be 10MB or smaller."); and a browser origin
+outside `ALLOWED_ORIGINS` is an uncoded 403. All three used to be 500s
+reported to Sentry; none is reported now.
+
+System health (`GET /api/admin/system/errors`, super admin only):
+`SENTRY_NOT_CONFIGURED` and `SENTRY_UNAVAILABLE` (both 503: fix the
+server's configuration, or wait and retry). See "Error monitoring".
+
+Safety limits (see "Safety limits" under Domain rules): venue capacity
+outside 1 to 100,000 is 422 `EVENT_CAPACITY_INVALID` (event create, update
+and the wizard's materialize); a guest past the 5,000-per-event ceiling is
+422 `EVENT_GUEST_CEILING` for an organiser (add, import, restore), while a
+registrant or an RSVP gets registration's own `REGISTRATION_FULL` /
+`REGISTRATION_PARTY_TOO_LARGE`, never the number; an import file of more
+than 2,000 rows is 422 `GUEST_IMPORT_TOO_MANY_ROWS` and one over 5 MB is 413
+`GUEST_IMPORT_FILE_TOO_LARGE`; invitation and reminder emails past the
+event's daily allowance are 429 `EVENT_EMAIL_DAILY_LIMIT`.
+
+Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
+`MEMORY_HUB_NOTHING_TO_DOWNLOAD` (no approved items) and 429
+`MEMORY_HUB_DOWNLOAD_RATE_LIMIT`.
+
+Dates on days and program items (see "Event days and program items"):
+a new or changed day date before UTC today minus one day is 422
+`EVENT_DAY_DATE_IN_PAST` ("The date of '<label>' has already passed. Choose
+today or a later date."; day create and update, the wizard's materialize
+and the full event update), and a program item whose start isn't on its
+day's UTC date is 422 `PROGRAM_ITEM_DATE_NOT_ON_DAY` ("'<title>' is set to
+'<day>', so it must start on <date>. Change its start date or choose
+another day."; item create and update, materialize and the full update).
+The full event update (`PUT /api/events/:eventId/full`) has no codes of its
+own: every refusal is its part's own endpoint's, code included.
+
+Values that used to reach Prisma unchecked as a 500 (all 422):
+`RSVP_FIELD_OPTIONS_INVALID` ("The choices for '<label>' must be a list of
+text options.": a question's `options` that isn't a JSON-encoded list of
+strings, which is what the RSVP page reads; POST/PUT `.../rsvp-fields`, the
+full update, and the wizard's materialize, whose draft holds the choices as a
+list and stores its JSON), `MEMORY_HUB_OPENS_AT_INVALID` ("The Memory Hub's opening
+time isn't a valid date and time.": null or `''` is "open now", anything
+else must parse; POST/PUT `.../memory-hub`, the wizard's materialize and the
+full update) and `PROGRAM_VISIBILITY_INVALID` ("Program visibility must be
+true or false."; PUT `.../program/:id`, materialize and the full update).
+
+Feedback (`PUT /api/events/:eventId/feedback`, see "Feedback and sharing
+permissions"): every 422 carries a code naming its field
+(`FEEDBACK_ERROR_CODES`, `feedback-validation.util.ts`):
+`FEEDBACK_EVENT_NOT_COMPLETED` (also on the logo signature),
+`FEEDBACK_SCORE_INVALID` (missing on the first save, or not a whole number
+0–10), `FEEDBACK_WORKED_BEST_TOO_LONG`, `FEEDBACK_TO_IMPROVE_TOO_LONG`,
+`FEEDBACK_PHOTO_NOT_ELIGIBLE`, `FEEDBACK_LOGO_INVALID` and
+`FEEDBACK_LOGO_TOO_LARGE`. A wrong type (400) and a `SUPER_ADMIN` saving
+(403) have none. A guest asking to share a video publicly (`POST
+/api/memory-hub/guest-items` and the public-sharing toggle) is 422
+`PUBLIC_SHARING_PHOTOS_ONLY`.
 
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
@@ -442,6 +791,68 @@ apart is exactly the oracle the single message exists to avoid.
 `FIREBASE_TOKEN_INVALID` is safe to keep as its own code precisely
 because whoever holds a Firebase ID token can already check its
 validity directly with Firebase; there's nothing to leak.
+
+### Error monitoring
+
+**Sentry, permanent infrastructure, not a feature:** no flag. On when
+`SENTRY_DSN` is set; without it nothing is initialised and nothing is sent.
+`src/instrument.ts` is `server.ts`'s **first import**, so Sentry starts
+before the app loads (keep it first). Environment from
+`SENTRY_ENVIRONMENT` (falls back to `NODE_ENV`), release from
+`RENDER_GIT_COMMIT`. All of it lives in `src/shared/monitoring/`.
+
+**What is reported:** every unexpected error and every 5xx, an `HttpError`
+503 included. **An `HttpError` below 500 never is**: a 404, 409, 422 or 429
+is the app working as designed. One rule decides, `shouldReportError`
+(`error-reporting.ts`); the global handler calls `reportError` for every
+error it sees, and a handler that sends a 5xx itself is caught by the
+`reportUnreportedServerErrors` safety net (or calls `reportError` with the
+exception, as the Paystack webhook does). A deliberate, explained 5xx (the
+system health endpoint's 503) calls `skipServerErrorReport`. Uncaught
+exceptions and unhandled rejections are captured by Sentry's own handlers
+and flushed before the process exits. **Tracing is off**: errors are what
+we need, Render shows latency, and a span would carry URLs and query text
+past the scrubber and spend the quota. Turn it on only for a specific
+performance question, at a very low rate.
+
+**Privacy rules for error data.** Error data leaves our infrastructure, so
+every event and breadcrumb goes through one scrubber (`sentry-scrub.ts`,
+wired as `beforeSend`/`beforeBreadcrumb`), and most of it is never
+collected in the first place: Sentry v11's `dataCollection` defaults to
+collecting everything (cookies, headers, bodies, query strings, user info,
+local variables), so `sentry.config.ts` switches every category off, and
+`maxRequestBodySize: 'none'` keeps the body out of the HTTP integration
+too. Never sent: request bodies, cookies, query
+strings, any header outside a short allowlist (`Authorization` and
+`X-Session-Token` included), device and session tokens, invite, share and
+team-invite tokens (in a URL path too: `/rsvp/validate/:token` is masked),
+oobCodes, OTP codes, passwords, and **any email address or phone number
+anywhere** (message, URL, exception text, breadcrumb, extra, tags), all
+masked. A JSON parse error's message is withheld whole, since it quotes the
+body (a malformed request body is now a 400 and never reported; the rule
+stays for any other parse error). The user is `id`, `role` and `tenantId`, never email, name or phone.
+A new kind of credential is a new scrubber rule and a new value in
+`tests/monitoring/sentry-scrub.test.ts`, never "it won't be logged".
+
+**System health** (`GET /api/admin/system/errors?environment=&project=&status=`,
+`src/modules/system-health/`): `SUPER_ADMIN` only, and everyone else gets
+the global 404 (`requireSuperAdminHidden`), not a 403. It reads Sentry's
+API with `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECTS`
+("`<backend slug>,<frontend slug>`", in that order; `SENTRY_API_URL`
+optional, defaulting to the DSN's region, e.g. `https://de.sentry.io`), and
+returns both projects' issues merged, newest activity first, unresolved
+unless `status` says `resolved` or `ignored`: `title`, `project`
+(`backend`/`frontend`), `environment` (the filter, or `null` when the list
+spans every environment: Sentry's list doesn't name one per issue),
+`level`, `count`, `usersAffected`, `firstSeen`, `lastSeen`, `status`,
+`link`. With it, `health`: the deployed `commit`, `environment`,
+`uptimeSeconds`, `startedAt` and whether the database answers. Each answer,
+a failure included, is **cached 60 seconds** per filter, so the screen
+can't exhaust Sentry's API limits. Sentry not configured is 503
+`SENTRY_NOT_CONFIGURED`; Sentry failing, timing out or refusing is 503
+`SENTRY_UNAVAILABLE`; never a 500. Both 503s still carry `data.health`.
+**The auth token never leaves the server**: not in a response, a log line
+or an error message.
 
 ### Tier enforcement
 
@@ -453,8 +864,42 @@ Read limits from `SubscriptionTierConfig` at runtime. Never hardcode
 them; a `SUPER_ADMIN` can change them and enforcement must follow.
 `null` means unlimited.
 
-Enforcement points differ: `maxGuestsPerEvent` is checked at **import
-time**; `maxSmsPerMonth` at **send time**, all-or-nothing.
+Enforcement points differ: `maxGuestsPerEvent` is checked whenever a live
+guest is **added** (organiser add, import, and restoring an archived guest,
+a plus-one excepted since the limit doesn't count them), under the event's
+row lock so two at once can't both take the last place;
+`maxSmsPerMonth` at **send time**, all-or-nothing. A plan's limit is
+never the last word: the hard limits under "Safety limits" (Domain rules)
+apply after it, whatever a `SUPER_ADMIN` sets, `null` included.
+
+**No feature is tied to a tier by name in code.** Every paid-only feature
+is a `SubscriptionTierConfig` setting a `SUPER_ADMIN` can switch on for any
+tier, the free one included: `memoryHubEnabled`, `guestExportEnabled`,
+`vendorMarketplace`, `smsEnabled` (already settings), and
+`publicEventsEnabled`, `paidTicketingEnabled`, `customRsvpFieldsEnabled` and
+`vendorPriorityPlacement` (`tier-capabilities.util.ts`; they were Spark-
+and Elevate-by-name until the free pilot). Their migration set every tier
+to what the code did before. A tier with **no config row** keeps that old
+rule for these four rather than switching them off, so a database the
+seed never reached behaves as before. A new paid-only feature is a new
+setting, never a tier name in an `if`.
+
+**The frontend decides from settings, never from the plan's name.**
+`GET /api/tenants/me` carries `planSettings`: the limits (`maxEvents`,
+`maxGuestsPerEvent`, `maxSmsPerMonth`, `maxVendorSpaces`,
+`maxMemoryHubBytesPerEvent`, `null` = unlimited) and the on/off settings
+(`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
+`vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
+`customRsvpFieldsEnabled`, `vendorPriorityPlacement`) of the tenant's
+effective plan. One function resolves them, `resolvePlanSettings`
+(`plan-settings.util.ts`), with exactly the server's fallback when the
+tier has no config row; change an enforcement point's fallback and it
+changes too. A setting of a switched-off feature is left out, not sent as
+false. Whether to show, lock or badge a feature comes from these;
+`subscriptionTier` is for display (the plan's name on a billing screen)
+and is never compared in code. They are the tenant's plan: an event's own
+numbers, which an Event Pass can raise, come with the event (its
+`guestLimit`).
 
 **A new tier column needs a per-tier `UPDATE` in its migration.** `null` on a
 numeric limit means unlimited, so a migration that only does `ADD COLUMN`
@@ -462,11 +907,22 @@ leaves every existing row unlimited — it fails **open**. Follow the `ADD
 COLUMN` with an `UPDATE "SubscriptionTierConfig" SET … WHERE "tier" = …` for
 each tier, and update `TIER_CONFIGS` in `prisma/seed.ts` to match. The seed
 cannot cover for you: it never touches a database it isn't pointed at, and it
-does not overwrite existing tier configs. `maxVendorSpaces` and
+does not overwrite existing tier configs. `maxMemoryHubBytesPerEvent` (bytes) is a `BIGINT`, so a limit can be above
+2 GB (`20261017090000_memory_hub_bytes_bigint`); Prisma reads it as a JS
+`bigint`, and `subscription-tier-config.repository.ts` hands every row on
+with it as a plain number (a `bigint` can't be written to JSON). Read tier
+configs only through that repository. The tier admin takes it, and
+`guestExportEnabled`, with the other limits and switches: a whole number of
+0 or more within JavaScript's safe-integer range (or null), and true or
+false, else 422. `maxVendorSpaces` and
 `maxMemoryHubBytesPerEvent` were both added without one, so on any database
 the seed has never run against they are `null`, i.e. unlimited. There is no
 production database yet, so nothing is broken today — the first one must be
 populated by hand.
+
+**While `payments` is off there is no upgrade path** (see "Feature
+flags"): tier refusals carry launch wording and the contact address, never
+a plan or a price.
 
 **Role gates hide. Tier gates show, with an upgrade path.** A role
 mismatch (an `EVENT_ADMIN` opening User Management) is an authorization
@@ -480,12 +936,18 @@ to nav items, routes, and buttons alike; a tier-gated route must never
 Where "act on it" leads depends on who is asking and what is gated — and
 it is **never the public Pricing page for someone who is signed in**:
 
+Whether a feature is locked at all is read from `/me`'s `planSettings`
+(above), never from the plan's name.
+
 - **Signed-in tenant, tenant-scoped feature** (Vendor Space, Vendor
   Discovery). A locked click, or a direct URL hit, raises a confirmation
   — nobody is moved somewhere unannounced — and confirming goes to
-  `/subscription`, carrying the reason as `feature` and `requiredTier`
-  query params. A direct hit lands on the dashboard with that
-  confirmation open. (`TierGateService`, `tierGuard`.)
+  `/subscription`, carrying the reason as the `feature` query param only.
+  There is no `requiredTier` param: no plan is named, since the gate is
+  read from `planSettings` and any tier can have the setting switched on.
+  A direct hit lands on the dashboard with that confirmation open. With
+  `payments` off it shows the launch wording and contact address instead,
+  and confirming goes nowhere. (`TierGateService`, `tierGuard`.)
 - **Signed-in tenant, event-scoped feature** (Memory Hub, which an Event
   Pass on that event also unlocks). No confirmation: the user goes to the
   event's Control Center with `?upgrade=<feature>`, which opens a
@@ -496,6 +958,107 @@ it is **never the public Pricing page for someone who is signed in**:
 
 Exception: registration-time tier selection is not an upsell surface —
 nobody is upgrading before they have an account.
+
+### Feature flags
+
+Production can run a reduced feature set while dev keeps everything. One
+codebase: a feature is switched off by configuration, **never deleted**.
+
+- **Every new optional feature registers a flag** in the one registry,
+  `FEATURE_NAMES` (`src/shared/features/feature-flags.ts`), under a
+  stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
+  `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
+  `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
+  `feedback`.
+- **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
+  (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
+  Unset means everything is on. An unknown name stops the app at load
+  (`assertFeatureConfigValid` in `app.ts`); it is never ignored. Names are
+  case-sensitive.
+- **Routes are guarded on the server**, with one `requireFeature(name)`
+  (`shared/middleware/feature.middleware.ts`) per router or route: after
+  `authenticate`, before the role gate. Never as checks scattered through
+  services. Off means a 404 with the global 404 body, for everyone except
+  `SUPER_ADMIN`, the way a role gate hides. On a public route, off is a
+  404 for everyone.
+- **A shared path belongs to the feature it serves, not to whatever it
+  touches.** The Paystack webhook, subscriptions and Event Pass use
+  Paystack but are not ticketing; only the ticket routes and the payout
+  bank-details (subaccount) routes are. Subscriptions, Event Pass and SMS
+  bundle purchases belong to `payments`; the webhook belongs to nothing
+  and is never switched off.
+- **Beyond its routes, a switched-off feature can't be reached by any
+  other path.** Every refusal is a 422 checked BEFORE any tier check, so
+  a tenant never hears an upgrade pitch for a feature that isn't on offer:
+  - `ticketing` off: `/rsvp/validate` offers no tickets, an RSVP carrying
+    a `ticketId` is refused, and no path makes an event paid: create,
+    update FREE → PAID, the wizard's materialize, and publishing a draft
+    saved as paid.
+  - `publicEvents` off: no path makes an event `PUBLIC`, the same way.
+    The public view, registration, share links and
+    `/api/events/:eventId/registration-settings` are 404.
+  - **Only a change is refused.** Saving an event that is already paid or
+    public, re-sending the stored value or leaving it out, succeeds, so
+    older events stay editable. Past that check the switched-off value is
+    kept out of the tier and payout checks, so the save isn't refused for
+    a plan or for missing bank details either.
+  - `vendors` off: an `EVENT_VENDOR` user can't be created, and
+    `/api/tenants/me` has no `vendorSpaceLimit`.
+  - `sms` off: nothing is texted; an SMS-only guest on a send, resend or
+    reminder is a per-guest failure the organiser sees, never a silent
+    skip. The guest import template asks for an email for every guest and
+    its examples are emails. Nobody ends up reachable only by phone: phone-only is 422 on
+    guest create, and on an update that changes the contact (an update
+    that leaves the contact alone, a name or the plus-ones, is never
+    refused for it, so a phone-only guest from before the switch stays
+    editable) (public self-registration needs an email
+    whatever the flag says: the link is emailed), phone-only
+    rows are refused and listed on import while the rest imports, and at
+    RSVP a guest who has an email can't remove it or swap it for a phone
+    (adding a phone beside it is fine; a guest who never had an email can
+    still reply).
+  - `invitationDesigns` off: `/rsvp/validate`'s `design` is `null` and
+    emails carry no design image.
+  - `teamMembers` off: `/api/users` (team management, assignments,
+    invitations) and `/api/team-invites` are 404. Members already added,
+    their assignments and the assignment lock carry on unchanged.
+  - `announcements` off: `/api/events/:eventId/announcements` is 404, and
+    cancelling an event emails nobody (`guestNotification: null`); the
+    cancel itself works as before.
+  - `payments` off (the free launch pilot; switched back on when billing
+    returns): every route that starts or changes a payment is 404:
+    `/api/subscriptions` subscribe, change-tier, cancel and
+    update-card-link, and `/api/events/:eventId/pass` purchase, SMS bundle
+    purchase and both reconciles. The Paystack webhook keeps working, so a
+    payment started before the switch still lands, and so do the read-only
+    routes (current plan, plans, billing history, pass status). Every tier
+    refusal is then worded without plans, tiers, passes, upgrading, buying
+    or prices, with the launch contact instead ("You've reached the limit of
+    50 guest(s) for this event during our launch period. Contact us at
+    admin@e-velope.co.za if you need more."), keeping its status and code.
+    One place picks the wording: `tierRefusalMessage`
+    (`subscription-tier-config/tier-refusal-wording.util.ts`); a new tier
+    refusal goes through it.
+  - `memoryHubVideo` off: no Memory Hub upload signature for a video,
+    organiser or guest (422 `MEMORY_HUB_VIDEO_UNAVAILABLE`), and guest-view's
+    `limits` say so (`videosAllowed: false`, `videoMaxBytes: null`,
+    `allowedFormats` images only). Videos already uploaded stay and show,
+    and are left out of a Memory Hub download.
+  - `memoryHubDownload` off: `POST /api/events/:eventId/memory-hub/download`
+    is 404. Nothing else changes.
+  - `feedback` off: `/api/events/:eventId/feedback`, `/api/admin/feedback`
+    and the guest's public-sharing toggle are 404; a guest upload's
+    `allowPublicSharing` is ignored (nothing recorded, and the upload goes
+    through); guest-view has no `publicSharing`; the feedback request sweep
+    sends nothing (an event asked later still gets its one email, while
+    inside the window). Consent records already given stay.
+  Tier messages and limits never name a switched-off feature to a tenant.
+- **The frontend reads `GET /api/config/features`** (public, no auth,
+  `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
+  flags. Frontend hiding is UX; the server guard is the boundary.
+- **Switching a flag off never deletes data.** Saved designs, tickets,
+  vendor spaces and the rest stay exactly as they were; they are only not
+  served. Switching it back on brings them back unchanged.
 
 ### Migrations and the shared database
 
@@ -735,12 +1298,18 @@ DRAFT ──publish──> PUBLISHED ──(last day passes)──> COMPLETED (d
   └──────cancel────────┴──> CANCELLED (stored, irreversible)
 ```
 
+A COMPLETED event can't be cancelled: 409 `EVENT_ALREADY_HAPPENED`, and
+nobody is emailed. There's nothing left to call off, and guests must not
+be told an event they attended was cancelled.
+
 - `COMPLETED` is **never stored** — derived at read time from the last
   event day. The database row still reads `PUBLISHED`.
 - Every path returning an event returns the **effective** status. A list
   showing `PUBLISHED` while the detail shows `COMPLETED` is a bug.
 - `CANCELLED` is stored and has no reversal. Guests may already have been
-  told.
+  told. Cancelling emails every invited guest who hasn't declined (see
+  "Announcements"); the status write is conditional, so two cancels racing
+  email guests once.
 - `Event.status` has exactly one writer: `eventRepository.updateStatus()`.
   Do not add another.
 
@@ -769,24 +1338,163 @@ Genuinely different workflows, not a toggle:
 invitations. Import, manual add, and send all apply.
 
 **Public** — no organiser-built list. A shareable link is distributed;
-guests self-create by RSVPing. Import, manual add, and send are all
-rejected server-side.
+guests add themselves by registering (below). Import, manual add, and
+send are all rejected server-side.
 
 In the UI, build **two variants**, not one screen with disabled fields.
 Offering an action the backend will always reject reads as broken
 software.
 
+### Public events and self-registration
+
+Behind `publicEvents`. A company shares one link ("register for the
+year-end function here"); each person who registers becomes a guest with
+their own invitation.
+
+- **The link** carries `Event.shareToken` (`GET /api/events/:id/share-link`,
+  `POST .../share-link/regenerate`; a published public event only). An
+  unknown or regenerated token, or one for an event since made private, is
+  a 404.
+- **Settings** (`GET`/`PUT /api/events/:eventId/registration-settings`,
+  organiser only, tenant-scoped and under the assignment lock): allowed
+  email domains (stored lowercase without "@"; an email must be at exactly
+  one of them, so `company.co.za` does not admit `mail.company.co.za`;
+  empty = anyone), a cap, a closing date, the plus-ones each registrant may
+  bring, and which days are open (`EventDay.openForRegistration`, on by
+  default; at least one). The **cap** counts self-registered guests who
+  haven't declined plus their plus-ones, and can't be set above the plan's
+  guest limit (422); registration also stops at that limit itself. The
+  **closing date** defaults to the RSVP deadline and can't be after it
+  (422); registration closes at whichever comes first, because a
+  registrant can only change their answer until the deadline.
+- **The view** (`GET /api/public-events/:shareToken`) is exactly what the
+  registration page shows, as an explicit allowlist: name, host,
+  description, cover, the live days with their venue and whether each is
+  open, and `registration` (`isOpen`, `reason` CANCELLED/CLOSED/FULL with
+  its guest-facing `message`, `closesAt`, `plusOnesAllowed`,
+  `allowedEmailDomains`). Day ids are the only ids in it (the form sends
+  them back as `dayIds`). One rule decides open or not for the view,
+  registration and the organiser's settings: `resolveRegistrationState`
+  (`event-public/registration-rules.util.ts`).
+- **Registering** (`POST /api/public-events/:shareToken/register`: name,
+  email, optional phone, `dayIds` from the open days, default all, and
+  `plusOneNames` up to the allowance). Email is required and normalised
+  before every check. Success creates the guest (`Guest.selfRegisteredAt`
+  set) with an ACCEPTED invite offering every open day and attending the
+  chosen ones, and each plus-one as an accepted Guest+Invite pair, exactly
+  as RSVP creates them; then emails the personal link. **The invite token
+  is never in the response**: only the email can open the invitation, or
+  the domain restriction would mean nothing and a repeat registration
+  would hand over someone else's invitation. Counting and writing happen
+  under a row lock on the event, so two registrations can't both take the
+  last seat or both create one email.
+- **The answer never says whether an email or a phone is on the event.**
+  Every check runs in the same order for every request, and a registration
+  is answered the same way whoever is on the guest list: 201,
+  `{ outcome: 'REGISTERED', emailSent, message: "Check your email for your
+  e-velope." }`, byte for byte (a failed send: `emailSent: false` and one
+  "couldn't send" message, also the same either way). A phone another
+  guest has is saved like any other (phones aren't unique, see "Guest
+  contact").
+- **The same email again** creates no guest and gets exactly the answer a
+  new registration with the same request would get: the success, or the
+  same refusal (closed, full, no room for the party). Its own link is
+  emailed to that address anyway, as "Here's your link again"
+  (`buildRegistrationResendEmail`); that email is the only place that
+  says they were already registered, and only its owner reads it. A form
+  a new registration would be refused for (a closed day, too many
+  plus-ones) is refused first and sends nothing. A cancelled or finished
+  event refuses everyone and re-sends nothing, and an email outside the
+  domains gets the domain refusal. If the organiser archived every invite
+  the guest had, nothing is re-sent or re-created, and the answer is
+  still the ordinary success. Accepted residuals: timing (a repeat writes
+  nothing, so it answers a few database round trips sooner), and a
+  registrant who lost their link while registration is closed or full
+  sees that refusal, though the link reaches their inbox.
+- **Afterwards a registrant is an ordinary guest.** `selfRegisteredAt` is a
+  marker on the guest list, nothing more: they change their answer through
+  `/rsvp` like anyone, and check-in lists them and their plus-ones like
+  anyone. The differences: an RSVP edit that asks for more seats than
+  the cap has left (adding plus-ones, or accepting after declining) is
+  refused, and **the allowed domains hold at RSVP too**: changing to an
+  email outside them is 422 `REGISTRATION_EMAIL_DOMAIN` with registration's
+  own message (`emailDomainRefusal`, `registration-rules.util.ts`), for any
+  guest on a public event with domains, or a registrant could register at
+  the company address and swap it afterwards. The domains are on the
+  public page, so the refusal reveals nothing. Only a change is checked:
+  an address the guest already had before the domains were set never
+  blocks their reply.
+
 ### Guest contact
 
-Exactly **one** of email or phone at creation. Both fields exist on the
-model so the other can be captured at RSVP time. Supplying both is
-rejected.
+Exactly **one** of email or phone **at creation** (organiser create and
+import). Both fields exist on the model so the other can be captured at
+RSVP time. Supplying both at creation is rejected. The exception is
+public self-registration, where the email is required and a phone may sit
+beside it. **The rule is for creation only:** `guestService.update`
+checks only the fields it changes. A name or plus-ones change is never
+refused for the contact the guest already has (both, from RSVP; or
+phone-only while `sms` is off). A contact change is judged on what it
+leaves behind: never no contact, with `sms` off an email, and never
+an email another guest on the event has (409 `GUEST_EMAIL_TAKEN`,
+compared in normal form, `guestRepository.isEmailUsedByOtherGuest`).
+
+**The database guarantees it too:** a partial unique index,
+`Guest_eventId_email_live_key`, on `("eventId", lower("email"))` for live
+guests (`isArchived = false`, email set), created only in
+`20261009091000_guest_email_unique` (Prisma can't express it). The
+migration refuses to run while any duplicate exists;
+`scripts/report-guest-email-duplicates.ts` lists them, read-only. Two
+writes racing past the app's check trip the index, and each path answers
+with its own refusal, never a 500 (`isGuestEmailUniqueViolation`,
+`guest-validation.util.ts`): organiser create, update, import and restore
+409 `GUEST_EMAIL_TAKEN`, RSVP 422 `CONTACT_EMAIL_UNAVAILABLE`, and
+self-registration the ordinary "couldn't send" answer (identical either
+way; registering again re-sends the link). Archiving a guest frees their
+address; restoring them while a live guest has it is 409.
 
 Names are nullable — a guest imported by phone supplies their name when
 they RSVP.
 
-Duplicate = same email or phone on the **same event**. The same person
-across two events is two unrelated records.
+Duplicate = same **email** on the **same event**. The same person across
+two events is two unrelated records. **A phone is never anyone's
+identity:** a household, a couple or a PA share one, so two guests on one
+event may hold the same phone, on every path (organiser create, import,
+RSVP, self-registration), and no response refuses or mentions another
+guest's phone (`findDuplicateEmail`, `guest-validation.util.ts`). The one
+check on a phone is inside a single import file: the same phone on two
+phone-only rows is a duplicated row (a list pasted twice), refused and
+listed like a repeated email ("appears more than once in this file (first
+seen on row N)"). It is never compared with existing guests.
+
+**An email another guest on the event has is refused at RSVP with one
+neutral answer:** 422 `CONTACT_EMAIL_UNAVAILABLE`, "That email address
+can't be used for this invitation. Please use another one.", the same
+message, status and code for every cause, compared in normal form on both
+sides (`guestRepository.isEmailUsedByOtherGuest`). **Accepted residual:**
+refused vs accepted still tells whoever holds an invite whether an address
+is on that event's guest list. Accepting the duplicate instead would make
+one email two guests and break email as the identity registration and
+re-sends rely on. The leak is bounded, not closed: 20 tries an hour per
+invite (`rsvpSubmitInviteLimiter`), each successful try really changes
+the guest's own email, and more invites cost an organiser's invitation or,
+on a public event, a real inbox per registration.
+
+**Emails are stored and compared lowercase and trimmed, everywhere** —
+users, tenants, team invites, guests, sign-in lookups — through one
+`normalizeEmail` (`shared/utils/email.util.ts`). Rows from before the rule
+were brought in line by `20261006091000_lowercase_emails` (users, guests)
+and `20261007090000_lowercase_tenant_emails` (tenants), which skip (never
+merge) any row whose normalised email would collide: two users, two
+tenants, or two guests on one event. `scripts/report-email-collisions.ts`
+lists them, read-only. A comparison of a stored email still normalises
+both sides, so a skipped row matches its other casing. The one place that
+finds a tenant by email, Paystack's subscription webhooks
+(`subscription.repository.ts`'s `findByEmail`), compares normalised forms
+in SQL and matches **nothing** when two tenants share an address once
+normalised: crediting the wrong tenant is worse than an unclaimed webhook.
+A Postgres regex in a `$queryRaw` template literal needs its backslashes
+doubled (`'^\\s+|\\s+$'`); a single `\s` reaches Postgres as a plain `s`.
 
 Phone numbers are E.164 (`+27...`). Reject with a specific message
 naming the fix, not a generic "invalid".
@@ -819,10 +1527,10 @@ first day by date. Publishing refuses an event with a day that has no
 venue. Event create and update take no venue at all (an older client
 still sending one is ignored, not refused). The Event's own `location`,
 `address`, `latitude` and `longitude` columns are dropped
-(`20261004090000_drop_event_venue_columns`). `/rsvp/validate`'s and the
-public event view's `event.location`/`address` (and validate's
-coordinates) remain as compatibility keys, filled from the first day's
-venue.
+(`20261004090000_drop_event_venue_columns`). `/rsvp/validate`'s
+`event.location`/`address` and coordinates remain as compatibility keys,
+filled from the first day's venue. The public event view no longer has
+them: no client ever read it, and it shows each day's venue.
 
 ### Event program
 
@@ -864,10 +1572,114 @@ multi-day draft, optional on a single-day one (left `NULL`), 422 when it
 isn't a whole number naming one of the draft's days. `program.isPublished`
 is honoured (absent means visible). No follow-up calls are needed.
 
+### Event days and program items: dates
+
+Two rules the wizard enforces, enforced on the server too, by one helper
+each that every path calls (`event-day-validation.util.ts`'s
+`assertDayDateNotPast`, `program-item-validation.util.ts`'s
+`assertItemStartsOnItsDay`):
+
+- **A day's date can't be in the past.** A new or changed date earlier than
+  UTC today minus one day is 422 `EVENT_DAY_DATE_IN_PAST`. The one day of
+  slack is for organisers behind UTC, whose today is still UTC yesterday:
+  events have no time zone (see Known gaps), so the server can't know the
+  organiser's own today. **Only a new or changed date is judged:** a saved
+  day re-sent with its date unchanged is never refused, so an event that
+  has already happened stays editable. Day create and update, the wizard's
+  materialize and the full event update.
+- **An item with a day starts on that day.** Its start time's UTC date must
+  equal the day's date, or 422 `PROGRAM_ITEM_DATE_NOT_ON_DAY`. Judged on the
+  item a change leaves behind (stored values filling in what isn't sent),
+  and only when something about it changes: creating it, a new start or a
+  new day, or (in the full update) its day's date moving without it. An
+  older item already off its day can still be renamed. An item with no day
+  (`NULL`) is placed by date as above and has nothing to match. Item create
+  and update, materialize and the full update.
+
+### Editing an event: the full update
+
+**In edit mode, the wizard's steps change nothing on the server. Next only
+moves between steps; every change is held until "Save changes", which
+sends the whole event in one all-or-nothing request. Leaving without
+saving discards everything. "Save changes" is blocked only by invalid
+fields; with nothing changed, it sends nothing and says "No changes to
+save".** (Events being edited may already be live: guests must never see a
+half-applied edit, such as a new date before the organiser has saved.)
+
+That request is `PUT /api/events/:eventId/full` (`src/modules/event-full-update/`),
+organiser only (`requireEventAdmin`), scoped and under the assignment lock
+through `eventService.getById` like every event lookup. The per-part
+endpoints (`PUT /api/events/:id`, `/days`, `/tickets`, `/rsvp-fields`,
+`/program`, `/program/:programId/items`, `/memory-hub/:id`) stay for the
+other screens that use them.
+
+The body, every key optional (a key left out leaves that part alone):
+
+```
+{
+  event?:      { name?, description?, hostName?, coverImageUrl?, coverImagePublicId?,
+                 coverImageBytes?, visibility?, ticketing?, rsvpDeadline?, capacity?,
+                 ticketsRefundable? },                      // PUT /api/events/:id's body
+  days?:       [{ id?, label?, date?, startTime?, endTime?, location?, address?,
+                  latitude?, longitude? }],                 // PUT .../days/:id's body
+  tickets?:    [{ id?, name?, description?, price?, currency?, totalQuantity?, isAvailable? }],
+  rsvpFields?: [{ id?, label?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings
+  program?:    { title?, isPublished?,
+                 items?: [{ id?, title?, description?, startTime?, durationMins?, dayIndex? }] },
+  memoryHub?:  { opensAt?: string | null }
+}
+```
+
+- **Each list is the whole list as the organiser left it.** A row with an
+  `id` is a saved row, updated only where it changed; a row without one is
+  new (and needs what its create endpoint needs); a saved row missing from
+  the list is **archived**, as its DELETE does, never deleted. An `id` that
+  isn't one of this event's live rows is that endpoint's 404 ("Event day
+  not found", "Ticket not found", "RSVP field not found", "Program item not
+  found"). The same id twice, or a list that isn't a list of objects, is an
+  uncoded 400.
+- **Order is position.** A question's and an item's `order` is its place in
+  its list.
+- **An item names its day by `dayIndex`**, its position in this request's
+  `days` (a new day has no id yet), as materialize does; with `days` left
+  out, its position in the event's live days by date (as GET returns them).
+  `null` is no day. Left out on a saved item, its stored day is kept, as
+  `PUT .../items/:id` keeps it. The multi-day rule is the item endpoints'.
+- **Every check is its part's own**, through the same helpers (see "Event
+  days and program items: dates", the venue, label, ticket, question and
+  item helpers, and `event.service.ts`'s `assertEventFieldsValid` and
+  `assertEventUpdateAllowed`), so every refusal has the same status, words
+  and code as the per-part endpoint, and is judged on the event this save
+  leaves: the RSVP deadline against the days it ends with, day labels
+  unique across the resulting days, an item against its resulting day. A
+  new question is the custom-questions tier gate, as on its POST. With
+  `ticketing` off, a change to tickets is 422 with paid ticketing's own
+  message (their routes are 404); re-sending them unchanged is fine.
+- **Removing a day** follows DELETE `.../days/:id`: it is archived, with no
+  refusal of its own. An archived day keeps its label, and the unique
+  `(eventId, label)` index counts archived days, so a new day can't take a
+  label a removed one held (409, the day endpoints' message), exactly as
+  after a DELETE. Two saved days may swap labels in one save.
+- **Cancelled and completed events follow today's rules**, which is none:
+  no per-part edit endpoint refuses them, so this doesn't either.
+- **All or nothing.** Every part is checked first, with nothing written;
+  then only what changed is written, in one transaction holding the event's
+  row lock (`eventRepository.withEventWriteLock`), so a refusal the
+  database gives mid-save rolls back what was already written. A save that
+  changes nothing writes nothing. A replaced cover is destroyed in
+  Cloudinary only after the save commits.
+- **The response** is `200 { status: 'ok', data }`, `data` exactly `GET
+  /api/events/:id`'s (the event with its days, tickets, questions, program
+  and items, Memory Hub and Event Pass, effective status, plus
+  `acceptedGuestCount` and `guestLimit`), so the wizard can re-baseline
+  from it.
+
 ### Reminders
 
-Manual only — the organiser presses a button; this codebase has no
-scheduler by deliberate choice. They go through the same dispatch path as
+Manual only — the organiser presses a button. Nothing here runs on a
+timer by deliberate choice, with one exception, the feedback request sweep
+(see "Feedback and sharing permissions"), which is built to be correct
+whether or not its timer fires. They go through the same dispatch path as
 invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
@@ -880,10 +1692,237 @@ invite has not expired, and they were not reminded in the last 24 hours
 plus-ones are excluded at query level. Refused outright when the event is
 not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
 
-The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`)
-and released if the send fails, so overlapping requests cannot double-send
-and a failed send never starts it. Every attempt, failures included, is
+The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`,
+for the whole batch in one conditional write, `claimReminders`) and
+released for each guest whose send failed, so overlapping requests cannot
+double-send and a failed send never starts it. Every attempt, failures included, is
 written to `InviteReminderLog`.
+
+### Announcements
+
+Behind `announcements`. An organiser emails their guests ("Buses leave at
+18:00"): `POST /api/events/:eventId/announcements/preview` (`audience`,
+optional `eventDayId`: how many will receive it, and who can't be
+reached), `POST /api/events/:eventId/announcements` (`subject` up to 150
+characters, `body` up to 5000, plain text, both required) and `GET` for
+the history: `{ announcements, dailyLimit }`, newest first. Organiser only,
+tenant-scoped and under the assignment lock (`eventService.getScoped`).
+
+- **Who is invited.** Live (never archived) guests with a live invite who
+  are **not plus-ones** (covered by their host; their token is never given
+  out), whose invitation reached them (`deliveredAt`) or who registered
+  themselves. A guest still waiting on their invitation, or on a draft,
+  hasn't heard of the event, so no announcement reaches them.
+- **Audiences** (`announcement-audience.util.ts`, the one place):
+  `EVERYONE` (hasn't declined), `ATTENDING`, `NOT_REPLIED`,
+  `NOT_ATTENDING`. Narrowed to one live day, only guests invited to that
+  day count, and ATTENDING means said they'll come that day; NOT_ATTENDING
+  is declined, or accepted without that day; EVERYONE is ATTENDING or
+  NOT_REPLIED for it.
+- **Email only**, whatever `sms` says. A guest in the audience without an
+  email is counted and listed as unreachable (with their phone), never
+  silently skipped. An audience with nobody to email is 422.
+- **The daily limit:** 5 announcements per event in any rolling 24 hours
+  (`ANNOUNCEMENTS_PER_EVENT_PER_DAY`), then 429. Counted and claimed under
+  a row lock on the event, so racing sends can't pass it. The sender
+  address is shared by every tenant, so one organiser flooding inboxes
+  costs everyone's deliverability. The history's `dailyLimit` (`perDay`,
+  `windowHours`, `sentInWindow`, `remaining`, and `nextAvailableAt` once
+  none are left) is the same count the send enforces: **the frontend keeps
+  no copy of the number**, it shows these.
+- **A cancelled event can't send** (409, preview too); its history still
+  lists.
+- **History** (`Announcement`, append-only): event, kind, subject, body,
+  audience, day, sent by, sent at, recipients and unreachable counted when
+  the send is claimed; one `AnnouncementDelivery` per guest emailed. Each
+  entry's `sentCount` and `failureCount` are both counted from those rows,
+  never `recipientCount` minus failures: after a crash mid-send some
+  recipients have no row, and they weren't reached.
+- **Cancellation.** `POST /api/events/:id/cancel` takes an optional `note`
+  (up to 1000 characters, checked before anything is cancelled). Once
+  cancelled, every invited guest who hasn't declined is emailed (no day,
+  no limit) and it is recorded as kind `CANCELLATION`, unless nobody was in
+  the audience. Emails failing never undoes the cancel: the response is
+  the event plus `guestNotification` (sent, failed, each failure, the
+  unreachable guests, the record). If the email couldn't be sent at all
+  (a database failure before any went), `guestNotification.error` tells the
+  organiser to **contact their guests directly**, never to send an
+  announcement (a cancelled event refuses them), and `failures` and
+  `unreachable` list every guest who wasn't reached; if even the audience
+  couldn't be loaded, the message says so and points at the guest list.
+
+### Safety limits
+
+Hard limits in code, for mistakes and runaway clients rather than for
+pricing. They are not tier settings and a `SUPER_ADMIN` can't raise them;
+each refusal carries a code (see "Machine-readable codes" under Errors).
+
+- **Venue capacity** (`Event.capacity`, `event-capacity.util.ts`): a whole
+  number from 1 to 100,000, or none. Anything else is 422
+  `EVENT_CAPACITY_INVALID`, never a value that reaches the integer column
+  and comes back a 500 (a tester's 100,000,000,000 did).
+- **5,000 guests per event, plus-ones included** (`MAX_GUESTS_PER_EVENT`,
+  `guest-ceiling.util.ts`). Checked after the plan's own guest limit, so a
+  limited plan's refusal is still the plan's, and a plan left unlimited
+  stops here. Unlike the plan's limit it counts plus-ones: it bounds the
+  rows an event holds, not what was sold. Every path that makes a live
+  guest goes through it: organiser add, import and restore (422
+  `EVENT_GUEST_CEILING`), self-registration (FULL / PARTY_TOO_LARGE, also on
+  the public view) and plus-ones named at RSVP (409 `REGISTRATION_FULL`,
+  "This event is full, so there isn't room for your plus-ones", checked under
+  the event's row lock, only when an answer adds plus-ones). Organiser add,
+  import and restore count and write under the event's row lock
+  (`guestRepository.withEventGuestLock`, the lock registration takes), so
+  two at once can't both pass it, nor the plan's own limit.
+- **Guest import:** at most 2,000 rows per file (`MAX_IMPORT_ROWS`), refused
+  whole before any row is validated (422 `GUEST_IMPORT_TOO_MANY_ROWS`), and
+  at most 5 MB (413 `GUEST_IMPORT_FILE_TOO_LARGE`). The import's write
+  transaction allows 30 seconds: a full 2,000-row file took about 11 against
+  the remote test database, past Prisma's 5-second default.
+- **Invitation and reminder emails: 2,000 per event in any rolling 24 hours**
+  (`EVENT_EMAILS_PER_DAY`, `event-email-limit.util.ts`). A 300-guest event's
+  invitations and a reminder round are 600; a 1,000-guest event still fits
+  both in a day; a runaway loop stops at 2,000 instead of draining the shared
+  Resend quota. Every invitation email (bulk or a single resend) and
+  reminder email counts, claimed before anything goes under a row lock on
+  the event (`EventEmailClaim`, append-only, one row per send with its
+  count), so a refused email still counts and racing sends can't pass it.
+  All-or-nothing: 429 `EVENT_EMAIL_DAILY_LIMIT`, nothing sent, no reminder
+  cooldown started, saying how many could still go. SMS, announcements
+  (their own limit), the cancellation email and registration emails are not
+  counted.
+
+### Memory Hub download
+
+Behind `memoryHubDownload`. `POST /api/events/:eventId/memory-hub/download`
+(organiser only, tenant-scoped, under the assignment lock, the plan's Memory
+Hub gate; `memory-hub-download.service.ts`) returns links to zip files of the
+event's **approved, live** items in original quality: `{ itemCount,
+photoCount, videoCount, expiresAt, parts: [{ part, partCount, mediaType,
+itemCount, bytes, fileName, url }] }`.
+
+- **Never through this server.** Each `url` is a signed Cloudinary
+  `generate_archive` URL in `download` mode
+  (`shared/cloudinary/cloudinary-archive.util.ts`): the browser fetches it,
+  Cloudinary zips the originals and streams them back, nothing is stored.
+- **By exact public id**, never by folder prefix (the folder holds pending
+  and rejected uploads too). Only ids in this event's own folder
+  (`isSignedPublicIdInFolder`). Videos only while `memoryHubVideo` is on.
+- **Parts.** One archive holds one resource type, so photos and videos are
+  separate parts, photos first, oldest first. A part closes at 1,000 files
+  (Cloudinary's limit), 95 MB of originals (its limit is at least 100 MB) or
+  a 12,000-character URL, whichever comes first. The URL is what binds:
+  every id is in it, and Cloudinary refuses a request line past about 16 KB
+  with a 414 (measured: a 16,336-character URL worked, 16,628 did not), so a
+  part holds about 80 photos.
+- **Names.** Each zip is `<event name>-photos[-part-N-of-M].zip`, the name
+  reduced to letters, digits and hyphens with anything like an email
+  address or a phone number removed. Inside, each file is named by its
+  public id's random UUID: Cloudinary's archive API can't name files one
+  by one (only the public id, or the original upload filename, which is
+  whatever the guest's phone called it and is never used).
+- **Links last 30 minutes.** Every fetch rebuilds the zip at Cloudinary's
+  cost, so a link should die before it can be forwarded and reused, yet
+  live long enough to start every part on a slow connection (Cloudinary
+  checks the expiry when a download starts).
+- **Rate limited per event:** 5 sets of links an hour
+  (`memoryHubDownloadLimiter`), counting only successes, then 429
+  `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`. Nothing approved is 422
+  `MEMORY_HUB_NOTHING_TO_DOWNLOAD`.
+
+### Feedback and sharing permissions
+
+Behind `feedback`. After an event we ask its organisers how it went and
+whether e-velope may feature their company, quote them, contact them about
+a case study and share photos they choose. Guests decide for their own
+photos.
+
+**Consent records.** Every permission given or withdrawn is one
+`ConsentRecord` (`src/modules/consent/`), append-only (see "Soft delete"):
+who (exactly one of an organiser's `userId` or the uploading guest's
+`guestId`), the event, the kind (`COMPANY_NAME_LOGO`, `QUOTE`,
+`CASE_STUDY_CONTACT` for the whole event; `PHOTO_ORGANISER_SELECTED` and
+`PHOTO_GUEST_PUBLIC_SHARING` per photo, with its `memoryItemId`),
+`GRANTED` or `WITHDRAWN`, the exact wording shown and its version, and
+when. **The current state of a subject (event + kind, + photo) is its
+latest record by `seq`**, `NOT_GIVEN` when it has none
+(`foldConsentStates`, `consent.service.ts`); never read a single record as
+the state. Only a change is recorded: re-sending what is current appends
+nothing. CHECK constraints keep a guest to `PHOTO_GUEST_PUBLIC_SHARING`
+only, and an organiser off it.
+
+**All consent wording lives in `consent-wording.ts`** (`src/modules/consent/`),
+one list of versions per kind; the current wording is the last. The server
+stores the current text and version on each record, and sends the same
+text to the frontend (the feedback GET's `wording`, guest-view's
+`publicSharing.wording`), which shows it and keeps no copy. **Changing the
+words means a new version appended to the list**, never an edit: old
+records keep the wording they were given.
+
+**The guest's opt-in.** `POST /api/memory-hub/guest-items` takes an optional
+`allowPublicSharing`, **off unless it is exactly `true`**; true records a
+`PHOTO_GUEST_PUBLIC_SHARING` grant for the new photo in the same
+transaction ("Happy for this photo to be shared publicly by the organiser
+and e-velope."). Photos only (a video: 422 `PUBLIC_SHARING_PHOTOS_ONLY`).
+The guest changes it later through their invite token, `POST
+/api/memory-hub/guest-items/:itemId/public-sharing` (`{ token,
+allowPublicSharing }`, their own live photos only, anything else 404,
+allowed whatever the event's state so they can always withdraw; the upload
+limiters). Guest-view's `publicSharing.myItems` lists each of their pending
+and approved photos with its current setting. Organiser uploads carry no
+opt-in, so they are never eligible.
+
+**Organiser feedback** (`/api/events/:eventId/feedback`, organiser only,
+tenant-scoped and under the assignment lock through `getScoped`): one per
+event (`EventFeedback`), saved only once the event is `COMPLETED`, editable
+afterwards. `GET` returns the feedback (or null), `available`, each
+event-level permission's state, the eligible photos and the current
+selection, the wording of every tick and the logo limits. `PUT` takes
+`score` (0–10, required on the first save), `workedBest` and `toImprove`
+(up to 2000 characters, blank stored as null), `permissions` (the three
+event-level kinds, true/false), `selectedPhotoIds` (the whole selection:
+added photos are granted, missing ones withdrawn) and `logo` (`{ url,
+publicId, bytes }` from `POST .../feedback/logo-signature`, signed into the
+tenant's own `feedback-logos` folder and checked like every Cloudinary
+asset; null removes it). One transaction under a row lock on the event.
+**A photo newly selected must be eligible now**, or nothing is saved (422).
+A `SUPER_ADMIN` can read it but not save it (403): a permission is the
+company's to give. `GET /api/events` carries `feedbackGiven` on every
+event (live feedback exists), read for the whole list in one query, so the
+list's cards never ask one by one; it is left out while `feedback` is off.
+
+**Eligible and shareable — one rule** (`feedback-photos.util.ts`).
+Eligible (the organiser may select it): approved, not archived, a photo, a
+guest's upload to the event's live album, in the event's own folder, AND
+its guest's opt-in currently granted. **Shareable** (the super admin may
+use it): eligible AND the organiser's selection currently granted. **Every
+condition, every time it is read**: a photo rejected or archived since, or
+whose guest or organiser has since withdrawn, drops out with no other step.
+A selection whose guest later withdraws stands as the organiser's record
+but is not shareable.
+
+**Super admin** (`/api/admin/feedback`, `SUPER_ADMIN` only, the global 404
+for everyone else): the list (event, company, dates, score, answers, logo,
+each permission's status with when it was given, the wording version and,
+when withdrawn, when; selected and shareable photo counts), `GET
+/:eventId/shareable-photos` (each shareable photo with both consents, and
+Memory Hub download-style zip links of the originals, 30 minutes) and `GET
+/export` (the list as CSV; every cell an organiser typed is defused for
+spreadsheets, a leading `=`, `+`, `-`, `@`, tab or CR prefixed with `'`).
+
+**The request email** (`feedback-request.service.ts`) is **the one
+scheduled job**: a periodic in-process sweep, started by `server.ts` (never
+`app.ts`, so tests start no timer), every 15 minutes. From 08:00 UTC the
+day after an event's last day, once it is `COMPLETED`, its organisers (the
+creator and the members assigned to it, active and able to open it; none
+left, the tenant's active `TENANT_ADMIN`s) are emailed once. **Once is the
+claim, not the timer:** a `FeedbackRequestClaim` row, unique per event, is
+inserted before anything is sent, so two sweeps racing (on one server or
+several) or a restart email once; a send that fails after the claim is not
+retried. It catches up: a server asleep at the due time sends on its next
+sweep, for events whose last day was within the last 7 days, and never for
+older ones. Never for a cancelled, draft or archived event, an archived
+tenant, an event with feedback already given, or with `feedback` off.
 
 ### Check-in
 
@@ -900,6 +1939,56 @@ listed and checked in like anyone else (they have an `Invite`). Check-in and
 undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
+
+### Team roles and invitations
+
+Behind the `teamMembers` flag. A tenant has two kinds of member:
+
+- **`TENANT_ADMIN`** manages the team, billing and every event. Never
+  locked by assignments: a promotion to it clears the user's assignments
+  in the same transaction (a later demotion starts unlocked, never with
+  stale ones), and assignments for one are 422.
+- **`EVENT_ADMIN`** (a team member) works on events, subject to the
+  assignment lock (see Tenant scoping).
+
+**A tenant always keeps one active `TENANT_ADMIN`.** Demoting or
+suspending the last one is 409, whoever asks (a `SUPER_ADMIN` too),
+checked inside a transaction that holds a row lock on the tenant
+(`user.repository.ts`'s `withTenantTeamLock`), so two admins demoting or
+suspending each other at once can't both succeed. **Nobody can suspend
+themselves** (403), or change their own role (403, as before).
+
+Team management is the existing `/api/users` router, extended:
+`GET /api/users` for a `TENANT_ADMIN` lists every member of the tenant,
+suspended ones included (where else would they be reactivated?), each
+with `status` (`ACTIVE`/`SUSPENDED`) and `assignments`;
+`PUT /api/users/:id` writes only `username` and `role` (it used to spread
+the body into Prisma); a `TENANT_ADMIN` may now suspend and reactivate
+their own members (`POST /:id/suspend`, `/:id/reactivate`); assignments
+are `PUT /api/users/:id/assignments` (the whole list). Suspending revokes
+every device token, as before. With `vendors` off, creating an
+`EVENT_VENDOR` or **changing** someone to one is 422.
+
+**Invitations** (`TeamInvite`, `/api/users/invites`, `TENANT_ADMIN` only):
+an email, a role (`TENANT_ADMIN` or `EVENT_ADMIN`) and, for an
+`EVENT_ADMIN`, optional event assignments. The token is 256 random bits
+in the emailed link only; the row keeps its SHA-256 hash, like a device
+token, and it is never logged. Valid 7 days, single use, at most one open
+invite per tenant and email (a partial unique index). Resending mints a
+new token and expiry (the old link stops working); revoking sets
+`revokedAt`. Acceptance: the frontend's `/join` page reads the invite
+(`POST /api/team-invites/lookup`: email, company name, role, expiry),
+creates the Firebase account for that email, locked, and calls `POST
+/api/team-invites/accept` with the new account's Firebase ID token, the
+invite token and a name. The backend checks the Firebase email matches,
+then in one transaction claims the invite, creates the `User` in the
+inviting tenant with the invited role, and creates the assignments that
+still name live events. The device code step follows on first sign-in.
+Users belong to one tenant: an address that already has an account can't
+be invited or accept (409 `USER_EMAIL_TAKEN`). An `EVENT_ADMIN` invite all
+of whose events have been archived since is refused (422) rather than
+accepted unlocked. Create and resend are limited per admin; lookup and
+accept per token hash and per IP (failures only).
 
 ### Invitation designs
 
@@ -1049,7 +2138,9 @@ Signals and explicit `(input)` handlers, as above; not the Forms API.
   continue." / "No changes to save yet."). Tapping it saves nothing, marks
   every field touched, shows every error and moves focus to the first.
   While saving, the button shows progress and can't be pressed again.
-  A wizard's Next checks its own step only.
+  A wizard's Next checks its own step only. In the event wizard's edit
+  mode, Next saves nothing: see "Editing an event: the full update" under
+  Domain rules.
 - **Pieces:** `createForm()` (valid, dirty, submitting, first invalid
   field; `begin()` at the top of every submit handler, `end()` when the
   save settles), `FormFieldDirective` (`[egField]` on a native control:
@@ -1181,10 +2272,22 @@ isolation guard (`resolve-database-url.util.ts`) refuses to run
 otherwise. New migrations reach it through the guarded harness
 (`npm run test:db:reset`, or `NODE_ENV=test npx prisma migrate deploy`);
 see "Migrations and the shared database". Fixtures are created and
-hard-deleted by the tests themselves (`tests/helpers/`). The test database
+hard-deleted by the tests themselves (`tests/helpers/`). **The tier rows
+(`SubscriptionTierConfig`) are shared by every suite:** a test that changes
+one saves every row first and restores it with an upsert of the whole saved
+row, `updatedAt` included, or removes a row only if it created it; it never
+deletes a row it found. To test "no config row", stub
+`subscriptionTierConfigRepository.findByTier` (`vi.spyOn`) instead
+(`tests/subscription/tier-capability-settings.test.ts`). The test database
 is still a real remote Postgres, which is what catches round-trip bugs
 like the Prisma transaction timeout at 50 rows that a fast local database
 or a 5-row fixture would never show.
+
+**Every feature flag is on in tests,** whatever `.env`'s
+`FEATURES_DISABLED` says: `tests/setup.ts` sets it empty before anything
+loads `.env`, so a developer's launch-mode `.env` can't make a test pass or
+fail. A test about a switched-off feature sets the flag itself
+(`vi.stubEnv('FEATURES_DISABLED', …)`, undone by `vi.unstubAllEnvs()`).
 
 **Manual smoke runs use the dev database** with the seed accounts
 (`npm run seed`). They exist specifically so authenticated and
@@ -1223,10 +2326,16 @@ Every task ends with a written report covering:
 
 Carried deliberately. Do not treat as bugs to fix opportunistically.
 
-- **Guest self-registration on public RSVP is not built.** Public event
-  share links currently resolve to nothing.
-- **Announcements are not built.** Cancelling an event does not notify
-  guests.
+- **Reminders and organiser resends are refused on public events**
+  (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
+  would skip them anyway; a registrant who lost their link registers again
+  with the same email to have it re-sent.
+- **Announcements are email only and sent in the request.** A guest
+  without an email can't be reached (they are listed to the organiser).
+  Every guest send still finishes before the response returns: batched,
+  300 guests are three Resend calls rather than 300, but there is no queue
+  behind it, and SMS is still one call per guest. A crash mid-send leaves
+  fewer delivery rows than the announcement's recipient count.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
 - **Automated test coverage is thin.** The backend has a Vitest suite
@@ -1243,15 +2352,18 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     strict Firebase verify, `forgotPassword` no longer revoking on
     request, both rate limiters (`skipSuccessfulRequests`, hash-keying),
     `DeviceToken.userAgent`, only the token's hash ever stored, the
-    `authenticate` middleware, the test-database isolation guard, and
+    `authenticate` middleware, `register`, `request-otp` and `verify-otp`
+    answering a rejected Firebase token with a 401 (and an outage still
+    with a 500), the test-database isolation guard, and
     username escaping in auth emails.
   - **Tenant scoping** (`tests/tenant-scope/`): fail-closed lookups for
     a caller with no tenant, event program and program items across
     tenants, vendor-space membership, `TENANT_ADMIN`/`EVENT_ADMIN`
     refused without a tenant at creation, tickets and custom RSVP fields
     across tenants and under the wrong event (plus the SPARK custom-field
-    gate and organiser-only ticket reads), and event days under the wrong
-    event.
+    gate and organiser-only ticket reads), event days under the wrong
+    event, and Event Pass and SMS-bundle reconcile scoped to the URL's
+    event and the caller's tenant.
   - **Program defaults** (`tests/event-program/`): visible by default on
     both creation paths and still hideable, the publish migration, and a
     program item's `order` defaulting to the end of the list.
@@ -1259,7 +2371,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     the guest program contract, archived event days hidden from guests
     and refused at submit (`tests/rsvp/`); Memory Hub guest view,
     guest-safe wording and the per-invite upload rate limit
-    (`tests/memory-hub/`); invite email escaping (`tests/invite/`).
+    (`tests/memory-hub/`); invite email escaping (`tests/invite/`, which
+    sets its own `FRONTEND_BASE_URL` so it runs alone).
+  - **Batched sending** (`tests/invite/batch-sending.test.ts`): 100 per
+    Resend call in order, one refused email failing alone, a refused or
+    thrown batch call failing only its own recipients while the next batch
+    goes; over HTTP on a 205-guest event, invitations (each guest's own
+    link, delivered marked), reminders (cooldown and log per guest) and an
+    announcement (delivery rows) across three batches, with one batch
+    failing. How long a 300-guest send takes is measured, opt-in, by
+    `MEASURE_SEND_TIMING=1 npx vitest run tests/perf/send-timing.test.ts`.
   - **Emails** (`tests/email/`): every email through the shared layout,
     with a plain-text part, every user value escaped, the sender name
     sanitised, no "RSVP" in a subject, the design image only for UPLOAD,
@@ -1275,7 +2396,21 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     retired with the columns it read.) Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
     per-day venues on `/rsvp/validate`, `/rsvp/program` and the sent emails.
   - **RSVP contact update** (`tests/rsvp/rsvp-contact-update.test.ts`)
-    and its error codes (`tests/rsvp/rsvp-contact-codes.test.ts`).
+    and its error codes (`tests/rsvp/rsvp-contact-codes.test.ts`); the
+    per-invite submit limit, 20 an hour (`tests/rsvp/rsvp-submit-rate-limit.test.ts`).
+  - **Guest contact rules** (`tests/guest/`): two guests on one event
+    sharing a phone on organiser create, import and RSVP, with nothing
+    mentioning the other guest; an email another guest has refused at RSVP
+    with the neutral `CONTACT_EMAIL_UNAVAILABLE`, in any casing, and by
+    an organiser edit with `GUEST_EMAIL_TAKEN`; a phone repeated within
+    one import file flagged, one an existing guest has imported; update
+    checking only what it changes (a guest with both contacts, and a
+    phone-only guest with sms off, renamed and given plus-ones); the
+    plus-ones allowance 0–20 on create, update and import. Allowed
+    domains at RSVP (`tests/public-events/rsvp-email-domain.test.ts`):
+    registration's refusal for a change outside them, an address held
+    from before never blocking a reply. Forgot password's email limiter
+    keyed per IP without an email (`tests/auth/forgot-password-email-limit.test.ts`).
   - **Required fields** (`tests/validation/`): 422 on blanks for program
     items, tickets, custom RSVP fields, guests, the wizard's materialize,
     and RSVP submit (attending, name, required custom questions). The
@@ -1292,7 +2427,168 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     publicIds and mismatched URLs refused with nothing destroyed, on
     Memory Hub uploads and event covers.
   - **The global error handler** (`tests/errors/`): no raw Prisma text
-    in a response.
+    in a response; a duplicate user email is 409 `USER_EMAIL_TAKEN`, not
+    a 500.
+  - **Tenant emails** (`tests/subscription/`): Paystack's subscription
+    lookup finds a tenant whatever case and padding either side has,
+    matches neither of two colliding tenants, and the tenant email
+    migration skips collisions.
+  - **Team members** (`tests/team/`): the assignment lock (an unlocked
+    member sees every event; a locked one gets 404 on an unassigned event,
+    its guests, invites, check-in, `/api/guests/:id` and RSVP responses,
+    and a list of only their events; import still works through multer;
+    create auto-assigns; the last assignment is 409 without
+    `confirmWidening`; outside a request it fails closed), team roles (the
+    last `TENANT_ADMIN` can't be demoted or suspended, including two
+    demotions racing; no self-suspend; vendor role change 422 with
+    vendors off; `PUT` ignores other fields; promotion clears
+    assignments), invitations (lowercased email, only the hash stored, the
+    raw token never logged, can't be accepted twice, after expiry, by
+    another email or by an existing account; resend rotates; revoke), and
+    email normalisation (case-insensitive `USER_EMAIL_TAKEN`, the
+    database race as 409, and the lowercase migration's collision skips).
+  - **Public events** (`tests/public-events/`): registration creates an
+    accepted guest with their days and plus-ones and emails the link
+    (never returned); allowed domains; the cap with plus-ones (and at
+    RSVP), the plan's limit in guest words; the closing date and the RSVP
+    deadline default; a cancelled event; the same email again answered
+    byte for byte as a new registration (success, full, closed, a refused
+    form, all invites archived), re-sent as "Here's your link again" and
+    never duplicated; a phone another guest has saved, with an identical
+    answer and the other guest untouched; the view's exact keys and no
+    internal values; every form and settings error code; settings
+    validation, scoping and the assignment lock; per-email and per-IP rate
+    limits.
+  - **Announcements** (`tests/announcements/`): every audience with and
+    without a day, sent for real and checked against who got an email and
+    who was listed unreachable (archived guests and invites, guests never
+    invited and plus-ones never reached); the body escaped with its line
+    breaks kept, From, Reply-To and the one button to the guest's own
+    invitation; the history and its failure counts; the daily limit, also
+    under racing sends; every validation code; a cancelled event 409;
+    another tenant's event and a locked member's unassigned event 404; the
+    flag. The cancellation email: who gets it, no button, the note
+    escaped, recorded, failures reported while the cancel stands, a
+    too-long note cancelling nothing, a second or racing cancel emailing
+    nobody again, a completed event refused with `EVENT_ALREADY_HAPPENED`, never refused by the limit, a draft emailing nobody, and
+    the flag off; when it can't be sent at all, the message (contact
+    guests directly, never "send an announcement") and every guest not
+    reached listed. The history's `dailyLimit` and `sentCount` counted
+    from delivery rows (a crashed send). Guest email uniqueness (`tests/guest/guest-email-unique.test.ts`):
+    RSVP's `PLUS_ONES_OVER_ALLOWANCE`, organiser add's `GUEST_EMAIL_TAKEN`,
+    the unique index and each path's answer to a violation, and the
+    migration refusing to run over duplicates.
+  - **`FRONTEND_BASE_URL`** (`tests/config/`): a missing, blank or
+    non-URL value refuses to load the app; share links are built by
+    `frontendUrl`; no other file in `src/` reads the variable. Loading the
+    rate limiters logs no express-rate-limit validation error
+    (`ERR_ERL_KEY_GEN_IPV6`).
+  - **Feature flags** (`tests/feature-flags/`): an unknown name fails
+    startup, `/api/config/features` reflects the env, a switched-off
+    feature's routes 404 for a tenant and work for a `SUPER_ADMIN`, the
+    Paystack webhook and Event Pass purchase work with ticketing off,
+    `/rsvp/validate` hides a saved design and offers no tickets, invite
+    emails drop the design image, a paid or public event is 422 on create,
+    update, publish and the wizard, an RSVP with a `ticketId` is refused,
+    an older paid or public event stays editable, the import template is
+    email-only with SMS off, an `EVENT_VENDOR` user is 422, an SMS-only guest is a reported failure
+    on send, resend and reminder, and with SMS off a phone-only guest is
+    422 on create, update and public registration, refused per row on
+    import, and can't be left by an RSVP that removes the email. With
+    `payments` off (`payments-off-routes.test.ts`,
+    `payments-off-tier-wording.test.ts`): each payment route 404s, the
+    read-only billing routes answer, a pass bought before the switch is
+    confirmed by the webhook after it, and every tier refusal (events,
+    public, paid ticketing on both sides, custom questions, guests, export,
+    SMS three ways, Memory Hub three ways, vendors, the registration cap)
+    keeps its status and code with no plan wording. With `memoryHubVideo`
+    off (`tests/memory-hub/memory-hub-video-flag.test.ts`): video
+    signatures 422 for guests and organisers, photos still sign, and
+    guest-view's limits offer photos only.
+  - **Error monitoring** (`tests/monitoring/`, `tests/system-health/`): one
+    event carrying every forbidden value (body, cookies, Authorization,
+    device/session/invite/share/team tokens, oobCode, OTP, password, emails
+    and phones in every field) leaves the scrubber with none of them; a
+    real Sentry client (sending nothing) captures no `HttpError` 4xx and
+    does capture a 500 and an `HttpError` 503, with the user as id, role
+    and tenant only; the 5xx safety net. System health: tenant and event
+    admins 404, the 503 codes with health attached, both projects merged
+    newest first, the filters, the 60-second cache, the token never in a
+    response.
+  - **Tier settings** (`tests/subscription/tier-capability-settings.test.ts`):
+    public events, paid ticketing, custom RSVP questions and vendor priority
+    placement each switched on for Spark and shown to change access; no
+    config row keeps the old rule; the super admin screen saves them and
+    refuses a non-boolean. `/api/tenants/me`'s `planSettings`
+    (`tests/tenant/tenant-me-plan-settings.test.ts`): a SPARK setting
+    changed shows in `/me`, no config row gives the enforcement fallback,
+    and a switched-off feature's settings are left out.
+  - **Safety limits** (`tests/safety-limits/`): venue capacity outside
+    1–100,000 refused on create, update and materialize with nothing
+    written; the guest ceiling on real 4,999-guest events (plus-ones
+    counted) for add, restore, import, RSVP plus-ones and self-registration
+    (view, FULL and PARTY_TOO_LARGE), after the plan's own limit; import
+    refusing 2,001 rows before any row is checked, taking exactly 2,000, and
+    the coded 413; the daily email limit on invitations, resends and
+    reminders (nothing sent, no cooldown started), the rolling window, other
+    events not counting, and two racing claims.
+  - **Feedback and sharing permissions** (`tests/feedback/`): consent
+    records append-only (a withdrawal is a new row, the repository has no
+    update or delete, the database refuses an `UPDATE`) with the state
+    following the latest record (seq breaking a same-millisecond tie);
+    the wording stored per record and the history in order; a guest's
+    opt-in off by default, recorded with its wording when true, videos
+    refused, changed later through the token (their own photos only) and
+    shown in guest-view; feedback only on completed events, the score and
+    text rules, permissions recorded only on change, withdrawals; no photo
+    selectable without the guest's opt-in (pending, rejected, archived,
+    organiser, other-event photos refused too); another tenant's event and
+    a locked member's unassigned event 404, a `SUPER_ADMIN` save 403; the
+    logo's folder, URL and size; shareable = every condition, a guest's or
+    organiser's withdrawal, a rejection or an archive each removing the
+    photo; the list, the CSV (formula cells defused) and the download
+    links; the super admin routes 404 for tenants; the request email's
+    recipients and content, once per event even with two sweeps (or two
+    requests) racing, never for cancelled, draft, future, too old,
+    archived or answered events, nor with the flag off.
+  - **The full event update** (`tests/event-full-update/full-update.test.ts`):
+    a whole edit (event fields, days moved, added and removed, tickets,
+    questions, program and items, the album's opening) lands at once, unchanged
+    rows unwritten; removed rows archived, never deleted; two days swapping
+    labels; a save with nothing changed writes nothing; each part's refusal
+    (blank title, item off its day, a day moved without its item, a past
+    day, no venue, capacity, the deadline, unknown ids, a duplicate label, a
+    ticket price, an answer type, a missing item day, a malformed list,
+    ticketing off, the custom-questions tier) leaves every row as it was; a
+    database refusal mid-save rolls back what was written; another tenant
+    and a locked member 404. The date rules on the per-part endpoints and
+    materialize (`tests/validation/day-and-item-dates.test.ts`).
+  - **Guest limits under concurrency** (`tests/guest/guest-limit-serialised.test.ts`):
+    restore refused at the plan's limit (a plus-one allowed), and two adds
+    or two imports racing for the last place: one lands, one is refused.
+  - **Tier limits above 2 GB** (`tests/subscription/memory-hub-bytes-bigint.test.ts`):
+    5 GB saved and returned as a number by the tier admin, its list and
+    `/me`; an event holding 3 GB reported against it; the tier admin's
+    422s for byte counts and guest export. `feedbackGiven` on the events
+    list (`tests/feedback/events-list-feedback.test.ts`).
+  - **Programs and invites under their URL** (`tests/tenant-scope/program-invite-url-scope.test.ts`):
+    every `/program/:id` and `/invites/:id` route 404s, writing nothing, for
+    the same tenant's other event's record, another tenant and a locked
+    member's unassigned event; and works under the right URL. The wizard's
+    draft question options held to the same rule (`tests/validation/bad-values-coded.test.ts`).
+  - **Memory Hub routes under their URL** (`tests/memory-hub/memory-hub-url-scope.test.ts`):
+    every `/:id` and `/:hubId` route 404s, writing nothing, for the same
+    tenant's other event's hub, another hub's item and another tenant; and
+    still works under the right URL. Coded 422s for bad question options,
+    Memory Hub opening times and program visibility on every path
+    (`tests/validation/bad-values-coded.test.ts`).
+  - **Memory Hub download** (`tests/memory-hub/memory-hub-download.test.ts`):
+    exactly the approved, live items by public id (never pending, rejected,
+    archived or another folder), videos only with the flag on, the signed
+    URL re-signed and its 30-minute expiry, safe zip names, 200 photos in
+    three parts under the URL budget, the file-count and size budgets, the
+    flag, other tenants and the assignment lock, and the per-event rate
+    limit counting successes only.
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
@@ -1306,7 +2602,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   the control center's send/upgrade paths, the Event Pass panel,
   tenant navigation/routes and the vendor space list, and the event
   wizard's day venues, program item days and required fields, program
-  visibility, guest-facing day venues, and RSVP contact editing. Most screens and
+  visibility, guest-facing day venues, RSVP contact editing, the public
+  registration page (each link and registration state, open days,
+  plus-ones up to the allowance, refusals placed by code, never reading
+  a token from the response), the organiser's registration settings panel
+  (status at a glance, the cap against the plan's limit, the closing
+  date, domains, open days, sending only what changed), registrants in
+  the public control centre's guest list and its WhatsApp share, and
+  plus-one allowances on Add Guest, guest details and the guest list. Most screens and
   services have no spec, and nothing runs in a real browser: the
   cross-tab, tab-freezing and Android behaviours in particular are
   verified only by a manual browser run.
@@ -1320,9 +2623,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   passes is off. An `Event.timezone` would fix that and would not change how
   stored dates read back.
 - **The venue compatibility keys are kept.** The Event venue columns are
-  dropped (see "Venue"), but `/rsvp/validate`'s and the public event
-  view's `event.location`/`address` (and validate's coordinates), filled
-  from the first day's venue, are still sent. The current frontend reads
+  dropped (see "Venue"), but `/rsvp/validate`'s `event.location`/`address`
+  and coordinates, filled from the first day's venue, are still sent. The current frontend reads
   none of them. Remove them once no deployed client does.
 - **Check-in by QR is not built.** The check-in endpoint already accepts an
   `inviteToken` in place of a `guestId`, so a scanner is a second input, not a
@@ -1334,3 +2636,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —
   fixing them inside the feature build is far cheaper than retrofitting.
+
+---
+
+## 9. Known decisions for later
+
+Decided, not yet built. Do not build them early, and do not build
+anything that contradicts them.
+
+- **Cover photo vs invitation design:** after the pilot, the cover photo
+  becomes the event's image OUTSIDE the event (invite emails, and share
+  previews on WhatsApp and social media), and the invitation design is
+  what guests see INSIDE the event, on their page. Each has one job; they
+  never compete.

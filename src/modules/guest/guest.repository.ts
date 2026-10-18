@@ -1,15 +1,27 @@
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type UpdateGuestDto } from './guest.types.js';
-import { type DeliveryMethod } from '@prisma/client';
+import { type DeliveryMethod, type Prisma } from '@prisma/client';
 
 // Guest has no tenantId column of its own — ownership is transitive
 // through its direct eventId -> Event -> tenantId. Repository methods
 // stay unscoped (or take an optional tenantId that filters through that
 // one-hop relation); tenant ownership is enforced by the service layer,
 // exactly like event-day.repository.ts / event.repository.ts.
-const tenantOwnedGuestFilter = (tenantId?: string) =>
-  tenantId ? { event: { tenantId, isArchived: false } } : {};
+//
+// eventIds is the assignment lock (event-assignment-lock.util.ts), from
+// eventService's resolveEventScope: a locked EVENT_ADMIN reaches only the
+// guests of their assigned events.
+const tenantOwnedGuestFilter = (tenantId?: string, eventIds?: string[]) =>
+  tenantId || eventIds
+    ? {
+        event: {
+          isArchived: false,
+          ...(tenantId ? { tenantId } : {}),
+          ...(eventIds ? { id: { in: eventIds } } : {}),
+        },
+      }
+    : {};
 
 export interface CreateGuestWithInviteInput {
   firstName: string | null;
@@ -20,21 +32,28 @@ export interface CreateGuestWithInviteInput {
   plusOnesAllowed: number;
 }
 
+// Runs `fn` in the caller's transaction when given one, else in its own.
+const inTransaction = <T>(
+  tx: Prisma.TransactionClient | undefined,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  options?: { maxWait: number; timeout: number }
+): Promise<T> => (tx ? fn(tx) : prisma.$transaction(fn, options));
+
 export const guestRepository = {
-  findById: (id: string, includeArchived = false, tenantId?: string) =>
+  findById: (id: string, includeArchived = false, tenantId?: string, eventIds?: string[]) =>
     prisma.guest.findFirst({
       where: {
         id,
         ...(includeArchived ? {} : { isArchived: false }),
-        ...tenantOwnedGuestFilter(tenantId),
+        ...tenantOwnedGuestFilter(tenantId, eventIds),
       },
     }),
 
-  findAll: (tenantId?: string, includeArchived = false) =>
+  findAll: (tenantId?: string, includeArchived = false, eventIds?: string[]) =>
     prisma.guest.findMany({
       where: {
         ...(includeArchived ? {} : { isArchived: false }),
-        ...tenantOwnedGuestFilter(tenantId),
+        ...tenantOwnedGuestFilter(tenantId, eventIds),
       },
       orderBy: { createdAt: 'desc' },
     }),
@@ -50,6 +69,20 @@ export const guestRepository = {
 
   // Feeds both the dedup check (Task 4) and the tier-limit count — one
   // query, non-archived guests currently on this event, contacts only.
+  // Is this email held by any OTHER live guest on the event (an email
+  // change at RSVP submit, or by the organiser in guestService.update).
+  // Compared in normal form on both sides, so a row the lowercase_emails
+  // migration skipped still matches its other casing. `email` must already
+  // be normalised.
+  isEmailUsedByOtherGuest: async (eventId: string, email: string, guestId: string, tx?: Prisma.TransactionClient) => {
+    const rows = await (tx ?? prisma).$queryRaw<{ id: string }[]>`
+      SELECT "id" FROM "Guest"
+      WHERE "eventId" = ${eventId} AND "isArchived" = false AND "id" <> ${guestId}
+        AND lower(regexp_replace("email", '^\\s+|\\s+$', '', 'g')) = ${email}
+      LIMIT 1`;
+    return rows.length > 0;
+  },
+
   findContactsForEvent: (eventId: string) =>
     prisma.guest.findMany({
       where: { eventId, isArchived: false },
@@ -61,8 +94,28 @@ export const guestRepository = {
   // the organiser opted into; a guest declaring a plus-one at RSVP time is
   // not a choice the organiser made, and shouldn't be able to push them
   // over a limit they'd then have to upgrade or prune guests to fix.
-  countForEvent: (eventId: string) =>
-    prisma.guest.count({ where: { eventId, isArchived: false, hostGuestId: null } }),
+  countForEvent: (eventId: string, tx?: Prisma.TransactionClient) =>
+    (tx ?? prisma).guest.count({ where: { eventId, isArchived: false, hostGuestId: null } }),
+
+  // Serialises everything an organiser does that adds live guests to one
+  // event (add, import, restore): the plan's limit and the ceiling are only
+  // true while no other addition can commit in between. The same row lock
+  // public registration takes (event-public.repository.ts), so these and
+  // registrations queue behind each other too. An import holds it longer:
+  // its write carries up to 2,000 rows (see bulkCreateWithInvites).
+  withEventGuestLock: <T>(eventId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>, timeout = 15_000): Promise<T> =>
+    prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
+        return fn(tx);
+      },
+      { maxWait: 10_000, timeout }
+    ),
+
+  // Every live guest, plus-ones included: what the hard guest ceiling
+  // (guest-ceiling.util.ts) counts, unlike countForEvent above.
+  countAllForEvent: (eventId: string, tx?: Prisma.TransactionClient) =>
+    (tx ?? prisma).guest.count({ where: { eventId, isArchived: false } }),
 
   // Feeds guest-export.util.ts — every non-archived guest (primary AND
   // plus-one, both live in this same table) with everything a row needs:
@@ -105,8 +158,11 @@ export const guestRepository = {
   // one). guest.service.ts's create() is the pre-existing caller; it
   // unwraps `.guest` to keep its own response shape unchanged for the
   // organiser-facing route.
-  createWithInvite: (eventId: string, userId: string, data: CreateGuestWithInviteInput) =>
-    prisma.$transaction(async (tx) => {
+  //
+  // `tx`: run inside a transaction the caller holds (guest.service.ts's
+  // create, under withEventGuestLock); otherwise it opens its own.
+  createWithInvite: (eventId: string, userId: string, data: CreateGuestWithInviteInput, tx?: Prisma.TransactionClient) =>
+    inTransaction(tx, async (tx) => {
       const guest = await tx.guest.create({
         data: {
           eventId,
@@ -153,9 +209,10 @@ export const guestRepository = {
   bulkCreateWithInvites: (
     eventId: string,
     userId: string,
-    rows: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; eventDayIds: string[]; plusOnesAllowed: number }[]
+    rows: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; eventDayIds: string[]; plusOnesAllowed: number }[],
+    tx?: Prisma.TransactionClient
   ) =>
-    prisma.$transaction(async (tx) => {
+    inTransaction(tx, async (tx) => {
       const guestIds = rows.map(() => crypto.randomUUID());
       const inviteIds = rows.map(() => crypto.randomUUID());
 
@@ -193,7 +250,10 @@ export const guestRepository = {
       });
 
       return tx.guest.findMany({ where: { id: { in: guestIds } } });
-    }),
+    // Still four statements, but each carries every row: a full 2,000-row
+    // file (MAX_IMPORT_ROWS) took about 11 seconds against the remote test
+    // database, past Prisma's 5-second default, and came back as a 500.
+    }, { maxWait: 10_000, timeout: 30_000 }),
 
   update: (id: string, data: UpdateGuestDto) =>
     prisma.guest.update({

@@ -1,4 +1,8 @@
+import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
+
+// Writes take an optional transaction client (the full event update).
+type Db = Prisma.TransactionClient | typeof prisma;
 import { type CreateEventProgramDto, type UpdateEventProgramDto } from './event-program.types.js';
 
 export const eventProgramRepository = {
@@ -25,8 +29,8 @@ export const eventProgramRepository = {
       },
     }),
 
-  create: (eventId: string, userId: string, data: CreateEventProgramDto) =>
-    prisma.eventProgram.create({
+  create: (eventId: string, userId: string, data: CreateEventProgramDto, db: Db = prisma) =>
+    db.eventProgram.create({
       data: {
         eventId,
         title: data.title ?? null,
@@ -40,8 +44,8 @@ export const eventProgramRepository = {
       },
     }),
 
-  update: (id: string, userId: string, data: UpdateEventProgramDto) =>
-    prisma.eventProgram.update({
+  update: (id: string, userId: string, data: UpdateEventProgramDto, db: Db = prisma) =>
+    db.eventProgram.update({
       where: { id },
       data: {
         ...(data.title !== undefined && { title: data.title ?? null }),

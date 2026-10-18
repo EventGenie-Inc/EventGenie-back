@@ -1,5 +1,6 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { hashToken } from '../../modules/auth/device-token.util.js';
+import { normalizeEmail } from '../utils/email.util.js';
 import { MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN } from '../../modules/upload/upload-constants.js';
 
 // ─────────────────────────────────────────
@@ -35,12 +36,25 @@ export const forgotPasswordLimiter = rateLimit({
 // varied IPs, which the IP limiter above wouldn't catch). Uses the
 // same response message as the IP limiter so a 429 here reveals
 // nothing about whether the email is real vs. just IP-rate-limited.
+//
+// Keyed by the SHA-256 of the normalised email, never the address. A
+// request with no usable email falls back to its IP through
+// ipKeyGenerator, like publicRegistrationEmailKey: it used to share one
+// 'unknown' bucket with every other such request from anywhere, so three
+// of them in 15 minutes refused the next one for everybody.
+export const forgotPasswordEmailKey = (body: unknown, ipKey: string): string => {
+  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['email'] : undefined;
+  return typeof raw === 'string' && raw.trim()
+    ? `forgot-email:${hashToken(normalizeEmail(raw))}`
+    : `forgot-email-ip:${ipKey}`;
+};
+
 export const forgotPasswordEmailLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 3,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.body?.email ?? 'unknown').toLowerCase().trim(),
+  keyGenerator: (req) => forgotPasswordEmailKey(req.body, ipKeyGenerator(req.ip ?? 'unknown')),
   message: {
     status: 'error',
     message: 'Too many password reset requests. Please try again later.',
@@ -331,6 +345,50 @@ export const rsvpProgramLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITER — RSVP SUBMIT (POST /api/rsvp/submit), per invite
+//
+//  Keyed by the SHA-256 hash of the invite token in the body (never the
+//  raw token, same rule as memoryHubGuestUploadTokenKey); a request with
+//  no token falls back to its IP and is refused by the service anyway.
+//
+//  Why per invite: submit is where a guest changes their email, and an
+//  email another guest on the event already has is refused. That refusal
+//  says no more than "this address can't be used here", but refused vs
+//  accepted still tells the holder of an invite whether an address is on
+//  the guest list. This bounds how fast one invite can ask. Per invite,
+//  not per IP, for the reason memoryHubGuestUploadLimiter gives: a venue's
+//  WiFi or a carrier-grade NAT puts many guests on one IP.
+//
+//  The number, 20 an hour, counting every request (a success answers the
+//  question as well as a refusal does): a guest replies once and edits
+//  rarely; the frontend submits once per tap of the reply button, never
+//  on its own. Twenty leaves room for a guest to fix a refused form many
+//  times over and come back to change their answer, while capping one
+//  invite at twenty addresses an hour. More invites don't come cheap: a
+//  private event's come only from the organiser, and a public event's
+//  each need a real inbox to receive the link (registration is limited
+//  per email and per IP). Accepted residual: see STEERING "Guest contact".
+// ─────────────────────────────────────────
+export const RSVP_SUBMITS_PER_INVITE_PER_HOUR = 20;
+
+export const rsvpSubmitInviteKey = (rawToken: string): string => `rsvp-invite:${hashToken(rawToken)}`;
+
+export const rsvpSubmitInviteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: RSVP_SUBMITS_PER_INVITE_PER_HOUR,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    typeof req.body?.token === 'string' && req.body.token
+      ? rsvpSubmitInviteKey(req.body.token as string)
+      : `rsvp-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: "You've sent a lot of replies in a short time. Please wait a while and try again.",
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — MEMORY HUB GUEST VIEW (POST /api/memory-hub/guest-view)
 //
 //  Unauthenticated, token-only, fired once per page load to decide
@@ -397,14 +455,24 @@ export const publicEventViewLimiter = rateLimit({
 //  database row (Guest + Invite) on success — closer in risk to
 //  uploadSignatureLimiter (every response is a grant) than to a read
 //  endpoint, except here there's no session at all gating who can call
-//  it. Two limiters stacked, keyed differently, because they guard
+//  it. Three limiters stacked, keyed differently, because they guard
 //  against different abuse shapes:
 //
 //  Per IP — a genuine registrant submits once, maybe a couple of times
-//  if they mistype their contact and get a validation error back. 8 per
-//  15 minutes comfortably covers that (plus a shared-IP household
-//  registering a couple of people back to back) while making a
-//  single-machine script mass-registering fake guests impractical.
+//  if they mistype something. 30 per 15 minutes, raised from 8 for the
+//  case this feature exists for: a company sharing one registration link
+//  with its staff, many of whom register from the same office network
+//  (one public IP), and South African mobile networks putting unrelated
+//  people behind one carrier-grade NAT IP (see the per-credential note
+//  on memoryHubGuestUploadLimiter). Still makes a single-machine script
+//  mass-registering fake guests slow.
+//
+//  Per email (the SHA-256 hash of the NORMALISED email in the body,
+//  never the address itself, so the limiter's store holds no contact
+//  details) — 5 per hour. Registering an address that's already on the
+//  list re-sends that person's link, so without this anyone could flood
+//  someone's inbox from many IPs. A request with no usable email falls
+//  back to its IP (it is refused before anything is sent anyway).
 //
 //  Per event (keyed by the shareToken in the URL, not the IP) — a
 //  script distributed across many IPs would sail through the IP limiter
@@ -427,13 +495,37 @@ export const publicEventViewLimiter = rateLimit({
 // ─────────────────────────────────────────
 export const publicRegistrationIpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 8,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
   message: {
     status: 'error',
     message: 'Too many registration attempts. Please wait a few minutes and try again.',
+  },
+});
+
+// `ipKey` is the caller's ipKeyGenerator(req.ip) — the IPv6-safe form, so a
+// visitor can't step around the fallback by moving within their /56.
+// Called with it inline in the keyGenerator below: express-rate-limit
+// checks a keyGenerator's own source for ipKeyGenerator whenever it reads
+// req.ip, and warns at startup (ERR_ERL_KEY_GEN_IPV6) if it isn't there.
+export const publicRegistrationEmailKey = (body: unknown, ipKey: string): string => {
+  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['email'] : undefined;
+  return typeof raw === 'string' && raw.trim()
+    ? `register-email:${hashToken(normalizeEmail(raw))}`
+    : `register-email-ip:${ipKey}`;
+};
+
+export const publicRegistrationEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => publicRegistrationEmailKey(req.body, ipKeyGenerator(req.ip ?? 'unknown')),
+  message: {
+    status: 'error',
+    message: 'Too many registration attempts for this email address. Please wait a while and try again.',
   },
 });
 
@@ -446,5 +538,97 @@ export const publicRegistrationEventLimiter = rateLimit({
   message: {
     status: 'error',
     message: 'Registration for this event is receiving a high volume of requests right now. Please try again in a moment.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITERS — TEAM INVITATIONS (Team Members batch)
+//
+//  Creating or resending an invite sends an email to an address the admin
+//  typed, so it's the same inbox-spamming risk as request-otp: keyed by the
+//  signed-in admin's id, 20 per hour covers onboarding a whole team in one
+//  sitting while bounding a script.
+//
+//  Lookup and accept are public (the invitee has no account yet) and
+//  carry a credential, the invite token, so they get the two-limiter shape
+//  the device-token exchange uses: per token (its SHA-256 hash, never the
+//  raw value, as a key — see deviceLimiterKey), 20 requests / 15 minutes,
+//  which a person opening the link a few times and accepting once never
+//  approaches; and per IP, FAILED requests only (skipSuccessfulRequests),
+//  30 / 15 minutes, the backstop against guessing tokens, generous enough
+//  for an office on one shared IP joining at once.
+// ─────────────────────────────────────────
+export const teamInviteSendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many invitations sent. Please wait a while and try again.',
+  },
+});
+
+export const teamInviteTokenKey = (rawToken: string): string => `team-invite:${hashToken(rawToken)}`;
+
+export const teamInviteTokenLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => teamInviteTokenKey(String(req.body?.token ?? 'unknown')),
+  message: {
+    status: 'error',
+    message: 'Too many attempts with this invitation. Please wait a few minutes and try again.',
+  },
+});
+
+export const teamInviteIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — MEMORY HUB DOWNLOAD ALL
+//  (POST /api/events/:eventId/memory-hub/download)
+//
+//  Keyed by the EVENT in the URL, not the user or IP: what it protects is
+//  Cloudinary's usage, which every fresh set of zip links can spend again,
+//  whoever asks. 5 an hour per event: one organiser downloading after the
+//  function needs one, a retry after a dropped connection or a colleague
+//  doing the same needs a couple more, and a looping client or a
+//  double-clicking button stops at five. Only successful requests count
+//  (skipFailedRequests): a 404 for another tenant's event, the flag off or
+//  a hub with nothing approved spends nothing at Cloudinary, so it must not
+//  use up the real organiser's budget either. Each link is also short-lived
+//  (memory-hub-download.service.ts), which bounds how often one set can be
+//  fetched.
+// ─────────────────────────────────────────
+export const MEMORY_HUB_DOWNLOADS_PER_EVENT_PER_HOUR = 5;
+export const MEMORY_HUB_DOWNLOAD_RATE_LIMIT = 'MEMORY_HUB_DOWNLOAD_RATE_LIMIT';
+
+export const memoryHubDownloadKey = (eventId: string): string => `memory-hub-download:${eventId}`;
+
+export const memoryHubDownloadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: MEMORY_HUB_DOWNLOADS_PER_EVENT_PER_HOUR,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipFailedRequests: true,
+  keyGenerator: (req) => memoryHubDownloadKey(String(req.params['eventId'] ?? 'unknown')),
+  message: {
+    status: 'error',
+    message:
+      "You've prepared this event's download several times in the last hour. Use the links you already have, or try again in an hour.",
+    code: MEMORY_HUB_DOWNLOAD_RATE_LIMIT,
   },
 });

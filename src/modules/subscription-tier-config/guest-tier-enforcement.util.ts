@@ -1,4 +1,4 @@
-import { type EventPassTier, type SubscriptionTier } from '@prisma/client';
+import { type EventPassTier, type SubscriptionTier, type Prisma } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { guestRepository } from '../guest/guest.repository.js';
@@ -6,6 +6,8 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import { isEventPassActive, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { EVENT_PASS_GUEST_CAP } from '../event-pass/event-pass-plans.config.js';
+import { launchLimitMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
+import { assertWithinGuestCeiling } from '../guest/guest-ceiling.util.js';
 
 export interface GuestLimitInfo {
   limit: number | null; // effective limit for this event; null = unlimited
@@ -76,9 +78,14 @@ export const resolveGuestLimit = async (
 // reasoning: a SUPER_ADMIN acting on a SPARK tenant's event must still be
 // bound by that tenant's plan (or its event's pass), and has no tenantId
 // of their own to fall back on.
+//
+// `tx`: count inside the caller's transaction — the organiser paths call
+// this under the event's row lock (guestRepository.withEventGuestLock), so
+// the counts can't change before their write commits.
 export const assertGuestsCreatable = async (
   event: EntitlementDerivableEvent & { id: string },
-  additionalCount: number
+  additionalCount: number,
+  tx?: Prisma.TransactionClient
 ): Promise<void> => {
   // Creation-time (a NEW guest — organiser add, bulk import, or a
   // brand-new public self-registrant): correctly bound by the event's
@@ -89,24 +96,42 @@ export const assertGuestsCreatable = async (
   // so "an existing invitation still resolves" is unaffected regardless
   // of what this returns.
   const resolved = await resolveGuestLimit(event);
-  if (resolved.limit === null) return;
+  if (resolved.limit !== null) await assertWithinPlanGuestLimit(event, resolved, resolved.limit, additionalCount, tx);
 
-  const existingCount = await guestRepository.countForEvent(event.id);
+  // Then the hard ceiling, plus-ones included, whatever the plan says: an
+  // unlimited plan reaches it too (guest-ceiling.util.ts).
+  await assertWithinGuestCeiling(event.id, additionalCount, tx);
+};
+
+const assertWithinPlanGuestLimit = async (
+  event: EntitlementDerivableEvent & { id: string },
+  resolved: GuestLimitInfo,
+  limit: number,
+  additionalCount: number,
+  tx?: Prisma.TransactionClient
+): Promise<void> => {
+  const existingCount = await guestRepository.countForEvent(event.id, tx);
   const projected = existingCount + additionalCount;
 
-  if (projected > resolved.limit) {
-    const over = projected - resolved.limit;
+  if (projected > limit) {
+    const over = projected - limit;
     // Attribute the message to whichever side is actually binding, so
     // "upgrade" points at the thing that would actually raise the cap.
     const source = resolved.boundByPass
-      ? `This event's ${event.eventPass!.passTier} pass allows a maximum of ${resolved.limit} guest(s) per event.`
-      : `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} guest(s) per event.`;
+      ? `This event's ${event.eventPass!.passTier} pass allows a maximum of ${limit} guest(s) per event.`
+      : `The ${resolved.tenantTier} plan allows a maximum of ${limit} guest(s) per event.`;
     const upgradeHint = resolved.boundByPass ? 'upgrade the pass' : 'upgrade the plan';
+
+    const counts =
+      `This event currently has ${existingCount} guest(s), and this would add ${additionalCount} more ` +
+      `(${projected} total) — ${over} over the limit.`;
 
     throw new HttpError(
       403,
-      `${source} This event currently has ${existingCount} guest(s), and this would add ${additionalCount} more ` +
-        `(${projected} total) — ${over} over the limit. Remove guests or ${upgradeHint} to continue.`
+      tierRefusalMessage(
+        `${source} ${counts} Remove guests or ${upgradeHint} to continue.`,
+        launchLimitMessage(`You've reached the limit of ${limit} guest(s) for this event`) + ` ${counts}`
+      )
     );
   }
 };

@@ -1,19 +1,23 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { eventDraftRepository } from './event-draft.repository.js';
 import { eventRepository } from '../event/event.repository.js';
+import { isCreatorLocked } from '../event/event.service.js';
+import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
-import { requireDayLabel, requireDayDate, assertDayTimesInOrder } from '../event-day/event-day-validation.util.js';
-import { resolveDayVenueForCreate } from '../event-day/event-day-venue.util.js';
+import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
 import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
-import { requireFieldLabel, requireFieldType } from '../rsvp-field/rsvp-field-validation.util.js';
+import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
   requireItemStartTime,
   optionalItemDuration,
-  itemDayRequiredMessage,
+  assertItemHasDay,
+  resolveItemDayIndex,
+  assertItemStartsOnItsDay,
+  assertProgramVisibilityFlag,
 } from '../program-item/program-item-validation.util.js';
 import { assertValidHostName } from '../event/event-host-name.util.js';
 import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
@@ -21,6 +25,9 @@ import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
+import { assertPublicEventsAvailable } from '../event/public-events-availability.util.js';
+import { assertValidOpensAt } from '../memory-hub/memory-hub-validation.util.js';
 
 export const eventDraftService = {
 
@@ -58,32 +65,18 @@ export const eventDraftService = {
       throw new HttpError(422, 'Your event needs at least one day.');
     }
 
-    const days = (p.days as Array<Record<string, unknown>>).map((day) => {
-      const label = requireDayLabel(day.label);
-      const startTime = day.startTime ? parseClientDateTime(day.startTime as string) : null;
-      const endTime = day.endTime ? parseClientDateTime(day.endTime as string) : null;
-      assertDayTimesInOrder(startTime, endTime, label);
-      return {
-        label,
-        date: requireDayDate(day.date, label),
-        startTime,
-        endTime,
-        venue: resolveDayVenueForCreate(day, label),
-      };
-    });
+    // The same rules as POST .../days (resolveNewDay), the past-date rule
+    // included: every day here is new.
+    const days = (p.days as Array<Record<string, unknown>>).map((day) => resolveNewDay(day));
 
     // Duplicate day labels within this draft would make the import
     // engine's Day-column matching ambiguous later — checked purely
     // in-memory, before the transaction starts, since the event doesn't
     // exist yet and there's nothing external to race against. Matches
     // event-day-validation.util.ts's case-insensitive rule.
-    const seenLabels = new Set<string>();
-    for (const day of days) {
-      const label = day.label.toLowerCase();
-      if (seenLabels.has(label)) {
-        throw new HttpError(409, `Duplicate day label '${day.label}' — day labels must be unique within an event`);
-      }
-      seenLabels.add(label);
+    const duplicateLabel = findDuplicateDayLabel(days.map((d) => d.label));
+    if (duplicateLabel !== null) {
+      throw new HttpError(409, `Duplicate day label '${duplicateLabel}' — day labels must be unique within an event`);
     }
 
     // Same both-or-neither/plausibility treatment extended to the two
@@ -125,7 +118,11 @@ export const eventDraftService = {
     });
     const customFields = (Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : []).map((field) => {
       const label = requireFieldLabel(field.label);
-      return { ...field, label, fieldType: requireFieldType(field.fieldType, label) } as Record<string, unknown> & { label: string; fieldType: RsvpFieldType };
+      const fieldType = requireFieldType(field.fieldType, label);
+      // The same rule and code as the other paths (RSVP_FIELD_OPTIONS_INVALID),
+      // instead of storing whatever the draft holds.
+      const options = resolveDraftFieldOptions(field.options, label);
+      return { ...field, label, fieldType, options } as Record<string, unknown> & { label: string; fieldType: RsvpFieldType; options: string | null };
     });
     const program = p.program as Record<string, unknown> | undefined;
     // Each item names its day by `dayIndex`, its position in the draft's
@@ -138,15 +135,9 @@ export const eventDraftService = {
       const title = requireItemTitle(item.title);
       const startTime = requireItemStartTime(item.startTime, title);
       const durationMins = optionalItemDuration(item.durationMins, title);
-      let dayIndex: number | null = null;
-      if (item.dayIndex !== undefined && item.dayIndex !== null) {
-        if (typeof item.dayIndex !== 'number' || !Number.isInteger(item.dayIndex) || item.dayIndex < 0 || item.dayIndex >= days.length) {
-          throw new HttpError(422, `'${title}' is set to a day that isn't part of this event. Choose its day again.`);
-        }
-        dayIndex = item.dayIndex;
-      } else if (days.length > 1) {
-        throw new HttpError(422, itemDayRequiredMessage(title));
-      }
+      const dayIndex = resolveItemDayIndex(item.dayIndex, days.length, title);
+      assertItemHasDay(dayIndex !== null, days.length, title);
+      assertItemStartsOnItsDay(startTime, dayIndex === null ? null : days[dayIndex]!, title);
       return { ...item, title, startTime, durationMins, dayIndex } as Record<string, unknown> & {
         title: string;
         startTime: Date;
@@ -156,17 +147,22 @@ export const eventDraftService = {
     });
     // Visible to guests by default (STEERING "Event program"); the wizard's
     // "hide from guests" sends false.
-    if (program?.isPublished !== undefined && typeof program.isPublished !== 'boolean') {
-      throw new HttpError(422, 'Program visibility must be true or false.');
-    }
+    assertProgramVisibilityFlag(program?.isPublished);
     const programPublished = program?.isPublished !== false;
     const memoryHub = p.memoryHub as Record<string, unknown> | undefined;
+    assertValidOpensAt(memoryHub?.opensAt);
 
+    assertPaidTicketingAvailable(p.ticketing as EventTicketing | undefined);
+    assertPublicEventsAvailable(p.visibility as EventVisibility | undefined);
     await assertEventCreatable(tenantId, {
       ...(p.visibility !== undefined && { visibility: p.visibility as EventVisibility }),
       ...(p.ticketing !== undefined && { ticketing: p.ticketing as EventTicketing }),
       hasCustomRsvpFields: customFields.length > 0,
     });
+
+    // A locked member is assigned to the event they create, in the same
+    // transaction (eventService.create does the same; see isCreatorLocked).
+    const assignCreator = await isCreatorLocked(userId);
 
     const result = await prisma.$transaction(async (tx) => {
       const event = await tx.event.create({
@@ -240,7 +236,7 @@ export const eventDraftService = {
             label: field.label,
             fieldType: field.fieldType,
             isRequired: (field.isRequired as boolean) ?? false,
-            options: field.options ? JSON.stringify(field.options) : null,
+            options: field.options,
             order: index,
             isArchived: false,
             createdBy: userId,
@@ -293,6 +289,10 @@ export const eventDraftService = {
           updatedBy: userId,
         },
       });
+
+      if (assignCreator) {
+        await eventAssignmentRepository.create(tx, tenantId, userId, event.id, userId);
+      }
 
       return event;
     }, {

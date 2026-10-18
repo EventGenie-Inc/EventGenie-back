@@ -1,10 +1,11 @@
 import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
-import { type PlatformRole, type EventStatus } from '@prisma/client';
+import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
-import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
+import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { assertValidHostName } from './event-host-name.util.js';
@@ -14,6 +15,14 @@ import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforc
 import { guestRepository } from '../guest/guest.repository.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
+import { assertPublicEventsAvailable } from './public-events-availability.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { eventAssignmentLock, eventIdsFilter } from '../event-assignment/event-assignment-lock.util.js';
+import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
+import { isRecordNotFound } from '../../shared/utils/prisma-error.util.js';
+import { feedbackRepository } from '../feedback/feedback.repository.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -55,20 +64,144 @@ const assertEventName = (name: unknown): void => {
   }
 };
 
-const tenantScopeFor = (requestingRole: PlatformRole, tenantId: string | null): string | undefined =>
-  resolveTenantScope(requestingRole, tenantId, 'Event not found');
+// ─────────────────────────────────────────
+//  THE EVENT SCOPE — who may see which events, decided here and only here
+//
+//  Two layers, in order:
+//  1. Tenant (resolveTenantScope): SUPER_ADMIN unscoped; everyone else
+//     confined to their own tenant, failing closed without one.
+//  2. The assignment lock (event-assignment-lock.util.ts): a locked
+//     EVENT_ADMIN (one with any EventAssignment rows) is further confined
+//     to their assigned events. Their user id comes from the request viewer
+//     (request-viewer.context.ts), so no caller has to pass it.
+//
+//  Every by-id lookup (getById, getScoped, getScopedWithPass) and the list
+//  (getAll) resolves its scope here, and every event sub-resource (days,
+//  program, guests, invites, RSVP fields, check-in, Memory Hub, Event Pass,
+//  tickets, invitation design, uploads) gates on one of those lookups, so
+//  an unassigned event is the same 404 as another tenant's everywhere.
+//  /api/guests/:id, which reaches a guest without an event in its URL, uses
+//  resolveEventScope directly (guest.service.ts). Do not build an event
+//  `where` anywhere else.
+// ─────────────────────────────────────────
+export interface EventScope {
+  tenantId: string | undefined;
+  // Present only for a locked caller: the event must be one of these.
+  eventIds: string[] | undefined;
+}
+
+export const resolveEventScope = async (requestingRole: PlatformRole, tenantId: string | null): Promise<EventScope> => {
+  const scopedTenantId = resolveTenantScope(requestingRole, tenantId, 'Event not found');
+  const lock = await eventAssignmentLock.resolveForRequest(requestingRole);
+  return { tenantId: scopedTenantId, eventIds: eventIdsFilter(lock) };
+};
+
+// A locked member who creates an event is assigned to it (in the create
+// transaction), or they couldn't open what they just made. "Locked" is read
+// from the rows themselves: only an EVENT_ADMIN can hold assignments
+// (team.service.ts refuses them for any other role and clears them on a
+// promotion), so any rows at all means a locked EVENT_ADMIN. An unlocked
+// creator stays unlocked: assigning them would narrow them to one event.
+// Shared with the wizard's materialize (event-draft.service.ts).
+// Cancel on an event whose last day has passed. Its own code, apart from the
+// "already cancelled" 409, so the organiser's screen can say which.
+export const EVENT_ALREADY_HAPPENED = 'EVENT_ALREADY_HAPPENED';
+
+// ─────────────────────────────────────────
+//  THE CHECKS ON AN EVENT UPDATE — written once, for PUT /api/events/:id
+//  and the full event update (event-full-update.service.ts)
+// ─────────────────────────────────────────
+
+// The request's own values, before the event is even looked up.
+export const assertEventFieldsValid = (data: UpdateEventDto): void => {
+  if (data.name !== undefined) assertEventName(data.name);
+  assertValidCapacity(data.capacity);
+  assertValidHostName(data.hostName);
+};
+
+// Everything that needs the stored event. `days` is the event's live days
+// as they will be once this save lands: its stored days for a plain event
+// PUT, the edited list for the full update (the RSVP deadline can't be
+// after the last of THOSE).
+export const assertEventUpdateAllowed = async (
+  event: EntitlementDerivableEvent & { tenantId: string; coverImagePublicId: string | null; ticketing: EventTicketing; visibility: EventVisibility },
+  data: UpdateEventDto,
+  days: EventDayLike[]
+): Promise<void> => {
+  // Cover ownership is checked against the EVENT's tenant (right for a
+  // SUPER_ADMIN too), so it needs the event first; and it must run before
+  // the size check, which destroys the asset on rejection. The id already
+  // stored on this event is not re-checked (see assertCoverPublicIdOwned).
+  if (data.coverImagePublicId !== event.coverImagePublicId) {
+    assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
+  }
+  assertCoverImageWithinSizeLimit(data);
+
+  if (data.rsvpDeadline !== undefined) {
+    // rejectPast: false — an organiser deliberately closing RSVPs early
+    // by setting the deadline to "now" on a live event is legitimate;
+    // only a past deadline at CREATION time is rejected (see create()).
+    assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, days, { rejectPast: false });
+  }
+
+  // Only a CHANGE to paid/public is refused while the feature is off.
+  // Past that point, a switched-off feature's value can only be the one
+  // already stored, so it stays out of the tier and payout checks below:
+  // re-saving an older paid event must not 403 on a plan or ask for bank
+  // details, whose routes are off too.
+  assertPaidTicketingAvailable(data.ticketing, event.ticketing);
+  assertPublicEventsAvailable(data.visibility, event.visibility);
+  const ticketing = isFeatureEnabled('ticketing') ? data.ticketing : undefined;
+  const visibility = isFeatureEnabled('publicEvents') ? data.visibility : undefined;
+  await assertEventUpdatable(event, {
+    ...(visibility !== undefined && { visibility }),
+    ...(ticketing !== undefined && { ticketing }),
+  });
+  if (ticketing === 'PAID') {
+    await assertEventReadyToSellTickets(event);
+  }
+};
+
+// Cover REPLACED (including cleared to null) — delete the now-orphaned
+// old asset, once the save has landed. Fire-and-forget: never let a
+// Cloudinary hiccup fail an otherwise-successful event update; a failed
+// delete is just a harmless orphan (Batch B Task 3), not a broken event.
+// Does NOT run on archive — archiving is reversible, and deleting the
+// cover here would break restore (see the batch report).
+export const destroyReplacedCover = (event: { coverImagePublicId: string | null }, data: UpdateEventDto): void => {
+  if (
+    data.coverImagePublicId !== undefined &&
+    event.coverImagePublicId &&
+    event.coverImagePublicId !== data.coverImagePublicId
+  ) {
+    const oldPublicId = event.coverImagePublicId;
+    void destroyAsset(oldPublicId).then((result) => {
+      if (!result.ok) console.error('[cloudinary cleanup] failed to delete replaced cover:', result.reason);
+    });
+  }
+};
+
+export const isCreatorLocked = async (userId: string): Promise<boolean> =>
+  (await eventAssignmentRepository.countForUser(userId)) > 0;
 
 export const eventService = {
 
   // Both list and detail flow through the SAME withEffectiveStatus
   // presenter, so they can never disagree about a given event's
   // status — there is no separate code path either could drift from.
+  //
+  // A locked EVENT_ADMIN's list holds only their assigned events.
+  //
+  // feedbackGiven: whether the event has its organiser feedback (the
+  // card's "How did it go?" prompt), read for the whole list in one query.
+  // Left out while `feedback` is off, like the feature's routes.
   getAll: async (requestingRole: PlatformRole, tenantId: string | null) => {
     if (isTenantScopeEmptyForList(requestingRole, tenantId)) return [];
-    const events = requestingRole === 'SUPER_ADMIN'
-      ? await eventRepository.findAll()
-      : await eventRepository.findAll(tenantId ?? undefined);
-    return events.map(withEffectiveStatus);
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const events = (await eventRepository.findAll(scope.tenantId, false, scope.eventIds)).map(withEffectiveStatus);
+    if (!isFeatureEnabled('feedback')) return events;
+    const withFeedback = await feedbackRepository.findEventIdsWithFeedback(events.map((e) => e.id));
+    return events.map((e) => ({ ...e, feedbackGiven: withFeedback.has(e.id) }));
   },
 
   // includeArchived is only ever true for the SUPER_ADMIN restore flow
@@ -82,7 +215,8 @@ export const eventService = {
   // response (update/publish/cancel/reactivate), and getDetail. Every other
   // caller wants getScoped or getScopedWithPass below.
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventRepository.findById(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const event = await eventRepository.findById(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -102,7 +236,8 @@ export const eventService = {
   // getScopedWithPass; one that needs the other relations, or returns the
   // event to a client, stays on getById.
   getScoped: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventRepository.findScoped(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const event = await eventRepository.findScoped(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -111,7 +246,8 @@ export const eventService = {
   // getScoped plus the Event Pass — three queries. What every tier check
   // needs (EntitlementDerivableEvent = tenantId + eventPass + eventDays).
   getScopedWithPass: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventRepository.findScopedWithPass(id, includeArchived, tenantScopeFor(requestingRole, tenantId));
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const event = await eventRepository.findScopedWithPass(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
     return withEffectiveStatus(event);
@@ -159,6 +295,8 @@ export const eventService = {
     // them — see event-day.router.ts), so there's nothing to compare the
     // deadline against beyond "not in the past".
     assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, [], { rejectPast: true });
+    assertPaidTicketingAvailable(data.ticketing);
+    assertPublicEventsAvailable(data.visibility);
     await assertEventCreatable(tenantId, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
@@ -168,60 +306,19 @@ export const eventService = {
     if (data.ticketing === 'PAID') {
       await assertTenantReadyToSellTickets(tenantId);
     }
-    return eventRepository.create(tenantId, userId, data);
+    return eventRepository.create(tenantId, userId, data, await isCreatorLocked(userId));
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
-    if (data.name !== undefined) assertEventName(data.name);
-    assertValidCapacity(data.capacity);
-    assertValidHostName(data.hostName);
+    assertEventFieldsValid(data);
     // Tier rules are evaluated against the EVENT's owning tenant, not the
     // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
     // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
     // their own to fall back on.
     const event = await eventService.getById(id, requestingRole, tenantId);
-
-    // Cover ownership is checked against the EVENT's tenant (right for a
-    // SUPER_ADMIN too), so it needs the event first; and it must run before
-    // the size check, which destroys the asset on rejection. The id already
-    // stored on this event is not re-checked (see assertCoverPublicIdOwned).
-    if (data.coverImagePublicId !== event.coverImagePublicId) {
-      assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
-    }
-    assertCoverImageWithinSizeLimit(data);
-
-    if (data.rsvpDeadline !== undefined) {
-      // rejectPast: false — an organiser deliberately closing RSVPs early
-      // by setting the deadline to "now" on a live event is legitimate;
-      // only a past deadline at CREATION time is rejected (see create()).
-      assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
-    }
-
-    await assertEventUpdatable(event, {
-      ...(data.visibility !== undefined && { visibility: data.visibility }),
-      ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
-    });
-    if (data.ticketing === 'PAID') {
-      await assertEventReadyToSellTickets(event);
-    }
+    await assertEventUpdateAllowed(event, data, event.eventDays);
     await eventRepository.update(id, userId, data);
-
-    // Cover REPLACED (including cleared to null) — delete the now-orphaned
-    // old asset. Fire-and-forget: never let a Cloudinary hiccup fail an
-    // otherwise-successful event update; a failed delete is just a
-    // harmless orphan (Batch B Task 3), not a broken event. Does NOT run
-    // on archive — archiving is reversible, and deleting the cover here
-    // would break restore (see the batch report).
-    if (
-      data.coverImagePublicId !== undefined &&
-      event.coverImagePublicId &&
-      event.coverImagePublicId !== data.coverImagePublicId
-    ) {
-      const oldPublicId = event.coverImagePublicId;
-      void destroyAsset(oldPublicId).then((result) => {
-        if (!result.ok) console.error('[cloudinary cleanup] failed to delete replaced cover:', result.reason);
-      });
-    }
+    destroyReplacedCover(event, data);
 
     // Re-fetched through getById (not the bare update() result) so this
     // response goes through the same withEffectiveStatus presenter as
@@ -270,7 +367,7 @@ export const eventService = {
     }
 
     const shareToken = event.shareToken ?? (await eventRepository.generateShareToken(id, userId)).shareToken;
-    return { url: `${process.env.FRONTEND_BASE_URL}/register?token=${shareToken}` };
+    return { url: frontendUrl(`/register?token=${shareToken}`) };
   },
 
   // Explicit regenerate (Task-parallel to Memory Hub's regenerateShareLink)
@@ -287,7 +384,7 @@ export const eventService = {
     }
 
     const updated = await eventRepository.generateShareToken(id, userId);
-    return { url: `${process.env.FRONTEND_BASE_URL}/register?token=${updated.shareToken}` };
+    return { url: frontendUrl(`/register?token=${updated.shareToken}`) };
   },
 
   // ─────────────────────────────────────────
@@ -335,6 +432,8 @@ export const eventService = {
     // subaccount can regress from ACTIVE to FAILED between when a PAID
     // event was created and when it's published (a rejected bank-detail
     // update attempt) — see payment-account-readiness.util.ts.
+    assertPaidTicketingAvailable(event.ticketing);
+    assertPublicEventsAvailable(event.visibility);
     if (event.ticketing === 'PAID') {
       await assertEventReadyToSellTickets(event);
     }
@@ -344,16 +443,17 @@ export const eventService = {
   },
 
   // ─────────────────────────────────────────
-  //  CANCEL — DRAFT/PUBLISHED/(effectively-)COMPLETED → CANCELLED
+  //  CANCEL — DRAFT/PUBLISHED → CANCELLED (never a COMPLETED one)
   //
   //  Not reversible — there is no un-cancel. Guests may already have
   //  been told, so recovering from a mistaken cancel is a support
   //  matter, not a self-service one. Cancelling does not archive the
   //  event or its guests and does not delete anything; it only blocks
-  //  outbound actions (Task 3) and marks the event. Guests are not
-  //  notified here — that needs the (unbuilt) Announcements feature —
-  //  and ticketed events don't trigger a refund here either — that
-  //  needs the (unbuilt) payment integration. Both are out of scope.
+  //  outbound actions (Task 3) and marks the event. Guests are emailed
+  //  by the caller, announcement.service.ts's cancelEvent (the cancel
+  //  route goes through it), once this has succeeded. Ticketed events
+  //  don't trigger a refund here — that needs the (unbuilt) payment
+  //  integration.
   // ─────────────────────────────────────────
   cancel: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const event = await eventService.getById(id, requestingRole, tenantId); // effective status
@@ -361,8 +461,22 @@ export const eventService = {
     if (event.status === 'CANCELLED') {
       throw new HttpError(409, 'This event has already been cancelled.');
     }
+    // Its last day has passed (the derived COMPLETED): there is nothing left
+    // to call off, and guests must not be told an event they attended was
+    // cancelled.
+    if (event.status === 'COMPLETED') {
+      throw new HttpError(409, 'This event has already taken place, so it can no longer be cancelled.', EVENT_ALREADY_HAPPENED);
+    }
 
-    await eventRepository.updateStatus(id, userId, 'CANCELLED');
+    // Conditional: a second cancel racing this one past the check above is
+    // refused here, so the guests' cancellation email
+    // (announcement.service.ts's cancelEvent) goes out once.
+    try {
+      await eventRepository.updateStatus(id, userId, 'CANCELLED', 'CANCELLED');
+    } catch (err) {
+      if (isRecordNotFound(err)) throw new HttpError(409, 'This event has already been cancelled.');
+      throw err;
+    }
     return eventService.getById(id, requestingRole, tenantId);
   },
 };

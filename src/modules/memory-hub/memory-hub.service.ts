@@ -11,6 +11,7 @@ import { eventService } from '../event/event.service.js';
 import { inviteRepository } from '../invite/invite.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { assertValidOpensAt } from './memory-hub-validation.util.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { destroyAsset, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
 import { isCloudinaryDeliveryUrlFor, isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
@@ -22,7 +23,17 @@ import {
   isMemoryHubTierEnabled,
 } from './memory-hub-tier-enforcement.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
-import { isMemoryItemTooLarge, memoryItemTooLargeMessage } from './memory-item-limits.util.js';
+import {
+  assertMemoryItemMediaTypeAvailable,
+  isMemoryHubVideoEnabled,
+  isMemoryItemTooLarge,
+  memoryItemAllowedFormats,
+  memoryItemTooLargeMessage,
+} from './memory-item-limits.util.js';
+import { launchLimitMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { consentService } from '../consent/consent.service.js';
+import { currentConsentWording } from '../consent/consent-wording.js';
 import {
   MEMORY_ITEM_IMAGE_MAX_BYTES,
   MEMORY_ITEM_VIDEO_MAX_BYTES,
@@ -35,6 +46,18 @@ import {
 // a plain String (not an FK), same convention as rsvp.service.ts's
 // GUEST_ACTOR.
 const GUEST_ACTOR = 'guest-memory-upload';
+
+// A guest asked for a video to be shared publicly: the opt-in (and its
+// wording, "this photo") is for photos only.
+export const PUBLIC_SHARING_PHOTOS_ONLY = 'PUBLIC_SHARING_PHOTOS_ONLY';
+
+const INVALID_INVITE_MESSAGE = "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.";
+
+const assertSharingIsForAPhoto = (mediaType: MediaType): void => {
+  if (mediaType !== 'IMAGE') {
+    throw new HttpError(422, 'Only photos can be shared publicly, not videos.', PUBLIC_SHARING_PHOTOS_ONLY);
+  }
+};
 
 // Checked at PERSIST time (after Cloudinary has already reported the
 // real byte count) — the pre-signature checks in
@@ -116,7 +139,11 @@ const assertItemAcceptableOrDestroy = async (
         403,
         audience === 'guest'
           ? "This event's photo album is full, so new photos can't be added right now."
-          : `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`
+          : tierRefusalMessage(
+              `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`,
+              launchLimitMessage(`This upload would push the event's Memory Hub over its storage limit, so it has not been saved. You've reached the storage limit for this event`) +
+                ' Removing items also frees up space.'
+            )
       );
     }
   }
@@ -224,13 +251,37 @@ export const memoryHubService = {
     return { ...hub, usedBytes, limitBytes };
   },
 
-  getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const hub = await memoryHubRepository.findById(id, includeArchived);
-    if (!hub) throw new HttpError(404, 'Memory hub not found');
-    // Ownership gate via the parent event — throws 404 if it belongs to
-    // a different tenant, indistinguishable from the hub not existing.
-    await eventService.getById(hub.eventId, requestingRole, tenantId);
-    return hub;
+  // THE HUB UNDER ITS URL — /api/events/:eventId/memory-hub/:id. The
+  // URL's event is gated first (tenant scoping and the assignment lock,
+  // eventService.getById), then the hub must be THAT event's: a hub of
+  // the same tenant's other event is the same 404 as another tenant's or
+  // a missing one (STEERING "A sub-resource must belong to the event in
+  // its URL"). It used to gate only on the hub's own event, so any of a
+  // tenant's hubs could be edited under any of its events' URLs. The
+  // parent event is the default (live-only) lookup: an archived event's
+  // hub can't be reached, nor restored before the event is.
+  hubInScope: async (eventId: string, hubId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+    const event = await eventService.getById(eventId, requestingRole, tenantId);
+    const hub = await memoryHubRepository.findById(hubId, includeArchived);
+    if (!hub || hub.eventId !== eventId) throw new HttpError(404, 'Memory hub not found');
+    return { hub, event };
+  },
+
+  // An item under /:hubId/items/:id: in scope only when its hub is the
+  // URL's hub, under the URL's event (hubInScope). Item routes used to
+  // ignore both and gate on the item's own hub.
+  itemInScope: async (
+    eventId: string,
+    hubId: string,
+    itemId: string,
+    requestingRole: PlatformRole,
+    tenantId: string | null,
+    includeArchived = false
+  ) => {
+    await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId);
+    const item = await memoryHubRepository.findItemById(itemId, includeArchived);
+    if (!item || item.memoryHubId !== hubId) throw new HttpError(404, 'Memory item not found');
+    return item;
   },
 
   // Every event gets one automatically at creation now (both the wizard's
@@ -240,18 +291,20 @@ export const memoryHubService = {
   // flows depend on.
   create: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: CreateMemoryHubDto) => {
     await eventService.getById(eventId, requestingRole, tenantId);
+    assertValidOpensAt(data?.opensAt);
     const existing = await memoryHubRepository.findByEventId(eventId);
     if (existing) throw new HttpError(409, 'A memory hub already exists for this event');
     return memoryHubRepository.create(eventId, userId, data);
   },
 
-  update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryHubDto) => {
-    await memoryHubService.getById(id, requestingRole, tenantId);
+  update: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryHubDto) => {
+    await memoryHubService.hubInScope(eventId, id, requestingRole, tenantId);
+    assertValidOpensAt(data?.opensAt);
     return memoryHubRepository.update(id, userId, data);
   },
 
-  archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    await memoryHubService.getById(id, requestingRole, tenantId);
+  archive: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await memoryHubService.hubInScope(eventId, id, requestingRole, tenantId);
     return memoryHubRepository.archive(id, userId);
   },
 
@@ -260,17 +313,15 @@ export const memoryHubService = {
   // (already self-service, transitively tenant-scoped), not Event's
   // (SUPER_ADMIN-only "support" action), since hub management is
   // already self-service at every other step.
-  reactivate: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+  reactivate: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
-    // to find a hub that is currently archived and un-archive it.
-    const hub = await memoryHubRepository.findById(id, true);
-    if (!hub) throw new HttpError(404, 'Memory hub not found');
-    // Parent event via the DEFAULT (non-archived-required) lookup — same
+    // to find a hub that is currently archived and un-archive it. Its
+    // parent event via the DEFAULT (non-archived-required) lookup — same
     // precedent as invite.service.ts's reactivate: a child can't be
     // restored while its parent is still archived; restore the event first.
-    await eventService.getById(hub.eventId, requestingRole, tenantId);
+    await memoryHubService.hubInScope(eventId, id, requestingRole, tenantId, true);
     await memoryHubRepository.reactivate(id, userId);
-    return memoryHubService.getById(id, requestingRole, tenantId, true);
+    return (await memoryHubService.hubInScope(eventId, id, requestingRole, tenantId, true)).hub;
   },
 
   // ── Share link (Task 4) ────────────────────────────────────────────
@@ -281,13 +332,13 @@ export const memoryHubService = {
   // previous token stops matching anything: it is genuinely invalidated,
   // not just hidden.
 
-  regenerateShareLink: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    await memoryHubService.getById(id, requestingRole, tenantId);
+  regenerateShareLink: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await memoryHubService.hubInScope(eventId, id, requestingRole, tenantId);
     return memoryHubRepository.generateShareToken(id, userId);
   },
 
-  revokeShareLink: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    await memoryHubService.getById(id, requestingRole, tenantId);
+  revokeShareLink: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await memoryHubService.hubInScope(eventId, id, requestingRole, tenantId);
     return memoryHubRepository.revokeShareToken(id, userId);
   },
 
@@ -332,22 +383,19 @@ export const memoryHubService = {
 
   // ── Memory Items — organiser/curation side, tenant-scoped ─────────
 
-  getAllItems: async (hubId: string, requestingRole: PlatformRole, tenantId: string | null, status?: 'PENDING' | 'APPROVED' | 'REJECTED') => {
-    await memoryHubService.getById(hubId, requestingRole, tenantId); // throws 404 if wrong tenant
+  getAllItems: async (eventId: string, hubId: string, requestingRole: PlatformRole, tenantId: string | null, status?: 'PENDING' | 'APPROVED' | 'REJECTED') => {
+    await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId);
     const items = await memoryHubRepository.findAllItems(hubId, status);
     return items.map(toCuratedItem);
   },
 
-  getItemById: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    const item = await memoryHubRepository.findItemById(id);
-    if (!item) throw new HttpError(404, 'Memory item not found');
-    await memoryHubService.getById(item.memoryHubId, requestingRole, tenantId);
-    return toCuratedItem(item);
-  },
+  getItemById: async (eventId: string, hubId: string, id: string, requestingRole: PlatformRole, tenantId: string | null) =>
+    toCuratedItem(await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId)),
 
   // ORGANISER upload persist — items land APPROVED immediately (an
   // organiser reviewing their own upload is pointless friction).
   createOrganiserItem: async (
+    eventId: string,
     hubId: string,
     userId: string,
     requestingRole: PlatformRole,
@@ -367,8 +415,7 @@ export const memoryHubService = {
       throw new HttpError(400, 'bytes is required and must be a positive number');
     }
 
-    const hub = await memoryHubService.getById(hubId, requestingRole, tenantId);
-    const event = await eventService.getById(hub.eventId, requestingRole, tenantId);
+    const { event } = await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId);
 
     await assertItemAcceptableOrDestroy(event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl);
 
@@ -383,8 +430,8 @@ export const memoryHubService = {
     });
   },
 
-  updateItem: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryItemDto) => {
-    await memoryHubService.getItemById(id, requestingRole, tenantId);
+  updateItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateMemoryItemDto) => {
+    await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId);
     return memoryHubRepository.updateItemCaption(id, userId, data.caption);
   },
 
@@ -401,8 +448,8 @@ export const memoryHubService = {
   // purge — not built in this batch (archiving an item, below, is the
   // only removal action that exists today; a true irreversible delete
   // is future work if storage cost demands it).
-  curateItem: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, status: 'APPROVED' | 'REJECTED') => {
-    await memoryHubService.getItemById(id, requestingRole, tenantId);
+  curateItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, status: 'APPROVED' | 'REJECTED') => {
+    await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId);
     return memoryHubRepository.updateItemStatus(id, userId, status);
   },
 
@@ -410,19 +457,18 @@ export const memoryHubService = {
   // reasoning as reject) and does NOT touch its Cloudinary asset —
   // consistent with the event cover precedent: archiving is reversible,
   // deleting the asset would break restore.
-  archiveItem: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    await memoryHubService.getItemById(id, requestingRole, tenantId);
+  archiveItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId);
     return memoryHubRepository.archiveItem(id, userId);
   },
 
-  reactivateItem: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    const item = await memoryHubRepository.findItemById(id, true);
-    if (!item) throw new HttpError(404, 'Memory item not found');
-    // Parent hub via the DEFAULT (non-archived-required) lookup — same
-    // "restore the parent first" precedent as the hub's own reactivate.
-    await memoryHubService.getById(item.memoryHubId, requestingRole, tenantId);
+  reactivateItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    // The item including archived; its hub via the DEFAULT (non-archived-
+    // required) lookup — same "restore the parent first" precedent as the
+    // hub's own reactivate.
+    await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, true);
     await memoryHubRepository.reactivateItem(id, userId);
-    return memoryHubService.getItemById(id, requestingRole, tenantId);
+    return memoryHubService.getItemById(eventId, hubId, id, requestingRole, tenantId);
   },
 
   // ── GUEST upload path — authenticated by invite token only ────────
@@ -464,6 +510,7 @@ export const memoryHubService = {
       throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
     }
 
+    assertMemoryItemMediaTypeAvailable(mediaType, 'guest');
     await assertMemoryHubAccessible(invite.event, 'guest');
     await assertMemoryHubQuotaAvailable(invite.event, 'guest');
 
@@ -512,6 +559,22 @@ export const memoryHubService = {
       memoryHubRepository.findPendingItemsByGuest(hub.id, invite.guestId),
     ]);
 
+    // The guest's own photos (pending and approved) and whether each may be
+    // shared publicly, with the wording they agree to. Left out entirely
+    // while `feedback` is off, like a switched-off feature's settings.
+    let publicSharing: {
+      wording: { version: number; text: string };
+      myItems: { id: string; allowPublicSharing: boolean }[];
+    } | undefined;
+    if (isFeatureEnabled('feedback')) {
+      const mine = await memoryHubRepository.findShareablePhotosByGuest(hub.id, invite.guestId);
+      const sharing = await consentService.guestSharingFor(mine.map((item) => item.id));
+      publicSharing = {
+        wording: currentConsentWording('PHOTO_GUEST_PUBLIC_SHARING'),
+        myItems: mine.map((item) => ({ id: item.id, allowPublicSharing: sharing.get(item.id) === true })),
+      };
+    }
+
     return {
       available: true as const,
       title: hub.title,
@@ -530,12 +593,17 @@ export const memoryHubService = {
       })),
       limits: {
         imageMaxBytes: MEMORY_ITEM_IMAGE_MAX_BYTES,
-        videoMaxBytes: MEMORY_ITEM_VIDEO_MAX_BYTES,
+        // With `memoryHubVideo` off a video upload signature is refused, so
+        // videos aren't offered: no video size, and formats are images only.
+        videosAllowed: isMemoryHubVideoEnabled(),
+        videoMaxBytes: isMemoryHubVideoEnabled() ? MEMORY_ITEM_VIDEO_MAX_BYTES : null,
+        allowedFormats: memoryItemAllowedFormats(),
         // The real per-invite upload budget (memoryHubGuestUploadLimiter,
         // rate-limit.middleware.ts) — reported here so the frontend reads
         // the actual enforced number instead of hardcoding its own copy.
         uploadRequestsPer5Min: MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
       },
+      ...(publicSharing ? { publicSharing } : {}),
     };
   },
 
@@ -561,10 +629,16 @@ export const memoryHubService = {
     if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || data.bytes <= 0) {
       throw new HttpError(400, 'bytes is required and must be a positive number');
     }
+    if (data.allowPublicSharing !== undefined && typeof data.allowPublicSharing !== 'boolean') {
+      throw new HttpError(400, 'allowPublicSharing must be true or false');
+    }
+    // Off by default: only an explicit true is an opt-in. With `feedback`
+    // off the opt-in isn't offered, so nothing is recorded.
+    const allowPublicSharing = data.allowPublicSharing === true && isFeatureEnabled('feedback');
 
     const invite = await inviteRepository.findByToken(data.token);
     if (!invite) {
-      throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+      throw new HttpError(404, INVALID_INVITE_MESSAGE);
     }
 
     if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
@@ -579,16 +653,33 @@ export const memoryHubService = {
       throw new HttpError(403, `This event's photo album opens on ${formatGuestDate(hub.opensAt)}. Check back then to add your photos and videos.`);
     }
 
+    // Before the checks below, some of which destroy the upload: a refused
+    // opt-in leaves the file for the guest to save again without it.
+    if (allowPublicSharing) assertSharingIsForAPhoto(data.mediaType);
+
     await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl, 'guest');
 
-    const item = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
-      mediaUrl: data.mediaUrl,
-      cloudinaryPublicId: data.cloudinaryPublicId,
-      mediaType: data.mediaType,
-      bytes: data.bytes,
-      ...(data.caption !== undefined && { caption: data.caption }),
-      status: 'PENDING',
-      uploadedByGuestId: invite.guestId,
+    const item = await memoryHubRepository.withTransaction(async (tx) => {
+      const created = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
+        mediaUrl: data.mediaUrl,
+        cloudinaryPublicId: data.cloudinaryPublicId,
+        mediaType: data.mediaType,
+        bytes: data.bytes,
+        ...(data.caption !== undefined && { caption: data.caption }),
+        status: 'PENDING',
+        uploadedByGuestId: invite.guestId,
+      }, tx);
+      if (allowPublicSharing) {
+        await consentService.record([{
+          eventId: invite.eventId,
+          kind: 'PHOTO_GUEST_PUBLIC_SHARING',
+          memoryItemId: created.id,
+          userId: null,
+          guestId: invite.guestId,
+          action: 'GRANTED',
+        }], tx);
+      }
+      return created;
     });
 
     // Explicit shape, not the raw MemoryItem row — no memoryHubId,
@@ -602,6 +693,48 @@ export const memoryHubService = {
       mediaType: item.mediaType,
       caption: item.caption,
       status: item.status,
+      ...(isFeatureEnabled('feedback') ? { allowPublicSharing } : {}),
     };
+  },
+
+  // GUEST public-sharing toggle (the `feedback` flag) — authenticated by
+  // invite token only, like guest-view. A guest changes their mind about
+  // one of their OWN photos: anyone else's, or one that isn't live, is the
+  // same 404. Allowed whatever the event's or album's state, so a guest
+  // can always withdraw. Only a change is recorded: setting what is
+  // already current appends nothing.
+  setGuestPublicSharing: async (token: unknown, itemId: unknown, allowPublicSharing: unknown) => {
+    if (typeof token !== 'string' || !token) {
+      throw new HttpError(400, 'token is required');
+    }
+    if (typeof itemId !== 'string' || !itemId) {
+      throw new HttpError(400, 'itemId is required');
+    }
+    if (typeof allowPublicSharing !== 'boolean') {
+      throw new HttpError(400, 'allowPublicSharing must be true or false');
+    }
+
+    const invite = await inviteRepository.findByToken(token);
+    if (!invite) {
+      throw new HttpError(404, INVALID_INVITE_MESSAGE);
+    }
+
+    const item = await memoryHubRepository.findGuestItem(itemId, invite.eventId, invite.guestId);
+    if (!item) throw new HttpError(404, "We couldn't find that photo.");
+    if (allowPublicSharing) assertSharingIsForAPhoto(item.mediaType);
+
+    const current = (await consentService.guestSharingFor([item.id])).get(item.id) === true;
+    if (current !== allowPublicSharing) {
+      await consentService.record([{
+        eventId: invite.eventId,
+        kind: 'PHOTO_GUEST_PUBLIC_SHARING',
+        memoryItemId: item.id,
+        userId: null,
+        guestId: invite.guestId,
+        action: allowPublicSharing ? 'GRANTED' : 'WITHDRAWN',
+      }]);
+    }
+
+    return { id: item.id, allowPublicSharing };
   },
 };

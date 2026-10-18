@@ -186,6 +186,30 @@ enum SmsSendSource {
 // the same as FAILED. FAILED and EXPIRED both remain retryable via the
 // same TicketPurchase row (ticket-purchase.service.ts's retryPayment) —
 // only PAID is terminal.
+// Who an organiser's announcement goes to (announcement-audience.util.ts).
+// EVERYONE is every invited guest who hasn't declined; the others follow
+// the invite's reply. Narrowed to one day, each is judged on that day.
+enum AnnouncementAudience {
+  EVERYONE
+  ATTENDING
+  NOT_REPLIED
+  NOT_ATTENDING
+}
+
+// ANNOUNCEMENT: an organiser's message, counted against the daily limit.
+// CANCELLATION: the automatic email sent when the event is cancelled.
+enum AnnouncementKind {
+  ANNOUNCEMENT
+  CANCELLATION
+}
+
+// What an EventEmailClaim counted: an invitation send (bulk or a single
+// resend) or a round of reminders.
+enum EventEmailKind {
+  INVITATION
+  REMINDER
+}
+
 enum TicketPurchaseStatus {
   PENDING
   PAID
@@ -342,6 +366,9 @@ model Tenant {
   eventPasses             EventPass[]
   eventPassPurchases      EventPassPurchase[]
   eventSmsBundlePurchases EventSmsBundlePurchase[]
+  eventAssignments        EventAssignment[]
+  teamInvites             TeamInvite[]
+  eventFeedback           EventFeedback[]
 }
 
 // ─────────────────────────────────────────
@@ -372,6 +399,9 @@ model User {
   otpRecords       OtpRecord[]
   eventDrafts      EventDraft[]
   deviceTokens     DeviceToken[]
+  // Team Members batch — see EventAssignment and TeamInvite below.
+  eventAssignments EventAssignment[]
+  teamInvitesSent  TeamInvite[]      @relation("TeamInviteInvitedBy")
 }
 
 // ─────────────────────────────────────────
@@ -447,25 +477,25 @@ model DeviceToken {
 // ─────────────────────────────────────────
 
 model Event {
-  id                 String          @id @default(cuid())
-  tenantId           String
-  createdByUserId    String
-  name               String
-  description        String?
+  id                          String          @id @default(cuid())
+  tenantId                    String
+  createdByUserId             String
+  name                        String
+  description                 String?
   // No venue here: it belongs to each EventDay (see EventDay.location).
   // The four retired Event venue columns were dropped in
   // 20261004090000_drop_event_venue_columns.
-  coverImageUrl      String?
+  coverImageUrl               String?
   // Cloudinary's asset id for coverImageUrl, when the cover was uploaded
   // through the signed-upload flow (src/modules/upload/) rather than
   // pasted as an external link. Nullable independently of coverImageUrl —
   // an externally-hosted URL has no Cloudinary asset to reference. Needed
   // to delete the old asset on replace and for any future
   // transform/thumbnail generation (see Batch B report).
-  coverImagePublicId String?
-  status             EventStatus     @default(DRAFT)
-  visibility         EventVisibility @default(PRIVATE)
-  ticketing          EventTicketing  @default(FREE)
+  coverImagePublicId          String?
+  status                      EventStatus     @default(DRAFT)
+  visibility                  EventVisibility @default(PRIVATE)
+  ticketing                   EventTicketing  @default(FREE)
   // Organiser-typed display name shown to guests on the invitation/RSVP
   // page and the public Memory Hub gallery — e.g. "The Mashilo Family" or
   // "Sarah & Tom". Deliberately separate from Tenant.name (a workspace
@@ -474,16 +504,16 @@ model Event {
   // shows no host line, since falling back to the tenant name would leak
   // exactly what rsvp.service.ts's guest-facing responses are designed to
   // withhold.
-  hostName           String?
+  hostName                    String?
   // Independent of Event.status — closes guest self-service RSVP only.
   // Organiser guest management is unaffected. Never folded into
   // resolveEffectiveStatus (event-status.util.ts).
-  rsvpDeadline       DateTime?
+  rsvpDeadline                DateTime?
   // The VENUE's physical capacity — informational, not a billing limit.
   // Distinct from SubscriptionTierConfig.maxGuestsPerEvent; never conflate
   // the two. Warns via acceptedGuestCount on the event detail response,
   // never blocks guest creation/import.
-  capacity           Int?
+  capacity                    Int?
   // Public self-registration credential — same shape and purpose as
   // MemoryHub.shareToken (32 random bytes hex, unguessable, unique).
   // Null until the organiser first requests a share link for a PUBLIC
@@ -492,7 +522,20 @@ model Event {
   // the previous link rather than just hiding it. Never the raw Event.id
   // — a cuid in a public URL lets anyone enumerate events by guessing,
   // and could never be revoked once shared somewhere it shouldn't be.
-  shareToken         String?         @unique
+  shareToken                  String?         @unique
+  // Public self-registration settings (event-public.service.ts), set by the
+  // organiser through /api/events/:eventId/registration-settings. Dormant
+  // on a PRIVATE event. Empty domains = anyone may register; otherwise the
+  // registrant's normalised email must be at exactly one of them
+  // (lowercase, no "@"). The cap counts self-registered guests who haven't
+  // declined, plus their plus-ones; null = no cap of its own (the plan's
+  // guest limit still applies). registrationClosesAt null = closes at the
+  // RSVP deadline, and registration never stays open past that deadline.
+  registrationEmailDomains    String[]        @default([])
+  registrationCap             Int?
+  registrationClosesAt        DateTime?
+  // Copied onto each registrant's Guest.plusOnesAllowed at registration.
+  registrationPlusOnesAllowed Int             @default(0)
   // Organiser-chosen, informational only — Ticketing & Payments batch.
   // With split-at-source, a ticket's money lands directly in the
   // organiser's bank account (possibly weeks before a refund request
@@ -500,12 +543,12 @@ model Event {
   // back. This is display copy shown to the guest BEFORE they pay (see
   // rsvp.service.ts's validate() projection), never something this
   // backend acts on. Meaningless (and unused) while ticketing is FREE.
-  ticketsRefundable  Boolean         @default(false)
-  isArchived         Boolean         @default(false)
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  createdBy          String
-  updatedBy          String
+  ticketsRefundable           Boolean         @default(false)
+  isArchived                  Boolean         @default(false)
+  createdAt                   DateTime        @default(now())
+  updatedAt                   DateTime        @updatedAt
+  createdBy                   String
+  updatedBy                   String
 
   tenant                  Tenant                   @relation(fields: [tenantId], references: [id])
   createdByUser           User                     @relation(fields: [createdByUserId], references: [id])
@@ -524,11 +567,19 @@ model Event {
   eventSmsBundlePurchases EventSmsBundlePurchase[]
   smsSendLogs             SmsSendLog[]
   inviteReminderLogs      InviteReminderLog[]
+  announcements           Announcement[]
+  emailClaims             EventEmailClaim[]
+  // Feedback and sharing permissions — see EventFeedback and ConsentRecord.
+  feedback                EventFeedback?
+  consentRecords          ConsentRecord[]
+  feedbackRequestClaim    FeedbackRequestClaim?
   // A list only because Prisma cannot express "unique among non-archived":
   // at most ONE non-archived row per event, enforced by the partial unique
   // index in the invitation_design migration. Read it through
   // invitationDesignRepository.findActiveByEventId, never as a list.
   invitationDesigns       InvitationDesign[]
+  // Team Members batch — which EVENT_ADMINs this event is assigned to.
+  assignments             EventAssignment[]
 }
 
 // ─────────────────────────────────────────
@@ -543,12 +594,12 @@ model Event {
 // ─────────────────────────────────────────
 
 model EventDay {
-  id         String    @id @default(cuid())
-  eventId    String
-  label      String
-  date       DateTime  @db.Date
-  startTime  DateTime?
-  endTime    DateTime?
+  id                  String    @id @default(cuid())
+  eventId             String
+  label               String
+  date                DateTime  @db.Date
+  startTime           DateTime?
+  endTime             DateTime?
   // The venue — per day, not per event: a wedding's ceremony and its
   // brunch the next morning are often in different places. Nullable here
   // only so the migration that introduced them could backfill old events
@@ -556,21 +607,26 @@ model EventDay {
   // every create and update (event-day-venue.util.ts). Coordinates come
   // from the frontend's HERE lookup, both-or-neither, exactly as the
   // event-level ones did.
-  location   String?
-  address    String?
-  latitude   Decimal?  @db.Decimal(10, 7)
-  longitude  Decimal?  @db.Decimal(10, 7)
-  isArchived Boolean   @default(false)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  createdBy  String
-  updatedBy  String
+  location            String?
+  address             String?
+  latitude            Decimal?  @db.Decimal(10, 7)
+  longitude           Decimal?  @db.Decimal(10, 7)
+  // Public self-registration: a registrant can choose (and is invited to)
+  // only the days marked open. On by default, so a single-day event and
+  // every day added later need nothing set.
+  openForRegistration Boolean   @default(true)
+  isArchived          Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  createdBy           String
+  updatedBy           String
 
   event          Event            @relation(fields: [eventId], references: [id])
   inviteEventDay InviteEventDay[]
   attendances    Attendance[]
   checkIns       CheckIn[]
   programItems   ProgramItem[]
+  announcements  Announcement[]
 
   @@unique([eventId, label])
 }
@@ -590,28 +646,35 @@ model EventDay {
 // ─────────────────────────────────────────
 
 model Guest {
-  id              String   @id @default(cuid())
-  eventId         String
-  firstName       String?
-  surname         String?
-  email           String?
-  phoneNumber     String?
-  isArchived      Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String    @id @default(cuid())
+  eventId          String
+  firstName        String?
+  surname          String?
+  email            String?
+  phoneNumber      String?
+  isArchived       Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
   // A plus-one is a Guest row with hostGuestId set — declared during the
   // host's RSVP, never contacted directly (see assertExactlyOneContact,
   // which relaxes the email/phone requirement exactly for this case).
-  hostGuestId     String?
+  hostGuestId      String?
   // Per-guest allowance, not per-event: a couple gets a plus-one, a single
   // friend gets none. Enforced server-side in rsvp.service.ts's submit().
-  plusOnesAllowed Int      @default(0)
+  plusOnesAllowed  Int       @default(0)
+  // Set when the guest added themselves through a public event's
+  // registration link (event-public.service.ts); null for everyone an
+  // organiser added, and for plus-ones. A marker only: reminders, check-in
+  // and the guest list treat a self-registered guest like any other.
+  selfRegisteredAt DateTime?
 
-  event       Event        @relation(fields: [eventId], references: [id])
-  invites     Invite[]
-  memoryItems MemoryItem[] @relation("MemoryItemUploadedByGuest")
-  hostGuest   Guest?       @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
-  plusOnes    Guest[]      @relation("GuestPlusOnes")
+  event                  Event                  @relation(fields: [eventId], references: [id])
+  invites                Invite[]
+  memoryItems            MemoryItem[]           @relation("MemoryItemUploadedByGuest")
+  hostGuest              Guest?                 @relation("GuestPlusOnes", fields: [hostGuestId], references: [id])
+  plusOnes               Guest[]                @relation("GuestPlusOnes")
+  announcementDeliveries AnnouncementDelivery[]
+  consentRecords         ConsentRecord[]
 }
 
 // ─────────────────────────────────────────
@@ -812,9 +875,10 @@ model MemoryItem {
   createdBy          String
   updatedBy          String
 
-  memoryHub       MemoryHub @relation(fields: [memoryHubId], references: [id])
-  uploadedByGuest Guest?    @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
-  uploadedByUser  User?     @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+  memoryHub       MemoryHub       @relation(fields: [memoryHubId], references: [id])
+  uploadedByGuest Guest?          @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
+  uploadedByUser  User?           @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
+  consentRecords  ConsentRecord[]
 }
 
 // ─────────────────────────────────────────
@@ -1202,6 +1266,88 @@ model InviteReminderLog {
 //  delete); it stays findable by folder.
 // ─────────────────────────────────────────
 
+// ─────────────────────────────────────────
+//  ANNOUNCEMENTS — append-only, like InviteReminderLog: never edited or
+//  archived. An organiser's message to their guests, or the automatic
+//  email sent when the event is cancelled (kind). Written when the send is
+//  CLAIMED, before any email goes out, under a row lock on the event, so
+//  the daily limit (announcement.service.ts) holds when two sends race;
+//  recipientCount (guests emailed) and unreachableCount (guests in the
+//  audience with no email) are known at that point. What happened to each
+//  email is an AnnouncementDelivery row, and the failure count is summed
+//  from those at read time, the way PaymentLedgerEntry is: the row itself
+//  is never updated afterwards.
+// ─────────────────────────────────────────
+model Announcement {
+  id               String               @id @default(cuid())
+  eventId          String
+  kind             AnnouncementKind
+  // As sent: header-safe (sanitizeHeaderText), at most 150 characters.
+  subject          String
+  // Plain text, line breaks kept; escaped by the email layout. Null only
+  // for a cancellation sent without a note.
+  body             String?
+  audience         AnnouncementAudience
+  // Set when the organiser narrowed the audience to one day.
+  eventDayId       String?
+  // The organiser who sent it — a User.id (no relation, same as
+  // InviteReminderLog.sentBy).
+  sentBy           String
+  sentAt           DateTime             @default(now())
+  recipientCount   Int
+  unreachableCount Int
+
+  event      Event                  @relation(fields: [eventId], references: [id])
+  eventDay   EventDay?              @relation(fields: [eventDayId], references: [id])
+  deliveries AnnouncementDelivery[]
+
+  @@index([eventId, sentAt])
+}
+
+// One row per guest an announcement was emailed to, written once the
+// email has gone (or failed to). Append-only.
+model AnnouncementDelivery {
+  id             String   @id @default(cuid())
+  announcementId String
+  guestId        String
+  succeeded      Boolean
+  failureReason  String?
+  createdAt      DateTime @default(now())
+
+  announcement Announcement @relation(fields: [announcementId], references: [id])
+  guest        Guest        @relation(fields: [guestId], references: [id])
+
+  @@index([announcementId])
+  @@index([guestId])
+}
+
+// ─────────────────────────────────────────
+//  EVENT EMAIL CLAIM — append-only, like InviteReminderLog: never edited
+//  or archived. One row per invitation or reminder send that emails
+//  anyone, written BEFORE the emails go, under a row lock on the event,
+//  with how many emails it is about to send. The daily email limit
+//  (event-email-limit.util.ts) sums emailCount over the last 24 hours, so
+//  two sends racing can't pass it together. A claim counts attempts, not
+//  deliveries: an email Resend refuses still used the request.
+//
+//  ON DELETE CASCADE only so a hard-deleted test fixture event takes its
+//  claims with it; product code never hard-deletes an event.
+// ─────────────────────────────────────────
+model EventEmailClaim {
+  id         String         @id @default(cuid())
+  eventId    String
+  kind       EventEmailKind
+  emailCount Int
+  // The organiser who pressed the button — a User.id (no relation, same
+  // as InviteReminderLog.sentBy).
+  claimedBy  String
+  claimedAt  DateTime       @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, claimedAt])
+}
+
 model InvitationDesign {
   id                 String               @id @default(cuid())
   eventId            String
@@ -1245,8 +1391,11 @@ model SubscriptionTierConfig {
   // (never a running counter — see memory-hub-tier-enforcement.util.ts).
   // Independent of memoryHubEnabled below (all-or-nothing capability
   // gate); this is the numeric ceiling for tiers that have it. null =
-  // unlimited, same convention as every other max* column.
-  maxMemoryHubBytesPerEvent Int?
+  // unlimited, same convention as every other max* column. BigInt, so a
+  // limit can be above 2 GB (an Int stops at 2,147,483,647 bytes); the
+  // repository hands it to the code as a plain number
+  // (subscription-tier-config.repository.ts).
+  maxMemoryHubBytesPerEvent BigInt?
   emailEnabled              Boolean          @default(true)
   smsEnabled                Boolean          @default(false)
   vendorMarketplace         Boolean          @default(false)
@@ -1255,6 +1404,15 @@ model SubscriptionTierConfig {
   // Guest list export (.xlsx) — Celebrate and above. All-or-nothing
   // capability gate, same shape as memoryHubEnabled/dragDropBuilder.
   guestExportEnabled        Boolean          @default(false)
+  // Free Pilot — capabilities that used to be tied to a tier by name in
+  // code (tier-capabilities.util.ts). Set per tier by their migration to
+  // exactly what the code did: Spark had none of the first three, only
+  // Elevate had priority placement.
+  publicEventsEnabled       Boolean          @default(false)
+  paidTicketingEnabled      Boolean          @default(false)
+  customRsvpFieldsEnabled   Boolean          @default(false)
+  // Vendor spaces owned by a tenant on this tier rank first in discovery.
+  vendorPriorityPlacement   Boolean          @default(false)
   isAvailable               Boolean          @default(true)
   updatedAt                 DateTime         @updatedAt
 }
@@ -1475,4 +1633,177 @@ model PaystackWebhookEvent {
   receivedAt DateTime @default(now())
 
   @@index([eventType, receivedAt])
+}
+
+// ─────────────────────────────────────────
+//  TEAM MEMBERS — event assignments and team invitations
+//
+//  EventAssignment is the assignment lock for events
+//  (shared/utils/assignment-lock.util.ts): an EVENT_ADMIN with NO rows
+//  here sees every event in their tenant; one with ANY rows sees only
+//  those events. TENANT_ADMIN is never locked (a promotion to it clears
+//  the user's rows — team.service.ts). tenantId is the user's and the
+//  event's tenant, checked equal when a row is written, so a row can
+//  never join two tenants.
+//
+//  A membership join row, like VendorSpaceUser: removing an assignment
+//  deletes the row rather than archiving it (see STEERING's soft-delete
+//  exceptions). A row pointing at an archived event is kept and still
+//  counts as an assignment, so archiving a member's last event never
+//  widens their access.
+// ─────────────────────────────────────────
+
+model EventAssignment {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  eventId   String
+  createdAt DateTime @default(now())
+  createdBy String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  event  Event  @relation(fields: [eventId], references: [id])
+
+  @@unique([userId, eventId])
+  @@index([eventId])
+}
+
+// An invitation for one email address to join a tenant with a role (and,
+// for an EVENT_ADMIN, optional event assignments, applied on acceptance).
+// Only the SHA-256 hash of the token is stored, exactly like DeviceToken:
+// the raw value exists only in the emailed link. Resending mints a new
+// token (the old link stops working) and a new 7-day expiry. Single use:
+// acceptedAt is set in the same transaction that creates the User.
+// Revoking sets revokedAt; nothing is deleted.
+//
+// At most one OPEN invite (not accepted, not revoked) per tenant and
+// email, enforced by a partial unique index in the team_members
+// migration, since Prisma can't express one.
+model TeamInvite {
+  id              String       @id @default(cuid())
+  tenantId        String
+  // Lowercased and trimmed (shared/utils/email.util.ts's normalizeEmail).
+  email           String
+  role            PlatformRole
+  // Event ids to assign on acceptance (EVENT_ADMIN only; empty = every
+  // event). Re-checked on acceptance: an event archived since is dropped.
+  eventIds        String[]
+  tokenHash       String       @unique
+  expiresAt       DateTime
+  lastSentAt      DateTime
+  acceptedAt      DateTime?
+  acceptedUserId  String?
+  revokedAt       DateTime?
+  invitedByUserId String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  invitedBy User   @relation("TeamInviteInvitedBy", fields: [invitedByUserId], references: [id])
+
+  @@index([tenantId, email])
+}
+
+// ─────────────────────────────────────────
+//  FEEDBACK AND SHARING PERMISSIONS (behind the `feedback` flag)
+//
+//  After an event, its organisers are asked how it went and whether
+//  e-velope may feature their company, quote them, contact them about a
+//  case study and share photos they choose. Guests decide for their own
+//  photos. Every permission given or withdrawn is a ConsentRecord.
+// ─────────────────────────────────────────
+
+// What a ConsentRecord is about. The first three are the organiser's, for
+// the whole event; PHOTO_ORGANISER_SELECTED is the organiser's, per photo;
+// PHOTO_GUEST_PUBLIC_SHARING is the uploading guest's, per photo.
+enum ConsentKind {
+  COMPANY_NAME_LOGO
+  QUOTE
+  CASE_STUDY_CONTACT
+  PHOTO_ORGANISER_SELECTED
+  PHOTO_GUEST_PUBLIC_SHARING
+}
+
+enum ConsentAction {
+  GRANTED
+  WITHDRAWN
+}
+
+// APPEND-ONLY, like PaymentLedgerEntry: never updated, never deleted, no
+// isArchived and no updatedAt, and consent.repository.ts has no update or
+// delete method. A withdrawal is a NEW row. The current state of a subject
+// (event + kind, plus the photo for the photo kinds) is its latest row by
+// `seq`; no row at all means never given.
+//
+// Exactly one of userId (an organiser, a User.id with no relation, like
+// Announcement.sentBy) or guestId (the uploading guest) says who. wording
+// and wordingVersion are what that person was shown
+// (consent-wording.ts); a changed wording is a new version, and old rows
+// keep the wording they were given.
+//
+// ON DELETE CASCADE only so a hard-deleted test fixture takes its records
+// with it; product code never hard-deletes an event, guest or photo.
+model ConsentRecord {
+  id             String        @id @default(cuid())
+  // Orders records unambiguously: two in the same millisecond still have
+  // a latest.
+  seq            Int           @unique @default(autoincrement())
+  eventId        String
+  kind           ConsentKind
+  memoryItemId   String?
+  userId         String?
+  guestId        String?
+  action         ConsentAction
+  wording        String
+  wordingVersion Int
+  recordedAt     DateTime      @default(now())
+
+  event      Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  memoryItem MemoryItem? @relation(fields: [memoryItemId], references: [id], onDelete: Cascade)
+  guest      Guest?      @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, seq])
+  @@index([memoryItemId])
+}
+
+// One per event: the organisers' answers. Edited in place (the answers are
+// not consent; the permissions beside them are ConsentRecords). Never
+// deleted; isArchived only by convention, nothing archives one today.
+model EventFeedback {
+  id           String   @id @default(cuid())
+  eventId      String   @unique
+  tenantId     String
+  // 0–10, "How likely are you to recommend e-velope?"
+  score        Int
+  // Up to 2000 characters each; null when left blank.
+  workedBest   String?
+  toImprove    String?
+  // The company's logo, signed into the tenant's own folder
+  // (upload-folders.ts's feedbackLogoFolder) and checked on save.
+  logoUrl      String?
+  logoPublicId String?
+  // User.ids, no relation (same as Announcement.sentBy).
+  submittedBy  String
+  updatedBy    String
+  isArchived   Boolean  @default(false)
+  submittedAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+}
+
+// The "How did <event> go?" email, claimed once per event BEFORE it is
+// sent (feedback-request.service.ts). The unique eventId is the claim: two
+// sweeps racing, on one server or several, can't both insert it, so the
+// email goes at most once, restarts included. Append-only: written once,
+// never edited.
+model FeedbackRequestClaim {
+  id             String   @id @default(cuid())
+  eventId        String   @unique
+  recipientCount Int
+  claimedAt      DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
 }

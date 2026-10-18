@@ -3,6 +3,6 @@ export interface CreateEventProgramDto {
 }
 
 export interface UpdateEventProgramDto {
-  title?: string;
+  title?: string | null;
   isPublished?: boolean;
 }

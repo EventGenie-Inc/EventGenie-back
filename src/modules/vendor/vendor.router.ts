@@ -6,10 +6,15 @@ import {
   requireTenantAdmin,
   requireVendorSpaceOwner,
 } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 
 const router = Router();
+
+// Every vendor route is authenticated; the guard needs req.user to let a
+// SUPER_ADMIN through while the feature is off.
+router.use(authenticate, requireFeature('vendors'));
 
 // ─────────────────────────────────────────
 //  VENDOR SPACE
@@ -20,7 +25,7 @@ const router = Router();
 // SUPER_ADMIN sees all, others see their own tenant's vendors —
 // includeArchived lets a tenant admin see (and then restore) their own
 // archived spaces, same pattern as guest-event.router.ts's list route.
-router.get('/', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const includeArchived = req.query['includeArchived'] === 'true';
@@ -36,7 +41,7 @@ router.get('/', authenticate, requireEventAdminOrVendor, async (req: Request, re
 // ways to search: raw coordinates, or an eventId (resolved through the
 // normal tenant-scoped event lookup, then searched cross-tenant from
 // its coordinates — see getNearbyVendorsForEvent's own comment).
-router.get('/nearby', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/nearby', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.query['eventId'] as string | undefined;
@@ -67,7 +72,7 @@ router.get('/nearby', authenticate, requireEventAdminOrVendor, async (req: Reque
 // the event-scoped variant. Cross-tenant, no location filter. Must be
 // registered before /:id or Express would match "browse" as an :id
 // value (same reason /nearby and /mine are registered up here too).
-router.get('/browse', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/browse', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const vendors = await vendorService.getBrowseVendors(auth.user.tenantId);
@@ -81,7 +86,7 @@ router.get('/browse', authenticate, requireEventAdminOrVendor, async (req: Reque
 // (Vendor Space Follow-up, Task 1) — this is how the frontend gets the
 // list to show a chooser. Any authenticated user may call it; a
 // non-vendor role simply gets an empty list (they hold no memberships).
-router.get('/mine', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/mine', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const spaces = await vendorService.getMySpaces(auth.user.id);
@@ -93,7 +98,7 @@ router.get('/mine', authenticate, async (req: Request, res: Response, next: Next
 // getSpaceForViewer, not getSpaceById directly — an EVENT_VENDOR reads
 // their own space via VendorSpaceUser membership here, not tenantId
 // (see vendor.service.ts's own comment); every other role is unchanged.
-router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const space = await vendorService.getSpaceForViewer(req.params['id'] as string, auth.user.role, auth.user.tenantId, auth.user.id);
@@ -104,7 +109,7 @@ router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request,
 // POST /api/vendors
 // Vendors don't self-onboard a new space — they're assigned to an existing
 // one via POST /:vendorSpaceId/assign-user below.
-router.post('/', authenticate, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const space = await vendorService.createSpace(auth.user.id, auth.user.role, auth.user.tenantId, req.body);
@@ -113,7 +118,7 @@ router.post('/', authenticate, requireTenantAdmin, async (req: Request, res: Res
 });
 
 // PUT /api/vendors/:id
-router.put('/:id', authenticate, requireVendorSpaceOwner('id'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', requireVendorSpaceOwner('id'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const space = await vendorService.updateSpace(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
@@ -122,7 +127,7 @@ router.put('/:id', authenticate, requireVendorSpaceOwner('id'), async (req: Requ
 });
 
 // DELETE /api/vendors/:id
-router.delete('/:id', authenticate, requireVendorSpaceOwner('id'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', requireVendorSpaceOwner('id'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     await vendorService.archiveSpace(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
@@ -138,7 +143,7 @@ router.delete('/:id', authenticate, requireVendorSpaceOwner('id'), async (req: R
 // archived space before this route ever ran. requireTenantAdmin is a
 // role-shape check only; the real tenant-ownership check happens inside
 // vendorService.reactivateSpace via its own includeArchived lookup.
-router.post('/:id/reactivate', authenticate, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/reactivate', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const space = await vendorService.reactivateSpace(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
@@ -152,7 +157,7 @@ router.post('/:id/reactivate', authenticate, requireTenantAdmin, async (req: Req
 // already manage other spaces, and a space may already have other
 // users. Replaces the old single POST /:vendorSpaceId/assign-user
 // (there was no real consumer yet, so no back-compat route is kept).
-router.post('/:vendorSpaceId/users', authenticate, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:vendorSpaceId/users', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     if (!req.body.userId) throw new HttpError(400, 'userId is required');
@@ -171,7 +176,7 @@ router.post('/:vendorSpaceId/users', authenticate, requireTenantAdmin, async (re
 // Removes a user's membership on this vendor space. Hard-deletes the
 // join row (see schema comment on VendorSpaceUser) — this is a
 // membership fact, not a soft-deletable business entity.
-router.delete('/:vendorSpaceId/users/:userId', authenticate, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:vendorSpaceId/users/:userId', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     await vendorService.unassignVendorUser(
@@ -190,7 +195,7 @@ router.delete('/:vendorSpaceId/users/:userId', authenticate, requireTenantAdmin,
 // ─────────────────────────────────────────
 
 // GET /api/vendors/:vendorSpaceId/services?includeArchived=true
-router.get('/:vendorSpaceId/services', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:vendorSpaceId/services', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const includeArchived = req.query['includeArchived'] === 'true';
@@ -200,7 +205,7 @@ router.get('/:vendorSpaceId/services', authenticate, requireEventAdminOrVendor, 
 });
 
 // GET /api/vendors/:vendorSpaceId/services/:id
-router.get('/:vendorSpaceId/services/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:vendorSpaceId/services/:id', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const service = await vendorService.getServiceById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
@@ -209,7 +214,7 @@ router.get('/:vendorSpaceId/services/:id', authenticate, requireEventAdminOrVend
 });
 
 // POST /api/vendors/:vendorSpaceId/services
-router.post('/:vendorSpaceId/services', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:vendorSpaceId/services', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const service = await vendorService.createService(
@@ -224,7 +229,7 @@ router.post('/:vendorSpaceId/services', authenticate, requireVendorSpaceOwner('v
 });
 
 // PUT /api/vendors/:vendorSpaceId/services/:id
-router.put('/:vendorSpaceId/services/:id', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:vendorSpaceId/services/:id', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const service = await vendorService.updateService(
@@ -239,7 +244,7 @@ router.put('/:vendorSpaceId/services/:id', authenticate, requireVendorSpaceOwner
 });
 
 // DELETE /api/vendors/:vendorSpaceId/services/:id
-router.delete('/:vendorSpaceId/services/:id', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:vendorSpaceId/services/:id', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     await vendorService.archiveService(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
@@ -255,7 +260,7 @@ router.delete('/:vendorSpaceId/services/:id', authenticate, requireVendorSpaceOw
 // middleware already checks — it looks at the SPACE's archived state,
 // not the service's, so an archived service under an active space
 // still passes it correctly.
-router.post('/:vendorSpaceId/services/:id/reactivate', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:vendorSpaceId/services/:id/reactivate', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const service = await vendorService.reactivateService(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
@@ -269,7 +274,7 @@ router.post('/:vendorSpaceId/services/:id/reactivate', authenticate, requireVend
 // ─────────────────────────────────────────
 
 // GET /api/vendors/:vendorSpaceId/services/:serviceId/products?includeArchived=true
-router.get('/:vendorSpaceId/services/:serviceId/products', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:vendorSpaceId/services/:serviceId/products', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const includeArchived = req.query['includeArchived'] === 'true';
@@ -279,7 +284,7 @@ router.get('/:vendorSpaceId/services/:serviceId/products', authenticate, require
 });
 
 // GET /api/vendors/:vendorSpaceId/services/:serviceId/products/:id
-router.get('/:vendorSpaceId/services/:serviceId/products/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:vendorSpaceId/services/:serviceId/products/:id', requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const product = await vendorService.getProductById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
@@ -288,7 +293,7 @@ router.get('/:vendorSpaceId/services/:serviceId/products/:id', authenticate, req
 });
 
 // POST /api/vendors/:vendorSpaceId/services/:serviceId/products
-router.post('/:vendorSpaceId/services/:serviceId/products', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:vendorSpaceId/services/:serviceId/products', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const product = await vendorService.createProduct(
@@ -303,7 +308,7 @@ router.post('/:vendorSpaceId/services/:serviceId/products', authenticate, requir
 });
 
 // PUT /api/vendors/:vendorSpaceId/services/:serviceId/products/:id
-router.put('/:vendorSpaceId/services/:serviceId/products/:id', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:vendorSpaceId/services/:serviceId/products/:id', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const product = await vendorService.updateProduct(
@@ -318,7 +323,7 @@ router.put('/:vendorSpaceId/services/:serviceId/products/:id', authenticate, req
 });
 
 // DELETE /api/vendors/:vendorSpaceId/services/:serviceId/products/:id
-router.delete('/:vendorSpaceId/services/:serviceId/products/:id', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:vendorSpaceId/services/:serviceId/products/:id', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     await vendorService.archiveProduct(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
@@ -327,7 +332,7 @@ router.delete('/:vendorSpaceId/services/:serviceId/products/:id', authenticate, 
 });
 
 // POST /api/vendors/:vendorSpaceId/services/:serviceId/products/:id/reactivate
-router.post('/:vendorSpaceId/services/:serviceId/products/:id/reactivate', authenticate, requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:vendorSpaceId/services/:serviceId/products/:id/reactivate', requireVendorSpaceOwner('vendorSpaceId'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const product = await vendorService.reactivateProduct(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);

@@ -5,6 +5,7 @@ import { vendorRepository } from './vendor.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEffectiveTier, type TenantSubscriptionState } from '../subscription/effective-tier.util.js';
 import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { launchLimitMessage, launchUnavailableMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 
 export interface VendorSpaceLimitInfo {
   limit: number | null; // effective ceiling on active vendor spaces for this tenant; null = unlimited
@@ -60,7 +61,10 @@ export const assertVendorSpaceCreatable = async (tenantId: string | null): Promi
   if (!resolved.vendorMarketplace) {
     throw new HttpError(
       403,
-      `The ${resolved.tenantTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`
+      tierRefusalMessage(
+        `The ${resolved.tenantTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`,
+        launchUnavailableMessage('The vendor marketplace')
+      )
     );
   }
 
@@ -72,7 +76,11 @@ export const assertVendorSpaceCreatable = async (tenantId: string | null): Promi
     if (activeCount >= resolved.limit) {
       throw new HttpError(
         403,
-        `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} active vendor space(s). Archive an existing space or upgrade your plan to add another.`
+        tierRefusalMessage(
+          `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} active vendor space(s). Archive an existing space or upgrade your plan to add another.`,
+          launchLimitMessage(`You've reached the limit of ${resolved.limit} active vendor space(s)`) +
+            ' Archiving a space you no longer need also frees up a place.'
+        )
       );
     }
   }
@@ -100,7 +108,10 @@ export const assertVendorMarketplaceAccessible = async (tenantId: string | null)
   if (!config?.vendorMarketplace) {
     throw new HttpError(
       403,
-      `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`
+      tierRefusalMessage(
+        `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`,
+        launchUnavailableMessage('The vendor marketplace')
+      )
     );
   }
 };
@@ -122,7 +133,10 @@ export const assertEventVendorMarketplaceAccessible = async (event: EntitlementD
   if (!config?.vendorMarketplace) {
     throw new HttpError(
       403,
-      `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`
+      tierRefusalMessage(
+        `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`,
+        launchUnavailableMessage('The vendor marketplace')
+      )
     );
   }
 };

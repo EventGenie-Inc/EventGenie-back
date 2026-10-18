@@ -1,7 +1,8 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { rsvpService } from './rsvp.service.js';
 import { eventProgramService } from '../event-program/event-program.service.js';
-import { ticketQuoteLimiter, rsvpProgramLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import { ticketQuoteLimiter, rsvpProgramLimiter, rsvpSubmitInviteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
 
 // Fully public surface — a guest only has a bare invite token, never a
 // platform session. No auth middleware anywhere in this file.
@@ -17,7 +18,7 @@ router.get('/validate/:token', async (req: Request, res: Response, next: NextFun
 
 // POST rather than a query string: the invite token is the guest's
 // credential and must not be placed in URLs, logs, or referrers.
-router.post('/ticket-quote', ticketQuoteLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/ticket-quote', requireFeature('ticketing'), ticketQuoteLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const quote = await rsvpService.quoteTicket(req.body);
     res.status(200).json({ status: 'ok', data: quote });
@@ -38,7 +39,8 @@ router.post('/program', rsvpProgramLimiter, async (req: Request, res: Response, 
 });
 
 // POST /api/rsvp/submit
-router.post('/submit', async (req: Request, res: Response, next: NextFunction) => {
+// Limited per invite (rsvpSubmitInviteLimiter): see rate-limit.middleware.ts.
+router.post('/submit', rsvpSubmitInviteLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await rsvpService.submit(req.body);
     res.status(200).json({ status: 'ok', data: result });
@@ -50,7 +52,7 @@ router.post('/submit', async (req: Request, res: Response, next: NextFunction) =
 // Re-initiates payment for an existing FAILED/EXPIRED ticket purchase —
 // never resubmits the whole RSVP form. See rsvp.service.ts's
 // retryTicketPayment.
-router.post('/ticket-purchase/retry', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/ticket-purchase/retry', requireFeature('ticketing'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await rsvpService.retryTicketPayment(req.body?.token as string);
     res.status(200).json({ status: 'ok', data: result });
@@ -62,7 +64,7 @@ router.post('/ticket-purchase/retry', async (req: Request, res: Response, next: 
 // the callback's own query parameters as proof of payment — this makes
 // an authoritative call back to Paystack if still PENDING. See
 // rsvp.service.ts's confirmTicketPayment / ticketPurchaseService.reconcile.
-router.get('/ticket-purchase/confirm/:token', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/ticket-purchase/confirm/:token', requireFeature('ticketing'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await rsvpService.confirmTicketPayment(req.params['token'] as string);
     res.status(200).json({ status: 'ok', data: result });

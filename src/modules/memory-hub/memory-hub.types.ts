@@ -23,8 +23,12 @@ export interface CreateMemoryItemDto {
 
 // Guest upload — authenticated by invite token only, as the RSVP
 // endpoints are. Same shape as CreateMemoryItemDto plus the token.
+//
+// allowPublicSharing: the guest's own opt-in for this photo (the `feedback`
+// flag), false when left out. Organiser uploads don't carry one.
 export interface CreateGuestMemoryItemDto extends CreateMemoryItemDto {
   token: string;
+  allowPublicSharing?: boolean;
 }
 
 export interface UpdateMemoryItemDto {

@@ -2,11 +2,12 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { paymentAccountService } from './payment-account.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
 
-router.use(authenticate, requireTenantAdmin);
+router.use(authenticate, requireFeature('ticketing'), requireTenantAdmin);
 
 // Every route below operates on the CALLER's own tenant (from the JWT),
 // never a route param — same self-service shape as tenant.router.ts's

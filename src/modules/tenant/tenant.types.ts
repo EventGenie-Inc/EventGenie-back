@@ -1,4 +1,5 @@
 import { type SubscriptionTier, type SubscriptionStatus } from '@prisma/client';
+import { type PlanSettings } from '../subscription-tier-config/plan-settings.util.js';
 
 // Deliberate, hand-picked projection — every tenant.router.ts response
 // (me/list/detail/suspend/reactivate) returns exactly this, never the
@@ -34,10 +35,15 @@ export interface VendorSpaceLimitDto {
   currentCount: number; // active (non-archived) vendor spaces this tenant owns right now
 }
 
-// Returned only by tenant.service.ts's getDetail (GET /api/tenants/me and
-// SUPER_ADMIN's GET /api/tenants/:id) — never by getAll or getById, which
+// Returned only by tenant.service.ts's getDetail (GET /api/tenants/me;
+// SUPER_ADMIN's GET /api/tenants/:id uses getById) — never by getAll or getById, which
 // stay at plain ClientTenantDto so a tenant list or an internal
 // ownership-gate check doesn't pay for the extra vendor-space queries.
+// vendorSpaceLimit is absent while the vendors feature is switched off.
 export interface ClientTenantDetailDto extends ClientTenantDto {
-  vendorSpaceLimit: VendorSpaceLimitDto;
+  // What the effective plan allows (subscription-tier-config/
+  // plan-settings.util.ts). The frontend shows or locks features from
+  // these, never from subscriptionTier's name.
+  planSettings: PlanSettings;
+  vendorSpaceLimit?: VendorSpaceLimitDto;
 }

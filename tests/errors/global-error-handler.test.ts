@@ -4,6 +4,10 @@ import app, { GENERIC_ERROR_MESSAGE } from '../../src/app.js';
 import { inviteRepository } from '../../src/modules/invite/invite.repository.js';
 import { prisma } from '../helpers/fixtures.js';
 
+// findByToken returns a Prisma promise; a stub returns a plain one, which
+// behaves the same to its caller (it is only awaited).
+const asFindByToken = (fn: () => Promise<unknown>) => fn as unknown as typeof inviteRepository.findByToken;
+
 // ─────────────────────────────────────────
 //  GLOBAL ERROR HANDLER — no raw error text reaches a client
 //
@@ -31,7 +35,7 @@ const expectGeneric500 = (res: request.Response, leakedText: string) => {
 describe('global error handler', () => {
   it("a Prisma validation error's text never reaches the response, and is logged", async () => {
     let prismaMessage = '';
-    vi.spyOn(inviteRepository, 'findByToken').mockImplementationOnce(async () => {
+    vi.spyOn(inviteRepository, 'findByToken').mockImplementationOnce(asFindByToken(async () => {
       try {
         // A genuinely invalid query: Prisma rejects it with a
         // PrismaClientValidationError naming the model and arguments.
@@ -40,7 +44,7 @@ describe('global error handler', () => {
         prismaMessage = (err as Error).message;
         throw err;
       }
-    });
+    }));
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await request(app).get('/api/rsvp/validate/any-token');
@@ -53,7 +57,7 @@ describe('global error handler', () => {
 
   it("a Prisma known-request error (raw SQL on a missing table) never reaches the response", async () => {
     let prismaMessage = '';
-    vi.spyOn(inviteRepository, 'findByToken').mockImplementationOnce(async () => {
+    vi.spyOn(inviteRepository, 'findByToken').mockImplementationOnce(asFindByToken(async () => {
       try {
         await prisma.$queryRawUnsafe('SELECT * FROM "NoSuchTable_ErrorHandlerTest"');
         return null;
@@ -61,7 +65,7 @@ describe('global error handler', () => {
         prismaMessage = (err as Error).message;
         throw err;
       }
-    });
+    }));
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await request(app).get('/api/rsvp/validate/any-token');

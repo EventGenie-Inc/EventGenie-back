@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { paymentWebhookService } from './payment-webhook.service.js';
 import { type PaystackWebhookPayload } from './payment-webhook.types.js';
+import { reportError } from '../../shared/monitoring/error-reporting.js';
 
 const router = Router();
 
@@ -43,6 +44,7 @@ router.post('/', async (req: Request, res: Response) => {
     // deliberate: it tells Paystack to retry, which is exactly what we
     // want once whatever failed has recovered.
     console.error('[payments webhook] processing failed:', err);
+    reportError(err, req, res);
     res.status(500).json({ status: 'error', message: 'Webhook processing failed' });
   }
 });

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
-import { type MemoryItemStatus } from '@prisma/client';
+import { type MemoryItemStatus, type Prisma } from '@prisma/client';
 import { type CreateMemoryHubDto, type UpdateMemoryHubDto } from './memory-hub.types.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 
@@ -13,7 +13,16 @@ import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 // happens in memory-hub.service.ts by gating every method through
 // eventService.getById() first, exactly like event-day/guest/invite
 // gate through it. See the batch report.
+type Tx = Prisma.TransactionClient;
+// Hub writes take an optional transaction client (the full event update).
+type Db = Tx | typeof prisma;
+
 export const memoryHubRepository = {
+
+  // A guest upload and its public-sharing consent are written together
+  // (memory-hub.service.ts's createGuestItem): one transaction, so a photo
+  // never lands without the opt-in its guest asked for.
+  withTransaction: <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => prisma.$transaction(fn),
 
   // ── Memory Hub ────────────────────────────
 
@@ -54,8 +63,8 @@ export const memoryHubRepository = {
       },
     }),
 
-  create: (eventId: string, userId: string, data: CreateMemoryHubDto) =>
-    prisma.memoryHub.create({
+  create: (eventId: string, userId: string, data: CreateMemoryHubDto, db: Db = prisma) =>
+    db.memoryHub.create({
       data: {
         eventId,
         title: data.title ?? null,
@@ -69,8 +78,8 @@ export const memoryHubRepository = {
       },
     }),
 
-  update: (id: string, userId: string, data: UpdateMemoryHubDto) =>
-    prisma.memoryHub.update({
+  update: (id: string, userId: string, data: UpdateMemoryHubDto, db: Db = prisma) =>
+    db.memoryHub.update({
       where: { id },
       data: {
         ...(data.title !== undefined && { title: data.title ?? null }),
@@ -164,6 +173,31 @@ export const memoryHubRepository = {
       orderBy: { createdAt: 'desc' },
     }),
 
+  // The guest's own live photos that can still be shown to them (pending
+  // or approved; a rejected one is never shown to its guest), newest
+  // first: guest-view's publicSharing.myItems. Filtered by uploader in the
+  // query, like findPendingItemsByGuest.
+  findShareablePhotosByGuest: (memoryHubId: string, guestId: string) =>
+    prisma.memoryItem.findMany({
+      where: {
+        memoryHubId,
+        uploadedByGuestId: guestId,
+        mediaType: 'IMAGE',
+        status: { in: ['PENDING', 'APPROVED'] },
+        isArchived: false,
+      },
+      select: { id: true },
+      orderBy: { createdAt: 'desc' },
+    }),
+
+  // One live item this guest uploaded to this event, or null: the guest's
+  // public-sharing toggle may only reach their own photo.
+  findGuestItem: (id: string, eventId: string, guestId: string) =>
+    prisma.memoryItem.findFirst({
+      where: { id, memoryHub: { eventId }, uploadedByGuestId: guestId, isArchived: false },
+      select: { id: true, mediaType: true },
+    }),
+
   findItemById: (id: string, includeArchived = false) =>
     prisma.memoryItem.findFirst({
       where: { id, ...(includeArchived ? {} : { isArchived: false }) },
@@ -185,9 +219,10 @@ export const memoryHubRepository = {
       status: MemoryItemStatus;
       uploadedByUserId?: string;
       uploadedByGuestId?: string;
-    }
+    },
+    tx?: Tx
   ) =>
-    prisma.memoryItem.create({
+    (tx ?? prisma).memoryItem.create({
       data: {
         memoryHubId,
         mediaUrl: data.mediaUrl,

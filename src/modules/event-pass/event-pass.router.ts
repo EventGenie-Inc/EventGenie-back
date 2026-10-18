@@ -2,7 +2,9 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { eventPassService } from './event-pass.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin, requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 
 // Nested under /api/events/:eventId/pass (app.ts) — mergeParams is set
 // there, same as every other event-child router (event-day, guest,
@@ -23,7 +25,7 @@ router.get('/', requireEventAdmin, async (req: Request, res: Response, next: Nex
   } catch (err) { next(err); }
 });
 
-router.get('/sms-bundle', requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/sms-bundle', requireFeature('sms'), requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
@@ -34,36 +36,50 @@ router.get('/sms-bundle', requireEventAdmin, async (req: Request, res: Response,
 
 // Purchase / reconcile routes — money-moving, gated requireTenantAdmin,
 // same convention as subscription.router.ts / payment-account.router.ts.
-router.post('/purchase', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+// Behind `payments` too (off for the free launch pilot), before the role
+// gate; the status reads above stay up either way.
+router.post('/purchase', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
-    const callbackUrl = `${process.env.FRONTEND_BASE_URL}/billing/event-pass/callback`;
+    const callbackUrl = frontendUrl('/billing/event-pass/callback');
     const result = await eventPassService.purchasePass(eventId, auth.user.role, auth.user.tenantId, req.body, callbackUrl);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
 
-router.post('/purchases/:purchaseId/reconcile', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/purchases/:purchaseId/reconcile', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const result = await eventPassService.reconcilePassPurchase(req.params['purchaseId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const result = await eventPassService.reconcilePassPurchase(
+      req.params['eventId'] as string,
+      req.params['purchaseId'] as string,
+      auth.user.role,
+      auth.user.tenantId
+    );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchase', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchase', requireFeature('sms'), requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;
-    const callbackUrl = `${process.env.FRONTEND_BASE_URL}/billing/event-pass/sms-bundle/callback`;
+    const callbackUrl = frontendUrl('/billing/event-pass/sms-bundle/callback');
     const result = await eventPassService.purchaseSmsBundle(eventId, auth.user.role, auth.user.tenantId, req.body, callbackUrl);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireFeature('sms'), requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const result = await eventPassService.reconcileSmsBundlePurchase(req.params['purchaseId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const result = await eventPassService.reconcileSmsBundlePurchase(
+      req.params['eventId'] as string,
+      req.params['purchaseId'] as string,
+      auth.user.role,
+      auth.user.tenantId
+    );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });

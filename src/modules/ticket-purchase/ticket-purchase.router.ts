@@ -3,10 +3,11 @@ import { ticketPurchaseService } from './ticket-purchase.service.js';
 import { eventService } from '../event/event.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
-router.use(authenticate, requireEventAdmin);
+router.use(authenticate, requireFeature('ticketing'), requireEventAdmin);
 
 // Read-only — purchases are created internally by the RSVP-submit
 // transaction (POST /api/rsvp/submit), never through a public POST here.
@@ -36,14 +37,16 @@ router.get('/event/:eventId', async (req: Request, res: Response, next: NextFunc
 
 router.get('/invite/:inviteId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const purchases = await ticketPurchaseService.getAll(req.params['inviteId'] as string);
+    const auth = req as AuthenticatedRequest;
+    const purchases = await ticketPurchaseService.getAll(req.params['inviteId'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: purchases });
   } catch (err) { next(err); }
 });
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const purchase = await ticketPurchaseService.getById(req.params['id'] as string);
+    const auth = req as AuthenticatedRequest;
+    const purchase = await ticketPurchaseService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: purchase });
   } catch (err) { next(err); }
 });

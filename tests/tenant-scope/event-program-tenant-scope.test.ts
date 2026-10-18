@@ -28,7 +28,8 @@ import {
 //  before the parents they reference).
 // ─────────────────────────────────────────
 
-const cleanup: (() => Promise<void>)[] = [];
+// Each returns whatever its delete returns; only completion matters.
+const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();
@@ -65,20 +66,20 @@ describe('event-program / program-item — tenant scoping (Part 1)', () => {
     ).rejects.toMatchObject({ statusCode: 404 });
 
     await expect(
-      eventProgramService.getById(program.id, otherUser.role, otherUser.tenantId)
+      eventProgramService.getById(event.id, program.id, otherUser.role, otherUser.tenantId)
     ).rejects.toMatchObject({ statusCode: 404 });
 
     await expect(
-      eventProgramService.update(program.id, otherUser.id, otherUser.role, otherUser.tenantId, { title: 'Hijacked' })
+      eventProgramService.update(event.id, program.id, otherUser.id, otherUser.role, otherUser.tenantId, { title: 'Hijacked' })
     ).rejects.toMatchObject({ statusCode: 404 });
 
     await expect(
-      eventProgramService.archive(program.id, otherUser.id, otherUser.role, otherUser.tenantId)
+      eventProgramService.archive(event.id, program.id, otherUser.id, otherUser.role, otherUser.tenantId)
     ).rejects.toMatchObject({ statusCode: 404 });
 
     // Regression guard: the owning tenant can still reach it, and the
     // cross-tenant attempts above never actually mutated the row.
-    const found = await eventProgramService.getById(program.id, ownerUser.role, ownerUser.tenantId);
+    const found = await eventProgramService.getById(event.id, program.id, ownerUser.role, ownerUser.tenantId);
     expect(found.id).toBe(program.id);
     expect(found.title).toBe('Wedding Day');
     expect(found.isArchived).toBe(false);
@@ -87,9 +88,11 @@ describe('event-program / program-item — tenant scoping (Part 1)', () => {
   it("eventProgramService.getById: not found is 404, not a 500 (bare Error regression guard)", async () => {
     const ownerTenant = await createTestTenant();
     const ownerUser = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: ownerTenant.id });
-    cleanup.push(() => deleteTestUserRow(ownerUser.id), () => deleteTestTenant(ownerTenant.id));
+    const event = await createTestEvent(ownerTenant.id, ownerUser.id);
+    cleanup.push(() => deleteTestEvent(event.id), () => deleteTestUserRow(ownerUser.id), () => deleteTestTenant(ownerTenant.id));
 
-    const err = await eventProgramService.getById('does-not-exist', ownerUser.role, ownerUser.tenantId).catch((e) => e);
+    // The owner's own event, a program id that doesn't exist.
+    const err = await eventProgramService.getById(event.id, 'does-not-exist', ownerUser.role, ownerUser.tenantId).catch((e) => e);
     expect(err).toMatchObject({ statusCode: 404 });
     expect(err.name).toBe('HttpError');
   });

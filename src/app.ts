@@ -2,14 +2,21 @@ import express, { type Application, type Request, type Response, type NextFuncti
 import cors from 'cors';
 import { HttpError } from './shared/errors/http-error.js';
 import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
+import { rejectBodyParseErrors, REQUEST_BODY_LIMIT_MB } from './shared/middleware/body-parse-errors.middleware.js';
+import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
+import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
+import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
+import { reportError, reportUnreportedServerErrors } from './shared/monitoring/error-reporting.js';
 
 // ─────────────────────────────────────────
 //  ROUTERS
 // ─────────────────────────────────────────
 import tenantRouter from './modules/tenant/tenant.router.js';
 import userRouter from './modules/user/user.router.js';
+import userInvitePublicRouter from './modules/user/user-invite-public.router.js';
 import eventRouter from './modules/event/event.router.js';
 import eventDayRouter from './modules/event-day/event-day.router.js';
+import eventFullUpdateRouter from './modules/event-full-update/event-full-update.router.js';
 import eventDraftRouter from './modules/event-draft/event-draft.router.js';
 import guestRouter from './modules/guest/guest.router.js';
 import guestEventRouter from './modules/guest/guest-event.router.js';
@@ -18,6 +25,7 @@ import attendanceRouter from './modules/attendance/attendance.router.js';
 import checkInRouter from './modules/check-in/check-in.router.js';
 import authRouter from './modules/auth/auth.router.js';
 import memoryHubRouter from './modules/memory-hub/memory-hub.router.js';
+import memoryHubDownloadRouter from './modules/memory-hub/memory-hub-download.router.js';
 import memoryHubPublicRouter from './modules/memory-hub/memory-hub-public.router.js';
 import vendorRouter from './modules/vendor/vendor.router.js';
 import subscriptionTierConfigRouter from './modules/subscription-tier-config/subscription-tier-config.router.js';
@@ -29,6 +37,8 @@ import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import eventPublicRouter from './modules/event-public/event-public.router.js';
+import registrationSettingsRouter from './modules/registration-settings/registration-settings.router.js';
+import announcementRouter from './modules/announcement/announcement.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
 import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
@@ -38,6 +48,26 @@ import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.
 import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
+import featureConfigRouter from './modules/feature-config/feature-config.router.js';
+import systemHealthRouter from './modules/system-health/system-health.router.js';
+import feedbackRouter from './modules/feedback/feedback.router.js';
+import feedbackAdminRouter from './modules/feedback/feedback-admin.router.js';
+
+// ─────────────────────────────────────────
+//  FEATURE FLAGS
+//  An unknown name in FEATURES_DISABLED stops the app here, at load,
+//  before it can serve a single request with a flag nobody meant to set.
+//  See shared/features/feature-flags.ts.
+// ─────────────────────────────────────────
+assertFeatureConfigValid();
+
+// ─────────────────────────────────────────
+//  FRONTEND_BASE_URL
+//  Every link this server sends (emails, share links, payment callbacks)
+//  is built from it. Missing or not an absolute URL stops the app here,
+//  instead of sending "undefined/…" links. See frontend-url.util.ts.
+// ─────────────────────────────────────────
+assertFrontendUrlConfigured();
 
 const app: Application = express();
 
@@ -58,12 +88,24 @@ const app: Application = express();
 app.set('trust proxy', 1);
 
 // ─────────────────────────────────────────
+//  ERROR MONITORING
+//  Reports any 5xx a handler sent itself, without the error reaching the
+//  global handler below (which reports its own). First, so it sees every
+//  response. A no-op without SENTRY_DSN. See shared/monitoring/.
+// ─────────────────────────────────────────
+app.use(reportUnreportedServerErrors);
+
+// ─────────────────────────────────────────
 //  CORS
 //  Env-driven allowlist. Requests with no
 //  Origin header (Postman, curl, server-to-
 //  server) are always allowed through — only
 //  browser cross-origin requests carry Origin.
+//  Any other origin is a 403 (an HttpError, so
+//  never a 500 and never reported to Sentry).
 // ─────────────────────────────────────────
+export const CORS_REFUSED_MESSAGE = "Requests from this website aren't allowed.";
+
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
   .split(',')
   .map(origin => origin.trim())
@@ -74,7 +116,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new HttpError(403, CORS_REFUSED_MESSAGE));
     }
   },
   credentials: false,
@@ -92,8 +134,11 @@ app.use(cors({
 // req.rawBody as it parses — needed so payment-webhook.router.ts can
 // verify Paystack's HMAC signature against the real bytes sent, not a
 // re-serialised copy. See raw-body.middleware.ts.
-app.use(express.json({ limit: '10mb', verify: captureRawBody }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: `${REQUEST_BODY_LIMIT_MB}mb`, verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, limit: `${REQUEST_BODY_LIMIT_MB}mb` }));
+// A body that isn't valid JSON is a coded 400, one over the limit a coded
+// 413; neither is a 500.
+app.use(rejectBodyParseErrors);
 
 // ─────────────────────────────────────────
 //  HEALTH CHECK
@@ -118,6 +163,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/tenants
 //  /api/users
 //  /api/events
+//  /api/events/:eventId/full (the wizard's edit mode — the whole event at once)
 //  /api/events/:eventId/days
 //  /api/events/:eventId/guests
 //  /api/events/:eventId/invites
@@ -127,6 +173,8 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/events/:eventId/program/:programId/items
 //  /api/events/:eventId/tickets
 //  /api/events/:eventId/memory-hub
+//  /api/events/:eventId/memory-hub/download (zip links for every approved item)
+//  /api/events/:eventId/registration-settings (public events' registration rules)
 //  /api/event-drafts/current
 //  /api/invites/:inviteId/rsvp-responses
 //  /api/ticket-purchases
@@ -139,14 +187,22 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/geocoding (address search — HERE proxy)
 //  /api/payments/subaccount (tenant admin — Paystack subaccount onboarding)
 //  /api/payments/webhook (public — Paystack calls this)
+//  /api/config/features (public — which optional features are on)
+//
+//  A switched-off feature's routes 404 through requireFeature
+//  (shared/middleware/feature.middleware.ts), applied inside each
+//  feature's own router.
 // ─────────────────────────────────────────
 app.use('/api/tenants', tenantRouter);
 app.use('/api/users', userRouter);
+// Team invitation lookup/accept — public, token-authenticated (user-invite-public.router.ts)
+app.use('/api/team-invites', userInvitePublicRouter);
 app.use('/api/guests', guestRouter);
 app.use('/api/attendance', attendanceRouter);
 
 // Event router with nested children
 app.use('/api/events', eventRouter);
+app.use('/api/events/:eventId/full', eventFullUpdateRouter);
 app.use('/api/events/:eventId/days', eventDayRouter);
 app.use('/api/events/:eventId/guests', guestEventRouter);
 app.use('/api/events/:eventId/invites', inviteRouter);
@@ -157,6 +213,9 @@ app.use('/api/events/:eventId/program/:programId/items', programItemRouter);
 app.use('/api/events/:eventId/tickets', ticketRouter);
 app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
+app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
+app.use('/api/events/:eventId/announcements', announcementRouter);
+app.use('/api/events/:eventId/feedback', feedbackRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
@@ -169,6 +228,7 @@ app.use('/api/auth', authRouter);
 // ─────────────────────────────────────────
 //  MEMORY HUB ROUTES
 // ─────────────────────────────────────────
+app.use('/api/events/:eventId/memory-hub/download', memoryHubDownloadRouter);
 app.use('/api/events/:eventId/memory-hub', memoryHubRouter);
 app.use('/api/memory-hub', memoryHubPublicRouter);
 
@@ -220,13 +280,28 @@ app.use('/api/billing-history', paymentLedgerRouter);
 app.use('/api/event-passes', eventPassSignalRouter);
 
 // ─────────────────────────────────────────
+//  PUBLIC CONFIG
+//  /api/config/features — public, no auth; see feature-config.router.ts
+// ─────────────────────────────────────────
+app.use('/api/config', featureConfigRouter);
+
+// ─────────────────────────────────────────
+//  SYSTEM HEALTH (super admin only; anyone else gets the global 404)
+//  /api/admin/system/errors — Sentry issues for both projects, plus health
+// ─────────────────────────────────────────
+app.use('/api/admin/system', systemHealthRouter);
+
+// ─────────────────────────────────────────
+//  FEEDBACK (super admin only; anyone else gets the global 404)
+//  /api/admin/feedback — every event's feedback, shareable photos, CSV
+// ─────────────────────────────────────────
+app.use('/api/admin/feedback', feedbackAdminRouter);
+
+// ─────────────────────────────────────────
 //  404 HANDLER
 // ─────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
-  res.status(404).json({
-    status: 'error',
-    message: 'Route not found',
-  });
+  res.status(404).json(ROUTE_NOT_FOUND_BODY);
 });
 
 // ─────────────────────────────────────────
@@ -243,7 +318,11 @@ app.use((_req: Request, res: Response) => {
 // ─────────────────────────────────────────
 export const GENERIC_ERROR_MESSAGE = 'Something went wrong on our side. Please try again in a moment.';
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  // Every unexpected error and every 5xx goes to Sentry; an HttpError
+  // below 500 is an expected refusal and does not (error-reporting.ts).
+  reportError(err, req, res);
+
   if (err instanceof HttpError) {
     console.error(`[ERROR] ${err.message}`);
     res.status(err.statusCode).json({

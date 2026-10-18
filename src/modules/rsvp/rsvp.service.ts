@@ -7,6 +7,7 @@ import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
+import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
@@ -15,10 +16,22 @@ import {
   isInternationalPhoneNumber,
   CONTACT_ERROR_CODES,
   PHONE_FORMAT_MESSAGE,
+  GUEST_EMAIL_REQUIRED_MESSAGE,
+  CONTACT_EMAIL_UNAVAILABLE_MESSAGE,
+  isGuestEmailUniqueViolation,
 } from '../guest/guest-validation.util.js';
+import { guestRepository } from '../guest/guest.repository.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
+import { eventPublicRepository } from '../event-public/event-public.repository.js';
+import { exceedsGuestCeiling } from '../guest/guest-ceiling.util.js';
+import {
+  REGISTRATION_ERROR_CODES,
+  isEmailInAllowedDomains,
+  emailDomainRefusal,
+} from '../event-public/registration-rules.util.js';
 
 // A guest has no account, no support channel, and no context beyond the
 // one link they clicked — every message in this file is written for
@@ -33,10 +46,6 @@ import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 // language a guest should never see. In practice a guest can only ever
 // hold a token for an event that WAS published (invites can't be sent
 // to a draft event — Task 3), so this branch is defensive, not reachable.
-// Exported — event-public.service.ts's registration flow (G2) reuses
-// the COMPLETED/CANCELLED wording verbatim (they read fine for either
-// context, same reasoning as this comment already gave) and overrides
-// DRAFT with its own text, rather than duplicating the two shared strings.
 export const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
   DRAFT: 'This event is not yet open for RSVPs.',
   COMPLETED: 'This event has already taken place.',
@@ -87,6 +96,10 @@ const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null, isEdit: boolean)
 // a non-platform actor. Invite.updatedBy is a plain String (not an FK to
 // User), so this sentinel documents the convention for guest-originated writes.
 const GUEST_ACTOR = 'guest-rsvp';
+
+// More plus-ones named than the guest's own allowance: the form marks the
+// plus-ones (it was an uncoded 400 before).
+export const PLUS_ONES_OVER_ALLOWANCE = 'PLUS_ONES_OVER_ALLOWANCE';
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
@@ -281,7 +294,12 @@ export const rsvpService = {
     }
 
     const isExpired = !!invite.expiresAt && invite.expiresAt < new Date();
-    const ticketPurchase = invite.ticketPurchases[0] ?? null;
+    // Switched-off features reach the guest as if the event never had
+    // them: no tickets offered (a free event, no ticket list, no purchase
+    // to retry) and no design. What is saved stays saved; it is only not
+    // shown.
+    const ticketingOn = isFeatureEnabled('ticketing');
+    const ticketPurchase = ticketingOn ? (invite.ticketPurchases[0] ?? null) : null;
     // Earliest first, so "the first invited day" (whose venue fills the
     // compatibility fields on `event` below) is well defined.
     const invitedDays = invite.inviteEventDay
@@ -345,7 +363,7 @@ export const rsvpService = {
           // read path — the guest's browser branches on this to decide
           // whether to render the RSVP form at all.
           status: resolveEffectiveStatus(invite.event),
-          ticketing: invite.event.ticketing,
+          ticketing: ticketingOn ? invite.event.ticketing : 'FREE',
           // Deliberately added to this explicit allowlist, not a spread —
           // see this projection's own header comment. Informational only
           // (schema.prisma's comment on Event.ticketsRefundable), but
@@ -364,7 +382,7 @@ export const rsvpService = {
           })),
           // Only non-archived, isAvailable tickets — see
           // invite.repository.ts's findByToken.
-          tickets: invite.event.tickets.map((t) => ({
+          tickets: (ticketingOn ? invite.event.tickets : []).map((t) => ({
             id: t.id,
             name: t.name,
             price: t.price,
@@ -375,7 +393,7 @@ export const rsvpService = {
       // The invitation card's design: null, a template + overrides, or an
       // uploaded image. Guest-safe projection (toGuestDesign): no ids,
       // audit fields or Cloudinary publicId.
-      design: toGuestDesign(invite.event.invitationDesigns[0]),
+      design: isFeatureEnabled('invitationDesigns') ? toGuestDesign(invite.event.invitationDesigns[0]) : null,
       isExpired,
       isUsed: invite.used,
       // Flag, not a throw — same "return flags, don't throw" design as
@@ -412,6 +430,11 @@ export const rsvpService = {
 
   submit: async (data: SubmitRsvpDto) => {
     assertValidSubmission(data);
+    // validate() offers no tickets while ticketing is off, so only a stale
+    // or hand-made request gets here; it is refused, not quietly dropped.
+    if (data.ticketId && !isFeatureEnabled('ticketing')) {
+      throw new HttpError(422, "Tickets aren't available for this event. Please refresh the page and reply again.");
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       // Every lookup a later step could need is folded into this ONE
@@ -498,7 +521,21 @@ export const rsvpService = {
       if (emailIntent.kind === 'set') {
         const normalizedEmail = normalizeEmail(emailIntent.value);
         asUnprocessable(() => assertValidEmail(normalizedEmail));
-        if (normalizedEmail !== invite.guest.email) guestUpdateData.email = normalizedEmail;
+        if (normalizedEmail !== invite.guest.email) {
+          // A public event's allowed domains hold at RSVP too, or a
+          // registrant could register at the company address and then
+          // swap it for any other. The same refusal registration gives;
+          // the domains are on the public page, so it reveals nothing.
+          // Only a change is checked: an address the guest already has
+          // (from before the domains were set) never blocks a reply.
+          if (
+            invite.event.visibility === 'PUBLIC' &&
+            !isEmailInAllowedDomains(normalizedEmail, invite.event.registrationEmailDomains)
+          ) {
+            throw emailDomainRefusal(invite.event.registrationEmailDomains);
+          }
+          guestUpdateData.email = normalizedEmail;
+        }
       } else if (emailIntent.kind === 'remove' && invite.guest.email !== null) {
         guestUpdateData.email = null;
       }
@@ -513,6 +550,12 @@ export const rsvpService = {
       // send them anything (invitation resend, reminder) is one of these.
       const finalEmail = guestUpdateData.email !== undefined ? guestUpdateData.email : invite.guest.email;
       const finalPhone = guestUpdateData.phoneNumber !== undefined ? guestUpdateData.phoneNumber : invite.guest.phoneNumber;
+      // With sms off an email is the only way to reach a guest, so one who
+      // has an email can't remove it (or swap it for a phone alone). A
+      // guest who never had one isn't removing anything and can still reply.
+      if (invite.guest.email && !finalEmail && !isFeatureEnabled('sms')) {
+        throw new HttpError(422, GUEST_EMAIL_REQUIRED_MESSAGE, CONTACT_ERROR_CODES.EMAIL_REQUIRED);
+      }
       if (!finalEmail && !finalPhone) {
         throw new HttpError(
           422,
@@ -531,29 +574,14 @@ export const rsvpService = {
         : invite.deliveryMethod === 'EMAIL' && !finalEmail ? ('SMS' as const)
         : null;
 
-      // Same duplicate rule as guest.service.ts's create/import paths
-      // (STEERING: same email/phone on the same event is a duplicate) —
-      // only queried when a contact is actually changing, since this is
-      // the one extra read this whole block can't avoid.
-      if (guestUpdateData.email || guestUpdateData.phoneNumber) {
-        const duplicate = await tx.guest.findFirst({
-          where: {
-            eventId: invite.eventId,
-            isArchived: false,
-            id: { not: invite.guestId },
-            OR: [
-              ...(guestUpdateData.email ? [{ email: guestUpdateData.email }] : []),
-              ...(guestUpdateData.phoneNumber ? [{ phoneNumber: guestUpdateData.phoneNumber }] : []),
-            ],
-          },
-          select: { id: true },
-        });
-        if (duplicate) {
-          throw new HttpError(
-            409,
-            `Another guest on this event is already using this ${guestUpdateData.email ? 'email address' : 'phone number'}.`
-          );
-        }
+      // An email another guest on the event already has can't be taken
+      // (the same rule as organiser create and import). Refused with one
+      // neutral message and code whatever the cause, so the answer never
+      // says that another guest holds the address; how often one invite
+      // can ask is bounded by rsvpSubmitInviteLimiter (STEERING "Guest
+      // contact"). A phone is never checked: guests may share one.
+      if (guestUpdateData.email && (await guestRepository.isEmailUsedByOtherGuest(invite.eventId, guestUpdateData.email, invite.guestId, tx))) {
+        throw new HttpError(422, CONTACT_EMAIL_UNAVAILABLE_MESSAGE, CONTACT_ERROR_CODES.EMAIL_UNAVAILABLE);
       }
 
       // Required only when attending, and only when the guest has no name
@@ -595,8 +623,41 @@ export const rsvpService = {
         if (message) throw new HttpError(422, message);
       }
 
+      // A self-registered guest on an event with a registration cap can't
+      // take more seats than are left: someone who registered alone and
+      // later adds plus-ones, or who declined and now accepts, counts
+      // against the cap exactly like a new registrant. Checked only when
+      // the answer asks for MORE seats than they hold, so a guest already
+      // over a cap the organiser lowered can still edit or decline.
+      // Counted under the event's row lock, the same lock registration
+      // takes, so the two can't race past the cap together.
+      if (invite.guest.selfRegisteredAt && invite.event.registrationCap !== null) {
+        const seatsHeld = invite.status !== 'DECLINED' ? 1 + invite.guest.plusOnes.length : 0;
+        const seatsWanted = data.attending ? 1 + (data.plusOneNames?.length ?? 0) : 0;
+        if (seatsWanted > seatsHeld) {
+          await eventPublicRepository.lockEvent(tx, invite.eventId);
+          const { registeredSeats } = await eventPublicRepository.countSeats(invite.eventId, tx);
+          if (registeredSeats - seatsHeld + seatsWanted > invite.event.registrationCap) {
+            throw new HttpError(
+              409,
+              seatsWanted > 1
+                ? "This event is full, so there isn't room for your plus-ones. Please remove some and try again."
+                : 'This event is full, so your answer can’t be changed to attending right now.',
+              REGISTRATION_ERROR_CODES.FULL
+            );
+          }
+        }
+      }
+
       if (Object.keys(guestUpdateData).length > 0) {
-        await tx.guest.update({ where: { id: invite.guestId }, data: guestUpdateData });
+        // Another guest taking the same email between the check above and
+        // here trips the unique index: the same neutral refusal.
+        await tx.guest.update({ where: { id: invite.guestId }, data: guestUpdateData }).catch((err: unknown) => {
+          if (isGuestEmailUniqueViolation(err)) {
+            throw new HttpError(422, CONTACT_EMAIL_UNAVAILABLE_MESSAGE, CONTACT_ERROR_CODES.EMAIL_UNAVAILABLE);
+          }
+          throw err;
+        });
       }
       if (nextDeliveryMethod) {
         await tx.invite.update({ where: { id: invite.id }, data: { deliveryMethod: nextDeliveryMethod, updatedBy: GUEST_ACTOR } });
@@ -664,8 +725,9 @@ export const rsvpService = {
         const plusOneNames = data.plusOneNames ?? [];
         if (plusOneNames.length > invite.guest.plusOnesAllowed) {
           throw new HttpError(
-            400,
-            `You can bring up to ${invite.guest.plusOnesAllowed} plus-one(s). Please remove some and try again.`
+            422,
+            `You can bring up to ${invite.guest.plusOnesAllowed} plus-one(s). Please remove some and try again.`,
+            PLUS_ONES_OVER_ALLOWANCE
           );
         }
 
@@ -683,6 +745,24 @@ export const rsvpService = {
             data: attendingDayIds.map((eventDayId) => ({ inviteId: invite.id, eventDayId })),
           });
           attendances.push(...attendingDayIds.map((eventDayId) => ({ inviteId: invite.id, eventDayId })));
+        }
+
+        // The hard guest ceiling, plus-ones included (guest-ceiling.util.ts):
+        // checked only when this answer adds plus-ones beyond the ones it
+        // just archived, so re-sending the same party is never refused.
+        // Counted after the archive above and under the event's row lock
+        // (the lock registration takes), so the count is this answer's own.
+        // A guest hears "full", the same answer and code as a registrant's
+        // party that doesn't fit the cap, never the number.
+        if (plusOneNames.length > (isEdit ? invite.guest.plusOnes.length : 0)) {
+          await eventPublicRepository.lockEvent(tx, invite.eventId);
+          if (exceedsGuestCeiling(await guestRepository.countAllForEvent(invite.eventId, tx), plusOneNames.length)) {
+            throw new HttpError(
+              409,
+              "This event is full, so there isn't room for your plus-ones. Please remove some and try again.",
+              REGISTRATION_ERROR_CODES.FULL
+            );
+          }
         }
 
         // Each plus-one is a real Guest+Invite pair (mirrors
@@ -965,7 +1045,7 @@ export const rsvpService = {
       // otherwise), and that's exactly what guestEmailForReservation is.
       guestEmail: guestEmailForReservation as string,
       subaccountCode: freshReservation.subaccountCode,
-      callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(data.token)}`,
+      callbackUrl: frontendUrl(`/rsvp/payment-callback?token=${encodeURIComponent(data.token)}`),
     });
 
     if ('failed' in checkout) {
@@ -1020,7 +1100,7 @@ export const rsvpService = {
       platformChargeCents: outcome.platformChargeCents,
       guestEmail,
       subaccountCode: outcome.subaccountCode,
-      callbackUrl: `${process.env.FRONTEND_BASE_URL}/rsvp/payment-callback?token=${encodeURIComponent(token)}`,
+      callbackUrl: frontendUrl(`/rsvp/payment-callback?token=${encodeURIComponent(token)}`),
     });
 
     if ('failed' in checkout) {

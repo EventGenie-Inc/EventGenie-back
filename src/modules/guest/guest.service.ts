@@ -3,22 +3,27 @@ import { type CreateGuestDto, type UpdateGuestDto } from './guest.types.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import prisma from '../../shared/prisma/prisma.client.js';
-import { eventService } from '../event/event.service.js';
+import { eventService, resolveEventScope } from '../event/event.service.js';
 import { eventDayRepository } from '../event-day/event-day.repository.js';
 import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { assertWithinGuestCeiling } from './guest-ceiling.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
   normalizePhoneToE164,
   assertExactlyOneContact,
+  assertGuestHasEmail,
   assertValidPlusOnesAllowed,
-  findDuplicateContact,
+  findDuplicateEmail,
+  guestEmailTaken,
+  isGuestEmailUniqueViolation,
 } from './guest-validation.util.js';
 import { parseImportFile, validateImportRows } from './guest-import.engine.js';
 import { buildImportTemplateWorkbook } from './guest-template.util.js';
 import { buildGuestExportWorkbook } from './guest-export.util.js';
 import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
@@ -35,6 +40,13 @@ const assertEventAcceptsOrganiserGuestList = (visibility: string): void => {
   }
 };
 
+// The unique index on a live guest's email (guest-validation.util.ts) is
+// the same refusal as the pre-checks: 409 GUEST_EMAIL_TAKEN, never a 500.
+const rethrowGuestEmailTaken = (err: unknown): never => {
+  if (isGuestEmailUniqueViolation(err)) throw guestEmailTaken();
+  throw err;
+};
+
 export const guestService = {
   // Guest has no tenantId of its own — ownership is transitive through
   // its invites' parent events. Every method gates through
@@ -43,18 +55,24 @@ export const guestService = {
   // by-id/tenant-wide operations), mirroring event-day.service.ts and
   // user.service.ts respectively.
 
-  getAll: (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+  getAll: async (requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     if (requestingRole === 'SUPER_ADMIN') return guestRepository.findAll(undefined, includeArchived);
     // A non-SUPER_ADMIN with no tenantId should never exist — fail closed
     // with an empty list rather than an unscoped, every-tenant query. See
     // tenant-scope.util.ts.
     if (isTenantScopeEmptyForList(requestingRole, tenantId)) return Promise.resolve([]);
-    return guestRepository.findAll(tenantId ?? undefined, includeArchived);
+    // The event scope (tenant + assignment lock): a locked EVENT_ADMIN sees
+    // only their assigned events' guests.
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    return guestRepository.findAll(scope.tenantId, includeArchived, scope.eventIds);
   },
 
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const scope = resolveTenantScope(requestingRole, tenantId, 'Guest not found');
-    const guest = await guestRepository.findById(id, includeArchived, scope);
+    // Tenant first, with this record's own 404 wording; then the event scope
+    // adds the assignment lock (a guest of an unassigned event is a 404 too).
+    resolveTenantScope(requestingRole, tenantId, 'Guest not found');
+    const scope = await resolveEventScope(requestingRole, tenantId);
+    const guest = await guestRepository.findById(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!guest) throw new HttpError(404, 'Guest not found');
     return guest;
@@ -85,38 +103,45 @@ export const guestService = {
     // Organiser-created guests are never plus-ones — hostGuestId isn't
     // settable through this path — so contact stays required here.
     assertExactlyOneContact(email, phoneNumber);
+    if (!isFeatureEnabled('sms')) assertGuestHasEmail(email);
 
     const plusOnesAllowed = data.plusOnesAllowed ?? 0;
     assertValidPlusOnesAllowed(plusOnesAllowed);
 
+    // By email only: guests may share a phone (guest-validation.util.ts).
     const existingContacts = await guestRepository.findContactsForEvent(eventId);
-    const duplicate = findDuplicateContact(
-      existingContacts.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber })),
-      { email, phoneNumber }
-    );
-    if (duplicate) {
-      throw new HttpError(409, `A guest with this ${email ? 'email' : 'phone number'} already exists for this event`);
-    }
+    const duplicate = findDuplicateEmail(existingContacts.map((g) => ({ guestId: g.id, email: g.email })), email);
+    if (duplicate) throw guestEmailTaken();
 
-    await assertGuestsCreatable(event, 1);
-
+    // Counted and written under the event's row lock, so two additions at
+    // once can't both pass the plan's limit or the ceiling.
+    //
     // Unwrapped to `.guest` — this route's response contract is (and
     // stays) the Guest row alone; the paired Invite that
     // createWithInvite now also returns is consumed by
     // event-public.service.ts's registration path instead.
-    const { guest } = await guestRepository.createWithInvite(eventId, userId, {
-      firstName: data.firstName ?? null,
-      surname: data.surname ?? null,
-      email,
-      phoneNumber,
-      eventDayIds: data.eventDayIds,
-      plusOnesAllowed,
-    });
+    const { guest } = await guestRepository.withEventGuestLock(eventId, async (tx) => {
+      await assertGuestsCreatable(event, 1, tx);
+      return guestRepository.createWithInvite(eventId, userId, {
+        firstName: data.firstName ?? null,
+        surname: data.surname ?? null,
+        email,
+        phoneNumber,
+        eventDayIds: data.eventDayIds,
+        plusOnesAllowed,
+      }, tx);
+    }).catch(rethrowGuestEmailTaken);
     return guest;
   },
 
+  // Checks only the fields this update changes. The "exactly one contact"
+  // rule is a creation rule (guest-validation.util.ts): a guest who has
+  // since given both at RSVP, or a phone-only guest kept from before sms
+  // was switched off, can still have their name or plus-ones changed.
   update: async (id: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateGuestDto) => {
     const guest = await guestService.getById(id, requestingRole, tenantId);
+
+    if (data.plusOnesAllowed !== undefined) assertValidPlusOnesAllowed(data.plusOnesAllowed);
 
     // A blank value clears the field like null does — it used to be
     // stored as "", which then passed as "has a contact" nowhere and as a
@@ -128,19 +153,32 @@ export const guestService = {
       ? (data.phoneNumber === null || !data.phoneNumber.trim() ? null : normalizePhoneToE164(data.phoneNumber))
       : guest.phoneNumber;
 
-    if (nextEmail) assertValidEmail(nextEmail);
-    // Pass the guest's OWN hostGuestId — a plus-one being edited (e.g. just
-    // their name) must not be rejected for having no contact, which they
-    // never have and never will.
-    assertExactlyOneContact(nextEmail, nextPhone, guest.hostGuestId);
-
-    if (data.plusOnesAllowed !== undefined) assertValidPlusOnesAllowed(data.plusOnesAllowed);
+    // Only when a contact field changes is the contact judged, on the
+    // guest the change leaves behind. Plus-ones (hostGuestId set) never
+    // have a contact and are exempt.
+    if (data.email !== undefined || data.phoneNumber !== undefined) {
+      if (data.email !== undefined && nextEmail) assertValidEmail(nextEmail);
+      // The same duplicate rule as create: one email, one guest per event.
+      // Checked only when the email actually changes.
+      if (
+        data.email !== undefined && nextEmail && nextEmail !== guest.email &&
+        (await guestRepository.isEmailUsedByOtherGuest(guest.eventId, nextEmail, guest.id))
+      ) {
+        throw guestEmailTaken();
+      }
+      if (!guest.hostGuestId && !nextEmail && !nextPhone) {
+        throw new HttpError(422, 'A guest must have either an email or a phone number');
+      }
+      // With sms off, a contact change can't leave a guest reachable only
+      // by phone.
+      if (!isFeatureEnabled('sms')) assertGuestHasEmail(nextEmail, guest.hostGuestId);
+    }
 
     return guestRepository.update(id, {
       ...data,
       ...(data.email !== undefined && { email: nextEmail }),
       ...(data.phoneNumber !== undefined && { phoneNumber: nextPhone }),
-    });
+    }).catch(rethrowGuestEmailTaken);
   },
 
   // Archiving a guest cascades to every one of their Invites — a bulk
@@ -167,7 +205,11 @@ export const guestService = {
   reactivate: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
     // to find a guest that is currently archived and un-archive them.
-    await guestService.getById(id, requestingRole, tenantId, true);
+    const guest = await guestService.getById(id, requestingRole, tenantId, true);
+    // The event, for the plan's limit (its pass can raise it). Archived
+    // included, as the guest lookup above never refused a guest of an
+    // archived event either.
+    const event = await eventService.getScopedWithPass(guest.eventId, requestingRole, tenantId, true);
 
     // Per the same v1 approach as tenant.service.ts's reactivate: this
     // uniformly reactivates every archived invite under this guest,
@@ -179,12 +221,25 @@ export const guestService = {
     // precedent's documented simplification.
     const invites = await prisma.invite.findMany({ where: { guestId: id, isArchived: true } });
 
-    await prisma.$transaction(async (tx) => {
+    // A live guest may have this guest's email by now (archiving freed it):
+    // restoring would make two, so it is refused, by the unique index if
+    // not before.
+    //
+    // Restoring adds a live guest back, so it is held to what adding one
+    // is: the plan's own guest limit, then the hard ceiling
+    // (guest-ceiling.util.ts), counted and written under the event's row
+    // lock like add and import. A plus-one doesn't count toward the plan's
+    // limit (guestRepository.countForEvent), only toward the ceiling.
+    await guestRepository.withEventGuestLock(guest.eventId, async (tx) => {
+      if (guest.isArchived) {
+        if (guest.hostGuestId) await assertWithinGuestCeiling(guest.eventId, 1, tx);
+        else await assertGuestsCreatable(event, 1, tx);
+      }
       await tx.guest.update({ where: { id }, data: { isArchived: false } });
       for (const invite of invites) {
         await tx.invite.update({ where: { id: invite.id }, data: { isArchived: false } });
       }
-    });
+    }).catch(rethrowGuestEmailTaken);
 
     return guestRepository.findById(id, true);
   },
@@ -192,7 +247,7 @@ export const guestService = {
   getImportTemplate: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
     const eventDays = await eventDayRepository.findAll(eventId);
-    return buildImportTemplateWorkbook(event, eventDays);
+    return buildImportTemplateWorkbook(event, eventDays, { emailOnly: !isFeatureEnabled('sms') });
   },
 
   importGuests: async (
@@ -208,13 +263,21 @@ export const guestService = {
     const rows = await parseImportFile(file.buffer, file.originalname, file.mimetype);
     const eventDays = await eventDayRepository.findAll(eventId);
     const existingGuests = await guestRepository.findContactsForEvent(eventId);
-    const existingContacts = existingGuests.map((g) => ({ guestId: g.id, email: g.email, phoneNumber: g.phoneNumber }));
+    const existingContacts = existingGuests.map((g) => ({ guestId: g.id, email: g.email }));
 
-    const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts);
+    const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts, {
+      requireEmail: !isFeatureEnabled('sms'),
+    });
 
     if (validRows.length > 0) {
-      await assertGuestsCreatable(event, validRows.length);
-      await guestRepository.bulkCreateWithInvites(eventId, userId, validRows);
+      // Counted and written under the event's row lock (as add and
+      // registration are), with the import's own 30-second allowance. A
+      // violation here is a guest added with one of these emails while
+      // the file was being checked: nothing was imported (one transaction).
+      await guestRepository.withEventGuestLock(eventId, async (tx) => {
+        await assertGuestsCreatable(event, validRows.length, tx);
+        await guestRepository.bulkCreateWithInvites(eventId, userId, validRows, tx);
+      }, 30_000).catch(rethrowGuestEmailTaken);
     }
 
     return { totalRows, created: validRows.length, failed: failures.length, failures };

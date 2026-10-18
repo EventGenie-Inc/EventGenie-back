@@ -25,6 +25,15 @@ export const eventPassRepository = {
   // this is a financial fact record, never soft-deleted.
   findByEventId: (eventId: string, db: Db = prisma) => db.eventPass.findUnique({ where: { eventId } }),
 
+  // Scoped to the event in the URL: a purchase id from another event (the
+  // same tenant's or not) is not found. The event itself is tenant-gated by
+  // the caller (eventService.getById) before this runs.
+  findPurchaseForEvent: (id: string, eventId: string) =>
+    prisma.eventPassPurchase.findFirst({ where: { id, eventId } }),
+
+  findSmsBundlePurchaseForEvent: (id: string, eventId: string) =>
+    prisma.eventSmsBundlePurchase.findFirst({ where: { id, eventId } }),
+
   findPurchaseByPaymentRef: (paymentRef: string, db: Db = prisma) =>
     db.eventPassPurchase.findFirst({ where: { paymentRef } }),
 

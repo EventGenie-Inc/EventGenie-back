@@ -2,6 +2,7 @@ import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { launchUnavailableMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 
 // Called before building/streaming the guest export workbook. Spark has
 // no export — this is the all-or-nothing gate, read at runtime, never
@@ -27,7 +28,10 @@ export const assertGuestExportEnabled = async (event: EntitlementDerivableEvent)
   if (!config?.guestExportEnabled) {
     throw new HttpError(
       403,
-      `The ${effectiveTier} plan does not include guest list export. Upgrade to CELEBRATE or ELEVATE to use it.`
+      tierRefusalMessage(
+        `The ${effectiveTier} plan does not include guest list export. Upgrade to CELEBRATE or ELEVATE to use it.`,
+        launchUnavailableMessage('Guest list export')
+      )
     );
   }
 };

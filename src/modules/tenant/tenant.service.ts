@@ -5,6 +5,7 @@ import { vendorRepository } from '../vendor/vendor.repository.js';
 import { withEffectiveStatus } from '../event/event-status.util.js';
 import { withEffectiveTier } from '../subscription/effective-tier.util.js';
 import { resolveVendorSpaceLimit } from '../vendor/vendor-tier-enforcement.util.js';
+import { resolvePlanSettings } from '../subscription-tier-config/plan-settings.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type ClientTenantDto, type ClientTenantDetailDto } from './tenant.types.js';
 import {
@@ -12,6 +13,7 @@ import {
   reactivateFirebaseAccount,
 } from '../../shared/firebase/firebase-account-status.util.js';
 import { revokeAllDeviceTokensForUser, REVOKE_REASON } from '../auth/device-token.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // Deliberate, hand-picked projection (ClientTenantDto) — see that
 // type's own comment. Every method below that hands a Tenant back to
@@ -79,6 +81,14 @@ export const tenantService = {
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
     const effectiveTenant = withEffectiveTier(tenant);
+    // What the tenant's effective plan allows, resolved exactly as the
+    // server enforces it (plan-settings.util.ts). The frontend decides what
+    // to show from these, never from subscriptionTier's name.
+    const planSettings = await resolvePlanSettings(effectiveTenant.subscriptionTier);
+    // A switched-off feature's limit is never shown to a tenant: with
+    // vendors off there is no vendorSpaceLimit at all.
+    if (!isFeatureEnabled('vendors')) return { ...toClientTenant(effectiveTenant), planSettings };
+
     const [limitInfo, currentCount] = await Promise.all([
       resolveVendorSpaceLimit(tenant),
       vendorRepository.countActiveSpacesForTenant(id),
@@ -86,8 +96,9 @@ export const tenantService = {
 
     return {
       ...toClientTenant(effectiveTenant),
+      planSettings,
       vendorSpaceLimit: {
-        limit: limitInfo.limit, // null = unlimited; the object itself is always present
+        limit: limitInfo.limit, // null = unlimited; present whenever the vendors feature is on
         currentCount,
       },
     };
