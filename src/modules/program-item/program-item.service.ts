@@ -10,7 +10,8 @@ import {
   requireItemStartTime,
   assertValidItemOrder,
   optionalItemDuration,
-  itemDayRequiredMessage,
+  assertItemHasDay,
+  assertItemStartsOnItsDay,
 } from './program-item-validation.util.js';
 
 // ProgramItem has no tenantId of its own — ownership is transitive
@@ -42,16 +43,17 @@ const assertProgramInScope = async (
 // the (already tenant-scoped-through-eventService, unscoped-by-design —
 // see event-day.repository.ts) transitive lookup, same reuse pattern as
 // eventDayService.getById itself.
-const assertEventDayInScope = async (eventId: string, eventDayId: string): Promise<void> => {
+const assertEventDayInScope = async (eventId: string, eventDayId: string) => {
   const day = await eventDayRepository.findById(eventDayId);
   if (!day || day.eventId !== eventId) {
     throw new HttpError(422, "That day doesn't belong to this event.");
   }
+  return day;
 };
 
 // Live days only: an archived day is not one an organiser can pick.
-const isMultiDayEvent = async (eventId: string): Promise<boolean> =>
-  (await eventDayRepository.findAll(eventId)).length > 1;
+const liveDayCount = async (eventId: string): Promise<number> =>
+  (await eventDayRepository.findAll(eventId)).length;
 
 export const programItemService = {
 
@@ -88,13 +90,14 @@ export const programItemService = {
   ) => {
     await assertProgramInScope(eventId, programId, requestingRole, tenantId);
     const title = requireItemTitle(data.title);
-    requireItemStartTime(data.startTime, title);
+    const startTime = requireItemStartTime(data.startTime, title);
     assertValidItemOrder(data.order);
     const durationMins = optionalItemDuration(data.durationMins, title);
     if (data.eventDayId) {
-      await assertEventDayInScope(eventId, data.eventDayId);
-    } else if (await isMultiDayEvent(eventId)) {
-      throw new HttpError(422, itemDayRequiredMessage(title));
+      const day = await assertEventDayInScope(eventId, data.eventDayId);
+      assertItemStartsOnItsDay(startTime, day, title);
+    } else {
+      assertItemHasDay(false, await liveDayCount(eventId), title);
     }
     const order = data.order ?? (await programItemRepository.nextOrder(programId));
     return programItemRepository.create(programId, userId, { ...data, title, order, durationMins });
@@ -111,16 +114,26 @@ export const programItemService = {
   ) => {
     const item = await programItemService.getById(id, eventId, programId, requestingRole, tenantId);
     const title = data.title !== undefined ? requireItemTitle(data.title) : undefined;
-    if (data.startTime !== undefined) requireItemStartTime(data.startTime, title ?? item.title);
+    const effectiveTitle = title ?? item.title;
+    const startTime = data.startTime !== undefined ? requireItemStartTime(data.startTime, effectiveTitle) : undefined;
     assertValidItemOrder(data.order);
-    const durationMins = data.durationMins !== undefined ? optionalItemDuration(data.durationMins, title ?? item.title) : undefined;
+    const durationMins = data.durationMins !== undefined ? optionalItemDuration(data.durationMins, effectiveTitle) : undefined;
+    let chosenDay: Awaited<ReturnType<typeof assertEventDayInScope>> | null = null;
     if (data.eventDayId !== undefined && data.eventDayId !== null) {
-      await assertEventDayInScope(eventId, data.eventDayId);
-    } else if (data.eventDayId !== undefined && (await isMultiDayEvent(eventId))) {
+      chosenDay = await assertEventDayInScope(eventId, data.eventDayId);
+    } else if (data.eventDayId !== undefined) {
       // Clearing the day on a multi-day event. An update that leaves
       // eventDayId out keeps what is stored, so an older item with no day
       // can still be edited without being forced to pick one.
-      throw new HttpError(422, itemDayRequiredMessage(title ?? item.title));
+      assertItemHasDay(false, await liveDayCount(eventId), effectiveTitle);
+    }
+    // Judged on the item this leaves behind, only when its start or day
+    // changes; the stored day, when kept, is read only if it is still live.
+    const resultingStart = startTime ?? item.startTime;
+    const resultingDayId = data.eventDayId !== undefined ? data.eventDayId ?? null : item.eventDayId;
+    if (resultingStart.getTime() !== item.startTime.getTime() || resultingDayId !== item.eventDayId) {
+      const day = chosenDay ?? (resultingDayId ? await eventDayRepository.findById(resultingDayId) : null);
+      assertItemStartsOnItsDay(resultingStart, day, effectiveTitle);
     }
     return programItemRepository.update(id, userId, {
       ...data,

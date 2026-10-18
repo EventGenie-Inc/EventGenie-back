@@ -1,3 +1,4 @@
+import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { withPlainDayCoordinates } from '../event/event-coordinates.util.js';
 import { type DayVenue } from './event-day-venue.util.js';
@@ -22,6 +23,10 @@ export interface EventDayPatch {
   venue: DayVenue;
 }
 
+// Writes take an optional transaction client, so the full event update
+// (event-full-update.service.ts) can apply every day in one transaction.
+type Db = Prisma.TransactionClient | typeof prisma;
+
 export const eventDayRepository = {
   findAll: async (eventId: string) =>
     (
@@ -36,8 +41,8 @@ export const eventDayRepository = {
     return day ? withPlainDayCoordinates(day) : null;
   },
 
-  create: (eventId: string, userId: string, data: EventDayWrite) =>
-    prisma.eventDay
+  create: (eventId: string, userId: string, data: EventDayWrite, db: Db = prisma) =>
+    db.eventDay
       .create({
         data: {
           eventId,
@@ -59,8 +64,8 @@ export const eventDayRepository = {
   // The venue is always written in full: the service has already merged
   // the request with the stored day (event-day-venue.util.ts), including
   // clearing coordinates when the address changed without new ones.
-  update: (id: string, userId: string, data: EventDayPatch) =>
-    prisma.eventDay
+  update: (id: string, userId: string, data: EventDayPatch, db: Db = prisma) =>
+    db.eventDay
       .update({
         where: { id },
         data: {
@@ -77,8 +82,8 @@ export const eventDayRepository = {
       })
       .then(withPlainDayCoordinates),
 
-  archive: (id: string, userId: string) =>
-    prisma.eventDay.update({
+  archive: (id: string, userId: string, db: Db = prisma) =>
+    db.eventDay.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
     }),

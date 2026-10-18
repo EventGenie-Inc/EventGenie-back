@@ -32,6 +32,13 @@ export interface CreateGuestWithInviteInput {
   plusOnesAllowed: number;
 }
 
+// Runs `fn` in the caller's transaction when given one, else in its own.
+const inTransaction = <T>(
+  tx: Prisma.TransactionClient | undefined,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  options?: { maxWait: number; timeout: number }
+): Promise<T> => (tx ? fn(tx) : prisma.$transaction(fn, options));
+
 export const guestRepository = {
   findById: (id: string, includeArchived = false, tenantId?: string, eventIds?: string[]) =>
     prisma.guest.findFirst({
@@ -87,8 +94,23 @@ export const guestRepository = {
   // the organiser opted into; a guest declaring a plus-one at RSVP time is
   // not a choice the organiser made, and shouldn't be able to push them
   // over a limit they'd then have to upgrade or prune guests to fix.
-  countForEvent: (eventId: string) =>
-    prisma.guest.count({ where: { eventId, isArchived: false, hostGuestId: null } }),
+  countForEvent: (eventId: string, tx?: Prisma.TransactionClient) =>
+    (tx ?? prisma).guest.count({ where: { eventId, isArchived: false, hostGuestId: null } }),
+
+  // Serialises everything an organiser does that adds live guests to one
+  // event (add, import, restore): the plan's limit and the ceiling are only
+  // true while no other addition can commit in between. The same row lock
+  // public registration takes (event-public.repository.ts), so these and
+  // registrations queue behind each other too. An import holds it longer:
+  // its write carries up to 2,000 rows (see bulkCreateWithInvites).
+  withEventGuestLock: <T>(eventId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>, timeout = 15_000): Promise<T> =>
+    prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
+        return fn(tx);
+      },
+      { maxWait: 10_000, timeout }
+    ),
 
   // Every live guest, plus-ones included: what the hard guest ceiling
   // (guest-ceiling.util.ts) counts, unlike countForEvent above.
@@ -136,8 +158,11 @@ export const guestRepository = {
   // one). guest.service.ts's create() is the pre-existing caller; it
   // unwraps `.guest` to keep its own response shape unchanged for the
   // organiser-facing route.
-  createWithInvite: (eventId: string, userId: string, data: CreateGuestWithInviteInput) =>
-    prisma.$transaction(async (tx) => {
+  //
+  // `tx`: run inside a transaction the caller holds (guest.service.ts's
+  // create, under withEventGuestLock); otherwise it opens its own.
+  createWithInvite: (eventId: string, userId: string, data: CreateGuestWithInviteInput, tx?: Prisma.TransactionClient) =>
+    inTransaction(tx, async (tx) => {
       const guest = await tx.guest.create({
         data: {
           eventId,
@@ -184,9 +209,10 @@ export const guestRepository = {
   bulkCreateWithInvites: (
     eventId: string,
     userId: string,
-    rows: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; eventDayIds: string[]; plusOnesAllowed: number }[]
+    rows: { firstName: string | null; surname: string | null; email: string | null; phoneNumber: string | null; eventDayIds: string[]; plusOnesAllowed: number }[],
+    tx?: Prisma.TransactionClient
   ) =>
-    prisma.$transaction(async (tx) => {
+    inTransaction(tx, async (tx) => {
       const guestIds = rows.map(() => crypto.randomUUID());
       const inviteIds = rows.map(() => crypto.randomUUID());
 

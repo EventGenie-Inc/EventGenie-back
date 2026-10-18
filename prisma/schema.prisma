@@ -1391,8 +1391,11 @@ model SubscriptionTierConfig {
   // (never a running counter — see memory-hub-tier-enforcement.util.ts).
   // Independent of memoryHubEnabled below (all-or-nothing capability
   // gate); this is the numeric ceiling for tiers that have it. null =
-  // unlimited, same convention as every other max* column.
-  maxMemoryHubBytesPerEvent Int?
+  // unlimited, same convention as every other max* column. BigInt, so a
+  // limit can be above 2 GB (an Int stops at 2,147,483,647 bytes); the
+  // repository hands it to the code as a plain number
+  // (subscription-tier-config.repository.ts).
+  maxMemoryHubBytesPerEvent BigInt?
   emailEnabled              Boolean          @default(true)
   smsEnabled                Boolean          @default(false)
   vendorMarketplace         Boolean          @default(false)

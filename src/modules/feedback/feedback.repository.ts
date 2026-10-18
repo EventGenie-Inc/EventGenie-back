@@ -34,6 +34,17 @@ export const feedbackRepository = {
   findByEventId: (eventId: string, db: Db = prisma) =>
     db.eventFeedback.findFirst({ where: { eventId, isArchived: false } }),
 
+  // Which of these events have feedback — one query for a whole list
+  // (GET /api/events' feedbackGiven), never one per event.
+  findEventIdsWithFeedback: async (eventIds: string[]): Promise<Set<string>> => {
+    if (eventIds.length === 0) return new Set();
+    const rows = await prisma.eventFeedback.findMany({
+      where: { eventId: { in: eventIds }, isArchived: false },
+      select: { eventId: true },
+    });
+    return new Set(rows.map((r) => r.eventId));
+  },
+
   // Serialises saves of one event's feedback, so two organisers saving at
   // once can't both record the same change of permission. Same row-lock
   // idiom as announcement.repository.ts's withEventAnnouncementLock.

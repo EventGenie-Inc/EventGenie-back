@@ -6,6 +6,7 @@ import app from '../../src/app.js';
 import { assertEventCreatable, assertEventUpdatable } from '../../src/modules/subscription-tier-config/event-tier-enforcement.util.js';
 import { assertTenantReadyToSellTickets } from '../../src/modules/payment-account/payment-account-readiness.util.js';
 import { vendorService } from '../../src/modules/vendor/vendor.service.js';
+import { subscriptionTierConfigRepository } from '../../src/modules/subscription-tier-config/subscription-tier-config.repository.js';
 import { createActor, headersFor, installFirebaseMock } from '../helpers/team.js';
 import {
   createTestTenant,
@@ -25,8 +26,10 @@ import {
 //  SPARK and shown to change access. A tier with no config row keeps the
 //  old in-code rule.
 //
-//  The test database holds no tier configs unless a test writes them; this
-//  file puts every tier back as it found it.
+//  The tier rows are shared by every suite. This file never deletes one it
+//  found: the "no config row" case stubs the repository's lookup instead,
+//  and afterAll upserts every row back exactly as it was, updatedAt
+//  included (a row it created where there was none is removed).
 // ─────────────────────────────────────────
 
 const TIERS: SubscriptionTier[] = ['SPARK', 'CELEBRATE', 'ELEVATE'];
@@ -75,19 +78,26 @@ beforeAll(async () => {
 afterAll(async () => {
   await deleteTestUserRow(userId);
   await deleteTestTenant(tenantId);
-  for (const tier of TIERS) {
-    const saved = savedConfigs.find((c) => c.tier === tier);
-    if (saved) {
-      const { tier: _tier, updatedAt: _updatedAt, ...values } = saved;
-      await prisma.subscriptionTierConfig.update({ where: { tier }, data: values });
-    } else {
-      await prisma.subscriptionTierConfig.deleteMany({ where: { tier } });
-    }
-  }
+  // Every tier, each on its own (one failing never leaves the others
+  // unrestored), as an upsert of the whole saved row, updatedAt included.
+  const results = await Promise.allSettled(
+    TIERS.map(async (tier) => {
+      const saved = savedConfigs.find((c) => c.tier === tier);
+      if (saved) {
+        const { tier: _tier, ...values } = saved;
+        await prisma.subscriptionTierConfig.upsert({ where: { tier }, create: saved, update: values });
+      } else {
+        await prisma.subscriptionTierConfig.deleteMany({ where: { tier } });
+      }
+    })
+  );
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed.length) throw failed[0]!.reason;
 }, 60000);
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe('each new tier setting changes access', () => {
@@ -133,7 +143,8 @@ describe('each new tier setting changes access', () => {
   }, 30000);
 
   it('with no config row, each falls back to the old in-code rule', async () => {
-    await prisma.subscriptionTierConfig.deleteMany({ where: { tier: 'SPARK' } });
+    // No row for any tier, without deleting the shared ones.
+    vi.spyOn(subscriptionTierConfigRepository, 'findByTier').mockResolvedValue(null);
     expect(await statusOf(() => assertEventCreatable(tenantId, { visibility: 'PUBLIC' }))).toBe(403);
     expect(await statusOf(() => assertEventCreatable(tenantId, { ticketing: 'PAID' }))).toBe(403);
     expect(await statusOf(() => assertEventUpdatable(event(), { hasCustomRsvpFields: true }))).toBe(403);
@@ -142,7 +153,6 @@ describe('each new tier setting changes access', () => {
     const elevate = await createTestTenant();
     await prisma.tenant.update({ where: { id: elevate.id }, data: { subscriptionTier: 'ELEVATE' } });
     try {
-      await prisma.subscriptionTierConfig.deleteMany({ where: { tier: 'ELEVATE' } });
       expect(await statusOf(() => assertEventCreatable(elevate.id, { visibility: 'PUBLIC', ticketing: 'PAID', hasCustomRsvpFields: true }))).toBe('ok');
     } finally {
       await deleteTestTenant(elevate.id);

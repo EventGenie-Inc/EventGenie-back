@@ -22,3 +22,9 @@ const OFFSETLESS_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
 
 export const parseClientDateTime = (value: string): Date =>
   new Date(OFFSETLESS_DATE_TIME.test(value) ? `${value}Z` : value);
+
+// Same UTC calendar date. EventDay.date is a @db.Date (UTC midnight) and a
+// program item's startTime a full instant built by parseClientDateTime, so
+// "the same day" compares UTC calendar components, never instants.
+export const isSameUtcDate = (a: Date, b: Date): boolean =>
+  a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();

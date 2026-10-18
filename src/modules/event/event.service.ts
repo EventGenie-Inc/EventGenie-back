@@ -1,10 +1,11 @@
 import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
-import { type PlatformRole, type EventStatus } from '@prisma/client';
+import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
-import { withEffectiveStatus, assertEventIsPublished } from './event-status.util.js';
+import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { assertValidHostName } from './event-host-name.util.js';
@@ -21,6 +22,7 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { eventAssignmentLock, eventIdsFilter } from '../event-assignment/event-assignment-lock.util.js';
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 import { isRecordNotFound } from '../../shared/utils/prisma-error.util.js';
+import { feedbackRepository } from '../feedback/feedback.repository.js';
 
 // Shared by create() and update() — rejects an oversized cover upload
 // AND cleans up the now-orphaned asset that's already sitting in
@@ -105,6 +107,80 @@ export const resolveEventScope = async (requestingRole: PlatformRole, tenantId: 
 // "already cancelled" 409, so the organiser's screen can say which.
 export const EVENT_ALREADY_HAPPENED = 'EVENT_ALREADY_HAPPENED';
 
+// ─────────────────────────────────────────
+//  THE CHECKS ON AN EVENT UPDATE — written once, for PUT /api/events/:id
+//  and the full event update (event-full-update.service.ts)
+// ─────────────────────────────────────────
+
+// The request's own values, before the event is even looked up.
+export const assertEventFieldsValid = (data: UpdateEventDto): void => {
+  if (data.name !== undefined) assertEventName(data.name);
+  assertValidCapacity(data.capacity);
+  assertValidHostName(data.hostName);
+};
+
+// Everything that needs the stored event. `days` is the event's live days
+// as they will be once this save lands: its stored days for a plain event
+// PUT, the edited list for the full update (the RSVP deadline can't be
+// after the last of THOSE).
+export const assertEventUpdateAllowed = async (
+  event: EntitlementDerivableEvent & { tenantId: string; coverImagePublicId: string | null; ticketing: EventTicketing; visibility: EventVisibility },
+  data: UpdateEventDto,
+  days: EventDayLike[]
+): Promise<void> => {
+  // Cover ownership is checked against the EVENT's tenant (right for a
+  // SUPER_ADMIN too), so it needs the event first; and it must run before
+  // the size check, which destroys the asset on rejection. The id already
+  // stored on this event is not re-checked (see assertCoverPublicIdOwned).
+  if (data.coverImagePublicId !== event.coverImagePublicId) {
+    assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
+  }
+  assertCoverImageWithinSizeLimit(data);
+
+  if (data.rsvpDeadline !== undefined) {
+    // rejectPast: false — an organiser deliberately closing RSVPs early
+    // by setting the deadline to "now" on a live event is legitimate;
+    // only a past deadline at CREATION time is rejected (see create()).
+    assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, days, { rejectPast: false });
+  }
+
+  // Only a CHANGE to paid/public is refused while the feature is off.
+  // Past that point, a switched-off feature's value can only be the one
+  // already stored, so it stays out of the tier and payout checks below:
+  // re-saving an older paid event must not 403 on a plan or ask for bank
+  // details, whose routes are off too.
+  assertPaidTicketingAvailable(data.ticketing, event.ticketing);
+  assertPublicEventsAvailable(data.visibility, event.visibility);
+  const ticketing = isFeatureEnabled('ticketing') ? data.ticketing : undefined;
+  const visibility = isFeatureEnabled('publicEvents') ? data.visibility : undefined;
+  await assertEventUpdatable(event, {
+    ...(visibility !== undefined && { visibility }),
+    ...(ticketing !== undefined && { ticketing }),
+  });
+  if (ticketing === 'PAID') {
+    await assertEventReadyToSellTickets(event);
+  }
+};
+
+// Cover REPLACED (including cleared to null) — delete the now-orphaned
+// old asset, once the save has landed. Fire-and-forget: never let a
+// Cloudinary hiccup fail an otherwise-successful event update; a failed
+// delete is just a harmless orphan (Batch B Task 3), not a broken event.
+// Does NOT run on archive — archiving is reversible, and deleting the
+// cover here would break restore (see the batch report).
+export const destroyReplacedCover = (event: { coverImagePublicId: string | null }, data: UpdateEventDto): void => {
+  if (
+    data.coverImagePublicId !== undefined &&
+    event.coverImagePublicId &&
+    event.coverImagePublicId !== data.coverImagePublicId
+  ) {
+    const oldPublicId = event.coverImagePublicId;
+    void destroyAsset(oldPublicId).then((result) => {
+      if (!result.ok) console.error('[cloudinary cleanup] failed to delete replaced cover:', result.reason);
+    });
+  }
+};
+
 export const isCreatorLocked = async (userId: string): Promise<boolean> =>
   (await eventAssignmentRepository.countForUser(userId)) > 0;
 
@@ -115,11 +191,17 @@ export const eventService = {
   // status — there is no separate code path either could drift from.
   //
   // A locked EVENT_ADMIN's list holds only their assigned events.
+  //
+  // feedbackGiven: whether the event has its organiser feedback (the
+  // card's "How did it go?" prompt), read for the whole list in one query.
+  // Left out while `feedback` is off, like the feature's routes.
   getAll: async (requestingRole: PlatformRole, tenantId: string | null) => {
     if (isTenantScopeEmptyForList(requestingRole, tenantId)) return [];
     const scope = await resolveEventScope(requestingRole, tenantId);
-    const events = await eventRepository.findAll(scope.tenantId, false, scope.eventIds);
-    return events.map(withEffectiveStatus);
+    const events = (await eventRepository.findAll(scope.tenantId, false, scope.eventIds)).map(withEffectiveStatus);
+    if (!isFeatureEnabled('feedback')) return events;
+    const withFeedback = await feedbackRepository.findEventIdsWithFeedback(events.map((e) => e.id));
+    return events.map((e) => ({ ...e, feedbackGiven: withFeedback.has(e.id) }));
   },
 
   // includeArchived is only ever true for the SUPER_ADMIN restore flow
@@ -228,65 +310,15 @@ export const eventService = {
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
-    if (data.name !== undefined) assertEventName(data.name);
-    assertValidCapacity(data.capacity);
-    assertValidHostName(data.hostName);
+    assertEventFieldsValid(data);
     // Tier rules are evaluated against the EVENT's owning tenant, not the
     // requester's — a SUPER_ADMIN editing a SPARK tenant's event must still
     // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
     // their own to fall back on.
     const event = await eventService.getById(id, requestingRole, tenantId);
-
-    // Cover ownership is checked against the EVENT's tenant (right for a
-    // SUPER_ADMIN too), so it needs the event first; and it must run before
-    // the size check, which destroys the asset on rejection. The id already
-    // stored on this event is not re-checked (see assertCoverPublicIdOwned).
-    if (data.coverImagePublicId !== event.coverImagePublicId) {
-      assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
-    }
-    assertCoverImageWithinSizeLimit(data);
-
-    if (data.rsvpDeadline !== undefined) {
-      // rejectPast: false — an organiser deliberately closing RSVPs early
-      // by setting the deadline to "now" on a live event is legitimate;
-      // only a past deadline at CREATION time is rejected (see create()).
-      assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, event.eventDays, { rejectPast: false });
-    }
-
-    // Only a CHANGE to paid/public is refused while the feature is off.
-    // Past that point, a switched-off feature's value can only be the one
-    // already stored, so it stays out of the tier and payout checks below:
-    // re-saving an older paid event must not 403 on a plan or ask for bank
-    // details, whose routes are off too.
-    assertPaidTicketingAvailable(data.ticketing, event.ticketing);
-    assertPublicEventsAvailable(data.visibility, event.visibility);
-    const ticketing = isFeatureEnabled('ticketing') ? data.ticketing : undefined;
-    const visibility = isFeatureEnabled('publicEvents') ? data.visibility : undefined;
-    await assertEventUpdatable(event, {
-      ...(visibility !== undefined && { visibility }),
-      ...(ticketing !== undefined && { ticketing }),
-    });
-    if (ticketing === 'PAID') {
-      await assertEventReadyToSellTickets(event);
-    }
+    await assertEventUpdateAllowed(event, data, event.eventDays);
     await eventRepository.update(id, userId, data);
-
-    // Cover REPLACED (including cleared to null) — delete the now-orphaned
-    // old asset. Fire-and-forget: never let a Cloudinary hiccup fail an
-    // otherwise-successful event update; a failed delete is just a
-    // harmless orphan (Batch B Task 3), not a broken event. Does NOT run
-    // on archive — archiving is reversible, and deleting the cover here
-    // would break restore (see the batch report).
-    if (
-      data.coverImagePublicId !== undefined &&
-      event.coverImagePublicId &&
-      event.coverImagePublicId !== data.coverImagePublicId
-    ) {
-      const oldPublicId = event.coverImagePublicId;
-      void destroyAsset(oldPublicId).then((result) => {
-        if (!result.ok) console.error('[cloudinary cleanup] failed to delete replaced cover:', result.reason);
-      });
-    }
+    destroyReplacedCover(event, data);
 
     // Re-fetched through getById (not the bare update() result) so this
     // response goes through the same withEffectiveStatus presenter as

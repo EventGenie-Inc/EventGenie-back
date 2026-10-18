@@ -113,19 +113,23 @@ export const guestService = {
     const duplicate = findDuplicateEmail(existingContacts.map((g) => ({ guestId: g.id, email: g.email })), email);
     if (duplicate) throw guestEmailTaken();
 
-    await assertGuestsCreatable(event, 1);
-
+    // Counted and written under the event's row lock, so two additions at
+    // once can't both pass the plan's limit or the ceiling.
+    //
     // Unwrapped to `.guest` — this route's response contract is (and
     // stays) the Guest row alone; the paired Invite that
     // createWithInvite now also returns is consumed by
     // event-public.service.ts's registration path instead.
-    const { guest } = await guestRepository.createWithInvite(eventId, userId, {
-      firstName: data.firstName ?? null,
-      surname: data.surname ?? null,
-      email,
-      phoneNumber,
-      eventDayIds: data.eventDayIds,
-      plusOnesAllowed,
+    const { guest } = await guestRepository.withEventGuestLock(eventId, async (tx) => {
+      await assertGuestsCreatable(event, 1, tx);
+      return guestRepository.createWithInvite(eventId, userId, {
+        firstName: data.firstName ?? null,
+        surname: data.surname ?? null,
+        email,
+        phoneNumber,
+        eventDayIds: data.eventDayIds,
+        plusOnesAllowed,
+      }, tx);
     }).catch(rethrowGuestEmailTaken);
     return guest;
   },
@@ -202,10 +206,10 @@ export const guestService = {
     // Must look up including archived — the whole point of reactivate is
     // to find a guest that is currently archived and un-archive them.
     const guest = await guestService.getById(id, requestingRole, tenantId, true);
-    // Restoring adds a live guest back, so it can't take the event past the
-    // hard ceiling either (guest-ceiling.util.ts). The plan's own limit is
-    // not checked here (it never was on restore).
-    if (guest.isArchived) await assertWithinGuestCeiling(guest.eventId, 1);
+    // The event, for the plan's limit (its pass can raise it). Archived
+    // included, as the guest lookup above never refused a guest of an
+    // archived event either.
+    const event = await eventService.getScopedWithPass(guest.eventId, requestingRole, tenantId, true);
 
     // Per the same v1 approach as tenant.service.ts's reactivate: this
     // uniformly reactivates every archived invite under this guest,
@@ -220,7 +224,17 @@ export const guestService = {
     // A live guest may have this guest's email by now (archiving freed it):
     // restoring would make two, so it is refused, by the unique index if
     // not before.
-    await prisma.$transaction(async (tx) => {
+    //
+    // Restoring adds a live guest back, so it is held to what adding one
+    // is: the plan's own guest limit, then the hard ceiling
+    // (guest-ceiling.util.ts), counted and written under the event's row
+    // lock like add and import. A plus-one doesn't count toward the plan's
+    // limit (guestRepository.countForEvent), only toward the ceiling.
+    await guestRepository.withEventGuestLock(guest.eventId, async (tx) => {
+      if (guest.isArchived) {
+        if (guest.hostGuestId) await assertWithinGuestCeiling(guest.eventId, 1, tx);
+        else await assertGuestsCreatable(event, 1, tx);
+      }
       await tx.guest.update({ where: { id }, data: { isArchived: false } });
       for (const invite of invites) {
         await tx.invite.update({ where: { id: invite.id }, data: { isArchived: false } });
@@ -256,10 +270,14 @@ export const guestService = {
     });
 
     if (validRows.length > 0) {
-      await assertGuestsCreatable(event, validRows.length);
-      // A violation here is a guest added with one of these emails while
+      // Counted and written under the event's row lock (as add and
+      // registration are), with the import's own 30-second allowance. A
+      // violation here is a guest added with one of these emails while
       // the file was being checked: nothing was imported (one transaction).
-      await guestRepository.bulkCreateWithInvites(eventId, userId, validRows).catch(rethrowGuestEmailTaken);
+      await guestRepository.withEventGuestLock(eventId, async (tx) => {
+        await assertGuestsCreatable(event, validRows.length, tx);
+        await guestRepository.bulkCreateWithInvites(eventId, userId, validRows, tx);
+      }, 30_000).catch(rethrowGuestEmailTaken);
     }
 
     return { totalRows, created: validRows.length, failed: failures.length, failures };

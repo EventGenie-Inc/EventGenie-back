@@ -1,5 +1,9 @@
+import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateRsvpFieldDto, type UpdateRsvpFieldDto } from './rsvp-field.types.js';
+
+// Writes take an optional transaction client (the full event update).
+type Db = Prisma.TransactionClient | typeof prisma;
 
 export const rsvpFieldRepository = {
 
@@ -15,8 +19,8 @@ export const rsvpFieldRepository = {
       where: { id, isArchived: false },
     }),
 
-  create: (eventId: string, userId: string, data: CreateRsvpFieldDto) =>
-    prisma.rsvpField.create({
+  create: (eventId: string, userId: string, data: CreateRsvpFieldDto, db: Db = prisma) =>
+    db.rsvpField.create({
       data: {
         eventId,
         label: data.label,
@@ -30,8 +34,8 @@ export const rsvpFieldRepository = {
       },
     }),
 
-  update: (id: string, userId: string, data: UpdateRsvpFieldDto) =>
-    prisma.rsvpField.update({
+  update: (id: string, userId: string, data: UpdateRsvpFieldDto, db: Db = prisma) =>
+    db.rsvpField.update({
       where: { id },
       data: {
         ...(data.label !== undefined && { label: data.label }),
@@ -43,8 +47,8 @@ export const rsvpFieldRepository = {
       },
     }),
 
-  archive: (id: string, userId: string) =>
-    prisma.rsvpField.update({
+  archive: (id: string, userId: string, db: Db = prisma) =>
+    db.rsvpField.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
     }),

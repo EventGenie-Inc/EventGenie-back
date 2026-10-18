@@ -1,7 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { eventDayRepository } from './event-day.repository.js';
-import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { eventDayRepository, type EventDayWrite, type EventDayPatch } from './event-day.repository.js';
+import { resolveDayVenueForCreate, resolveDayVenueForUpdate, type DayVenueInput } from './event-day-venue.util.js';
+import { parseClientDateTime, isSameUtcDate } from '../../shared/utils/date-input.util.js';
 
 // EventDay.label must be unique per event so the import engine's Day
 // column (and any human reading a spreadsheet) never faces an ambiguous
@@ -19,8 +20,23 @@ export const assertNoDuplicateDayLabel = async (
   const normalized = label.trim().toLowerCase();
   const conflict = days.find((d) => d.id !== excludeDayId && d.label.trim().toLowerCase() === normalized);
   if (conflict) {
-    throw new HttpError(409, `This event already has a day labeled '${conflict.label}' — day labels must be unique per event`);
+    throw new HttpError(409, duplicateDayLabelMessage(conflict.label));
   }
+};
+
+export const duplicateDayLabelMessage = (label: string): string =>
+  `This event already has a day labeled '${label}' — day labels must be unique per event`;
+
+// The same rule over a whole list of days at once (the wizard's materialize
+// and the full event update): the first label repeated, ignoring case.
+export const findDuplicateDayLabel = (labels: string[]): string | null => {
+  const seen = new Set<string>();
+  for (const label of labels) {
+    const normalized = label.trim().toLowerCase();
+    if (seen.has(normalized)) return label;
+    seen.add(normalized);
+  }
+  return null;
 };
 
 // Defense-in-depth for the race the pre-check above can't fully close
@@ -63,4 +79,92 @@ export const assertDayTimesInOrder = (startTime: Date | null, endTime: Date | nu
   if (startTime && endTime && endTime.getTime() <= startTime.getTime()) {
     throw new HttpError(422, `The end time of '${label}' must be after its start time.`);
   }
+};
+
+// ─────────────────────────────────────────
+//  A DAY'S DATE CAN'T BE IN THE PAST — new or changed dates only
+//
+//  The wizard refuses a date before the organiser's own today. Events have
+//  no time zone (STEERING "Known gaps") and the server knows only UTC, so
+//  the server allows one day of slack: a date earlier than UTC today minus
+//  one day is refused. An organiser behind UTC (whose "today" is still UTC
+//  yesterday) is never refused for picking their own today.
+//
+//  Only a date that is new or changed is judged. A saved day whose event
+//  has already happened keeps its date and stays editable: re-sending it
+//  unchanged is never refused.
+// ─────────────────────────────────────────
+export const EVENT_DAY_DATE_IN_PAST = 'EVENT_DAY_DATE_IN_PAST';
+
+export const earliestAllowedDayDate = (now: Date = new Date()): Date =>
+  new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+
+export const assertDayDateNotPast = (date: Date, label: string, now: Date = new Date()): void => {
+  const day = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  if (day < earliestAllowedDayDate(now).getTime()) {
+    throw new HttpError(422, `The date of '${label}' has already passed. Choose today or a later date.`, EVENT_DAY_DATE_IN_PAST);
+  }
+};
+
+// startTime/endTime are optional; an explicit null (or blank) clears one.
+// Never new Date(null) — that is 1970-01-01, the bug the old repository
+// comment described.
+export const optionalDayDateTime = (value: unknown): Date | null =>
+  value ? parseClientDateTime(value as string) : null;
+
+export interface DayInput extends DayVenueInput {
+  label?: unknown;
+  date?: unknown;
+  startTime?: unknown;
+  endTime?: unknown;
+}
+
+// Every rule for a NEW day's own fields, in one place: POST .../days, the
+// wizard's materialize and the full event update. Label uniqueness is the
+// caller's (it needs the event's other days).
+export const resolveNewDay = (data: DayInput): EventDayWrite => {
+  const label = requireDayLabel(data.label);
+  const date = requireDayDate(data.date, label);
+  assertDayDateNotPast(date, label);
+  const venue = resolveDayVenueForCreate(data, label);
+  const startTime = optionalDayDateTime(data.startTime);
+  const endTime = optionalDayDateTime(data.endTime);
+  assertDayTimesInOrder(startTime, endTime, label);
+  return { label, date, startTime, endTime, venue };
+};
+
+export interface StoredDay {
+  label: string;
+  date: Date;
+  startTime: Date | null;
+  endTime: Date | null;
+  location: string | null;
+  address: string | null;
+  latitude: Prisma.Decimal | number | null;
+  longitude: Prisma.Decimal | number | null;
+}
+
+// Every rule for a change to a saved day, judged on the day it leaves
+// behind: PUT .../days/:id and the full event update. Omitted fields keep
+// their stored value. Label uniqueness is the caller's.
+export const resolveDayChanges = (data: DayInput, existing: StoredDay): EventDayPatch => {
+  const label = data.label !== undefined ? requireDayLabel(data.label) : undefined;
+  const effectiveLabel = label ?? existing.label;
+  const date = data.date !== undefined ? requireDayDate(data.date, effectiveLabel) : undefined;
+  if (date !== undefined && !isSameUtcDate(date, existing.date)) assertDayDateNotPast(date, effectiveLabel);
+  const venue = resolveDayVenueForUpdate(data, existing, effectiveLabel);
+  const startTime = data.startTime !== undefined ? optionalDayDateTime(data.startTime) : undefined;
+  const endTime = data.endTime !== undefined ? optionalDayDateTime(data.endTime) : undefined;
+  assertDayTimesInOrder(
+    startTime !== undefined ? startTime : existing.startTime,
+    endTime !== undefined ? endTime : existing.endTime,
+    effectiveLabel
+  );
+  return {
+    ...(label !== undefined && { label }),
+    ...(date !== undefined && { date }),
+    ...(startTime !== undefined && { startTime }),
+    ...(endTime !== undefined && { endTime }),
+    venue,
+  };
 };

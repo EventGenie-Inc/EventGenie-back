@@ -26,7 +26,8 @@ import {
 //  regression guard, not just "the guest message changed".
 // ─────────────────────────────────────────
 
-const cleanup: (() => Promise<void>)[] = [];
+// Each returns whatever its delete returns; only completion matters.
+const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();
@@ -170,7 +171,7 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
     const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
     const event = await createTestEvent(tenant.id, user.id);
     const hub = await memoryHubRepository.findByEventId(event.id);
-    await memoryHubService.archive(hub!.id, user.id, user.role, tenant.id);
+    await memoryHubService.archive(event.id, hub!.id, user.id, user.role, tenant.id);
     const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
 
     cleanup.push(
@@ -191,7 +192,7 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
     const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
     const event = await createTestEvent(tenant.id, user.id);
     const hub = await memoryHubRepository.findByEventId(event.id);
-    await memoryHubService.archive(hub!.id, user.id, user.role, tenant.id);
+    await memoryHubService.archive(event.id, hub!.id, user.id, user.role, tenant.id);
     const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
 
     cleanup.push(
@@ -220,7 +221,7 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
     const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
     const event = await createTestEvent(tenant.id, user.id);
     const hub = await memoryHubRepository.findByEventId(event.id);
-    await memoryHubService.update(hub!.id, user.id, user.role, tenant.id, { opensAt: '2099-01-01T00:00:00' });
+    await memoryHubService.update(event.id, hub!.id, user.id, user.role, tenant.id, { opensAt: '2099-01-01T00:00:00' });
     const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
 
     cleanup.push(

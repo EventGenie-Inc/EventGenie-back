@@ -57,7 +57,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const hub = await memoryHubService.update(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
+    const hub = await memoryHubService.update(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(200).json({ status: 'ok', data: hub });
   } catch (err) { next(err); }
 });
@@ -68,7 +68,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/:id/share-link', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const hub = await memoryHubService.regenerateShareLink(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    const hub = await memoryHubService.regenerateShareLink(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: hub });
   } catch (err) { next(err); }
 });
@@ -79,7 +79,7 @@ router.post('/:id/share-link', async (req: Request, res: Response, next: NextFun
 router.delete('/:id/share-link', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const hub = await memoryHubService.revokeShareLink(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    const hub = await memoryHubService.revokeShareLink(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: hub });
   } catch (err) { next(err); }
 });
@@ -88,7 +88,7 @@ router.delete('/:id/share-link', async (req: Request, res: Response, next: NextF
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await memoryHubService.archive(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    await memoryHubService.archive(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'Memory hub archived' });
   } catch (err) { next(err); }
 });
@@ -97,7 +97,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 router.post('/:id/reactivate', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const hub = await memoryHubService.reactivate(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    const hub = await memoryHubService.reactivate(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: hub });
   } catch (err) { next(err); }
 });
@@ -109,7 +109,7 @@ router.get('/:hubId/items', async (req: Request, res: Response, next: NextFuncti
   try {
     const auth = req as AuthenticatedRequest;
     const status = parseStatusFilter(req.query['status']);
-    const items = await memoryHubService.getAllItems(req.params['hubId'] as string, auth.user.role, auth.user.tenantId, status);
+    const items = await memoryHubService.getAllItems(req.params['eventId'] as string, req.params['hubId'] as string, auth.user.role, auth.user.tenantId, status);
     res.status(200).json({ status: 'ok', data: items });
   } catch (err) { next(err); }
 });
@@ -118,7 +118,7 @@ router.get('/:hubId/items', async (req: Request, res: Response, next: NextFuncti
 router.get('/:hubId/items/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const item = await memoryHubService.getItemById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    const item = await memoryHubService.getItemById(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: item });
   } catch (err) { next(err); }
 });
@@ -129,6 +129,7 @@ router.post('/:hubId/items', async (req: Request, res: Response, next: NextFunct
   try {
     const auth = req as AuthenticatedRequest;
     const item = await memoryHubService.createOrganiserItem(
+      req.params['eventId'] as string,
       req.params['hubId'] as string,
       auth.user.id,
       auth.user.role,
@@ -144,7 +145,7 @@ router.post('/:hubId/items', async (req: Request, res: Response, next: NextFunct
 router.put('/:hubId/items/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const item = await memoryHubService.updateItem(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
+    const item = await memoryHubService.updateItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(200).json({ status: 'ok', data: item });
   } catch (err) { next(err); }
 });
@@ -153,7 +154,7 @@ router.put('/:hubId/items/:id', async (req: Request, res: Response, next: NextFu
 router.post('/:hubId/items/:id/approve', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const item = await memoryHubService.curateItem(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, 'APPROVED');
+    const item = await memoryHubService.curateItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, 'APPROVED');
     res.status(200).json({ status: 'ok', data: item });
   } catch (err) { next(err); }
 });
@@ -164,7 +165,7 @@ router.post('/:hubId/items/:id/approve', async (req: Request, res: Response, nex
 router.post('/:hubId/items/:id/reject', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const item = await memoryHubService.curateItem(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, 'REJECTED');
+    const item = await memoryHubService.curateItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, 'REJECTED');
     res.status(200).json({ status: 'ok', data: item });
   } catch (err) { next(err); }
 });
@@ -173,7 +174,7 @@ router.post('/:hubId/items/:id/reject', async (req: Request, res: Response, next
 router.delete('/:hubId/items/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await memoryHubService.archiveItem(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    await memoryHubService.archiveItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'Memory item archived' });
   } catch (err) { next(err); }
 });
@@ -182,7 +183,7 @@ router.delete('/:hubId/items/:id', async (req: Request, res: Response, next: Nex
 router.post('/:hubId/items/:id/reactivate', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const item = await memoryHubService.reactivateItem(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    const item = await memoryHubService.reactivateItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: item });
   } catch (err) { next(err); }
 });

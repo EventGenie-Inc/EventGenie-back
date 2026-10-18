@@ -48,7 +48,7 @@ describe('auth emails — username is escaped', () => {
     expect(res.status).toBe(200);
 
     expect(mockResendSend).toHaveBeenCalled();
-    const html = mockResendSend.mock.calls[mockResendSend.mock.calls.length - 1][0].html as string;
+    const html = mockResendSend.mock.lastCall![0].html as string;
     expect(html).not.toContain(HOSTILE_USERNAME);
     expect(html).not.toContain('<script>');
     expect(html).toContain(ESCAPED_USERNAME);
@@ -62,7 +62,7 @@ describe('auth emails — username is escaped', () => {
     expect(res.status).toBe(200);
 
     expect(mockResendSend).toHaveBeenCalled();
-    const html = mockResendSend.mock.calls[mockResendSend.mock.calls.length - 1][0].html as string;
+    const html = mockResendSend.mock.lastCall![0].html as string;
     expect(html).not.toContain(HOSTILE_USERNAME);
     expect(html).not.toContain('<script>');
     expect(html).toContain(ESCAPED_USERNAME);
@@ -73,7 +73,7 @@ describe('auth emails — username is escaped', () => {
 // the real request path, with a plain-text part and the "e-velope" sender.
 describe('auth emails — shared layout, plain-text part, sender', () => {
   const lastSend = () =>
-    mockResendSend.mock.calls[mockResendSend.mock.calls.length - 1][0] as {
+    mockResendSend.mock.lastCall![0] as {
       from: string; subject: string; html: string; text: string;
     };
 

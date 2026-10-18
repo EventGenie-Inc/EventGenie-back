@@ -1,6 +1,10 @@
+import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateProgramItemDto, type UpdateProgramItemDto } from './program-item.types.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+
+// Writes take an optional transaction client (the full event update).
+type Db = Prisma.TransactionClient | typeof prisma;
 
 export const programItemRepository = {
 
@@ -25,8 +29,8 @@ export const programItemRepository = {
       where: { id, isArchived: false },
     }),
 
-  create: (programId: string, userId: string, data: CreateProgramItemDto & { order: number }) =>
-    prisma.programItem.create({
+  create: (programId: string, userId: string, data: CreateProgramItemDto & { order: number }, db: Db = prisma) =>
+    db.programItem.create({
       data: {
         programId,
         title: data.title,
@@ -41,8 +45,8 @@ export const programItemRepository = {
       },
     }),
 
-  update: (id: string, userId: string, data: UpdateProgramItemDto) =>
-    prisma.programItem.update({
+  update: (id: string, userId: string, data: UpdateProgramItemDto, db: Db = prisma) =>
+    db.programItem.update({
       where: { id },
       data: {
         ...(data.title !== undefined && { title: data.title }),
@@ -55,8 +59,8 @@ export const programItemRepository = {
       },
     }),
 
-  archive: (id: string, userId: string) =>
-    prisma.programItem.update({
+  archive: (id: string, userId: string, db: Db = prisma) =>
+    db.programItem.update({
       where: { id },
       data: { isArchived: true, updatedBy: userId },
     }),

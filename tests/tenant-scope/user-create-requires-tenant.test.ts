@@ -21,7 +21,8 @@ const newUser = () => ({
   username: `follow-up2-${randomUUID()}`,
 });
 
-const cleanup: (() => Promise<void>)[] = [];
+// Each returns whatever its delete returns; only completion matters.
+const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();
