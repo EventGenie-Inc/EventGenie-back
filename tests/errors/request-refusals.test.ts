@@ -47,6 +47,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 const settle = () => Sentry.flush(2000);
@@ -112,6 +113,35 @@ describe('CORS', () => {
   it('control: no Origin header is still let through', async () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
+  });
+
+  // Each environment's frontend is allowed through FRONTEND_BASE_URL alone,
+  // so a new environment (staging) needs no ALLOWED_ORIGINS entry of its own.
+  it.each([
+    ['dev', 'https://dev.e-velope.co.za'],
+    ['staging', 'https://staging.e-velope.co.za'],
+    ['prod', 'https://www.e-velope.co.za'],
+  ])("allows the %s frontend's own origin when FRONTEND_BASE_URL is it, with ALLOWED_ORIGINS leaving it out", async (_, site) => {
+    vi.stubEnv('FRONTEND_BASE_URL', `${site}/`); // a trailing slash isn't part of an origin
+    vi.stubEnv('ALLOWED_ORIGINS', 'http://localhost:4200');
+
+    const res = await request(app).get('/health').set('Origin', site);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe(site);
+  });
+
+  it("control: with FRONTEND_BASE_URL on staging, another environment's site is still refused, and ALLOWED_ORIGINS still allowed", async () => {
+    vi.stubEnv('FRONTEND_BASE_URL', 'https://staging.e-velope.co.za');
+    vi.stubEnv('ALLOWED_ORIGINS', 'http://localhost:4200');
+
+    const other = await request(app).get('/health').set('Origin', 'https://dev.e-velope.co.za');
+    expect(other.status).toBe(403);
+    expect(other.body).toEqual({ status: 'error', message: CORS_REFUSED_MESSAGE });
+
+    const listed = await request(app).get('/health').set('Origin', 'http://localhost:4200');
+    expect(listed.status).toBe(200);
+    expect(listed.headers['access-control-allow-origin']).toBe('http://localhost:4200');
   });
 
 });

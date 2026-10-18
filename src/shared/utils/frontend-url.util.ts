@@ -32,6 +32,11 @@ const frontendBaseUrl = (): string => {
 export const frontendUrl = (path: string): string =>
   `${frontendBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
 
+// The frontend's origin (scheme, host and port, no path or trailing slash),
+// as a browser sends it in the Origin header. app.ts's CORS check always
+// allows it: the site this server's links point at must be able to call it.
+export const frontendOrigin = (): string => new URL(frontendBaseUrl()).origin;
+
 // Called when app.ts loads, beside assertFeatureConfigValid: the app refuses
 // to start rather than serve links built from nothing.
 export const assertFrontendUrlConfigured = (): void => {

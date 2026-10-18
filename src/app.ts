@@ -5,7 +5,7 @@ import { captureRawBody } from './shared/middleware/raw-body.middleware.js';
 import { rejectBodyParseErrors, REQUEST_BODY_LIMIT_MB } from './shared/middleware/body-parse-errors.middleware.js';
 import { assertFeatureConfigValid } from './shared/features/feature-flags.js';
 import { ROUTE_NOT_FOUND_BODY } from './shared/middleware/feature.middleware.js';
-import { assertFrontendUrlConfigured } from './shared/utils/frontend-url.util.js';
+import { assertFrontendUrlConfigured, frontendOrigin } from './shared/utils/frontend-url.util.js';
 import { reportError, reportUnreportedServerErrors } from './shared/monitoring/error-reporting.js';
 
 // ─────────────────────────────────────────
@@ -97,23 +97,32 @@ app.use(reportUnreportedServerErrors);
 
 // ─────────────────────────────────────────
 //  CORS
-//  Env-driven allowlist. Requests with no
-//  Origin header (Postman, curl, server-to-
-//  server) are always allowed through — only
-//  browser cross-origin requests carry Origin.
-//  Any other origin is a 403 (an HttpError, so
-//  never a 500 and never reported to Sentry).
+//  Env-driven allowlist: the frontend's own
+//  origin (FRONTEND_BASE_URL's, so each
+//  environment's site — dev, staging, prod —
+//  is allowed without repeating it) plus
+//  ALLOWED_ORIGINS (localhost, extra sites).
+//  Both read per request, like frontendUrl().
+//  Requests with no Origin header (Postman,
+//  curl, server-to-server) are always allowed
+//  through — only browser cross-origin
+//  requests carry Origin. Any other origin is
+//  a 403 (an HttpError, so never a 500 and
+//  never reported to Sentry).
 // ─────────────────────────────────────────
 export const CORS_REFUSED_MESSAGE = "Requests from this website aren't allowed.";
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
-  .split(',')
-  .map(origin => origin.trim())
-  .filter(Boolean);
+const isAllowedOrigin = (origin: string): boolean =>
+  origin === frontendOrigin() ||
+  (process.env.ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(allowed => allowed.trim())
+    .filter(Boolean)
+    .includes(origin);
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || isAllowedOrigin(origin)) {
       callback(null, true);
     } else {
       callback(new HttpError(403, CORS_REFUSED_MESSAGE));
@@ -303,6 +312,7 @@ app.use('/api/admin/feedback', feedbackAdminRouter);
 app.use((_req: Request, res: Response) => {
   res.status(404).json(ROUTE_NOT_FOUND_BODY);
 });
+
 
 // ─────────────────────────────────────────
 //  GLOBAL ERROR HANDLER

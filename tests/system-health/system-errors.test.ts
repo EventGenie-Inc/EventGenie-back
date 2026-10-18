@@ -204,6 +204,23 @@ describe('the error list', () => {
     expect(res.body.data.issues[0].environment).toBe('production');
   }, 30000);
 
+  // The names both apps report (SENTRY_ENVIRONMENT on Render, the
+  // frontend's environment files), staging included.
+  it.each(['dev', 'staging', 'prod'])('filters by the %s environment', async (environment) => {
+    configureSentry();
+    sentryAnswers();
+
+    const res = await request(app).get(`${ENDPOINT}?environment=${environment}`).set(headersFor(superAdmin));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.filters.environment).toBe(environment);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url] of fetchMock.mock.calls as [string][]) {
+      expect(new URL(url).searchParams.get('query')).toBe(`is:unresolved environment:${environment}`);
+    }
+    expect(res.body.data.issues.map((i: { environment: string }) => i.environment)).toEqual([environment, environment, environment]);
+  }, 30000);
+
   it('caches each answer for 60 seconds, so Sentry is asked once', async () => {
     configureSentry();
     sentryAnswers();

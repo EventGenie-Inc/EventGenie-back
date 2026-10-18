@@ -254,9 +254,10 @@ SEED_TEST_PASSWORD
 value means every sent invitation points somewhere broken — and an SMS
 cannot be recalled. Verify it per environment.
 
-`ALLOWED_ORIGINS` is a comma-separated CORS allowlist. Set it on Render
-for both services; if unset, `allowedOrigins` resolves empty and every
-browser request is rejected.
+`ALLOWED_ORIGINS` is a comma-separated CORS allowlist of origins besides
+the frontend's own: `FRONTEND_BASE_URL`'s origin is always allowed, so a
+service needs it only for extra sites (localhost, for one). If unset, every
+other browser origin is rejected.
 
 ---
 
