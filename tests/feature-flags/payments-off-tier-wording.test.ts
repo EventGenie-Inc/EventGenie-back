@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import request from 'supertest';
-import { type SubscriptionTier, type SubscriptionTierConfig } from '@prisma/client';
+import { type Prisma, type SubscriptionTier, type SubscriptionTierConfig } from '@prisma/client';
 import app from '../../src/app.js';
 import { assertEventCreatable, assertEventUpdatable } from '../../src/modules/subscription-tier-config/event-tier-enforcement.util.js';
 import { assertGuestsCreatable } from '../../src/modules/subscription-tier-config/guest-tier-enforcement.util.js';
@@ -73,7 +73,9 @@ const BASE_CONFIG = {
   vendorPriorityPlacement: false,
 };
 
-const setConfig = (tier: SubscriptionTier, values: Partial<typeof BASE_CONFIG>) =>
+// Any column a tier config can be created with, not just BASE_CONFIG's own
+// (null) types.
+const setConfig = (tier: SubscriptionTier, values: Partial<Omit<Prisma.SubscriptionTierConfigCreateInput, 'tier'>>) =>
   prisma.subscriptionTierConfig.upsert({
     where: { tier },
     create: { tier, ...BASE_CONFIG, ...values },
@@ -209,7 +211,7 @@ describe('payments off — every tier refusal is worded without plans, upgrades 
     const publicId = `${memoryHubFolder(tenantId, realEventId)}/${randomUUID()}`;
     const mediaUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/v1/${publicId}.jpg`;
     await expectLaunchWording(403, () =>
-      memoryHubService.createOrganiserItem(hub!.id, userId, 'SUPER_ADMIN', null, {
+      memoryHubService.createOrganiserItem(realEventId, hub!.id, userId, 'SUPER_ADMIN', null, {
         mediaUrl,
         cloudinaryPublicId: publicId,
         mediaType: 'IMAGE',

@@ -30,6 +30,7 @@ import {
   assertProgramVisibilityFlag,
 } from '../program-item/program-item-validation.util.js';
 import { assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertValidOpensAt } from '../memory-hub/memory-hub-validation.util.js';
 import { eventFullUpdateRepository, type FullUpdatePlan, type DayRef, type PlannedItem } from './event-full-update.repository.js';
 import {
   type FullEventUpdateDto,
@@ -337,7 +338,7 @@ const planProgram = (event: LoadedEvent, input: Record<string, unknown> | undefi
 
 const planMemoryHub = (event: LoadedEvent, input: Record<string, unknown> | undefined): FullUpdatePlan['memoryHub'] => {
   if (input === undefined || input.opensAt === undefined) return null;
-  if (input.opensAt !== null && typeof input.opensAt !== 'string') throw new HttpError(400, "The photo album's opening time must be a date.");
+  assertValidOpensAt(input.opensAt);
   const opensAt = input.opensAt as string | null;
   const hub = event.memoryHub;
   // PUT .../memory-hub/:id's own lookup refuses an archived hub.

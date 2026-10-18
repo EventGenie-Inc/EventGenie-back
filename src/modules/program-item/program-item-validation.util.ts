@@ -80,11 +80,15 @@ export const assertItemStartsOnItsDay = (
   );
 };
 
-// The program's guest visibility, when sent, is true or false (the
-// wizard's materialize and the full event update).
+// The program's guest visibility, when sent, is true or false, else 422
+// PROGRAM_VISIBILITY_INVALID (a non-boolean used to reach Prisma as a 500
+// on PUT .../program/:id). PUT .../program/:id, the wizard's materialize
+// and the full event update.
+export const PROGRAM_VISIBILITY_INVALID = 'PROGRAM_VISIBILITY_INVALID';
+
 export const assertProgramVisibilityFlag = (isPublished: unknown): void => {
   if (isPublished !== undefined && typeof isPublished !== 'boolean') {
-    throw new HttpError(422, 'Program visibility must be true or false.');
+    throw new HttpError(422, 'Program visibility must be true or false.', PROGRAM_VISIBILITY_INVALID);
   }
 };
 

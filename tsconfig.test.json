@@ -1,0 +1,17 @@
+{
+  // Type-checks the test suite (tests/) with the same strict settings as
+  // the app: `npm run typecheck:tests`. `npm run build` (tsconfig.json)
+  // covers src/ only, so a changed service signature used to compile while
+  // a test still called the old one, and failed only at run time.
+  // vitest itself transpiles without checking types.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "sourceMap": false,
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -150,7 +150,7 @@ describe('Memory Hub — mediaUrl must be our delivery URL for exactly the check
 
     const hub = await memoryHubRepository.findByEventId(s.ownEvent.id);
     const organiserErr = await memoryHubService
-      .createOrganiserItem(hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
+      .createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
         mediaUrl: 'https://evil.example.com/x.jpg', cloudinaryPublicId: own, mediaType: 'IMAGE', bytes: 1000,
       })
       .catch((e) => e);
@@ -166,10 +166,10 @@ describe('Memory Hub — mediaUrl must be our delivery URL for exactly the check
     const image = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
     const video = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
 
-    const savedImage = await memoryHubService.createOrganiserItem(hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
+    const savedImage = await memoryHubService.createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
       mediaUrl: deliveryUrl('image', image, 'jpg'), cloudinaryPublicId: image, mediaType: 'IMAGE', bytes: 1000,
     });
-    const savedVideo = await memoryHubService.createOrganiserItem(hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
+    const savedVideo = await memoryHubService.createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
       mediaUrl: deliveryUrl('video', video, 'mp4'), cloudinaryPublicId: video, mediaType: 'VIDEO', bytes: 1000,
     });
     expect(savedImage.mediaUrl).toBe(deliveryUrl('image', image, 'jpg'));
@@ -183,7 +183,7 @@ describe('Memory Hub organiser upload — same check', () => {
     const s = await setup();
     const hub = await memoryHubRepository.findByEventId(s.ownEvent.id);
     const err = await memoryHubService
-      .createOrganiserItem(hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
+      .createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
         mediaUrl: 'https://example.test/x.jpg',
         cloudinaryPublicId: `${memoryHubFolder(s.tenantB.id, s.foreignEvent.id)}/${randomUUID()}`,
         mediaType: 'IMAGE',

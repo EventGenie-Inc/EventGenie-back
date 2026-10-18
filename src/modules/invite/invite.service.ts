@@ -9,18 +9,28 @@ import { eventService } from '../event/event.service.js';
 // direct eventId -> Event -> tenantId, exactly like event-day/guest. Every
 // method now gates through eventService.getById() (Part 2 — this was
 // deferred from Part 1.5 until the Control Center made these reachable).
+//
+// An invite under /api/events/:eventId/invites/:id must be THAT event's:
+// the URL's event is gated first (tenant scoping and the assignment lock),
+// then a 404 unless the invite's own eventId matches, so the same tenant's
+// other event's invite is the same 404 as another tenant's (STEERING "A
+// sub-resource must belong to the event in its URL"). These used to gate
+// only on the invite's own event.
+const inviteInScope = async (eventId: string, id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
+  await eventService.getById(eventId, requestingRole, tenantId);
+  const invite = await inviteRepository.findById(id, includeArchived);
+  if (!invite || invite.eventId !== eventId) throw new HttpError(404, 'Invite not found');
+  return invite;
+};
+
 export const inviteService = {
   getAll: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     await eventService.getById(eventId, requestingRole, tenantId); // throws 404 if wrong tenant
     return inviteRepository.findAll(eventId);
   },
 
-  getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    const invite = await inviteRepository.findById(id);
-    if (!invite) throw new HttpError(404, 'Invite not found');
-    await eventService.getById(invite.eventId, requestingRole, tenantId);
-    return invite;
-  },
+  getById: (eventId: string, id: string, requestingRole: PlatformRole, tenantId: string | null) =>
+    inviteInScope(eventId, id, requestingRole, tenantId),
 
   create: async (
     eventId: string,
@@ -43,13 +53,14 @@ export const inviteService = {
   },
 
   update: async (
+    eventId: string,
     id: string,
     userId: string,
     requestingRole: PlatformRole,
     tenantId: string | null,
     data: UpdateInviteDto
   ) => {
-    await inviteService.getById(id, requestingRole, tenantId); // now scoped
+    await inviteInScope(eventId, id, requestingRole, tenantId);
     return inviteRepository.update(id, userId, data);
   },
 
@@ -57,19 +68,15 @@ export const inviteService = {
   // exists and may be re-invited later. Invite already carries its own
   // eventId, so ownership is a direct one-hop gate via eventService.getById,
   // same shape as event-day.service.ts.
-  archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    const invite = await inviteRepository.findById(id);
-    if (!invite) throw new HttpError(404, 'Invite not found');
-    await eventService.getById(invite.eventId, requestingRole, tenantId);
+  archive: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await inviteInScope(eventId, id, requestingRole, tenantId);
     return inviteRepository.archive(id, userId);
   },
 
-  reactivate: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+  reactivate: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
     // to find an invite that is currently archived and un-archive it.
-    const invite = await inviteRepository.findById(id, true);
-    if (!invite) throw new HttpError(404, 'Invite not found');
-    await eventService.getById(invite.eventId, requestingRole, tenantId);
+    await inviteInScope(eventId, id, requestingRole, tenantId, true);
     return inviteRepository.reactivate(id, userId);
   },
 };

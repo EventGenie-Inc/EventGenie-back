@@ -109,14 +109,17 @@ describe('the last active TENANT_ADMIN', () => {
     // both demote. With it, the second is blocked at FOR UPDATE, so the
     // first waits out the cap and commits, and the second then counts zero.
     const realCount = userRepository.countOtherActiveWithRole;
+    // The real method returns a Prisma promise; the wrapper a plain one,
+    // which its caller only awaits.
+    const asCount = (fn: (...args: Parameters<typeof realCount>) => Promise<number>) => fn as unknown as typeof realCount;
     let counted = 0;
-    vi.spyOn(userRepository, 'countOtherActiveWithRole').mockImplementation(async (...args) => {
+    vi.spyOn(userRepository, 'countOtherActiveWithRole').mockImplementation(asCount(async (...args) => {
       const n = await realCount(...args);
       counted += 1;
       const deadline = Date.now() + 1500;
       while (counted < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
       return n;
-    });
+    }));
 
     const results = await Promise.allSettled([
       userService.update(b.id, 'TENANT_ADMIN', tenantId, a.id, { role: 'EVENT_ADMIN' }),

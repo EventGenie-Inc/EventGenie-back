@@ -9,7 +9,7 @@ import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
 import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
-import { requireFieldLabel, requireFieldType } from '../rsvp-field/rsvp-field-validation.util.js';
+import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
   requireItemStartTime,
@@ -27,6 +27,7 @@ import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from '../event/public-events-availability.util.js';
+import { assertValidOpensAt } from '../memory-hub/memory-hub-validation.util.js';
 
 export const eventDraftService = {
 
@@ -117,7 +118,11 @@ export const eventDraftService = {
     });
     const customFields = (Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : []).map((field) => {
       const label = requireFieldLabel(field.label);
-      return { ...field, label, fieldType: requireFieldType(field.fieldType, label) } as Record<string, unknown> & { label: string; fieldType: RsvpFieldType };
+      const fieldType = requireFieldType(field.fieldType, label);
+      // The same rule and code as the other paths (RSVP_FIELD_OPTIONS_INVALID),
+      // instead of storing whatever the draft holds.
+      const options = resolveDraftFieldOptions(field.options, label);
+      return { ...field, label, fieldType, options } as Record<string, unknown> & { label: string; fieldType: RsvpFieldType; options: string | null };
     });
     const program = p.program as Record<string, unknown> | undefined;
     // Each item names its day by `dayIndex`, its position in the draft's
@@ -145,6 +150,7 @@ export const eventDraftService = {
     assertProgramVisibilityFlag(program?.isPublished);
     const programPublished = program?.isPublished !== false;
     const memoryHub = p.memoryHub as Record<string, unknown> | undefined;
+    assertValidOpensAt(memoryHub?.opensAt);
 
     assertPaidTicketingAvailable(p.ticketing as EventTicketing | undefined);
     assertPublicEventsAvailable(p.visibility as EventVisibility | undefined);
@@ -230,7 +236,7 @@ export const eventDraftService = {
             label: field.label,
             fieldType: field.fieldType,
             isRequired: (field.isRequired as boolean) ?? false,
-            options: field.options ? JSON.stringify(field.options) : null,
+            options: field.options,
             order: index,
             isArchived: false,
             createdBy: userId,

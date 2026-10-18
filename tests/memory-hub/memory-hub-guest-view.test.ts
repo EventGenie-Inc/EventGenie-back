@@ -37,7 +37,8 @@ import {
 //  though an absent row already reads as disabled.
 // ─────────────────────────────────────────
 
-const cleanup: (() => Promise<void>)[] = [];
+// Each returns whatever its delete returns; only completion matters.
+const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();
@@ -100,7 +101,7 @@ describe('POST /api/memory-hub/guest-view — memoryHubService.getGuestView (Con
     const event = await createTestEvent(tenant.id, user.id);
     const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
     const hub = await memoryHubRepository.findByEventId(event.id);
-    await memoryHubService.archive(hub!.id, user.id, user.role, tenant.id);
+    await memoryHubService.archive(event.id, hub!.id, user.id, user.role, tenant.id);
 
     cleanup.push(
       () => deleteTestGuest(guest.id),
@@ -119,7 +120,7 @@ describe('POST /api/memory-hub/guest-view — memoryHubService.getGuestView (Con
     const event = await createTestEvent(tenant.id, user.id);
     const { guest, invite } = await createTestGuestWithInvite(event.id, user.id, []);
     const hub = await memoryHubRepository.findByEventId(event.id);
-    await memoryHubService.update(hub!.id, user.id, user.role, tenant.id, { opensAt: '2099-01-01T00:00:00' });
+    await memoryHubService.update(event.id, hub!.id, user.id, user.role, tenant.id, { opensAt: '2099-01-01T00:00:00' });
 
     cleanup.push(
       () => deleteTestGuest(guest.id),
@@ -160,7 +161,7 @@ describe('POST /api/memory-hub/guest-view — memoryHubService.getGuestView (Con
       const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
       const event = await createTestEvent(tenant.id, user.id);
       const hub = await memoryHubRepository.findByEventId(event.id);
-      await memoryHubService.update(hub!.id, user.id, user.role, tenant.id, { title: 'Our Gallery', description: 'Share your photos!' });
+      await memoryHubService.update(event.id, hub!.id, user.id, user.role, tenant.id, { title: 'Our Gallery', description: 'Share your photos!' });
 
       const { guest: guestA, invite: inviteA } = await createTestGuestWithInvite(event.id, user.id, []);
       const { guest: guestB, invite: inviteB } = await createTestGuestWithInvite(event.id, user.id, []);

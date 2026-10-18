@@ -19,7 +19,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const invite = await inviteService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    const invite = await inviteService.getById(req.params['eventId'] as string, req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: invite });
   } catch (err) { next(err); }
 });
@@ -38,7 +38,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const invite = await inviteService.update(
-      req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body
+      req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body
     );
     res.status(200).json({ status: 'ok', data: invite });
   } catch (err) { next(err); }
@@ -47,7 +47,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await inviteService.archive(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    await inviteService.archive(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', message: 'Invite archived' });
   } catch (err) { next(err); }
 });
@@ -55,7 +55,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 router.post('/:id/reactivate', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const invite = await inviteService.reactivate(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    const invite = await inviteService.reactivate(req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: invite });
   } catch (err) { next(err); }
 });
@@ -89,7 +89,7 @@ router.post('/:id/resend', async (req: Request, res: Response, next: NextFunctio
   try {
     const auth = req as AuthenticatedRequest;
     const result = await inviteDispatchService.resend(
-      req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId
+      req.params['eventId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId
     );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }

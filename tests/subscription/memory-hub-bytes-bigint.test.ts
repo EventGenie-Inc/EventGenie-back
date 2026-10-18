@@ -52,8 +52,9 @@ afterAll(async () => {
   await deleteTenantsDeep(tenantIds.splice(0));
   await prisma.user.delete({ where: { id: superAdmin.id } });
   if (savedElevate) {
-    const { tier: _tier, updatedAt: _updatedAt, ...values } = savedElevate;
-    await prisma.subscriptionTierConfig.update({ where: { tier: 'ELEVATE' }, data: values });
+    // The whole saved row, updatedAt included: back exactly as found.
+    const { tier: _tier, ...values } = savedElevate;
+    await prisma.subscriptionTierConfig.upsert({ where: { tier: 'ELEVATE' }, create: savedElevate, update: values });
   } else {
     await prisma.subscriptionTierConfig.deleteMany({ where: { tier: 'ELEVATE' } });
   }

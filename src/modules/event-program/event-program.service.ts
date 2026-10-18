@@ -7,6 +7,7 @@ import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { isSameUtcDate } from '../../shared/utils/date-input.util.js';
+import { assertProgramVisibilityFlag } from '../program-item/program-item-validation.util.js';
 
 // Guest-facing date matching — UTC only, per STEERING's "guest-facing
 // dates are UTC" anchor (guest-date.util.ts): isSameUtcDate compares UTC
@@ -31,12 +32,17 @@ export const eventProgramService = {
     return program;
   },
 
-  getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
+  // The program under its URL, /api/events/:eventId/program/:id: the
+  // URL's event is gated first (tenant scoping and the assignment lock),
+  // then the program must be THAT event's — the same tenant's other event's
+  // program is the same 404 as another tenant's or a missing one (STEERING
+  // "A sub-resource must belong to the event in its URL"). It used to gate
+  // only on the program's own event, so any of a tenant's programs could be
+  // read, edited or archived under any of its events' URLs.
+  getById: async (eventId: string, id: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await eventService.getById(eventId, requestingRole, tenantId);
     const program = await eventProgramRepository.findById(id);
-    if (!program) throw new HttpError(404, 'Program not found');
-    // Ownership gate via the parent event — throws 404 if it belongs to
-    // a different tenant, indistinguishable from the program not existing.
-    await eventService.getById(program.eventId, requestingRole, tenantId);
+    if (!program || program.eventId !== eventId) throw new HttpError(404, 'Program not found');
     return program;
   },
 
@@ -47,13 +53,14 @@ export const eventProgramService = {
     return eventProgramRepository.create(eventId, userId, data);
   },
 
-  update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventProgramDto) => {
-    await eventProgramService.getById(id, requestingRole, tenantId);
+  update: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventProgramDto) => {
+    await eventProgramService.getById(eventId, id, requestingRole, tenantId);
+    assertProgramVisibilityFlag(data?.isPublished);
     return eventProgramRepository.update(id, userId, data);
   },
 
-  archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    await eventProgramService.getById(id, requestingRole, tenantId);
+  archive: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    await eventProgramService.getById(eventId, id, requestingRole, tenantId);
     return eventProgramRepository.archive(id, userId);
   },
 

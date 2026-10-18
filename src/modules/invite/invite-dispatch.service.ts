@@ -468,12 +468,13 @@ export const inviteDispatchService = {
   },
 
   resend: async (
+    eventId: string,
     inviteId: string,
     userId: string,
     requestingRole: PlatformRole,
     tenantId: string | null
   ): Promise<InviteDispatchOutcome> => {
-    const invite = await inviteService.getById(inviteId, requestingRole, tenantId) as DispatchableInvite & {
+    const invite = await inviteService.getById(eventId, inviteId, requestingRole, tenantId) as DispatchableInvite & {
       eventId: string;
     };
     // Must run AFTER getById above (tenant ownership already confirmed by

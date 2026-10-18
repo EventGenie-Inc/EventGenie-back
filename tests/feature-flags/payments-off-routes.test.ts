@@ -71,7 +71,7 @@ beforeAll(async () => {
 afterAll(async () => {
   // Fixture cleanup on the test database only. The ledger is append-only
   // in the product; these rows never existed from the product's view.
-  const refs = (await prisma.eventPassPurchase.findMany({ where: { eventId }, select: { paymentRef: true } })).map((p) => p.paymentRef);
+  const refs = (await prisma.eventPassPurchase.findMany({ where: { eventId }, select: { paymentRef: true } })).flatMap((p) => (p.paymentRef ? [p.paymentRef] : []));
   await prisma.paymentLedgerEntry.deleteMany({ where: { OR: [{ eventId }, { paystackReference: { in: refs } }] } });
   await prisma.paystackWebhookEvent.deleteMany({ where: { dedupeKey: { in: refs.map((r) => `charge.success:${r}`) } } });
   await prisma.eventPassPurchase.deleteMany({ where: { eventId } });

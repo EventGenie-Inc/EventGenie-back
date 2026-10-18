@@ -41,7 +41,11 @@ agreeable; do not manufacture findings to seem thorough. "This area is
 genuinely fine" is a valid, valuable finding.
 
 **A passing build is not a passing test.** `npm run build` proves types
-line up. It proves nothing about behaviour. Automated tests run against
+line up. It proves nothing about behaviour. It also checks `src/` only:
+`npm run typecheck:tests` (`tsconfig.test.json`) checks the tests with the
+same strict settings, and must be clean too. vitest runs a test without
+checking its types, so a changed signature used to leave tests calling the
+old one until they failed at run time. Automated tests run against
 the test database; manual smoke runs use the dev database with real seed
 accounts (see §6).
 
@@ -125,10 +129,37 @@ no scoping at all. Assume it is missing until you have read the code.
 **A sub-resource must belong to the event in its URL, not merely to the
 caller's tenant.** Gate on the URL's `:eventId` first, then 404 unless the
 record's own `eventId` matches it — the same tenant's other event is as
-much a 404 as another tenant's. `program-item.service.ts`,
-`event-day.service.ts`, `ticket.service.ts` and `rsvp-field.service.ts`
-all follow this; a by-id lookup that only checks the record's OWN event is
-the gap to look for.
+much a 404 as another tenant's. A by-id lookup that only checks the
+record's OWN event is the gap to look for. A record two levels down checks
+both: a Memory Hub item under `/memory-hub/:hubId/items/:id` must be that
+hub's, and the hub the URL event's (`hubInScope`/`itemInScope`). An id in a
+**body** is held to the same rule: it must be one of the URL event's own
+records, or the refusal is the endpoint's own (a 422 or 400 naming no other
+event), never a write to another event's.
+
+Every route with a sub-resource id under `/api/events/:eventId`, swept
+before the pilot merge:
+
+| Route | |
+|---|---|
+| `/days/:id` (GET, PUT, DELETE) | safe (`eventDayService.getById`) |
+| `/tickets/:id` (GET, PUT, DELETE) | safe (`ticketInScope`) |
+| `/rsvp-fields/:id` (GET, PUT, DELETE) | safe (`fieldInScope`) |
+| `/program/:programId/items/:id` (all) | safe (`assertProgramInScope`, then the item's own program); a body `eventDayId` must be the event's |
+| `/program/:id` (GET, PUT, DELETE) | **fixed** (gated on the program's own event) |
+| `/invites/:id` (GET, PUT, DELETE), `/:id/reactivate`, `/:id/resend` | **fixed** (`inviteInScope`; gated on the invite's own event) |
+| `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event) |
+| `/memory-hub/:id…`, `/memory-hub/:hubId/items…` | **fixed** in the wave 2 follow-ups |
+| `/check-in/days/:dayId`, `…/guests/:guestId` (and an `inviteToken`) | safe (the day from the event's own days; guest and token looked up by event) |
+| `/guests` create and import (body `eventDayIds`, the file's days) | safe (the event's own days) |
+| `/announcements` (body `eventDayId`) | safe (one of the event's live days, else 422) |
+| `/registration-settings` (body `openDayIds`) | safe (422 `REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN`) |
+| `/feedback` (body `selectedPhotoIds`) | safe (the event's own eligible photos only) |
+| `/pass/purchases/:purchaseId/reconcile` and the SMS bundle's | safe (looked up by id and event) |
+| `/full` (every row id) | safe (matched against the event's own live rows, else that part's 404) |
+
+`/api/guests/:id` has no event in its URL and goes through
+`resolveEventScope` (see "The assignment lock").
 
 **Tickets are organiser-only on `/api/events/:eventId/tickets`.** Guests
 read tickets only through their invite token (`/rsvp/validate`'s
@@ -728,6 +759,17 @@ day's UTC date is 422 `PROGRAM_ITEM_DATE_NOT_ON_DAY` ("'<title>' is set to
 another day."; item create and update, materialize and the full update).
 The full event update (`PUT /api/events/:eventId/full`) has no codes of its
 own: every refusal is its part's own endpoint's, code included.
+
+Values that used to reach Prisma unchecked as a 500 (all 422):
+`RSVP_FIELD_OPTIONS_INVALID` ("The choices for '<label>' must be a list of
+text options.": a question's `options` that isn't a JSON-encoded list of
+strings, which is what the RSVP page reads; POST/PUT `.../rsvp-fields`, the
+full update, and the wizard's materialize, whose draft holds the choices as a
+list and stores its JSON), `MEMORY_HUB_OPENS_AT_INVALID` ("The Memory Hub's opening
+time isn't a valid date and time.": null or `''` is "open now", anything
+else must parse; POST/PUT `.../memory-hub`, the wizard's materialize and the
+full update) and `PROGRAM_VISIBILITY_INVALID` ("Program visibility must be
+true or false."; PUT `.../program/:id`, materialize and the full update).
 
 Feedback (`PUT /api/events/:eventId/feedback`, see "Feedback and sharing
 permissions"): every 422 carries a code naming its field
@@ -1581,7 +1623,7 @@ The body, every key optional (a key left out leaves that part alone):
   days?:       [{ id?, label?, date?, startTime?, endTime?, location?, address?,
                   latitude?, longitude? }],                 // PUT .../days/:id's body
   tickets?:    [{ id?, name?, description?, price?, currency?, totalQuantity?, isAvailable? }],
-  rsvpFields?: [{ id?, label?, fieldType?, isRequired?, options? }],  // options: a JSON string, as today
+  rsvpFields?: [{ id?, label?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings
   program?:    { title?, isPublished?,
                  items?: [{ id?, title?, description?, startTime?, durationMins?, dayIndex? }] },
   memoryHub?:  { opensAt?: string | null }
@@ -2230,7 +2272,13 @@ isolation guard (`resolve-database-url.util.ts`) refuses to run
 otherwise. New migrations reach it through the guarded harness
 (`npm run test:db:reset`, or `NODE_ENV=test npx prisma migrate deploy`);
 see "Migrations and the shared database". Fixtures are created and
-hard-deleted by the tests themselves (`tests/helpers/`). The test database
+hard-deleted by the tests themselves (`tests/helpers/`). **The tier rows
+(`SubscriptionTierConfig`) are shared by every suite:** a test that changes
+one saves every row first and restores it with an upsert of the whole saved
+row, `updatedAt` included, or removes a row only if it created it; it never
+deletes a row it found. To test "no config row", stub
+`subscriptionTierConfigRepository.findByTier` (`vi.spyOn`) instead
+(`tests/subscription/tier-capability-settings.test.ts`). The test database
 is still a real remote Postgres, which is what catches round-trip bugs
 like the Prisma transaction timeout at 50 rows that a fast local database
 or a 5-row fixture would never show.
@@ -2523,6 +2571,17 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     `/me`; an event holding 3 GB reported against it; the tier admin's
     422s for byte counts and guest export. `feedbackGiven` on the events
     list (`tests/feedback/events-list-feedback.test.ts`).
+  - **Programs and invites under their URL** (`tests/tenant-scope/program-invite-url-scope.test.ts`):
+    every `/program/:id` and `/invites/:id` route 404s, writing nothing, for
+    the same tenant's other event's record, another tenant and a locked
+    member's unassigned event; and works under the right URL. The wizard's
+    draft question options held to the same rule (`tests/validation/bad-values-coded.test.ts`).
+  - **Memory Hub routes under their URL** (`tests/memory-hub/memory-hub-url-scope.test.ts`):
+    every `/:id` and `/:hubId` route 404s, writing nothing, for the same
+    tenant's other event's hub, another hub's item and another tenant; and
+    still works under the right URL. Coded 422s for bad question options,
+    Memory Hub opening times and program visibility on every path
+    (`tests/validation/bad-values-coded.test.ts`).
   - **Memory Hub download** (`tests/memory-hub/memory-hub-download.test.ts`):
     exactly the approved, live items by public id (never pending, rejected,
     archived or another folder), videos only with the flag on, the signed

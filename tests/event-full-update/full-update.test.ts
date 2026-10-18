@@ -57,8 +57,9 @@ afterEach(() => vi.unstubAllEnvs());
 afterAll(async () => {
   await deleteTenantsDeep(tenantIds.splice(0));
   if (savedElevate) {
-    const { tier: _tier, updatedAt: _updatedAt, ...values } = savedElevate;
-    await prisma.subscriptionTierConfig.update({ where: { tier: 'ELEVATE' }, data: values });
+    // The whole saved row, updatedAt included: back exactly as found.
+    const { tier: _tier, ...values } = savedElevate;
+    await prisma.subscriptionTierConfig.upsert({ where: { tier: 'ELEVATE' }, create: savedElevate, update: values });
   } else {
     await prisma.subscriptionTierConfig.deleteMany({ where: { tier: 'ELEVATE' } });
   }
@@ -361,8 +362,8 @@ describe('one invalid part refuses the whole request and changes nothing', () =>
     } finally {
       await prisma.tenant.update({ where: { id: owner.tenantId! }, data: { subscriptionTier: 'ELEVATE' } });
       if (saved) {
-        const { tier: _t, updatedAt: _u, ...values } = saved;
-        await prisma.subscriptionTierConfig.update({ where: { tier: 'SPARK' }, data: values });
+        const { tier: _t, ...values } = saved;
+        await prisma.subscriptionTierConfig.upsert({ where: { tier: 'SPARK' }, create: saved, update: values });
       } else {
         await prisma.subscriptionTierConfig.deleteMany({ where: { tier: 'SPARK' } });
       }
