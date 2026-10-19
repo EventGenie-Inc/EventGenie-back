@@ -42,22 +42,18 @@ export const memoryHubRepository = {
       },
     }),
 
-  // Public share view — approved, non-archived items only, with just
-  // enough uploader info to derive a display name (see
-  // memory-hub.service.ts's toPublicItem). Event included (with
-  // eventDays) so its effective status can be resolved before this goes
-  // out to a guest's browser.
-  findByShareToken: (shareToken: string) =>
+  // Public share view — approved, non-archived items only, photos only
+  // unless includeVideos, and no uploader join: nobody's name reaches a
+  // share-link holder (see memory-hub.service.ts's toGalleryItem). Event
+  // included with eventDays and eventPass, so its effective status and
+  // its Memory Hub entitlement can be resolved before this goes out.
+  findByShareToken: (shareToken: string, opts: { includeVideos: boolean }) =>
     prisma.memoryHub.findFirst({
       where: { shareToken, isArchived: false },
       include: {
-        event: { include: { eventDays: { where: { isArchived: false } } } },
+        event: { include: { eventDays: { where: { isArchived: false } }, eventPass: true } },
         memoryItems: {
-          where: { isArchived: false, status: 'APPROVED' },
-          include: {
-            uploadedByGuest: { select: { firstName: true } },
-            uploadedByUser: { select: { username: true } },
-          },
+          where: { isArchived: false, status: 'APPROVED', ...(opts.includeVideos ? {} : { mediaType: 'IMAGE' as const }) },
           orderBy: { createdAt: 'desc' },
         },
       },
@@ -143,9 +139,9 @@ export const memoryHubRepository = {
 
   // ── Memory Items ──────────────────────────
 
-  // Same uploader join as findByShareToken above — curation needs to
-  // know who uploaded something at least as well as an anonymous
-  // visitor of the finished gallery does. Guest gets firstName only,
+  // Uploader join for curation, which needs to know who uploaded
+  // something (the share-link gallery has no uploader at all; guest-view
+  // shows a display name). Guest gets firstName only,
   // User gets username only — never email/phone; a display name is all
   // curation needs (see memory-hub.service.ts's toCuratedItem).
   findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived = false) =>

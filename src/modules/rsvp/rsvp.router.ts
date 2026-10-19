@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { rsvpService } from './rsvp.service.js';
 import { eventProgramService } from '../event-program/event-program.service.js';
-import { ticketQuoteLimiter, rsvpProgramLimiter, rsvpSubmitInviteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import { ticketQuoteLimiter, rsvpProgramLimiter, rsvpProgramIpLimiter, rsvpSubmitInviteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
 
 // Fully public surface — a guest only has a bare invite token, never a
 // platform session. No auth middleware anywhere in this file.
@@ -29,9 +29,10 @@ router.post('/ticket-quote', requireFeature('ticketing'), ticketQuoteLimiter, as
 // { token } — Contract A. Tells the guest's page whether to show a
 // Program tab and, if so, this invite's days with the items scheduled
 // on each (day-scoped items plus every item with no day set). Its own
-// limiter, not shared with any upload budget. See
+// two limiters, not shared with any other budget: per invite, and the
+// per-IP failures backstop in front (rate-limit.middleware.ts). See
 // event-program.service.ts's getProgramForInvite.
-router.post('/program', rsvpProgramLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/program', rsvpProgramIpLimiter, rsvpProgramLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await eventProgramService.getProgramForInvite(req.body?.token);
     res.status(200).json({ status: 'ok', data: result });

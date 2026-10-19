@@ -306,6 +306,34 @@ vocabulary too, same as a tier name — a guest sees "photo album", never
 `assertMemoryHubAccessible`); the organiser-facing branch of the same
 functions keeps saying "Memory Hub".
 
+**The share-link gallery is for anyone holding the link.** `GET
+/api/memory-hub/:shareToken` (`memory-hub.service.ts`'s `viewByShareToken`)
+reaches whoever the link was forwarded to, not only guests, so:
+- **Only what the gallery page uses** (the frontend's
+  `public-memories-page`): `eventName`, `isOpen`, `isCancelled` and the
+  items, each `id`, `mediaUrl`, `mediaType` and `caption`
+  (`toGalleryItem`). No hub title or description, no host name, no
+  `createdAt` (the server orders them, newest first). A field the page
+  starts showing is added then, not before.
+- **No uploader name at all**, guest or organiser. Guest-view
+  (`toPublicItem`) still shows a display name, to invited guests only.
+- **A plan without Memory Hub answers as an unknown link.** The event's
+  entitlement (an Event Pass included, `isMemoryHubTierEnabled`) is checked
+  on every view; without Memory Hub it is the same 404 as an unknown,
+  revoked or archived token, so a link holder learns nothing about the
+  organiser's billing.
+- **The 404 assumes no viewer:** "This link isn't active."
+  (`INACTIVE_SHARE_LINK_MESSAGE`), never "ask the organiser".
+- **Videos only while `memoryHubVideo` is on.**
+- **600 requests / 5 minutes per IP** (`memoryHubGalleryLimiter`,
+  `MEMORY_HUB_GALLERY_REQUESTS_PER_5_MIN`; it was 60). There is no
+  per-person credential to key by, since every viewer holds the same
+  token. The link is usually posted to a group chat at the event, so a
+  whole room opens it at once on the venue Wi-Fi as one IP; one page open is
+  one request (the photos come from Cloudinary), and 60 refused the 61st
+  guest. A lower limit does nothing against scraping, since one response is
+  the whole gallery; it only bounds load.
+
 **Guest rate limits are keyed by credential, not by IP, whenever the
 credential is available.** The Memory Hub guest upload endpoints
 (`guest-upload-signature`, `guest-items`) used to be keyed purely by
@@ -332,14 +360,41 @@ enforces (`upload-constants.ts`'s
 what may be uploaded right now (`videosAllowed`, `videoMaxBytes`,
 `allowedFormats`), so the picker never offers a file the signature refuses.
 
+**Guest-view is limited per invite too** (`memoryHubGuestViewLimiter`, 60 /
+5 minutes per invite, `MEMORY_HUB_GUEST_VIEWS_PER_INVITE_PER_5_MIN`, keyed
+by the SHA-256 of the invite token; with no token, the IP through
+`ipKeyGenerator`). It fires when a guest opens their page, and at the event
+that is a whole room on the venue Wi-Fi at once; keyed by IP (60/5min, as
+it was) the 61st guest's photo tab failed to load. The page asks once per
+open, so 60 per invite leaves a household sharing one invite on several
+phones far below it, and no guest less room than they had per IP. Its
+backstop is its own `memoryHubGuestViewIpLimiter`: 100 **failed**
+requests / 5 minutes per IP, `skipSuccessfulRequests`, for the same
+made-up-token-per-request reason as the upload backstop, and never
+sharing the upload limiters' budgets. **The guest's Program tab works the
+same way** (`POST /api/rsvp/program`: `rsvpProgramLimiter`, 60 / 5 minutes
+per invite, `RSVP_PROGRAM_VIEWS_PER_INVITE_PER_5_MIN`, keyed by the SHA-256
+of the invite token; backstop `rsvpProgramIpLimiter`, 100 failed / 5
+minutes per IP), for the same room-on-one-Wi-Fi reason, each with its own
+budget.
+
 Public self-registration has no credential before it succeeds, so it is
 limited three ways: per **email** (5 an hour, keyed by the SHA-256 of the
 normalised address, never the address: a repeat registration re-sends
 that person's link, so this stops anyone flooding an inbox from many
-IPs), per **IP** (30 per 15 minutes, counting successes, since every
-success writes a guest; generous because a company's staff register from
-one office network), and per **event** (30 a minute, a pace guard against
-a script spread across many IPs). The per-email limiter's fallback for a
+IPs), per **IP** (500 per 15 minutes, `PUBLIC_REGISTRATIONS_PER_IP_PER_15_MIN`,
+counting successes, since every success writes a guest and sends an
+email), and per **event** (300 per 5 minutes,
+`PUBLIC_REGISTRATIONS_PER_EVENT_PER_5_MIN`, a pace guard against a script
+spread across many IPs). Both are sized for a company's staff registering
+from one office network: a 300-person office in the first 15 minutes, at
+about 1.5 attempts each (a mistyped address, a refused domain, a double
+tap), is ~450 requests from one IP, front-loaded after one all-staff email
+(~180 in the first five minutes, ~90 in the peak minute). The old 30 per 15
+minutes refused the 31st colleague and 30 a minute refused the burst; a
+5-minute window absorbs the burst while the sustained pace stays at 60 a
+minute. What bounds a script's total is still the event's cap, its allowed
+domains and the per-email limit. The per-email limiter's fallback for a
 request with no email is the IP through `ipKeyGenerator`, like every other
 IP key: **every custom `keyGenerator` that reads `req.ip` calls
 `ipKeyGenerator` itself**, inline, so an IPv6 visitor can't step around a
@@ -1075,8 +1130,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
   - `memoryHubVideo` off: no Memory Hub upload signature for a video,
     organiser or guest (422 `MEMORY_HUB_VIDEO_UNAVAILABLE`), and guest-view's
     `limits` say so (`videosAllowed: false`, `videoMaxBytes: null`,
-    `allowedFormats` images only). Videos already uploaded stay and show,
-    and are left out of a Memory Hub download.
+    `allowedFormats` images only). Videos already uploaded stay and show
+    to the organiser and in guest-view, and are left out of a Memory Hub
+    download and the share-link gallery.
   - `memoryHubDownload` off: `POST /api/events/:eventId/memory-hub/download`
     is 404. Nothing else changes.
   - `feedback` off: `/api/events/:eventId/feedback`, `/api/admin/feedback`
@@ -1409,6 +1465,15 @@ their own invitation.
   them back as `dayIds`). One rule decides open or not for the view,
   registration and the organiser's settings: `resolveRegistrationState`
   (`event-public/registration-rules.util.ts`).
+- **Opening the link:** 600 views / 5 minutes per IP
+  (`publicEventViewLimiter`, `PUBLIC_EVENT_VIEWS_PER_IP_PER_5_MIN`; it was
+  60). Nobody has a credential before registering, so it is keyed by IP. A
+  company event's link goes out in one all-staff message and the whole
+  office opens it within minutes from one IP; the page asks once per open,
+  and 60 refused the 61st colleague. 600 covers ~300 people opening it
+  twice. One response is the whole view, so a lower limit slows no one
+  copying it; it only bounds load. Registering has its own limits (see
+  "Guest-facing responses").
 - **Registering** (`POST /api/public-events/:shareToken/register`: name,
   email, optional phone, `dayIds` from the open days, default all, and
   `plusOneNames` up to the allowance). Email is required and normalised
@@ -2626,6 +2691,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     three parts under the URL budget, the file-count and size budgets, the
     flag, other tenants and the assignment lock, and the per-event rate
     limit counting successes only.
+  - **Memory Hub share-link gallery** (`tests/memory-hub/memory-hub-share-gallery.test.ts`):
+    exactly the fields the page uses, with no uploader name (guest or
+    organiser), host name or hub title/description anywhere; videos
+    only with `memoryHubVideo` on; "This link isn't active." for an
+    unknown token, and exactly the same 404 for a plan without Memory Hub
+    (`findByTier` stubbed, so the shared tier rows are never touched). The
+    600-per-IP limit itself is not tested. Guest-view's limits
+    (`tests/memory-hub/memory-hub-guest-view-rate-limit.test.ts`): the
+    hashed per-invite key, one invite refused past 60 while another on the
+    same IP is not, and the IP refused after 100 failures; the same for
+    the guest's Program tab (`tests/rsvp/rsvp-program-rate-limit.test.ts`).
+    The public event view's 600 is not tested. Registration's limits
+    (`tests/public-events/registration-rate-limit.test.ts`): a 300-person
+    office's ~450 requests from one IP never refused, then refused past
+    500; the ~180-request burst on one link never refused, then refused
+    past 300; and the per-email limit.
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
