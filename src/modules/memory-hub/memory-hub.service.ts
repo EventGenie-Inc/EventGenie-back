@@ -149,8 +149,9 @@ const assertItemAcceptableOrDestroy = async (
   }
 };
 
-// Public projection — no uploader identity beyond a display name, no
-// guest contact details, no tenant/event-internal ids (Task 4).
+// Guest-view projection (invite token holders) — no uploader identity
+// beyond a display name, no guest contact details, no tenant/event-internal
+// ids (Task 4). The share-link gallery uses toGalleryItem below instead.
 const toPublicItem = (item: {
   id: string;
   mediaUrl: string;
@@ -167,6 +168,27 @@ const toPublicItem = (item: {
   createdAt: item.createdAt,
   uploaderDisplayName: item.uploadedByUser?.username ?? item.uploadedByGuest?.firstName ?? 'A guest',
 });
+
+// Share-link gallery projection (viewByShareToken) — anyone holding the
+// link sees it, so no uploader name at all, guest or organiser, and only
+// what the page uses: the photo, its type (the page shows photos only) and
+// its caption. Order is the server's (newest first), so no createdAt.
+const toGalleryItem = (item: {
+  id: string;
+  mediaUrl: string;
+  mediaType: MediaType;
+  caption: string | null;
+}) => ({
+  id: item.id,
+  mediaUrl: item.mediaUrl,
+  mediaType: item.mediaType,
+  caption: item.caption,
+});
+
+// The one answer for a share link that shows nothing: unknown, revoked,
+// archived, or on a plan without Memory Hub. Says nothing about who is
+// looking, since anyone holding the link can.
+export const INACTIVE_SHARE_LINK_MESSAGE = "This link isn't active.";
 
 // Curation projection — same join as toPublicItem above (Guest:
 // firstName only, User: username only; never email/phone — a display
@@ -357,27 +379,29 @@ export const memoryHubService = {
   // this endpoint specifically; flagging the conflict rather than
   // silently picking one, per STEERING's own instruction for handling
   // contradictions.
+  //
+  // A plan without Memory Hub (lapsed, downgraded, pass expired) answers
+  // exactly like an unknown token, so the response never tells a link
+  // holder anything about the organiser's billing. Videos are left out
+  // while `memoryHubVideo` is off.
   viewByShareToken: async (shareToken: string) => {
-    const hub = await memoryHubRepository.findByShareToken(shareToken);
-    if (!hub) throw new HttpError(404, "This gallery link isn't valid. Check the link, or ask the organiser for a new one.");
+    const hub = await memoryHubRepository.findByShareToken(shareToken, { includeVideos: isMemoryHubVideoEnabled() });
+    if (!hub || !(await isMemoryHubTierEnabled(hub.event))) throw new HttpError(404, INACTIVE_SHARE_LINK_MESSAGE);
 
     const effectiveStatus = resolveEffectiveStatus(hub.event);
     const isCancelled = effectiveStatus === 'CANCELLED';
     const isOpen = !hub.opensAt || hub.opensAt <= new Date();
     const canView = isOpen && !isCancelled;
 
+    // Exactly what the gallery page uses (the frontend's
+    // public-memories-page): the event's name, whether to show photos at
+    // all, and the photos. Nothing it doesn't show — no hub title or
+    // description, no host name.
     return {
-      title: hub.title,
-      description: hub.description,
       eventName: hub.event.name,
-      // Organiser-typed, never Tenant.name — same reasoning as
-      // rsvp.service.ts's validate() projection (schema.prisma's comment
-      // on Event.hostName). Absent (undefined-safe null) rather than
-      // falling back to anything tenant-derived when not set.
-      hostName: hub.event.hostName,
       isOpen,
       isCancelled,
-      items: canView ? hub.memoryItems.map(toPublicItem) : [],
+      items: canView ? hub.memoryItems.map(toGalleryItem) : [],
     };
   },
 

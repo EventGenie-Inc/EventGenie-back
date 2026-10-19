@@ -234,16 +234,25 @@ export const uploadSignatureLimiter = rateLimit({
 //  (family, group chats) — the most exposed endpoint on the platform.
 //  The token itself is unguessable (32 random bytes, same as an invite
 //  token), so this isn't really guarding against brute-forcing it; it's
-//  guarding against scripted scraping/hammering once a real link leaks
-//  somewhere unexpected. Keyed by IP (no authenticated user exists
-//  here). 60 requests / 5 minutes is generous enough that a household
-//  or venue Wi-Fi with several people browsing photos on one shared IP
-//  is never affected, while bounding a script that has the token and
-//  hits it in a tight loop.
+//  guarding against hammering once a real link leaks somewhere
+//  unexpected. Keyed by IP: there is no per-person credential here (every
+//  viewer holds the same share token).
+//
+//  600 / 5 minutes, raised from 60. The link is typically posted to a
+//  group chat at the event itself, so a whole room opens it at once on
+//  the venue Wi-Fi, which reaches us as one IP (and South African mobile
+//  carrier-grade NAT shares IPs too). One page open is one request (the
+//  photos come from Cloudinary), so 60 refused the 61st guest of a
+//  150-guest wedding in the first minutes; 600 covers ~300 people opening
+//  it twice. A lower limit buys nothing against scraping, since one
+//  response is the whole gallery; it only bounds load, and 2 requests a
+//  second per IP, each a few small queries, is nothing to absorb.
 // ─────────────────────────────────────────
+export const MEMORY_HUB_GALLERY_REQUESTS_PER_5_MIN = 600;
+
 export const memoryHubGalleryLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 60,
+  max: MEMORY_HUB_GALLERY_REQUESTS_PER_5_MIN,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
@@ -328,19 +337,55 @@ export const memoryHubGuestUploadIpLimiter = rateLimit({
 //  Unauthenticated, token-only — same exposure profile as
 //  ticketQuoteLimiter (an invite token, not a session), but this fires
 //  once per page load/tab-open rather than per keystroke/quantity
-//  change. Deliberately its own limiter, not shared with any upload
-//  budget — this is a pure read. Keyed by IP. 60/5min mirrors
-//  memoryHubGalleryLimiter/publicEventViewLimiter's "page load" budget.
+//  change. Deliberately its own limiters, not shared with any upload or
+//  guest-view budget — this is a pure read.
+//
+//  Keyed by the SHA-256 hash of the invite token in the body (never the
+//  raw token), not by IP, for the same reason as memoryHubGuestViewLimiter:
+//  it fires when a guest opens their page, and at the event that is a whole
+//  room on the venue Wi-Fi, one IP, at once. Per IP (60/5min, as it was)
+//  the 61st guest's Program tab failed to load. A request with no token
+//  falls back to its IP (the service refuses it with a 400 anyway).
+//
+//  60 / 5 minutes per invite: the page asks once per open (plus Retry), so
+//  a household sharing one invite on several phones stays far below, and
+//  no guest has less room than they had per IP. It bounds a script
+//  looping on one leaked invite.
+//
+//  rsvpProgramIpLimiter is the backstop against a made-up token per
+//  request: 100 FAILED requests / 5 minutes per IP,
+//  skipSuccessfulRequests, its own budget. Real guests' opens succeed, so
+//  a room never counts against it.
 // ─────────────────────────────────────────
+export const RSVP_PROGRAM_VIEWS_PER_INVITE_PER_5_MIN = 60;
+
+export const rsvpProgramInviteKey = (rawToken: string): string => `rsvp-program-invite:${hashToken(rawToken)}`;
+
 export const rsvpProgramLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 60,
+  max: RSVP_PROGRAM_VIEWS_PER_INVITE_PER_5_MIN,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  keyGenerator: (req) =>
+    typeof req.body?.token === 'string' && req.body.token
+      ? rsvpProgramInviteKey(req.body.token as string)
+      : `rsvp-program-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
   message: {
     status: 'error',
     message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+export const rsvpProgramIpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests from this network. Please wait a few minutes and try again.',
   },
 });
 
@@ -395,18 +440,57 @@ export const rsvpSubmitInviteLimiter = rateLimit({
 //  whether to show the Memory Hub tab at all — a pure read, unlike
 //  memoryHubGuestUploadLimiter (every response there is an upload
 //  grant). Deliberately separate from that per-invite upload budget so
-//  opening the page never eats into it. Keyed by IP; same 60/5min
-//  "page load" budget as memoryHubGalleryLimiter.
+//  opening the page never eats into it.
+//
+//  Keyed by the SHA-256 hash of the invite token in the body (never the
+//  raw token, same rule as memoryHubGuestUploadTokenKey), not by IP: it
+//  fires when a guest opens their page, and at the event that is a whole
+//  room on the venue Wi-Fi, one IP, at once. Per IP (60/5min, as it was)
+//  the 61st guest's photo tab failed to load. A request with no token
+//  falls back to its IP (the service refuses it with a 400 anyway).
+//
+//  60 / 5 minutes per invite. The page calls it once per open (plus
+//  Retry), so even a household sharing one invite on several phones,
+//  reopening it all evening, stays far below; it is the per-invite upload
+//  budget's number, and no guest has less room than they had per IP.
+//  What it bounds is a script looping on one leaked invite.
+//
+//  memoryHubGuestViewIpLimiter is the backstop a per-invite key alone
+//  can't give (a fresh made-up token per request would get a fresh
+//  budget every time): 100 FAILED requests / 5 minutes per IP,
+//  skipSuccessfulRequests, the same as memoryHubGuestUploadIpLimiter but
+//  its own budget. Real guests' opens succeed, so a room never counts
+//  against it.
 // ─────────────────────────────────────────
+export const MEMORY_HUB_GUEST_VIEWS_PER_INVITE_PER_5_MIN = 60;
+
+export const memoryHubGuestViewInviteKey = (rawToken: string): string => `memory-hub-view-invite:${hashToken(rawToken)}`;
+
 export const memoryHubGuestViewLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 60,
+  max: MEMORY_HUB_GUEST_VIEWS_PER_INVITE_PER_5_MIN,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  keyGenerator: (req) =>
+    typeof req.body?.token === 'string' && req.body.token
+      ? memoryHubGuestViewInviteKey(req.body.token as string)
+      : `memory-hub-view-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
   message: {
     status: 'error',
     message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+export const memoryHubGuestViewIpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests from this network. Please wait a few minutes and try again.',
   },
 });
 
@@ -431,14 +515,24 @@ export const ticketQuoteLimiter = rateLimit({
 //
 //  Same exposure profile as memoryHubGalleryLimiter: fully
 //  unauthenticated, reached with nothing but an unguessable shareToken
-//  that's meant to be shared widely. Keyed by IP. Same 60/5min budget —
-//  generous enough that several people on one shared IP browsing an
-//  event page before registering is never affected, while bounding a
-//  script hammering a leaked/guessed token.
+//  that's meant to be shared widely. Keyed by IP: nobody has a credential
+//  before registering.
+//
+//  600 / 5 minutes, raised from 60, the gallery's number for the same
+//  reason. A registration link for a company event goes out in one
+//  all-staff email or chat message, and the whole office opens it within
+//  minutes from one network, one IP. The page asks once per open, so 60
+//  refused the 61st colleague; 600 covers ~300 people opening it twice,
+//  e.g. a third of a 1,000-person office in the first five minutes. One
+//  response is the whole view, so a lower limit slows no one copying it;
+//  it only bounds load. Registering is limited separately (per email, per
+//  IP and per event, below).
 // ─────────────────────────────────────────
+export const PUBLIC_EVENT_VIEWS_PER_IP_PER_5_MIN = 600;
+
 export const publicEventViewLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 60,
+  max: PUBLIC_EVENT_VIEWS_PER_IP_PER_5_MIN,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
@@ -459,13 +553,18 @@ export const publicEventViewLimiter = rateLimit({
 //  against different abuse shapes:
 //
 //  Per IP — a genuine registrant submits once, maybe a couple of times
-//  if they mistype something. 30 per 15 minutes, raised from 8 for the
-//  case this feature exists for: a company sharing one registration link
-//  with its staff, many of whom register from the same office network
-//  (one public IP), and South African mobile networks putting unrelated
-//  people behind one carrier-grade NAT IP (see the per-credential note
-//  on memoryHubGuestUploadLimiter). Still makes a single-machine script
-//  mass-registering fake guests slow.
+//  if they mistype something. 500 per 15 minutes (it was 30, and 8
+//  before that), for the case this feature exists for: a company sharing
+//  one registration link with its staff, who register from the same
+//  office network (one public IP), and South African mobile networks
+//  putting unrelated people behind one carrier-grade NAT IP (see the
+//  per-credential note on memoryHubGuestUploadLimiter). A 300-person
+//  office registering in the first 15 minutes, at about 1.5 attempts each
+//  (a mistyped address, a refused domain, a double tap), is ~450 requests
+//  from one IP; 30 refused the 31st colleague. Every request counts,
+//  successes included, since each success writes a guest and sends an
+//  email. One machine's script still stops at 500 per 15 minutes, and the
+//  event's own cap and allowed domains bound what it can register.
 //
 //  Per email (the SHA-256 hash of the NORMALISED email in the body,
 //  never the address itself, so the limiter's store holds no contact
@@ -477,13 +576,14 @@ export const publicEventViewLimiter = rateLimit({
 //  Per event (keyed by the shareToken in the URL, not the IP) — a
 //  script distributed across many IPs would sail through the IP limiter
 //  above untouched, so this is the actual backstop against "thousands
-//  of fake guests" on one popular link. The window is deliberately
-//  short and the ceiling deliberately generous (30/minute = up to 1800/
-//  hour if sustained) specifically because a link just dropped into a
-//  busy WhatsApp group can legitimately produce a burst of real
-//  registrations from different people within seconds of each other —
-//  a tight per-event limit would reject genuine guests during exactly
-//  the moment the feature is supposed to shine. This is a pace guard
+//  of fake guests" on one popular link. 300 per 5 minutes (it was 30 per
+//  minute). A link dropped into one all-staff email or a busy WhatsApp
+//  group produces a burst: the same 300-person office's ~450 requests
+//  come front-loaded, ~180 in the first five minutes with a peak minute
+//  near 90, which 30 a minute refused. A 5-minute window absorbs that
+//  burst while the sustained pace stays at 60 a minute (3,600 an hour,
+//  double the old 1,800) — a tight per-event limit would reject genuine
+//  guests during exactly the moment the feature is supposed to shine. This is a pace guard
 //  against a sustained script, not a hard ceiling on total
 //  registrations — SubscriptionTierConfig.maxGuestsPerEvent
 //  (guest-tier-enforcement.util.ts) is what actually bounds the total
@@ -493,9 +593,12 @@ export const publicEventViewLimiter = rateLimit({
 //  accepts for that endpoint (a script-abuse guard, not a hard
 //  ceiling).
 // ─────────────────────────────────────────
+export const PUBLIC_REGISTRATIONS_PER_IP_PER_15_MIN = 500;
+export const PUBLIC_REGISTRATIONS_PER_EVENT_PER_5_MIN = 300;
+
 export const publicRegistrationIpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: PUBLIC_REGISTRATIONS_PER_IP_PER_15_MIN,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
@@ -530,8 +633,8 @@ export const publicRegistrationEmailLimiter = rateLimit({
 });
 
 export const publicRegistrationEventLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
+  windowMs: 5 * 60 * 1000,
+  max: PUBLIC_REGISTRATIONS_PER_EVENT_PER_5_MIN,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => `event:${req.params['shareToken'] ?? 'unknown'}`,

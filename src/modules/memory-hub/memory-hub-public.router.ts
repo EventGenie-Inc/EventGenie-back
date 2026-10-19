@@ -5,6 +5,7 @@ import {
   memoryHubGuestUploadLimiter,
   memoryHubGuestUploadIpLimiter,
   memoryHubGuestViewLimiter,
+  memoryHubGuestViewIpLimiter,
 } from '../../shared/middleware/rate-limit.middleware.js';
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 
@@ -75,14 +76,20 @@ router.post(
 // { token } — Contract B. Tells the guest's page whether to show a
 // photo album tab at all, plus the approved gallery and the guest's own
 // pending uploads, with no upload signature required to render. Its own
-// limiter — sized for page loads, never shares the upload limiters'
-// budgets. See memory-hub.service.ts's getGuestView.
-router.post('/guest-view', memoryHubGuestViewLimiter, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const result = await memoryHubService.getGuestView(req.body?.token);
-    res.status(200).json({ status: 'ok', data: result });
-  } catch (err) { next(err); }
-});
+// two limiters, never sharing the upload limiters' budgets: per invite,
+// and the per-IP failures backstop in front (rate-limit.middleware.ts).
+// See memory-hub.service.ts's getGuestView.
+router.post(
+  '/guest-view',
+  memoryHubGuestViewIpLimiter,
+  memoryHubGuestViewLimiter,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await memoryHubService.getGuestView(req.body?.token);
+      res.status(200).json({ status: 'ok', data: result });
+    } catch (err) { next(err); }
+  }
+);
 
 // GET /api/memory-hub/:shareToken
 // Public gallery — approved items only, no auth. Most exposed endpoint
