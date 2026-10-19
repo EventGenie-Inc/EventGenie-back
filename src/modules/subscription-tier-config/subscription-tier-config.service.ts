@@ -8,7 +8,7 @@ import { type SubscriptionTier } from '@prisma/client';
 const TIER_CAPABILITY_LABELS: Record<TierCapability, string> = {
   publicEventsEnabled: 'Public events',
   paidTicketingEnabled: 'Paid ticketing',
-  customRsvpFieldsEnabled: 'Custom RSVP questions',
+  customRsvpFieldsEnabled: 'Additional fields',
   vendorPriorityPlacement: 'Vendor priority placement',
 };
 

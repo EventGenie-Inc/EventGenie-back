@@ -9,7 +9,7 @@ const FIELD_TYPES: readonly RsvpFieldType[] = ['TEXT', 'NUMBER', 'EMAIL', 'PHONE
 // be saved, and an unknown type reached Prisma as a generic 500.
 export const requireFieldLabel = (label: unknown): string => {
   const trimmed = typeof label === 'string' ? label.trim() : '';
-  if (!trimmed) throw new HttpError(422, 'Each custom RSVP question needs a label — the question your guests will see.');
+  if (!trimmed) throw new HttpError(422, 'Each additional field needs a label — the question your guests will see.');
   return trimmed;
 };
 

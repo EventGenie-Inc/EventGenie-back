@@ -227,7 +227,7 @@ const planRsvpFields = (event: LoadedEvent, input: FullUpdateRsvpField[] | undef
   const plan = { creates: [] as FullUpdatePlan['rsvpFields']['creates'], updates: [] as FullUpdatePlan['rsvpFields']['updates'], archives: [] as string[] };
   if (input === undefined) return plan;
 
-  matchSavedRows(input, event.rsvpFields, 'custom RSVP question', 'RSVP field not found').forEach(({ row, stored }, order) => {
+  matchSavedRows(input, event.rsvpFields, 'additional field', 'Additional field not found').forEach(({ row, stored }, order) => {
     if (!stored) {
       plan.creates.push({
         ...resolveNewField(row),

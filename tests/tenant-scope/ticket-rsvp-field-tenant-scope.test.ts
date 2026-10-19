@@ -156,7 +156,7 @@ describe('custom RSVP fields — scoped through the event, tier gate enforced', 
     const body = { label: 'Song request', fieldType: 'TEXT', order: 1 };
     const refused = await request(app).post(fieldsUrl(eventId)).set(h).send(body);
     expect(refused.status).toBe(403);
-    expect(refused.body.message).toMatch(/custom RSVP fields/);
+    expect(refused.body.message).toMatch(/additional fields/);
     expect(await prisma.rsvpField.count({ where: { eventId, label: 'Song request' } })).toBe(0);
 
     await prisma.tenant.update({ where: { id: owner.tenantId }, data: { subscriptionTier: 'CELEBRATE', subscriptionStatus: 'ACTIVE' } });

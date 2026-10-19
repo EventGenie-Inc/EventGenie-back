@@ -28,7 +28,7 @@ export const buildFeedbackRequestEmail = (input: { to: string; eventId: string; 
       { kind: 'paragraph', text: 'We hope it went well. Tell us what worked and what we could do better: it takes about two minutes.' },
       {
         kind: 'paragraph',
-        text: 'You can also tell us whether we may mention your company or share a few of your photos. Each of these is optional, and you can change your mind later.',
+        text: 'You can also tell us whether we may mention your name or share a few of your photos. Each of these is optional, and you can change your mind later.',
       },
       { kind: 'button', label: 'Share your feedback', href: feedbackPageLink(input.eventId) },
     ],

@@ -15,7 +15,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 const fieldInScope = async (id: string, eventId: string, requestingRole: PlatformRole, tenantId: string | null) => {
   await eventService.getScoped(eventId, requestingRole, tenantId);
   const field = await rsvpFieldRepository.findById(id);
-  if (!field || field.eventId !== eventId) throw new HttpError(404, 'RSVP field not found');
+  if (!field || field.eventId !== eventId) throw new HttpError(404, 'Additional field not found');
   return field;
 };
 

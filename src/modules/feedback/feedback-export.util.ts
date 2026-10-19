@@ -29,7 +29,7 @@ const permissionCell = (p: FeedbackListEntry['permissions'][keyof FeedbackListEn
 
 const HEADER = [
   'Event',
-  'Company',
+  'Account',
   'Event date',
   'Submitted',
   'Last updated',
@@ -37,7 +37,7 @@ const HEADER = [
   'What worked best',
   'What to improve',
   'Logo',
-  'Company name and logo',
+  'Name and logo',
   'Quote',
   'Case study contact',
   'Selected photos',

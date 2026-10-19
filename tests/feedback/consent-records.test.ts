@@ -53,7 +53,7 @@ describe('append-only', () => {
       status: 'WITHDRAWN',
       granted: false,
       givenAt: grant!.recordedAt,
-      wordingVersion: 1,
+      wordingVersion: 2,
       withdrawnAt: rows[1]!.recordedAt,
     });
   });

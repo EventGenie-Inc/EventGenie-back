@@ -61,7 +61,7 @@ const toView = async (event: ScopedEvent): Promise<RegistrationSettingsView> => 
 
 const parseDomains = (value: unknown): string[] => {
   if (!Array.isArray(value) || !value.every((d) => typeof d === 'string')) {
-    throw new HttpError(400, 'allowedEmailDomains must be a list of email domains, e.g. ["company.co.za"].');
+    throw new HttpError(400, 'allowedEmailDomains must be a list of email domains, e.g. ["example.co.za"].');
   }
   const domains = [...new Set((value as string[]).map(normalizeEmailDomain).filter((d) => d.length > 0))];
   const invalid = (value as string[]).find((raw) => {
@@ -71,7 +71,7 @@ const parseDomains = (value: unknown): string[] => {
   if (invalid !== undefined) {
     throw new HttpError(
       422,
-      `'${invalid.trim()}' isn't an email domain. Use the part after the @, for example company.co.za.`,
+      `'${invalid.trim()}' isn't an email domain. Use the part after the @, such as example.co.za.`,
       CODES.DOMAIN_INVALID
     );
   }
@@ -126,7 +126,7 @@ export const registrationSettingsService = {
             422,
             tierRefusalMessage(
               `${source}, so the registration cap can be at most ${guestLimit.limit}.`,
-              `This event can have up to ${guestLimit.limit} guests during our launch period, so the registration cap ` +
+              `This event can have up to ${guestLimit.limit} guests during your free trial, so the registration cap ` +
                 `can be at most ${guestLimit.limit}. Contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.`
             ),
             CODES.CAP_ABOVE_PLAN_LIMIT

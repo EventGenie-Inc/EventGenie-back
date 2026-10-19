@@ -33,8 +33,8 @@ const assertCapabilityGates = async (tier: SubscriptionTier, input: EventTierChe
   }
   if (input.hasCustomRsvpFields && !resolveTierCapability(config, tier, 'customRsvpFieldsEnabled')) {
     throw new HttpError(403, tierRefusalMessage(
-      `The ${tier} plan does not support custom RSVP fields. Upgrade your plan to add them.`,
-      launchUnavailableMessage('Custom RSVP questions', { plural: true })
+      `The ${tier} plan does not support additional fields. Upgrade your plan to add them.`,
+      launchUnavailableMessage('Additional fields', { plural: true })
     ));
   }
 };
