@@ -26,11 +26,19 @@ export const CONSENT_WORDING_HISTORY: Record<ConsentKind, readonly ConsentWordin
       version: 1,
       text: "e-velope may show our company's name and logo on its website and social media as a company that has used e-velope.",
     },
+    {
+      version: 2,
+      text: "e-velope may show our name and logo on its website and social media, to say we've used e-velope.",
+    },
   ],
   QUOTE: [
     {
       version: 1,
       text: "e-velope may quote this feedback, with our company's name, on its website and social media.",
+    },
+    {
+      version: 2,
+      text: 'e-velope may quote this feedback, with our name, on its website and social media.',
     },
   ],
   CASE_STUDY_CONTACT: [

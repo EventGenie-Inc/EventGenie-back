@@ -157,8 +157,8 @@ describe('the list', () => {
       workedBest: 'The RSVP page',
       toImprove: 'More templates',
       permissions: {
-        COMPANY_NAME_LOGO: { status: 'GRANTED', wordingVersion: 1, withdrawnAt: null },
-        QUOTE: { status: 'WITHDRAWN', wordingVersion: 1 },
+        COMPANY_NAME_LOGO: { status: 'GRANTED', wordingVersion: 2, withdrawnAt: null },
+        QUOTE: { status: 'WITHDRAWN', wordingVersion: 2 },
         CASE_STUDY_CONTACT: { status: 'NOT_GIVEN', givenAt: null, wordingVersion: null, withdrawnAt: null },
       },
       photos: { selectedCount: 0, shareableCount: 0 },
@@ -178,13 +178,13 @@ describe('the list', () => {
     expect(res.headers['content-type']).toMatch(/^text\/csv/);
     expect(res.headers['content-disposition']).toMatch(/^attachment; filename="e-velope-feedback-\d{4}-\d{2}-\d{2}\.csv"$/);
     const csv = res.text;
-    expect(csv.startsWith('﻿Event,Company,Event date,')).toBe(true);
+    expect(csv.startsWith('﻿Event,Account,Event date,')).toBe(true);
     const row = csv.split('\r\n').find((line) => line.includes('HYPERLINK'));
     expect(row).toBeDefined();
     expect(row!.startsWith(`"'=HYPERLINK(""http://evil.test"",""x"")"`)).toBe(true);
     expect(csv).toContain(`'+SUM(A1:A9)`);
     expect(csv).toContain('"Line one\nline ""two"""');
-    expect(csv).toMatch(/WITHDRAWN \d{4}-\d{2}-\d{2} \(given \d{4}-\d{2}-\d{2}, wording v1\)/);
+    expect(csv).toMatch(/WITHDRAWN \d{4}-\d{2}-\d{2} \(given \d{4}-\d{2}-\d{2}, wording v2\)/);
   });
 
   it('csvCell: quotes what needs quoting and defuses every formula start', () => {

@@ -123,8 +123,8 @@ describe('permissions', () => {
     expect(first.status).toBe(200);
     let rows = await consents(event.id);
     expect(rows.map((r) => [r.kind, r.action, r.userId, r.wordingVersion])).toEqual([
-      ['COMPANY_NAME_LOGO', 'GRANTED', organiser.id, 1],
-      ['QUOTE', 'GRANTED', organiser.id, 1],
+      ['COMPANY_NAME_LOGO', 'GRANTED', organiser.id, 2],
+      ['QUOTE', 'GRANTED', organiser.id, 2],
     ]);
     expect(first.body.data.permissions.CASE_STUDY_CONTACT.status).toBe('NOT_GIVEN');
 
@@ -143,7 +143,7 @@ describe('permissions', () => {
       status: 'WITHDRAWN',
       granted: false,
       givenAt: rows[1]!.recordedAt.toISOString(),
-      wordingVersion: 1,
+      wordingVersion: 2,
       withdrawnAt: rows[2]!.recordedAt.toISOString(),
     });
     expect(withdrawn.body.data.permissions.COMPANY_NAME_LOGO.status).toBe('GRANTED');
@@ -154,8 +154,8 @@ describe('permissions', () => {
     const res = await get(event.id);
     expect(Object.keys(res.body.data.wording).sort()).toEqual(['CASE_STUDY_CONTACT', 'COMPANY_NAME_LOGO', 'PHOTO_ORGANISER_SELECTED', 'QUOTE']);
     expect(res.body.data.wording.QUOTE).toEqual({
-      version: 1,
-      text: "e-velope may quote this feedback, with our company's name, on its website and social media.",
+      version: 2,
+      text: 'e-velope may quote this feedback, with our name, on its website and social media.',
     });
   });
 

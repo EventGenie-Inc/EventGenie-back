@@ -60,7 +60,7 @@ const assertOrganiser = (requestingRole: PlatformRole): void => {
 const assertLogoAcceptable = (tenantId: string, logo: FeedbackLogoInput, storedPublicId: string | null): void => {
   if (logo.publicId === storedPublicId) return;
   if (!isSignedPublicIdInFolder(logo.publicId, feedbackLogoFolder(tenantId))) {
-    throw new HttpError(422, "This logo wasn't uploaded for your company. Upload it again from the feedback form.", FEEDBACK_ERROR_CODES.LOGO_INVALID);
+    throw new HttpError(422, "This logo wasn't uploaded for your account. Upload it again from the feedback form.", FEEDBACK_ERROR_CODES.LOGO_INVALID);
   }
   if (!isCloudinaryDeliveryUrlFor(logo.url, {
     cloudName: requireCloudinaryConfig().cloudName,

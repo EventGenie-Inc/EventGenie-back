@@ -45,7 +45,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
   try {
     const auth = req as AuthenticatedRequest;
     await rsvpFieldService.archive(req.params['id'] as string, req.params['eventId'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
-    res.status(200).json({ status: 'ok', message: 'RSVP field archived' });
+    res.status(200).json({ status: 'ok', message: 'Additional field archived' });
   } catch (err) { next(err); }
 });
 

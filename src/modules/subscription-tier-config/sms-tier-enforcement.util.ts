@@ -75,7 +75,7 @@ export const assertSmsSendable = async (
           : `The ${effectiveTier} plan does not include SMS. ` +
               `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
               `reminded by SMS. Nothing was sent. Add an email address for these guests, or upgrade the plan to enable SMS.`,
-        `SMS isn't available on your account during our launch period. ` +
+        `SMS isn't available during your free trial. ` +
           `${batchSmsCount} guest(s) in this batch only have a phone number on file, so ` +
           `${kind === 'invite' ? 'they cannot be invited' : 'nothing was sent'}. Add an email address for these guests, ` +
           `or contact us at ${LAUNCH_CONTACT_EMAIL} if you need SMS.`

@@ -67,6 +67,10 @@ Staging is its own Render service, Neon database and frontend site
 (`staging.e-velope.co.za`), running `main`'s code with production's
 feature flags and `SENTRY_ENVIRONMENT=staging`.
 
+Staging shares dev's Firebase sign-in, with its own database. On staging,
+always use +staging email addresses (e.g. name+staging@gmail.com), never
+an address used on dev.
+
 **A bug fix for production** goes on `hotfix/<name>`, branched from
 `main`: fix it, merge it into `main`, check it on staging, deploy
 production, then merge `main` into `dev` **the same day**, so `dev`
@@ -948,8 +952,8 @@ production database yet, so nothing is broken today — the first one must be
 populated by hand.
 
 **While `payments` is off there is no upgrade path** (see "Feature
-flags"): tier refusals carry launch wording and the contact address, never
-a plan or a price.
+flags"): tier refusals carry free-trial wording and the contact address,
+never a plan or a price.
 
 **Role gates hide. Tier gates show, with an upgrade path.** A role
 mismatch (an `EVENT_ADMIN` opening User Management) is an authorization
@@ -973,7 +977,7 @@ Whether a feature is locked at all is read from `/me`'s `planSettings`
   There is no `requiredTier` param: no plan is named, since the gate is
   read from `planSettings` and any tier can have the setting switched on.
   A direct hit lands on the dashboard with that confirmation open. With
-  `payments` off it shows the launch wording and contact address instead,
+  `payments` off it shows the free-trial wording and contact address instead,
   and confirming goes nowhere. (`TierGateService`, `tierGuard`.)
 - **Signed-in tenant, event-scoped feature** (Memory Hub, which an Event
   Pass on that event also unlocks). No confirmation: the user goes to the
@@ -1060,9 +1064,11 @@ codebase: a feature is switched off by configuration, **never deleted**.
     payment started before the switch still lands, and so do the read-only
     routes (current plan, plans, billing history, pass status). Every tier
     refusal is then worded without plans, tiers, passes, upgrading, buying
-    or prices, with the launch contact instead ("You've reached the limit of
-    50 guest(s) for this event during our launch period. Contact us at
-    admin@e-velope.co.za if you need more."), keeping its status and code.
+    or prices, with free-trial wording and the contact address instead
+    ("You've reached the limit of 50 guest(s) for this event during your
+    free trial. Contact us at admin@e-velope.co.za if you need more.";
+    "Public events aren't available during your free trial. Contact us at
+    admin@e-velope.co.za if you need them."), keeping its status and code.
     One place picks the wording: `tierRefusalMessage`
     (`subscription-tier-config/tier-refusal-wording.util.ts`); a new tier
     refusal goes through it.
@@ -2219,6 +2225,10 @@ receive one, open yours.
   their way").
 - **Restrained and warm, never cute.** No puns stacked on puns; one
   e-velope reference per screen is plenty.
+- **Product wording is neutral about who the event is for:** never
+  mention year-end functions, companies or any target audience in the
+  product; targeting belongs in marketing. Custom RSVP questions are
+  called 'Additional fields' in all user-visible text.
 
 **Logo files** live in the frontend's `public/brand/`. Frontend code
 reads the SVGs through `src/app/shared/brand/brand-assets.ts`, never a
