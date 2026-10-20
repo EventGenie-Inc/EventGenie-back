@@ -240,7 +240,7 @@ export const userInviteService = {
     // A rejected token is a 401; Firebase itself failing stays a 500.
     const decoded = await verifyOr401(
       () => getAuth(firebaseAdmin).verifyIdToken(firebaseToken),
-      'Firebase token is invalid or has expired'
+      'Your sign-in has expired or is not valid. Please sign in again.'
     );
 
     const username = typeof data?.username === 'string' ? data.username.trim() : '';

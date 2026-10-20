@@ -221,7 +221,7 @@ export const assertValidDesignInput = (
     } else if (bytes > INVITATION_DESIGN_MAX_BYTES) {
       throw invalid(
         `This image is too large (${(bytes / (1024 * 1024)).toFixed(1)}MB). Invitation designs must be ` +
-        `${INVITATION_DESIGN_MAX_BYTES / (1024 * 1024)}MB or smaller. Try exporting it as a JPG, or at a smaller size.`
+        `${INVITATION_DESIGN_MAX_BYTES / (1024 * 1024)}MB or smaller, so try a JPG or a smaller size.`
       );
     }
 

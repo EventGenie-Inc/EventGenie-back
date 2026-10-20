@@ -116,7 +116,7 @@ export const describeSkips = (reasons: ReminderSkipReason[]): string => {
 
 export const SKIP_MESSAGES: Record<ReminderSkipReason, string> = {
   ALREADY_RESPONDED: 'They have already responded, so no reminder is needed.',
-  NOT_INVITED_YET: "Their invitation hasn't been sent yet — send the invitation first; a reminder follows one.",
+  NOT_INVITED_YET: "Their invitation hasn't been sent yet. Send the invitation first.",
   INVITE_EXPIRED: 'Their invitation has expired, so its link no longer works. They need a new invitation, not a reminder.',
   RECENTLY_REMINDED: `They were reminded within the last ${REMINDER_COOLDOWN_HOURS} hours.`,
   STATE_CHANGED: 'They responded, or were reminded by another request, while this one was sending.',

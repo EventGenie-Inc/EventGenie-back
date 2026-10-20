@@ -46,7 +46,7 @@ export interface InviteDayLine {
 const whenText = (day: InviteDayLine): string => {
   const start = day.startTime ? formatGuestTime(day.startTime) : null;
   const end = day.endTime ? formatGuestTime(day.endTime) : null;
-  const time = start && end ? `${start} – ${end}` : start;
+  const time = start && end ? `${start} to ${end}` : start;
   return time ? `${formatGuestDate(day.date)} · ${time}` : formatGuestDate(day.date);
 };
 

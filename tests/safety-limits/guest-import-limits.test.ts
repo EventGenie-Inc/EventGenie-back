@@ -54,8 +54,8 @@ describe('guest import: rows per file', () => {
     expect(res.body).toEqual({
       status: 'error',
       message:
-        'This file has 2,001 guest rows, but one import can take at most 2,000. Nothing was imported. ' +
-        'Split the list into smaller files and import each one.',
+        'This file has 2,001 guest rows, but one import can take at most 2,000, so nothing was imported. ' +
+        'Split the list into smaller files.',
       code: 'GUEST_IMPORT_TOO_MANY_ROWS',
     });
     expect(contacts).not.toHaveBeenCalled();
@@ -82,7 +82,7 @@ describe('guest import: file size', () => {
     expect(res.body).toEqual({
       status: 'error',
       message:
-        'This file is larger than 5 MB, the most one import can take. Nothing was imported. ' +
+        'This file is larger than 5 MB, so nothing was imported. ' +
         'Remove empty rows and extra sheets, or split the list into smaller files.',
       code: 'GUEST_IMPORT_FILE_TOO_LARGE',
     });

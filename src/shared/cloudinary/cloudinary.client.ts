@@ -47,7 +47,7 @@ export const destroyAsset = async (publicId: string, resourceType: 'image' | 'vi
   try {
     config = requireCloudinaryConfig();
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : 'Cloudinary is not configured' };
+    return { ok: false, reason: error instanceof Error ? error.message : "Uploads aren't available right now." };
   }
 
   const timestamp = Math.floor(Date.now() / 1000);

@@ -62,15 +62,15 @@ export const buildImportTemplateWorkbook = async (
   sheet.getCell('C1').note =
     (emailOnly
       ? "Enter one email address per guest. Every guest needs an email address: text messages aren't available yet. "
-      : 'Enter one email OR one phone number (e.g. +27 82 123 4567) per guest — not both. ') +
+      : 'Enter one email OR one phone number (e.g. +27 82 123 4567) per guest, not both. ') +
     'First Name and Surname may be left blank; the guest can supply their name later when they RSVP.';
 
   sheet.getCell('E1').note =
-    'Optional — leave blank for 0. The number of extra guests (plus-ones) this person may bring, ' +
+    'Optional: leave blank for 0. The number of extra guests (plus-ones) this person may bring, ' +
     'declared by name when they RSVP.';
 
   if (eventDays.length >= 2) {
-    sheet.getCell('D1').note = "Must match one of this event's day labels exactly — see the \"Valid Days\" sheet.";
+    sheet.getCell('D1').note = "Must match one of this event's day labels exactly. See the \"Valid Days\" sheet.";
 
     const daysSheet = workbook.addWorksheet('Valid Days');
     daysSheet.columns = [
@@ -82,7 +82,7 @@ export const buildImportTemplateWorkbook = async (
       daysSheet.addRow({ label: day.label, date: day.date.toISOString().slice(0, 10) });
     }
   } else if (singleDayLabel) {
-    sheet.getCell('D1').note = `This event has only one day ("${singleDayLabel}") — you may leave this column blank.`;
+    sheet.getCell('D1').note = `This event has only one day ("${singleDayLabel}"), so you may leave this column blank.`;
   }
 
   const arrayBuffer = await workbook.xlsx.writeBuffer();

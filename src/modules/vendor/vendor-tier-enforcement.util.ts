@@ -78,8 +78,7 @@ export const assertVendorSpaceCreatable = async (tenantId: string | null): Promi
         403,
         tierRefusalMessage(
           `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} active vendor space(s). Archive an existing space or upgrade your plan to add another.`,
-          launchLimitMessage(`You've reached the limit of ${resolved.limit} active vendor space(s)`) +
-            ' Archiving a space you no longer need also frees up a place.'
+          launchLimitMessage(`You've reached the limit of ${resolved.limit} active vendor space(s)`, 'Archive a space you no longer need')
         )
       );
     }

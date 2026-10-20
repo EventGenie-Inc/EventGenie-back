@@ -282,7 +282,7 @@ export const subscriptionService = {
           relatedId: tenantId,
           payload: { stage: 'upgrade', summary: failure.summary, raw: failure.raw } as unknown as Prisma.InputJsonValue,
         });
-        throw toSubscriptionHttpError(failure, 'Could not start the new plan. Please contact support — your previous plan may need to be restored.');
+        throw toSubscriptionHttpError(failure, 'Could not start the new plan, and your previous plan may need restoring. Please contact support.');
       }
     }
 

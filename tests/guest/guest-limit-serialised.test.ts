@@ -75,7 +75,7 @@ describe('restoring a guest checks the plan limit', () => {
     const guest = await archivedGuest(eventId);
     const res = await request(app).post(`/api/guests/${guest.id}/reactivate`).set(headersFor(organiser));
     expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(new RegExp(`maximum of ${LIMIT} guest`));
+    expect(res.body.message).toMatch(new RegExp(`allows ${LIMIT} guest`));
     expect((await prisma.guest.findUniqueOrThrow({ where: { id: guest.id } })).isArchived).toBe(true);
   }, 60000);
 

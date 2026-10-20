@@ -88,7 +88,7 @@ describe('phones are not unique', () => {
       {
         row: 4,
         contact: other.replace('+27', '+27 '),
-        reason: `Duplicate contact '${other.replace('+27', '+27 ')}' — appears more than once in this file (first seen on row 3)`,
+        reason: `Duplicate contact '${other.replace('+27', '+27 ')}': it's also on row 3 of this file.`,
       },
     ]);
     expect(res.text).not.toMatch(/another guest|already exists/i);

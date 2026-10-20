@@ -21,12 +21,12 @@ const SMS_FROM = process.env.TWILIO_SMS_FROM;
 const TWILIO_ERROR_REASONS: Record<number, string> = {
   21211: 'The phone number is not formatted correctly',
   21614: 'This is not a valid mobile number and cannot receive SMS',
-  21408: "SMS is not permitted to this number's region on this Twilio account",
+  21408: "SMS is not permitted to this number's region",
   21610: 'This number has opted out of messages (unsubscribed)',
   21612: 'This number cannot be routed to any carrier',
   30003: "The recipient's phone is unreachable",
   30005: 'Unknown destination number',
-  30006: 'Landline or unreachable carrier — cannot receive SMS',
+  30006: 'This is a landline or an unreachable number, so it cannot receive SMS',
 };
 
 export const sendSms = async (to: string, body: string): Promise<EngineSendResult> => {
@@ -43,7 +43,7 @@ export const sendSms = async (to: string, body: string): Promise<EngineSendResul
   } catch (error) {
     const code = (error as { code?: number }).code;
     const reason = (code !== undefined && TWILIO_ERROR_REASONS[code])
-      || `SMS delivery failed (Twilio error ${code ?? 'unknown'})`;
+      || `SMS delivery failed (error ${code ?? 'unknown'})`;
     return { ok: false, reason };
   }
 };

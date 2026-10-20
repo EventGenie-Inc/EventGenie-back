@@ -17,9 +17,12 @@ export const LAUNCH_CONTACT_EMAIL = 'admin@e-velope.co.za';
 const CONTACT_FOR_MORE = `Contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.`;
 
 // A limit was reached: "<what> during your free trial. Contact us … if you
-// need more."
-export const launchLimitMessage = (what: string): string =>
-  `${what} during your free trial. ${CONTACT_FOR_MORE}`;
+// need more." `instead` puts what the organiser can do themselves before
+// the contact line, keeping the refusal to two sentences: "<what> during
+// your free trial. <instead>, or contact us … if you need more."
+export const launchLimitMessage = (what: string, instead?: string): string =>
+  `${what} during your free trial. ` +
+  (instead ? `${instead}, or contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.` : CONTACT_FOR_MORE);
 
 // A feature isn't available: "<feature> isn't available during your free
 // trial. …". A plural name ("Public events") takes `plural`, so the verb and

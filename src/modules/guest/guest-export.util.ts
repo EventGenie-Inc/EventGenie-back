@@ -97,8 +97,8 @@ export const buildGuestExportWorkbook = async (
     : null;
   if (lastFieldColumnLetter) {
     sheet.getCell(`${lastFieldColumnLetter}1`).note =
-      "Plus-ones have no answers of their own for these fields — v1 captures their name only. " +
-      "The organiser handles anything field-specific (e.g. dietary) by asking directly.";
+      "Plus-ones have no answers of their own for these fields, only a name. " +
+      "Ask them directly about anything else, such as dietary needs.";
   }
 
   for (const guest of groupByHost(guests)) {

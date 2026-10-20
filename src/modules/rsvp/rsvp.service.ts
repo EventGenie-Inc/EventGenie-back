@@ -86,7 +86,7 @@ const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null, isEdit: boolean)
     throw new HttpError(
       410,
       isEdit
-        ? `Responses for this event closed on ${deadlineText}. Your existing response stands — contact the organiser if you need to change it.`
+        ? `Responses for this event closed on ${deadlineText}, and your response stands. Contact the organiser if you need to change it.`
         : `Responses for this event closed on ${deadlineText}. Contact the organiser if you still need to RSVP.`
     );
   }
@@ -559,7 +559,7 @@ export const rsvpService = {
       if (!finalEmail && !finalPhone) {
         throw new HttpError(
           422,
-          'Please keep at least one way for the organiser to reach you — an email address or a phone number.',
+          'Please keep an email address or a phone number, so the organiser can reach you.',
           CONTACT_ERROR_CODES.LAST_REMOVED
         );
       }
@@ -607,7 +607,7 @@ export const rsvpService = {
         if (unanswered.length > 0) {
           throw new HttpError(
             422,
-            `Please answer ${unanswered.map((f) => `'${f.label}'`).join(', ')} — the organiser needs ${unanswered.length === 1 ? 'this' : 'these'} to plan for you.`
+            `Please answer ${unanswered.map((f) => `'${f.label}'`).join(', ')}. The organiser needs ${unanswered.length === 1 ? 'this' : 'these'} to plan for you.`
           );
         }
       }
@@ -903,7 +903,7 @@ export const rsvpService = {
           // other contact-detail gap this form fills.
           guestEmailForReservation = finalEmail;
           if (!guestEmailForReservation) {
-            throw new HttpError(400, 'An email address is required to purchase a ticket — please provide one above.');
+            throw new HttpError(400, 'An email address is required to buy a ticket. Please add one above.');
           }
 
           // No totalQuantity/soldCount pre-check here — that would be
@@ -942,7 +942,7 @@ export const rsvpService = {
       // nothing to refund-notice about — it simply lapses via its own
       // hold expiry if nobody ever completes it.
       const refundNotice = !data.attending && existingPurchase?.status === 'PAID'
-        ? "You have a paid ticket for this event. Declining doesn't automatically refund it — contact the organiser directly about a refund."
+        ? "You have a paid ticket, and declining doesn't refund it. Contact the organiser about a refund."
         : null;
 
       const updatedInvite = await tx.invite.update({
@@ -1091,7 +1091,7 @@ export const rsvpService = {
 
     const guestEmail = invite.guest.email;
     if (!guestEmail) {
-      throw new HttpError(400, 'An email address is required to purchase a ticket — please add one via the RSVP form first.');
+      throw new HttpError(400, 'An email address is required to buy a ticket. Add one to your RSVP first.');
     }
 
     const checkout = await ticketPurchaseService.startPaystackCheckout({

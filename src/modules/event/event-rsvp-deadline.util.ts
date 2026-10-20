@@ -37,6 +37,6 @@ export const assertValidRsvpDeadline = (
   const lastDayEnd = lastDay.endTime ?? endOfDayUtc(lastDay.date);
 
   if (rsvpDeadline > lastDayEnd) {
-    throw new HttpError(400, "The RSVP deadline can't be after the event's last day — an RSVP deadline after the event has ended is meaningless.");
+    throw new HttpError(400, "The RSVP deadline can't be after the event's last day.");
   }
 };

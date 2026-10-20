@@ -85,7 +85,7 @@ describe('RSVP submit — contact error codes', () => {
     expect(lastRemoved.status).toBe(422);
     expect(lastRemoved.body).toEqual({
       status: 'error',
-      message: 'Please keep at least one way for the organiser to reach you — an email address or a phone number.',
+      message: 'Please keep an email address or a phone number, so the organiser can reach you.',
       code: 'CONTACT_LAST_REMOVED',
     });
 

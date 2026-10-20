@@ -47,7 +47,7 @@ export const describeBillingHistoryEntry = (type: LedgerEntryType, rawPayload: u
     case 'SUBSCRIPTION_CHARGE_FAILED': {
       const reason = typeof payload['reason'] === 'string' ? payload['reason'] : null;
       return {
-        description: reason ? `Subscription payment failed — ${reason}` : 'Subscription payment failed',
+        description: reason ? `Subscription payment failed: ${reason}` : 'Subscription payment failed',
         outcome: 'FAILED',
       };
     }
@@ -90,7 +90,7 @@ export const describeBillingHistoryEntry = (type: LedgerEntryType, rawPayload: u
 
     case 'EVENT_PASS_PURCHASE_FAILED': {
       const summary = typeof payload['summary'] === 'string' ? payload['summary'] : null;
-      return { description: summary ? `Event Pass purchase failed — ${summary}` : 'Event Pass purchase failed', outcome: 'FAILED' };
+      return { description: summary ? `Event Pass purchase failed: ${summary}` : 'Event Pass purchase failed', outcome: 'FAILED' };
     }
 
     case 'SMS_BUNDLE_PURCHASE_SUCCEEDED': {
@@ -100,7 +100,7 @@ export const describeBillingHistoryEntry = (type: LedgerEntryType, rawPayload: u
 
     case 'SMS_BUNDLE_PURCHASE_FAILED': {
       const summary = typeof payload['summary'] === 'string' ? payload['summary'] : null;
-      return { description: summary ? `SMS bundle purchase failed — ${summary}` : 'SMS bundle purchase failed', outcome: 'FAILED' };
+      return { description: summary ? `SMS bundle purchase failed: ${summary}` : 'SMS bundle purchase failed', outcome: 'FAILED' };
     }
 
     default:

@@ -118,19 +118,17 @@ const assertWithinPlanGuestLimit = async (
     // Attribute the message to whichever side is actually binding, so
     // "upgrade" points at the thing that would actually raise the cap.
     const source = resolved.boundByPass
-      ? `This event's ${event.eventPass!.passTier} pass allows a maximum of ${limit} guest(s) per event.`
-      : `The ${resolved.tenantTier} plan allows a maximum of ${limit} guest(s) per event.`;
+      ? `This event's ${event.eventPass!.passTier} pass allows ${limit} guest(s)`
+      : `The ${resolved.tenantTier} plan allows ${limit} guest(s) per event`;
     const upgradeHint = resolved.boundByPass ? 'upgrade the pass' : 'upgrade the plan';
 
-    const counts =
-      `This event currently has ${existingCount} guest(s), and this would add ${additionalCount} more ` +
-      `(${projected} total) — ${over} over the limit.`;
+    const counts = `this would bring the event to ${projected} (${over} over the limit)`;
 
     throw new HttpError(
       403,
       tierRefusalMessage(
-        `${source} ${counts} Remove guests or ${upgradeHint} to continue.`,
-        launchLimitMessage(`You've reached the limit of ${limit} guest(s) for this event`) + ` ${counts}`
+        `${source}, and ${counts}. Remove guests or ${upgradeHint}.`,
+        launchLimitMessage(`This would bring the event to ${projected} guest(s), ${over} over its limit of ${limit}`, 'Remove guests')
       )
     );
   }

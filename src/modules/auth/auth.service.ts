@@ -265,7 +265,7 @@ export const authService = {
         err.code === 'auth/argument-error' ||
         err.code === 'auth/id-token-revoked'
       ) {
-        throw new HttpError(401, 'Firebase token is invalid or has expired', 'FIREBASE_TOKEN_INVALID');
+        throw new HttpError(401, 'Your sign-in has expired or is not valid. Please sign in again.', 'FIREBASE_TOKEN_INVALID');
       }
       if (err.code === 'auth/user-disabled') {
         throw new HttpError(403, 'Account is inactive or has been archived');
@@ -350,7 +350,7 @@ export const authService = {
         err.code === 'auth/argument-error' ||
         err.code === 'auth/id-token-revoked'
       ) {
-        throw new HttpError(401, 'Firebase token is invalid or has expired');
+        throw new HttpError(401, 'Your sign-in has expired or is not valid. Please sign in again.');
       }
       // auth/user-disabled — same fix as exchangeSession (Part 4/the
       // identical auth.middleware.ts fix): checkRevoked can now surface

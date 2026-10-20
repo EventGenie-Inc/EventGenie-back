@@ -363,7 +363,7 @@ export const eventService = {
     const event = await eventService.getById(id, requestingRole, tenantId);
     assertEventIsPublished(event.status);
     if (event.visibility !== 'PUBLIC') {
-      throw new HttpError(400, 'Share links are only available for public events — private events use individual invites instead.');
+      throw new HttpError(400, 'Share links are only for public events. Private events use individual invitations.');
     }
 
     const shareToken = event.shareToken ?? (await eventRepository.generateShareToken(id, userId)).shareToken;
@@ -380,7 +380,7 @@ export const eventService = {
     const event = await eventService.getById(id, requestingRole, tenantId);
     assertEventIsPublished(event.status);
     if (event.visibility !== 'PUBLIC') {
-      throw new HttpError(400, 'Share links are only available for public events — private events use individual invites instead.');
+      throw new HttpError(400, 'Share links are only for public events. Private events use individual invitations.');
     }
 
     const updated = await eventRepository.generateShareToken(id, userId);
@@ -425,7 +425,7 @@ export const eventService = {
       missing.push(`a venue for ${daysWithoutVenue.map((d) => `'${d.label}'`).join(', ')}`);
     }
     if (missing.length) {
-      throw new HttpError(422, `This event isn't ready to publish yet — it's missing: ${missing.join(', ')}.`);
+      throw new HttpError(422, `This event isn't ready to publish yet. It's missing: ${missing.join(', ')}.`);
     }
 
     // Re-checked here, not just at create/update: the tenant's

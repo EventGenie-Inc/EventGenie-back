@@ -113,7 +113,7 @@ export const assertExactlyOneContact = (
   hostGuestId: string | null = null
 ): void => {
   if (email && phoneNumber) {
-    throw new HttpError(400, 'A guest can only have one contact method at creation — email or phone, not both');
+    throw new HttpError(400, 'Give a guest an email address or a phone number, not both.');
   }
   // 422, not 400: a missing required value, not a malformed request —
   // matching every other required-field refusal (STEERING's Errors table).
