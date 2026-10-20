@@ -73,7 +73,7 @@ export const authenticate = async (
     if (!firebaseToken) {
       res.status(401).json({
         status: 'error',
-        message: 'No Firebase token provided',
+        message: "You're not signed in. Please sign in.",
       });
       return;
     }
@@ -185,7 +185,7 @@ export const authenticate = async (
     ) {
       res.status(401).json({
         status: 'error',
-        message: 'Firebase token is invalid or has expired',
+        message: 'Your sign-in has expired or is not valid. Please sign in again.',
       });
       return;
     }

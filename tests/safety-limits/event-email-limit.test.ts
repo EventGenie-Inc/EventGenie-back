@@ -73,7 +73,7 @@ describe('invitations', () => {
       status: 'error',
       message:
         'This would send 2 emails, but only 1 more can go from this event in the next 24 hours ' +
-        '(the limit is 2,000 invitation and reminder emails a day). Nothing was sent. Choose fewer guests, or try again later.',
+        '(the limit is 2,000 a day), so nothing was sent. Choose fewer guests, or try again later.',
       code: 'EVENT_EMAIL_DAILY_LIMIT',
     });
     expect(sentEmails()).toHaveLength(0);
@@ -93,7 +93,7 @@ describe('invitations', () => {
       .set(headersFor(organiser));
     expect(resend.status).toBe(429);
     expect(resend.body.code).toBe('EVENT_EMAIL_DAILY_LIMIT');
-    expect(resend.body.message).toMatch(/^This event has sent the most invitation and reminder emails allowed in 24 hours \(2,000\)\. Nothing was sent\./);
+    expect(resend.body.message).toMatch(/^This event has sent the most invitation and reminder emails allowed in 24 hours \(2,000\), so nothing was sent\./);
     expect(sentEmails()).toHaveLength(1);
   }, 60000);
 

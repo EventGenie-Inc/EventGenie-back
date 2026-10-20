@@ -207,7 +207,7 @@ export const userService = {
     // omitted tenantId — exactly the state Fix 1 made getById/getAll
     // fail closed against; this stops it being created in the first place.
     if (ROLES_REQUIRING_TENANT.includes(data.role) && !resolvedTenantId) {
-      throw new HttpError(422, `A ${data.role} must belong to a tenant — specify tenantId.`);
+      throw new HttpError(422, `A ${data.role} must belong to a tenant. Choose one for them.`);
     }
 
     // With the vendors feature off there is nothing for a vendor to sign

@@ -71,8 +71,7 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
         403,
         tierRefusalMessage(
           `The ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`,
-          launchLimitMessage(`You've reached the limit of ${config.maxEvents} active event(s)`) +
-            ' Archiving an event you no longer need also frees up a place.'
+          launchLimitMessage(`You've reached the limit of ${config.maxEvents} active event(s)`, 'Archive an event you no longer need')
         )
       );
     }

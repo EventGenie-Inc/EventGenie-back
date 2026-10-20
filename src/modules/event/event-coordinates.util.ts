@@ -26,16 +26,16 @@ export const assertValidCoordinates = (
   if (hasLatitude !== hasLongitude) {
     throw new HttpError(
       400,
-      'Both latitude and longitude must be provided together, or neither — a single coordinate cannot be saved on its own.'
+      'Provide both latitude and longitude, or neither.'
     );
   }
 
   if (!isPlausibleLatitude(latitude as number)) {
-    throw new HttpError(400, `'${latitude}' is not a valid latitude — it must be a number between -90 and 90.`);
+    throw new HttpError(400, `'${latitude}' is not a valid latitude. It must be a number between -90 and 90.`);
   }
 
   if (!isPlausibleLongitude(longitude as number)) {
-    throw new HttpError(400, `'${longitude}' is not a valid longitude — it must be a number between -180 and 180.`);
+    throw new HttpError(400, `'${longitude}' is not a valid longitude. It must be a number between -180 and 180.`);
   }
 };
 

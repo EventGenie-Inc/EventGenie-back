@@ -128,8 +128,7 @@ export const assertMemoryHubQuotaAvailable = async (
       403,
       tierRefusalMessage(
         `This event's Memory Hub has reached its ${limitMb}MB storage limit for the ${effectiveTier} plan. Remove items or upgrade the plan to add more.`,
-        launchLimitMessage(`This event's Memory Hub has reached its ${limitMb}MB storage limit`) +
-          ' Removing items also frees up space.'
+        launchLimitMessage(`This event's Memory Hub has reached its ${limitMb}MB storage limit`, 'Remove items to free up space')
       )
     );
   }

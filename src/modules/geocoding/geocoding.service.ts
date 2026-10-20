@@ -56,7 +56,7 @@ const asUnavailableError = (error: unknown): never => {
   console.error('[HERE geocoding]', error instanceof Error ? error.message : error);
   throw new HttpError(
     502,
-    'Address search is temporarily unavailable. You can keep typing the address by hand — it will still save.'
+    "Address search isn't working right now. Type the address by hand and it will still save."
   );
 };
 
@@ -85,7 +85,7 @@ export const geocodingService = {
   lookup: async (rawId: string): Promise<ResolvedAddress> => {
     const id = rawId.trim();
     if (!id) {
-      throw new HttpError(400, 'A HERE place id is required');
+      throw new HttpError(400, 'A place id is required');
     }
 
     try {

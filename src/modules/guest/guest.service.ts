@@ -35,7 +35,7 @@ const assertEventAcceptsOrganiserGuestList = (visibility: string): void => {
   if (visibility !== 'PRIVATE') {
     throw new HttpError(
       400,
-      "Public events don't use an organiser-built guest list — guests add themselves when they RSVP."
+      "Public events have no guest list to fill in. Guests add themselves when they RSVP."
     );
   }
 };

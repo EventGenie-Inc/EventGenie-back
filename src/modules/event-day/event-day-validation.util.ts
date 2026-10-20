@@ -25,7 +25,7 @@ export const assertNoDuplicateDayLabel = async (
 };
 
 export const duplicateDayLabelMessage = (label: string): string =>
-  `This event already has a day labeled '${label}' — day labels must be unique per event`;
+  `This event already has a day labeled '${label}'. Day labels must be unique.`;
 
 // The same rule over a whole list of days at once (the wizard's materialize
 // and the full event update): the first label repeated, ignoring case.
@@ -53,7 +53,7 @@ export const isDayLabelUniqueViolation = (err: unknown): boolean =>
 // and the wizard's materialize path alike.
 export const requireDayLabel = (label: unknown): string => {
   const trimmed = typeof label === 'string' ? label.trim() : '';
-  if (!trimmed) throw new HttpError(422, 'Each event day needs a label, e.g. "Day 1 — Ceremony".');
+  if (!trimmed) throw new HttpError(422, 'Each event day needs a label, e.g. "Day 1: Ceremony".');
   return trimmed;
 };
 
@@ -65,7 +65,7 @@ export const requireDayDate = (date: unknown, label: string): Date => {
   }
   const parsed = parseClientDateTime(date.trim());
   if (Number.isNaN(parsed.getTime())) {
-    throw new HttpError(422, `'${label}' needs a valid date — '${date}' isn't one.`);
+    throw new HttpError(422, `'${label}' needs a valid date, and '${date}' isn't one.`);
   }
   return parsed;
 };

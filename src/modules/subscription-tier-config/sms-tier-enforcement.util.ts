@@ -69,16 +69,13 @@ export const assertSmsSendable = async (
       403,
       tierRefusalMessage(
         kind === 'invite'
-          ? `The ${effectiveTier} plan does not include SMS invites. ` +
-              `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
-              `invited by SMS. Add an email address for these guests, or upgrade the plan to enable SMS.`
-          : `The ${effectiveTier} plan does not include SMS. ` +
-              `${batchSmsCount} guest(s) in this batch only have a phone number on file and cannot be ` +
-              `reminded by SMS. Nothing was sent. Add an email address for these guests, or upgrade the plan to enable SMS.`,
-        `SMS isn't available during your free trial. ` +
-          `${batchSmsCount} guest(s) in this batch only have a phone number on file, so ` +
-          `${kind === 'invite' ? 'they cannot be invited' : 'nothing was sent'}. Add an email address for these guests, ` +
-          `or contact us at ${LAUNCH_CONTACT_EMAIL} if you need SMS.`
+          ? `The ${effectiveTier} plan doesn't include SMS, and ${batchSmsCount} guest(s) in this batch ` +
+              `only have a phone number. Add an email address for them, or upgrade the plan.`
+          : `The ${effectiveTier} plan doesn't include SMS, and ${batchSmsCount} guest(s) in this batch ` +
+              `only have a phone number, so nothing was sent. Add an email address for them, or upgrade the plan.`,
+        `SMS isn't available during your free trial, and ${batchSmsCount} guest(s) in this batch only have a ` +
+          `phone number, so ${kind === 'invite' ? 'they cannot be invited' : 'nothing was sent'}. ` +
+          `Add an email address for them, or contact us at ${LAUNCH_CONTACT_EMAIL} if you need SMS.`
       )
     );
   }
@@ -95,11 +92,10 @@ export const assertSmsSendable = async (
         403,
         tierRefusalMessage(
           `This event's SMS bundle has ${Math.max(remaining, 0)} credit(s) left, but this batch needs ` +
-            `${batchSmsCount}. Buy more SMS credits for this event to continue — it does not draw from ` +
-            `the account's monthly SMS allowance.`,
+            `${batchSmsCount}. Buy more SMS credits for this event, since it doesn't use the monthly allowance.`,
           launchLimitMessage(
-            `This event has ${Math.max(remaining, 0)} SMS message(s) left, but this batch needs ${batchSmsCount}. ` +
-              `Nothing was sent. You've reached the SMS limit for this event`
+            `Nothing was sent, because this batch needs ${batchSmsCount} SMS message(s) and this event ` +
+              `has ${Math.max(remaining, 0)} left`
           )
         )
       );
@@ -119,16 +115,15 @@ export const assertSmsSendable = async (
         403,
         tierRefusalMessage(
           kind === 'invite'
-            ? `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS invite(s) per month. ` +
-                `${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
-                `— this batch needs ${batchSmsCount}. Reduce the batch, wait until next month, or upgrade the plan.`
-            : `The ${effectiveTier} plan allows ${config.maxSmsPerMonth} SMS message(s) per month, shared by invitations and ` +
-                `reminders. ${usedThisMonth} have already been sent this month, leaving ${Math.max(remaining, 0)} remaining ` +
-                `— this batch needs ${batchSmsCount}. Nothing was sent. Remind fewer guests, wait until next month, or upgrade the plan.`,
+            ? `This batch needs ${batchSmsCount} SMS invite(s), but the ${effectiveTier} plan has ` +
+                `${Math.max(remaining, 0)} of its ${config.maxSmsPerMonth} a month left. ` +
+                `Reduce the batch, wait until next month, or upgrade the plan.`
+            : `Nothing was sent, because this batch needs ${batchSmsCount} SMS message(s) and the ${effectiveTier} plan has ` +
+                `${Math.max(remaining, 0)} of its ${config.maxSmsPerMonth} a month left. ` +
+                `Remind fewer guests, wait until next month, or upgrade the plan.`,
           launchLimitMessage(
-            `Your account can send ${config.maxSmsPerMonth} SMS message(s) a month. ${usedThisMonth} have been sent ` +
-              `this month, leaving ${Math.max(remaining, 0)}, and this batch needs ${batchSmsCount}. Nothing was sent. ` +
-              `You've reached this month's SMS limit`
+            `Nothing was sent, because this batch needs ${batchSmsCount} SMS message(s) and your account has ` +
+              `${Math.max(remaining, 0)} of its ${config.maxSmsPerMonth} a month left`
           )
         )
       );

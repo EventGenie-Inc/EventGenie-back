@@ -139,7 +139,7 @@ const assertEventAcceptsInvites = (visibility: string): void => {
   if (visibility !== 'PRIVATE') {
     throw new HttpError(
       400,
-      "Public events don't use invites — share the event's public link instead (GET /api/events/:eventId/share-link)."
+      "Public events don't use invitations. Share the event's public link instead."
     );
   }
 };
@@ -425,9 +425,8 @@ export const inviteDispatchService = {
     if (missing.length) {
       throw new HttpError(
         400,
-        `${missing.length} guest(s) are not eligible for sending — they may be archived, have an ` +
-          `archived invite, belong to a different event, or be a plus-one (who has no invitation of ` +
-          `their own): ${missing.join(', ')}`
+        `${missing.length} guest(s) can't be sent an invitation. They may be archived, belong to ` +
+          `another event, or be a plus-one: ${missing.join(', ')}`
       );
     }
 
@@ -486,7 +485,7 @@ export const inviteDispatchService = {
     if (invite.guest.hostGuestId) {
       throw new HttpError(
         400,
-        "This invitation belongs to a plus-one — they're covered by their host's RSVP and have no invitation of their own to resend."
+        "This invitation belongs to a plus-one. Their host's RSVP covers them, so there's nothing to resend."
       );
     }
     const event = await eventService.getById(invite.eventId, requestingRole, tenantId);
@@ -559,9 +558,8 @@ export const inviteDispatchService = {
       if (missing.length) {
         throw new HttpError(
           400,
-          `${missing.length} guest(s) are not eligible for a reminder — they may be archived, have an ` +
-            `archived invite, belong to a different event, or be a plus-one (who has no contact of ` +
-            `their own): ${missing.join(', ')}`
+          `${missing.length} guest(s) can't be sent a reminder. They may be archived, belong to ` +
+            `another event, or be a plus-one: ${missing.join(', ')}`
         );
       }
     }

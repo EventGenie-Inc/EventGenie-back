@@ -250,7 +250,7 @@ describe('every email has a plain-text part with the same content', () => {
     for (const email of [invite, reminder]) {
       expect(email.text).toContain('Garden Party');
       expect(email.text).toContain('From Thandi & Sipho');
-      expect(email.text).toContain('5 June 2027 · 14:00 – 16:30');
+      expect(email.text).toContain('5 June 2027 · 14:00 to 16:30');
       expect(email.text).toContain('St George’s Cathedral');
       expect(email.text).toContain('5 Wale St, Cape Town');
       expect(email.text).toContain(`Open your e-velope:\n${RSVP_LINK}`);
@@ -267,7 +267,7 @@ describe('every email has a plain-text part with the same content', () => {
     const { registration } = allEmails({ design: upload() });
     expect(registration.text).toContain("You're registered");
     expect(registration.text).toContain('Garden Party');
-    expect(registration.text).toContain('5 June 2027 · 14:00 – 16:30');
+    expect(registration.text).toContain('5 June 2027 · 14:00 to 16:30');
     expect(registration.text).toContain('St George’s Cathedral');
     expect(registration.text).toContain(`Open your e-velope:\n${RSVP_LINK}`);
     expect(registration.text).toContain('Open your e-velope any time to change your answer.');

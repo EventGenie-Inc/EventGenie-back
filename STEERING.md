@@ -10,11 +10,18 @@ Conventions every contributor and AI coding agent must follow.
 > which is why the copy exists; if you find the two differ, say so
 > before relying on either.
 
-> **Where the repos are** (moved out of OneDrive; ignore any older path
-> in notes or memory, such as a OneDrive or `C:\Users\Levy\…` one):
-> backend `C:\dev\EventGenie-back`; frontend `C:\dev\eventgenie-front`,
-> with this file's copy at its root (`C:\dev\eventgenie-front\STEERING.md`)
-> and the Angular app in its `eventgenie-front` subfolder.
+> **Where the repos are**, on either machine:
+>
+> | | Windows | Mac |
+> |---|---|---|
+> | Backend | `C:\dev\EventGenie-back` | `~/EventGenie-back` |
+> | Frontend | `C:\dev\eventgenie-front` | `~/eventgenie-front-1` |
+>
+> The frontend has this file's copy at its root (`STEERING.md`) and the
+> Angular app in its `eventgenie-front` subfolder. On the Mac,
+> `~/EventGenie-front` is a legacy prototype, not the frontend. Ignore any
+> older path in notes or memory, such as a OneDrive or `C:\Users\Levy\…`
+> one.
 
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
@@ -1120,8 +1127,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
     routes (current plan, plans, billing history, pass status). Every tier
     refusal is then worded without plans, tiers, passes, upgrading, buying
     or prices, with free-trial wording and the contact address instead
-    ("You've reached the limit of 50 guest(s) for this event during your
-    free trial. Contact us at admin@e-velope.co.za if you need more.";
+    ("You've reached the limit of 3 active event(s) during your free trial.
+    Archive an event you no longer need, or contact us at
+    admin@e-velope.co.za if you need more.";
     "Public events aren't available during your free trial. Contact us at
     admin@e-velope.co.za if you need them."), keeping its status and code.
     One place picks the wording: `tierRefusalMessage`
@@ -1323,8 +1331,8 @@ tab meanwhile.
 **A refresh after a completed password reset ends the session the
 same way.** `refresh-session` verifies with `checkRevoked`, so once a
 reset completes elsewhere, an open session's next refresh is refused
-with a **401 that carries no code** ("Firebase token is invalid or has
-expired"). That endpoint's only coded 401s are `SESSION_EXPIRED` and
+with a **401 that carries no code** ("Your sign-in has expired or is not
+valid. Please sign in again."). That endpoint's only coded 401s are `SESSION_EXPIRED` and
 `SESSION_INVALID` (the session JWT itself failed); any other 401 on the
 refresh request — the revoked token, a uid mismatch, a user gone — is a
 verdict on the Firebase side, and ends the session as above: Firebase
@@ -2197,6 +2205,14 @@ modal never builds its own backdrop.
 than replacing it with generic text. `"'0821234567' is missing a country
 code, use +27821234567"` is far more useful than "Invalid input".
 
+**No dashes as punctuation in user-visible text; hints are one short
+line.** This covers both repos: messages, emails, SMS, spreadsheets, labels
+and alt text. Use a full stop, comma or colon instead of an em dash (—), an
+en dash (–) or a spaced hyphen between clauses, and "to" in a range ("14:00
+to 22:00"). Hyphens inside words stay ("e-velope", "plus-ones"). A message
+is at most two short sentences, and keeps what the person needs to fix the
+problem.
+
 **Bulk operation results** get a modal listing every failure with a
 specific reason. For imports, the row number must match what the user
 sees in Excel.
@@ -2351,7 +2367,7 @@ files are in `public/brand/mashware/`, read through `brand-assets.ts`:
 
 | File | Use | Alt text |
 |---|---|---|
-| `mashware-logo.svg` | Full logo with tagline, olive lettering: `/mashware` in light mode | "MashWare — Brave As Code, Emerging While Others Crash" |
+| `mashware-logo.svg` | Full logo with tagline, olive lettering: `/mashware` in light mode | "MashWare: Brave As Code, Emerging While Others Crash" |
 | `mashware-logo-dark.svg` | The same with gold lettering: `/mashware` in dark mode | the same |
 | `mashware-mark.svg` | Olive tile, gold "M": the footer, in both modes (there is no white version) | "MashWare" |
 

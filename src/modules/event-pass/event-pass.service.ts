@@ -132,7 +132,7 @@ export const eventPassService = {
       if (EVENT_PASS_TIER_RANK[dto.passTier] <= EVENT_PASS_TIER_RANK[currentTier]) {
         throw new HttpError(
           409,
-          `This event already has a ${currentTier} pass. Choose a higher tier to upgrade — a Small/Standard pass cannot be bought again once one is already active.`
+          `This event already has a ${currentTier} pass. Choose a higher tier to upgrade.`
         );
       }
       isUpgrade = true;
@@ -226,7 +226,7 @@ export const eventPassService = {
     if (!isEventPassActive(event)) {
       throw new HttpError(
         422,
-        "This event doesn't have an active Event Pass — SMS bundles are only available for events with one. Buy a pass first."
+        "SMS bundles need an active Event Pass. Buy a pass for this event first."
       );
     }
     const tenant = await tenantRepository.findById(event.tenantId);

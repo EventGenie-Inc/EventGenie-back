@@ -140,9 +140,8 @@ const assertItemAcceptableOrDestroy = async (
         audience === 'guest'
           ? "This event's photo album is full, so new photos can't be added right now."
           : tierRefusalMessage(
-              `This upload would push the event's Memory Hub over its storage limit. It has not been saved — remove existing items or upgrade the plan.`,
-              launchLimitMessage(`This upload would push the event's Memory Hub over its storage limit, so it has not been saved. You've reached the storage limit for this event`) +
-                ' Removing items also frees up space.'
+              `This upload would take the event's Memory Hub over its storage limit, so it wasn't saved. Remove items or upgrade the plan.`,
+              launchLimitMessage(`This upload wasn't saved, because it would take the event's Memory Hub over its storage limit`, 'Remove items to free up space')
             )
       );
     }

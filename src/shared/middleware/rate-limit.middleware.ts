@@ -200,7 +200,7 @@ export const addressAutosuggestLimiter = rateLimit({
   keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
   message: {
     status: 'error',
-    message: 'Too many address searches — please slow down and try again shortly.',
+    message: 'Too many address searches. Please wait a moment and try again.',
   },
 });
 

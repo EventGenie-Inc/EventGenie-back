@@ -66,8 +66,8 @@ router.post('/import', (req: Request, res: Response, next: NextFunction) => {
     if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
       next(new HttpError(
         413,
-        `This file is larger than ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)} MB, the most one import can take. ` +
-          'Nothing was imported. Remove empty rows and extra sheets, or split the list into smaller files.',
+        `This file is larger than ${MAX_IMPORT_FILE_SIZE_BYTES / (1024 * 1024)} MB, so nothing was imported. ` +
+          'Remove empty rows and extra sheets, or split the list into smaller files.',
         GUEST_IMPORT_FILE_TOO_LARGE
       ));
       return;

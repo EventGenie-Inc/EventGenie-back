@@ -76,7 +76,7 @@ export const eventDraftService = {
     // event-day-validation.util.ts's case-insensitive rule.
     const duplicateLabel = findDuplicateDayLabel(days.map((d) => d.label));
     if (duplicateLabel !== null) {
-      throw new HttpError(409, `Duplicate day label '${duplicateLabel}' — day labels must be unique within an event`);
+      throw new HttpError(409, `Duplicate day label '${duplicateLabel}'. Day labels must be unique.`);
     }
 
     // Same both-or-neither/plausibility treatment extended to the two

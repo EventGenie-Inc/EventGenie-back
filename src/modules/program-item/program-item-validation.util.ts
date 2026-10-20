@@ -32,7 +32,7 @@ export const optionalItemDuration = (durationMins: unknown, title: string): numb
 // organiser UI requires it there and hides it on a single-day event, where
 // a NULL item is placed by date (STEERING "Event program").
 export const itemDayRequiredMessage = (title: string): string =>
-  `Choose the day '${title}' happens on — this event has more than one day.`;
+  `Choose the day '${title}' happens on. This event has more than one day.`;
 
 // The rule itself, for every path: an item with no day on an event with
 // more than one live day is 422.

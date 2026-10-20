@@ -96,7 +96,7 @@ export const parseImportFile = async (
   const isCsv = ext === 'csv' || mimeType === 'text/csv';
 
   if (!isXlsx && !isCsv) {
-    throw new HttpError(400, `Unsupported file type '${ext || mimeType}' — only .xlsx and .csv files are supported`);
+    throw new HttpError(400, `Unsupported file type '${ext || mimeType}'. Upload an .xlsx or .csv file.`);
   }
 
   const rawRows = isXlsx ? await parseXlsxRows(buffer) : parseCsvRows(buffer);
@@ -120,7 +120,7 @@ export const parseImportFile = async (
     throw new HttpError(
       422,
       `This file has ${dataRows.length.toLocaleString('en-US')} guest rows, but one import can take at most ` +
-        `${MAX_IMPORT_ROWS.toLocaleString('en-US')}. Nothing was imported. Split the list into smaller files and import each one.`,
+        `${MAX_IMPORT_ROWS.toLocaleString('en-US')}, so nothing was imported. Split the list into smaller files.`,
       GUEST_IMPORT_TOO_MANY_ROWS
     );
   }
@@ -245,7 +245,7 @@ export const validateImportRows = (
     // By email only: guests may share a phone (guest-validation.util.ts).
     const dbDuplicate = findDuplicateEmail(existingContacts, email);
     if (dbDuplicate) {
-      fail(`Duplicate contact '${contactRaw}' — already exists for this event`);
+      fail(`Duplicate contact '${contactRaw}': another guest on this event already has it.`);
       continue;
     }
 
@@ -253,7 +253,7 @@ export const validateImportRows = (
     const firstPhoneRow = phoneNumber ? phonesSeenInFile.get(phoneNumber) : undefined;
     if (fileDuplicate || firstPhoneRow !== undefined) {
       const firstRow = firstPhoneRow ?? /^row-(\d+)$/.exec(fileDuplicate!.guestId)?.[1] ?? '?';
-      fail(`Duplicate contact '${contactRaw}' — appears more than once in this file (first seen on row ${firstRow})`);
+      fail(`Duplicate contact '${contactRaw}': it's also on row ${firstRow} of this file.`);
       continue;
     }
 

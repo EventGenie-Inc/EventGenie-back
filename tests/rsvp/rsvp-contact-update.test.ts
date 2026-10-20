@@ -96,7 +96,7 @@ describe('RSVP submit — contact update', () => {
     const { guest, invite } = await setupPhoneGuest();
     const res = await submit({ token: invite.token, attending: false, phoneNumber: null });
     expect(res.status).toBe(422);
-    expect(res.body.message).toMatch(/at least one way for the organiser to reach you/);
+    expect(res.body.message).toMatch(/an email address or a phone number, so the organiser can reach you/);
     expect((await reload(guest.id)).phoneNumber).toBe(guest.phoneNumber);
 
     // Blank is "leave it alone", never a removal — the long-standing rule.

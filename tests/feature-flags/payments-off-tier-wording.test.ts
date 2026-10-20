@@ -175,8 +175,7 @@ describe('payments off — every tier refusal is worded without plans, upgrades 
   it('the guest limit (with its counts still given)', async () => {
     await setConfig('SPARK', { maxGuestsPerEvent: 0 });
     const off = await expectLaunchWording(403, () => assertGuestsCreatable(eventFor(), 3));
-    expect(off.message).toMatch(/limit of 0 guest\(s\) for this event/);
-    expect(off.message).toMatch(/this would add 3 more/);
+    expect(off.message).toMatch(/bring the event to 3 guest\(s\), 3 over its limit of 0/);
   }, 60000);
 
   it('guest list export', async () => {
