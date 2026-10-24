@@ -1,10 +1,12 @@
-import { type EventStatus, type RsvpFieldType } from '@prisma/client';
+import { type EventStatus } from '@prisma/client';
 import crypto from 'crypto';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { inviteRepository } from '../invite/invite.repository.js';
 import { ticketPurchaseService, type ReservedPurchase } from '../ticket-purchase/ticket-purchase.service.js';
 import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
+import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
+import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape } from './rsvp-answers.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
@@ -12,10 +14,7 @@ import {
   normalizeEmail,
   assertValidEmail,
   normalizePhoneToE164,
-  isValidEmail,
-  isInternationalPhoneNumber,
   CONTACT_ERROR_CODES,
-  PHONE_FORMAT_MESSAGE,
   GUEST_EMAIL_REQUIRED_MESSAGE,
   CONTACT_EMAIL_UNAVAILABLE_MESSAGE,
   isGuestEmailUniqueViolation,
@@ -64,9 +63,9 @@ const assertEventAcceptsRsvp = (effectiveStatus: EventStatus): void => {
 // rsvpDeadline is independent of Event.status (Batch A Task 1) — an event
 // can be perfectly PUBLISHED and still have RSVP submission closed. Only
 // guest self-service is affected; organiser guest management in
-// guest.service.ts never checks this.
-const isRsvpDeadlinePassed = (rsvpDeadline: Date | null): boolean =>
-  !!rsvpDeadline && rsvpDeadline < new Date();
+// guest.service.ts never checks this. A date-only deadline closes at the
+// end of its day (event-rsvp-deadline.util.ts).
+const isRsvpDeadlinePassed = (rsvpDeadline: Date | null): boolean => hasDeadlinePassed(rsvpDeadline);
 
 // 410 Gone, not 403 — the ability to RSVP genuinely existed and is now
 // permanently gone as of a known point in time; that's precisely what
@@ -105,12 +104,6 @@ const isNonEmptyString = (value: unknown): value is string => typeof value === '
 
 const isPositiveInteger = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value > 0;
-
-const isValidRsvpResponseShape = (value: unknown): value is { rsvpFieldId: string; value: string } =>
-  typeof value === 'object' &&
-  value !== null &&
-  isNonEmptyString((value as Record<string, unknown>)['rsvpFieldId']) &&
-  typeof (value as Record<string, unknown>)['value'] === 'string';
 
 // No domain concept of "party size" exists yet — an Invite is 1:1 with a
 // guest, and ticketing has no payment integration to derive a real limit
@@ -231,27 +224,6 @@ const asUnprocessable = <T>(fn: () => T): T => {
   } catch (err) {
     if (err instanceof HttpError && err.statusCode === 400) throw new HttpError(422, err.message, err.code);
     throw err;
-  }
-};
-
-// A plain decimal number, as a guest types one: "12", "-3", "2.5". Not
-// Number()'s looser idea of a number ("0x1f", "1e3", "Infinity").
-const PLAIN_NUMBER = /^[+-]?(\d+(\.\d+)?|\.\d+)$/;
-
-// The message for an answer that isn't its question's type, or null.
-// Only EMAIL, PHONE and NUMBER have a format; every other type takes any text.
-const customAnswerProblem = (fieldType: RsvpFieldType, label: string, value: string): string | null => {
-  const answer = typeof value === 'string' ? value.trim() : '';
-  if (!answer) return null;
-  switch (fieldType) {
-    case 'EMAIL':
-      return isValidEmail(answer) ? null : `Enter an email address like name@example.com for '${label}'.`;
-    case 'PHONE':
-      return isInternationalPhoneNumber(answer) ? null : `${PHONE_FORMAT_MESSAGE} for '${label}'.`;
-    case 'NUMBER':
-      return PLAIN_NUMBER.test(answer) ? null : `Enter a number for '${label}'.`;
-    default:
-      return null;
   }
 };
 
@@ -595,33 +567,9 @@ export const rsvpService = {
         throw new HttpError(422, "Please tell us your name so the organiser knows who's coming.");
       }
 
-      // Custom questions the organiser marked required must be answered
-      // when attending — the same rule the RSVP form applies client-side
-      // (a decline needs no answers: nothing to cater for). Previously only
-      // the frontend enforced it, so a direct call could skip them.
-      if (data.attending) {
-        const answered = new Set(
-          (data.rsvpResponses ?? []).filter((r) => r.value.trim().length > 0).map((r) => r.rsvpFieldId)
-        );
-        const unanswered = invite.event.rsvpFields.filter((f) => f.isRequired && !answered.has(f.id));
-        if (unanswered.length > 0) {
-          throw new HttpError(
-            422,
-            `Please answer ${unanswered.map((f) => `'${f.label}'`).join(', ')}. The organiser needs ${unanswered.length === 1 ? 'this' : 'these'} to plan for you.`
-          );
-        }
-      }
-
-      // An answer to a typed question must be that type: EMAIL an email
-      // address (guest import's pattern), PHONE an international number,
-      // NUMBER a number. Checked attending or not, since answers are stored
-      // either way; a blank answer is no answer, and required-ness is the
-      // check above. Unknown field ids get their own 400 further down.
-      for (const response of data.rsvpResponses ?? []) {
-        const field = invite.event.rsvpFields.find((f) => f.id === response.rsvpFieldId);
-        const message = field ? customAnswerProblem(field.fieldType, field.label, response.value) : null;
-        if (message) throw new HttpError(422, message);
-      }
+      // Required questions (when attending), then each answer's type;
+      // unknown field ids are checked further down (rsvp-answers.util.ts).
+      assertAnswersValid(invite.event.rsvpFields, data.rsvpResponses ?? [], data.attending);
 
       // A self-registered guest on an event with a registration cap can't
       // take more seats than are left: someone who registered alone and
@@ -835,25 +783,15 @@ export const rsvpService = {
       const rsvpResponses = [];
       const submittedResponses = data.rsvpResponses ?? [];
       if (submittedResponses.length > 0) {
-        const validFieldIds = new Set(invite.event.rsvpFields.map((f) => f.id));
-
-        for (const response of submittedResponses) {
-          if (!validFieldIds.has(response.rsvpFieldId)) {
-            // 400 — same reasoning as the day-id check above: a well-shaped
-            // but non-existent/wrong-event rsvpFieldId is a malformed
-            // submission (stale page or tampered request), not something to
-            // let fall through to a foreign-key violation at write time.
-            throw new HttpError(400, "One of your answers isn't part of this invitation. Please refresh the page and try again.");
-          }
-        }
+        assertAnswersKnown(
+          invite.event.rsvpFields,
+          submittedResponses,
+          "One of your answers isn't part of this invitation. Please refresh the page and try again."
+        );
 
         // Batched, no read-back — same reasoning as the attendance
         // sections above.
-        const responseRows = submittedResponses.map((response) => ({
-          inviteId: invite.id,
-          rsvpFieldId: response.rsvpFieldId,
-          value: response.value,
-        }));
+        const responseRows = answerRows(invite.id, submittedResponses);
         await tx.rsvpResponse.createMany({ data: responseRows });
         rsvpResponses.push(...responseRows);
       }

@@ -1,6 +1,7 @@
 import { type DeliveryMethod, type InviteStatus } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
+import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
 
 // ─────────────────────────────────────────
 //  REMINDER RULES
@@ -83,13 +84,14 @@ export const classifyGuestForReminder = (invites: ReminderInvite[], now: Date): 
 };
 
 // Reminding after the RSVP deadline tells guests to respond by a date that
-// has gone — and the RSVP page would refuse them anyway (410). Same strict
-// comparison as rsvp.service.ts's isRsvpDeadlinePassed, so "the reminder
-// refuses" and "the guest is refused" flip at exactly the same instant.
+// has gone — and the RSVP page would refuse them anyway (410). Same
+// hasDeadlinePassed as rsvp.service.ts's isRsvpDeadlinePassed, so "the
+// reminder refuses" and "the guest is refused" flip at exactly the same
+// instant (a date-only deadline: the end of its day).
 // 409 like the other event-state gates; the organiser CAN fix it (extend
 // the deadline), which the message says.
 export const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null, now: Date = new Date()): void => {
-  if (rsvpDeadline && rsvpDeadline < now) {
+  if (rsvpDeadline && hasDeadlinePassed(rsvpDeadline, now)) {
     throw new HttpError(
       409,
       `The RSVP deadline for this event passed on ${formatGuestDate(rsvpDeadline)}, so guests can no longer respond and a ` +

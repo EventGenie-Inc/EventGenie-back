@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
+import { answerRows, type RsvpAnswer } from '../rsvp/rsvp-answers.util.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -34,6 +35,8 @@ export interface CreateRegistrantInput {
   // The days they said they'll attend.
   attendingDayIds: string[];
   plusOneNames: string[];
+  // Answers to the event's questions, already checked (rsvp-answers.util.ts).
+  answers: RsvpAnswer[];
 }
 
 const db = (tx?: Tx) => tx ?? prisma;
@@ -107,8 +110,9 @@ export const eventPublicRepository = {
   // The guest, their accepted invite (with the days it offers and the days
   // they attend), and any plus-ones (each an accepted Guest+Invite pair
   // attending the same days, exactly as rsvp.service.ts's submit() creates
-  // them, so check-in and the guest list need nothing new). Batched with
-  // pre-generated ids: five writes whatever the party size.
+  // them, so check-in and the guest list need nothing new), and their
+  // answers. Batched with pre-generated ids: at most six writes whatever the
+  // party size.
   createRegistrant: async (tx: Tx, eventId: string, data: CreateRegistrantInput, now: Date) => {
     const guestId = crypto.randomUUID();
     const inviteId = crypto.randomUUID();
@@ -181,6 +185,12 @@ export const eventPublicRepository = {
         data.attendingDayIds.map((eventDayId) => ({ inviteId: id, eventDayId }))
       ),
     });
+
+    // On the registrant's own invite, as RSVP submit stores them, so the
+    // guest details and the export show them like any RSVP's.
+    if (data.answers.length > 0) {
+      await tx.rsvpResponse.createMany({ data: answerRows(inviteId, data.answers) });
+    }
 
     return { guestId, invite: { id: inviteId, token, deliveredAt: null } };
   },

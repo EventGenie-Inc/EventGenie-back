@@ -20,7 +20,7 @@ import {
   assertProgramVisibilityFlag,
 } from '../program-item/program-item-validation.util.js';
 import { assertValidHostName } from '../event/event-host-name.util.js';
-import { assertValidRsvpDeadline } from '../event/event-rsvp-deadline.util.js';
+import { assertValidRsvpDeadline, parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
@@ -86,7 +86,7 @@ export const eventDraftService = {
     const capacity = p.capacity !== undefined && p.capacity !== null ? Number(p.capacity) : undefined;
     assertValidCapacity(capacity);
 
-    const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseClientDateTime(p.rsvpDeadline as string) : undefined;
+    const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseDeadline(p.rsvpDeadline as string) : undefined;
     assertValidRsvpDeadline(rsvpDeadline ?? null, days, { rejectPast: true });
 
     // Same size-limit + cleanup-of-the-already-uploaded-file treatment as

@@ -25,24 +25,29 @@ describe('GET /api/public-events/:shareToken', () => {
         capacity: 120,
       },
     });
+    await prisma.rsvpField.create({
+      data: { eventId: ev.eventId, label: 'Dietary needs', fieldType: 'TEXT', order: 0, createdBy: ev.organiser.id, updatedBy: ev.organiser.id },
+    });
     const res = await view(ev.shareToken);
     expect(res.status).toBe(200);
     expect(Object.keys(res.body)).toEqual(['status', 'data']);
 
     const data = res.body.data;
-    expect(Object.keys(data).sort()).toEqual(['coverImageUrl', 'days', 'description', 'hostName', 'name', 'registration']);
+    expect(Object.keys(data).sort()).toEqual(['coverImageUrl', 'days', 'description', 'hostName', 'name', 'registration', 'rsvpFields']);
     expect(Object.keys(data.registration).sort()).toEqual(
-      ['allowedEmailDomains', 'closesAt', 'isOpen', 'message', 'plusOnesAllowed', 'reason'].sort()
+      ['allowedEmailDomains', 'closesAt', 'code', 'isOpen', 'message', 'plusOnesAllowed', 'reason'].sort()
     );
     for (const day of data.days) {
       expect(Object.keys(day).sort()).toEqual(
         ['address', 'date', 'endTime', 'id', 'label', 'location', 'openForRegistration', 'startTime'].sort()
       );
     }
+    expect(data.rsvpFields).toHaveLength(1);
+    expect(Object.keys(data.rsvpFields[0]).sort()).toEqual(['fieldType', 'id', 'isRequired', 'label', 'options']);
     expect(data).toMatchObject({
       hostName: 'Acme HR',
       description: 'Drinks and dinner',
-      registration: { isOpen: true, reason: null, message: null, closesAt: null, plusOnesAllowed: 1, allowedEmailDomains: ['company.co.za'] },
+      registration: { isOpen: true, reason: null, code: null, message: null, closesAt: null, plusOnesAllowed: 1, allowedEmailDomains: ['company.co.za'] },
     });
     expect(data.days.map((d: { label: string }) => d.label)).toEqual(['Day 1', 'Day 2']);
     expect(data.days[0]).toMatchObject({ location: 'Test Venue', address: '1 Test Road, Cape Town', openForRegistration: true });

@@ -1,3 +1,5 @@
+import { type RsvpFieldType } from '@prisma/client';
+
 // Public self-registration — everything arrives from an unauthenticated
 // POST body, so every field is checked at runtime (event-public.service.ts's
 // parseRegistration) before it is trusted to be the type declared here.
@@ -13,6 +15,9 @@ export interface RegisterGuestDto {
   // Up to the organiser's allowance for registrants
   // (Event.registrationPlusOnesAllowed).
   plusOneNames?: unknown;
+  // Answers to the event's questions, exactly RSVP submit's rsvpResponses:
+  // [{ rsvpFieldId, value }], ids from the view's rsvpFields.
+  rsvpResponses?: unknown;
 }
 
 // Why registration isn't open. One code per state a registration page
@@ -22,20 +27,35 @@ export interface RegisterGuestDto {
 // which a registrant is never told about as such).
 export type RegistrationClosedReason = 'CANCELLED' | 'CLOSED' | 'FULL';
 
+// Exactly why, one per cause, so a screen can say the true reason; `reason`
+// above is the coarser state the page's layout follows. NOT_PUBLISHED is the
+// only "not open yet": registration has never opened.
+export type RegistrationClosedCode =
+  | 'EVENT_CANCELLED' // reason CANCELLED
+  | 'EVENT_FINISHED' // CLOSED: the event's last day has ended
+  | 'NOT_PUBLISHED' // CLOSED: a draft
+  | 'CLOSING_DATE_PASSED' // CLOSED: the organiser's own closing date
+  | 'RSVP_DEADLINE_PASSED' // CLOSED: no earlier closing date; the RSVP deadline
+  | 'NO_DAYS_OPEN' // CLOSED: every day is closed to registration
+  | 'FULL'; // FULL: the cap, the plan's guest limit or the hard ceiling
+
 export interface RegistrationState {
   isOpen: boolean;
   reason: RegistrationClosedReason | null;
+  code: RegistrationClosedCode | null;
   // Guest-facing words for `reason`; null while open.
   message: string | null;
   // When registration closes: the organiser's closing date or the RSVP
-  // deadline, whichever comes first. null = no closing date.
+  // deadline, whichever comes first (a date-only one: the end of that day,
+  // event-rsvp-deadline.util.ts). null = no closing date.
   closesAt: Date | null;
 }
 
 // GET /api/public-events/:shareToken — exactly what the registration page
 // shows, built by hand in toPublicView. Nothing else about the event (no
-// ids beyond each day's, which the form sends back as dayIds; no tenant,
-// status, capacity, counts, share token or organiser) is ever in it.
+// ids beyond each day's and each question's, which the form sends back as
+// dayIds and rsvpFieldIds; no tenant, status, capacity, counts, share token
+// or organiser) is ever in it.
 export interface PublicEventView {
   name: string;
   hostName: string | null;
@@ -50,6 +70,15 @@ export interface PublicEventView {
     location: string | null;
     address: string | null;
     openForRegistration: boolean;
+  }[];
+  // The event's questions, as the RSVP form receives them (rsvp.service.ts's
+  // invitation view): the form sends answers back by id.
+  rsvpFields: {
+    id: string;
+    label: string;
+    fieldType: RsvpFieldType;
+    isRequired: boolean;
+    options: string | null;
   }[];
   registration: RegistrationState & {
     // What the form needs to mirror the server's own checks.

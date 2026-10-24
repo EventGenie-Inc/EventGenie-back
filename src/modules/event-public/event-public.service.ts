@@ -14,6 +14,12 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventPublicRepository, type RegistrationSeats } from './event-public.repository.js';
 import {
+  assertAnswersValid,
+  assertAnswersKnown,
+  isValidRsvpResponseShape,
+  type RsvpAnswer,
+} from '../rsvp/rsvp-answers.util.js';
+import {
   REGISTRATION_ERROR_CODES,
   resolveRegistrationState,
   assertRegistrationOpen,
@@ -46,6 +52,7 @@ type ShareTokenEvent = NonNullable<Awaited<ReturnType<typeof eventRepository.fin
 
 const INVALID_LINK_MESSAGE = "This registration link isn't valid. Check the link, or ask the organiser for a new one.";
 const MALFORMED_MESSAGE = 'Something went wrong with your registration. Please refresh the page and try again.';
+const UNKNOWN_QUESTION_MESSAGE = "One of your answers isn't for this event's questions. Please refresh the page and try again.";
 const MAX_NAME_LENGTH = 100;
 const NO_SEATS: RegistrationSeats = { primaryGuests: 0, registeredSeats: 0, totalGuests: 0 };
 
@@ -85,9 +92,18 @@ const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicE
     address: d.address,
     openForRegistration: d.openForRegistration,
   })),
+  // Live questions in order (findByShareToken), the RSVP form's projection.
+  rsvpFields: event.rsvpFields.map((f) => ({
+    id: f.id,
+    label: f.label,
+    fieldType: f.fieldType,
+    isRequired: f.isRequired,
+    options: f.options,
+  })),
   registration: {
     isOpen: state.isOpen,
     reason: state.reason,
+    code: state.code,
     message: state.message,
     closesAt: state.closesAt,
     plusOnesAllowed: event.registrationPlusOnesAllowed,
@@ -110,6 +126,7 @@ interface ParsedRegistration {
   phoneNumber: string | null;
   dayIds: string[] | null;
   plusOneNames: string[];
+  answers: RsvpAnswer[];
 }
 
 const isBlank = (value: unknown): boolean =>
@@ -190,7 +207,17 @@ const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
     plusOneNames.forEach((n) => assertNameLength(n, "A plus-one's name", REGISTRATION_ERROR_CODES.PLUS_ONE_NAME_TOO_LONG));
   }
 
-  return { firstName, surname, email, phoneNumber, dayIds, plusOneNames };
+  // RSVP submit's shape exactly; what they answer is checked against the
+  // event's questions once it is loaded.
+  let answers: RsvpAnswer[] = [];
+  if (data.rsvpResponses !== undefined && data.rsvpResponses !== null) {
+    if (!Array.isArray(data.rsvpResponses) || !data.rsvpResponses.every(isValidRsvpResponseShape)) {
+      throw new HttpError(400, MALFORMED_MESSAGE);
+    }
+    answers = data.rsvpResponses;
+  }
+
+  return { firstName, surname, email, phoneNumber, dayIds, plusOneNames, answers };
 };
 
 // ─────────────────────────────────────────
@@ -294,6 +321,11 @@ export const eventPublicService = {
       );
     }
 
+    // The event's questions, refused exactly as at RSVP (same messages and
+    // codes; a registrant is attending, so required ones must be answered).
+    assertAnswersValid(event.rsvpFields, input.answers, true);
+    assertAnswersKnown(event.rsvpFields, input.answers, UNKNOWN_QUESTION_MESSAGE);
+
     const { limit } = await resolveGuestLimit(event);
 
     // Counted and written under the event's row lock, so two registrations
@@ -330,6 +362,7 @@ export const eventPublicService = {
           invitedDayIds: openDayIds,
           attendingDayIds,
           plusOneNames: input.plusOneNames,
+          answers: input.answers,
         },
         new Date()
       );
