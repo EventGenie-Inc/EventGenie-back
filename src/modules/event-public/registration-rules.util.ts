@@ -1,7 +1,8 @@
 import { type EventStatus } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
-import { type RegistrationClosedReason, type RegistrationState } from './event-public.types.js';
+import { type RegistrationClosedCode, type RegistrationClosedReason, type RegistrationState } from './event-public.types.js';
+import { deadlineEnd } from '../event/event-rsvp-deadline.util.js';
 import { type RegistrationSeats } from './event-public.repository.js';
 import { MAX_GUESTS_PER_EVENT, exceedsGuestCeiling } from '../guest/guest-ceiling.util.js';
 
@@ -66,45 +67,58 @@ export interface RegistrationRulesEvent {
   eventDays: { openForRegistration: boolean }[]; // live days only
 }
 
-// The organiser's closing date or the RSVP deadline, whichever is first:
+// The organiser's closing date or the RSVP deadline, whichever ends first
+// (a date-only one at the end of its day, event-rsvp-deadline.util.ts):
 // registration never stays open past the RSVP deadline, since a registrant
-// becomes a guest who can only change their answer until then.
-export const effectiveClosesAt = (event: { rsvpDeadline: Date | null; registrationClosesAt: Date | null }): Date | null => {
-  const dates = [event.registrationClosesAt, event.rsvpDeadline].filter((d): d is Date => d !== null);
-  if (dates.length === 0) return null;
-  return dates.reduce((earliest, d) => (d < earliest ? d : earliest));
+// becomes a guest who can only change their answer until then. `byDeadline`
+// says which one it is; on the same instant, the organiser's own date.
+const effectiveClosing = (event: {
+  rsvpDeadline: Date | null;
+  registrationClosesAt: Date | null;
+}): { closesAt: Date; byDeadline: boolean } | null => {
+  const closing = event.registrationClosesAt ? deadlineEnd(event.registrationClosesAt) : null;
+  const deadline = event.rsvpDeadline ? deadlineEnd(event.rsvpDeadline) : null;
+  if (deadline && (!closing || deadline < closing)) return { closesAt: deadline, byDeadline: true };
+  return closing ? { closesAt: closing, byDeadline: false } : null;
 };
 
-// Is anyone else at all able to register right now. `seats` and
-// `guestLimit` (the plan's, null = unlimited) are only read for FULL.
+// Is anyone else at all able to register right now, and if not, exactly
+// why (`code`). `seats` and `guestLimit` (the plan's, null = unlimited) are
+// only read for FULL.
 export const resolveRegistrationState = (
   event: RegistrationRulesEvent,
   seats: RegistrationSeats,
   guestLimit: number | null,
   now: Date = new Date()
 ): RegistrationState => {
-  const closesAt = effectiveClosesAt(event);
-  const closed = (reason: RegistrationClosedReason, message: string): RegistrationState => ({
+  const closing = effectiveClosing(event);
+  const closesAt = closing?.closesAt ?? null;
+  const closed = (reason: RegistrationClosedReason, code: RegistrationClosedCode, message: string): RegistrationState => ({
     isOpen: false,
     reason,
+    code,
     message,
     closesAt,
   });
 
-  if (event.status === 'CANCELLED') return closed('CANCELLED', 'This event has been cancelled.');
-  if (event.status === 'COMPLETED') return closed('CLOSED', 'This event has already taken place.');
-  // Defensive: a share link is only ever minted for a published event,
-  // and publishing has no reversal.
-  if (event.status !== 'PUBLISHED') return closed('CLOSED', 'Registration for this event is not open yet.');
-  if (closesAt && closesAt <= now) {
-    return closed('CLOSED', `Registration for this event closed on ${formatGuestDate(closesAt)}.`);
+  if (event.status === 'CANCELLED') return closed('CANCELLED', 'EVENT_CANCELLED', 'This event has been cancelled.');
+  if (event.status === 'COMPLETED') return closed('CLOSED', 'EVENT_FINISHED', 'This event has already taken place.');
+  // A draft: the only state where registration has never opened. A share
+  // link is only ever minted for a published event, and publishing has no
+  // reversal, so only the organiser's settings screen sees this.
+  if (event.status !== 'PUBLISHED') return closed('CLOSED', 'NOT_PUBLISHED', 'Registration for this event is not open yet.');
+  if (closing && closing.closesAt < now) {
+    const date = formatGuestDate(closing.closesAt);
+    return closing.byDeadline
+      ? closed('CLOSED', 'RSVP_DEADLINE_PASSED', `Replies for this event closed on ${date}, so registration is closed.`)
+      : closed('CLOSED', 'CLOSING_DATE_PASSED', `Registration for this event closed on ${date}.`);
   }
   if (!event.eventDays.some((d) => d.openForRegistration)) {
-    return closed('CLOSED', 'Registration for this event is not open.');
+    return closed('CLOSED', 'NO_DAYS_OPEN', "Registration isn't open for any day of this event.");
   }
-  if (isFull(event, seats, guestLimit)) return closed('FULL', REGISTRATION_FULL_MESSAGE);
+  if (isFull(event, seats, guestLimit)) return closed('FULL', 'FULL', REGISTRATION_FULL_MESSAGE);
 
-  return { isOpen: true, reason: null, message: null, closesAt };
+  return { isOpen: true, reason: null, code: null, message: null, closesAt };
 };
 
 // The organiser's cap, the plan's guest limit, or the hard guest ceiling

@@ -10,7 +10,7 @@ import {
 } from '../event-public/registration-rules.util.js';
 import { isValidPlusOnesAllowed, MAX_PLUS_ONES_ALLOWED } from '../guest/guest-validation.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { parseDeadline, deadlineEnd } from '../event/event-rsvp-deadline.util.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { registrationSettingsRepository, type RegistrationSettingsWrite } from './registration-settings.repository.js';
 import { type UpdateRegistrationSettingsDto, type RegistrationSettingsView } from './registration-settings.types.js';
@@ -140,13 +140,13 @@ export const registrationSettingsService = {
       if (data.closesAt === null || data.closesAt === '') {
         write.registrationClosesAt = null;
       } else {
-        const closesAt = typeof data.closesAt === 'string' ? parseClientDateTime(data.closesAt) : null;
+        const closesAt = typeof data.closesAt === 'string' ? parseDeadline(data.closesAt) : null;
         if (!closesAt || Number.isNaN(closesAt.getTime())) {
           throw new HttpError(422, 'Enter a valid closing date for registration.', CODES.CLOSES_AT_INVALID);
         }
         // A registrant becomes a guest who can change their answer only
         // until the RSVP deadline, so registration can't outlast it.
-        if (event.rsvpDeadline && closesAt > event.rsvpDeadline) {
+        if (event.rsvpDeadline && deadlineEnd(closesAt) > deadlineEnd(event.rsvpDeadline)) {
           throw new HttpError(
             422,
             `Registration can't close after the RSVP deadline (${formatGuestDate(event.rsvpDeadline)}). ` +

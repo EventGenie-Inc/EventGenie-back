@@ -3,7 +3,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type EventStatus, type Prisma } from '@prisma/client';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { withPlainCoordinates } from './event-coordinates.util.js';
-import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { parseDeadline } from './event-rsvp-deadline.util.js';
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 
 // A blank host name means "no host line" — stored as null, never "", the
@@ -146,7 +146,13 @@ export const eventRepository = {
       // eventPass included alongside eventDays — event-public.service.ts's
       // register() calls assertGuestsCreatable, which is event-scoped
       // (Event Pass batch) and needs both to resolve entitlement.
-      include: { eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } }, eventPass: true },
+      // rsvpFields: the registration form asks the event's questions, in
+      // the RSVP form's order (invite.repository.ts's findByToken).
+      include: {
+        eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } },
+        eventPass: true,
+        rsvpFields: { where: { isArchived: false }, orderBy: { order: 'asc' } },
+      },
     });
     return event ? withPlainCoordinates(event) : null;
   },
@@ -200,7 +206,7 @@ export const eventRepository = {
           visibility: data.visibility ?? 'PRIVATE',
           ticketing: data.ticketing ?? 'FREE',
           hostName: normalizeHostName(data.hostName),
-          rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null,
+          rsvpDeadline: data.rsvpDeadline ? parseDeadline(data.rsvpDeadline) : null,
           capacity: data.capacity ?? null,
           ticketsRefundable: data.ticketsRefundable ?? false,
           isArchived: false,
@@ -241,7 +247,7 @@ export const eventRepository = {
         ...(data.visibility !== undefined && { visibility: data.visibility }),
         ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
         ...(data.hostName !== undefined && { hostName: normalizeHostName(data.hostName) }),
-        ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null }),
+        ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? parseDeadline(data.rsvpDeadline) : null }),
         ...(data.capacity !== undefined && { capacity: data.capacity ?? null }),
         ...(data.ticketsRefundable !== undefined && { ticketsRefundable: data.ticketsRefundable }),
         updatedBy: userId,

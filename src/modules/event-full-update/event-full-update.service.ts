@@ -9,6 +9,7 @@ import {
   destroyReplacedCover,
 } from '../event/event.service.js';
 import { normalizeHostName } from '../event/event.repository.js';
+import { parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { type UpdateEventDto } from '../event/event.types.js';
 import { type EventDayWrite, type EventDayPatch } from '../event-day/event-day.repository.js';
 import {
@@ -124,7 +125,7 @@ const eventFieldsChanged = (event: LoadedEvent, d: UpdateEventDto): boolean =>
   (d.visibility !== undefined && d.visibility !== event.visibility) ||
   (d.ticketing !== undefined && d.ticketing !== event.ticketing) ||
   (d.hostName !== undefined && normalizeHostName(d.hostName) !== event.hostName) ||
-  (d.rsvpDeadline !== undefined && !sameInstant(d.rsvpDeadline ? parseClientDateTime(d.rsvpDeadline) : null, event.rsvpDeadline)) ||
+  (d.rsvpDeadline !== undefined && !sameInstant(d.rsvpDeadline ? parseDeadline(d.rsvpDeadline) : null, event.rsvpDeadline)) ||
   (d.capacity !== undefined && (d.capacity ?? null) !== event.capacity) ||
   (d.ticketsRefundable !== undefined && d.ticketsRefundable !== event.ticketsRefundable);
 

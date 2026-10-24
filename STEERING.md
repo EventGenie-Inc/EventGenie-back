@@ -751,7 +751,22 @@ the organiser allows each registrant, vs PARTY_TOO_LARGE),
 RSVP. Only a malformed body (a wrong type) is an uncoded 400. A phone
 another guest already has is never a refusal. A self-registered
 guest whose RSVP edit asks for more seats than the cap has left gets 409
-`REGISTRATION_FULL` too.
+`REGISTRATION_FULL` too. `REGISTRATION_CLOSED` covers several causes; the
+view's and the settings' `registration.code` says which (see "Public events
+and self-registration").
+
+Answers to the event's own questions, at RSVP submit and at registration
+alike (`rsvp-answers.util.ts`, one helper for both): `RSVP_ANSWER_REQUIRED`
+(422, a required question left blank by someone attending: "Please answer
+'Dietary needs'. The organiser needs this to plan for you."),
+`RSVP_ANSWER_INVALID` (422, not its question's type: EMAIL, PHONE, NUMBER,
+or a DROPDOWN answer that isn't one of its options, "Choose one of the
+options for 'T-shirt size'."; a blank answer is no answer),
+`RSVP_ANSWER_DUPLICATE` (422, the same question answered twice in one
+submission; checked first, it was a 500 from the unique
+`(inviteId, rsvpFieldId)` index) and `RSVP_ANSWER_UNKNOWN_FIELD` (400, a
+question this event doesn't have, archived ones included). Until 2026-10
+all of these were uncoded at RSVP.
 
 Registration settings (`PUT /api/events/:eventId/registration-settings`):
 every 422 carries a code, one per refusal, named for its field
@@ -1462,17 +1477,37 @@ their own invitation.
   haven't declined plus their plus-ones, and can't be set above the plan's
   guest limit (422); registration also stops at that limit itself. The
   **closing date** defaults to the RSVP deadline and can't be after it
-  (422); registration closes at whichever comes first, because a
-  registrant can only change their answer until the deadline.
+  (422; the deadline's own day is fine); registration closes at whichever
+  comes first, because a registrant can only change their answer until the
+  deadline. Both are dates: a date-only one closes at the end of that day
+  (see "Dates").
 - **The view** (`GET /api/public-events/:shareToken`) is exactly what the
   registration page shows, as an explicit allowlist: name, host,
   description, cover, the live days with their venue and whether each is
-  open, and `registration` (`isOpen`, `reason` CANCELLED/CLOSED/FULL with
-  its guest-facing `message`, `closesAt`, `plusOnesAllowed`,
-  `allowedEmailDomains`). Day ids are the only ids in it (the form sends
-  them back as `dayIds`). One rule decides open or not for the view,
+  open, the event's questions (`rsvpFields`: `id`, `label`, `fieldType`,
+  `isRequired`, `options`, live ones in order, exactly as the RSVP form
+  receives them), and `registration` (`isOpen`, `reason`
+  CANCELLED/CLOSED/FULL, `code`, its guest-facing `message`, `closesAt`,
+  `plusOnesAllowed`, `allowedEmailDomains`). Day and question ids are the
+  only ids in it (the form sends them back as `dayIds` and
+  `rsvpResponses[].rsvpFieldId`). One rule decides open or not for the view,
   registration and the organiser's settings: `resolveRegistrationState`
-  (`event-public/registration-rules.util.ts`).
+  (`event-public/registration-rules.util.ts`). `reason` is the state the
+  page lays out; `code` is the true cause, checked in this order:
+
+  | `code` | `reason` | Means | `message` |
+  |---|---|---|---|
+  | `EVENT_CANCELLED` | CANCELLED | the event was cancelled | "This event has been cancelled." |
+  | `EVENT_FINISHED` | CLOSED | its last day has ended | "This event has already taken place." |
+  | `NOT_PUBLISHED` | CLOSED | a draft: registration has never opened | "Registration for this event is not open yet." |
+  | `CLOSING_DATE_PASSED` | CLOSED | the organiser's closing date passed | "Registration for this event closed on 24 October 2026." |
+  | `RSVP_DEADLINE_PASSED` | CLOSED | no earlier closing date; the RSVP deadline passed | "Replies for this event closed on 24 October 2026, so registration is closed." |
+  | `NO_DAYS_OPEN` | CLOSED | every day is closed to registration | "Registration isn't open for any day of this event." |
+  | `FULL` | FULL | the cap, the plan's guest limit or the hard ceiling | the full message |
+
+  `null` while open. "Not open yet" is only ever a draft's. Registering
+  refuses with the same `message` and the `REGISTRATION_*` code of its
+  `reason` (see "Errors").
 - **Opening the link:** 600 views / 5 minutes per IP
   (`publicEventViewLimiter`, `PUBLIC_EVENT_VIEWS_PER_IP_PER_5_MIN`; it was
   60). Nobody has a credential before registering, so it is keyed by IP. A
@@ -1484,8 +1519,13 @@ their own invitation.
   "Guest-facing responses").
 - **Registering** (`POST /api/public-events/:shareToken/register`: name,
   email, optional phone, `dayIds` from the open days, default all, and
-  `plusOneNames` up to the allowance). Email is required and normalised
-  before every check. Success creates the guest (`Guest.selfRegisteredAt`
+  `plusOneNames` up to the allowance, and `rsvpResponses`, the answers to
+  the event's questions in RSVP submit's own shape). Email is required and
+  normalised before every check. Answers are checked and stored exactly as
+  at RSVP (`rsvp-answers.util.ts`, same messages and codes; a registrant is
+  attending, so required questions must be answered), on the registrant's
+  own invite, so the guest details and the export show them like any
+  RSVP's. Success creates the guest (`Guest.selfRegisteredAt`
   set) with an ACCEPTED invite offering every open day and attending the
   chosen ones, and each plus-one as an accepted Guest+Invite pair, exactly
   as RSVP creates them; then emails the personal link. **The invite token
@@ -2143,6 +2183,20 @@ whereas plain `new Date` reads it in the server's zone. The organiser picks
 calendar dates; UTC is the identity that prints back the date they picked.
 Events have no timezone of their own (see Known gaps).
 
+**"RSVP by 25 October" means until the end of 25 October.** The RSVP
+deadline and the registration closing date are dates
+(`event/event-rsvp-deadline.util.ts`). A date-only value (`2026-10-25`) is
+stored as the end of that day (`parseDeadline`), and every comparison reads
+a stored one through `deadlineEnd`/`hasDeadlinePassed`: one stored at UTC
+midnight (written date-only before 2026-10) or at 23:59:59 (the wizard's
+`toRsvpDeadlinePayload`) closes at 23:59:59.999 of its day; any other time
+is a deliberate instant, kept as given. RSVP submit, the guest page's
+`isRsvpDeadlinePassed`, reminders, registration closing, the settings'
+"not after the deadline" and "not in the past" at creation all use it. The
+deadline can be any day up to and including the event's last day, whatever
+time that day ends: a lunch ending at 14:00 can take replies "by" its own
+date. Never compare a deadline with `<` on the stored value.
+
 ### Terminology
 
 | Term | Applies to | Means |
@@ -2456,6 +2510,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   fewer delivery rows than the announcement's recipient count.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
+- **The frontend doesn't follow the 2026-10 deadline and registration
+  changes yet** (backend `hotfix/rsvp-deadline`). The wizard's own check
+  (`event-wizard.form.ts`'s `rsvpDeadlineProblem`) still refuses a deadline
+  on a last day that has an end time; the registration settings panel loads
+  its settings once, so after publishing from the control center it shows
+  "Closed" with the draft's "not open yet" message until reloaded; it and
+  the register page key on `reason` only, not `code`; the register page
+  doesn't show or send the event's questions (`rsvpFields`,
+  `rsvpResponses`); and `isRsvpDeadlinePassed` and the reminder check in
+  `event-display.util.ts`/`reminder.util.ts` compare the stored instant.
 - **Automated test coverage is thin.** The backend has a Vitest suite
   (`npm test`, `tests/`) on real Postgres in a separate
   `DATABASE_URL_TEST` database (never the shared dev/prod one — see
@@ -2723,6 +2787,29 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     office's ~450 requests from one IP never refused, then refused past
     500; the ~180-request burst on one link never refused, then refused
     past 300; and the per-email limit.
+  - **RSVP deadlines** (`tests/rsvp/rsvp-deadline-same-day.test.ts`): a
+    deadline on a one-day event's own date (the day ending 14:00) accepted
+    by update, the full update and materialize, the day after refused; a
+    date-only deadline stored as the end of its day, and today's not "in
+    the past" at create; a deadline of today stored as its midnight still
+    open to RSVP submit and the guest page, yesterday's closed; reminders
+    through the end of the deadline's day.
+  - **Registration status codes**
+    (`tests/public-events/registration-status-codes.test.ts`): each
+    `registration.code` with its message (NOT_PUBLISHED through the
+    organiser's settings), open with a deadline of today, and a closing date
+    on the deadline's own day in either form.
+  - **Questions at registration**
+    (`tests/public-events/registration-answers.test.ts`): the view lists
+    the live questions as RSVP does; answers stored on the registrant's
+    invite and shown by the guest details and the export; a missing
+    required answer (`RSVP_ANSWER_REQUIRED`, at RSVP too), an unknown or
+    archived or other event's field (`RSVP_ANSWER_UNKNOWN_FIELD`), a wrong
+    type (`RSVP_ANSWER_INVALID`) and a malformed list each refused, creating
+    no one; a DROPDOWN answer outside its options (`RSVP_ANSWER_INVALID`)
+    and the same question twice (`RSVP_ANSWER_DUPLICATE`, was a 500)
+    refused at registration and at RSVP alike; a repeat registration stores
+    no second answers.
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and

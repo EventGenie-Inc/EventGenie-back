@@ -6,14 +6,13 @@ import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
-import { assertValidRsvpDeadline } from './event-rsvp-deadline.util.js';
+import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { assertValidHostName } from './event-host-name.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
-import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
@@ -141,7 +140,7 @@ export const assertEventUpdateAllowed = async (
     // rejectPast: false — an organiser deliberately closing RSVPs early
     // by setting the deadline to "now" on a live event is legitimate;
     // only a past deadline at CREATION time is rejected (see create()).
-    assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, days, { rejectPast: false });
+    assertValidRsvpDeadline(data.rsvpDeadline ? parseDeadline(data.rsvpDeadline) : null, days, { rejectPast: false });
   }
 
   // Only a CHANGE to paid/public is refused while the feature is off.
@@ -294,7 +293,7 @@ export const eventService = {
     // No event days exist yet on this path (direct POST never creates
     // them — see event-day.router.ts), so there's nothing to compare the
     // deadline against beyond "not in the past".
-    assertValidRsvpDeadline(data.rsvpDeadline ? parseClientDateTime(data.rsvpDeadline) : null, [], { rejectPast: true });
+    assertValidRsvpDeadline(data.rsvpDeadline ? parseDeadline(data.rsvpDeadline) : null, [], { rejectPast: true });
     assertPaidTicketingAvailable(data.ticketing);
     assertPublicEventsAvailable(data.visibility);
     await assertEventCreatable(tenantId, {
