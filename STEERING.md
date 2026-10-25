@@ -760,13 +760,24 @@ alike (`rsvp-answers.util.ts`, one helper for both): `RSVP_ANSWER_REQUIRED`
 (422, a required question left blank by someone attending: "Please answer
 'Dietary needs'. The organiser needs this to plan for you."),
 `RSVP_ANSWER_INVALID` (422, not its question's type: EMAIL, PHONE, NUMBER,
-or a DROPDOWN answer that isn't one of its options, "Choose one of the
-options for 'T-shirt size'."; a blank answer is no answer),
+a DROPDOWN answer that isn't one of its options, "Choose one of the
+options for 'T-shirt size'.", or a CHECKBOX answer other than exactly
+"true" or "false", "Tick the box for 'Need parking', or leave it
+unticked."; a blank answer is no answer),
 `RSVP_ANSWER_DUPLICATE` (422, the same question answered twice in one
 submission; checked first, it was a 500 from the unique
 `(inviteId, rsvpFieldId)` index) and `RSVP_ANSWER_UNKNOWN_FIELD` (400, a
 question this event doesn't have, archived ones included). Until 2026-10
 all of these were uncoded at RSVP.
+
+An answer is stored exactly as sent and returned as stored (the guest page's
+`rsvpResponses`, the organiser's guest details, the export); the backend
+never fills one in. A CHECKBOX the form didn't send stores nothing and
+comes back as no answer; "false" is stored only when sent. Whether the
+form sends "false" for a box the guest never touched is the frontend's
+choice (`answersToSend`): until 2026-10 it sent nothing unless the box had
+been ticked and then cleared, so the same "no" was stored two ways (as
+"false", or as no answer at all).
 
 Registration settings (`PUT /api/events/:eventId/registration-settings`):
 every 422 carries a code, one per refusal, named for its field
@@ -852,6 +863,14 @@ registrant or an RSVP gets registration's own `REGISTRATION_FULL` /
 than 2,000 rows is 422 `GUEST_IMPORT_TOO_MANY_ROWS` and one over 5 MB is 413
 `GUEST_IMPORT_FILE_TOO_LARGE`; invitation and reminder emails past the
 event's daily allowance are 429 `EVENT_EMAIL_DAILY_LIMIT`.
+
+Guest import, a file that can't be read: 422 `GUEST_IMPORT_UNREADABLE_FILE`,
+"We couldn't read this file. Save it as .xlsx or .csv and try again." (a
+file named .xlsx that isn't a workbook, a damaged one, one exceljs still
+throws on, one that unpacks past 3 MB in any part or 4 MB in all, or a
+CSV the parser refuses), never a 500. Was a 500 for a
+workbook and an uncoded 400 with the parser's own words for a CSV. A file
+that is neither .xlsx nor .csv stays an uncoded 400.
 
 Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
 `MEMORY_HUB_NOTHING_TO_DOWNLOAD` (no approved items) and 429
@@ -1925,6 +1944,35 @@ each refusal carries a code (see "Machine-readable codes" under Errors).
   at most 5 MB (413 `GUEST_IMPORT_FILE_TOO_LARGE`). The import's write
   transaction allows 30 seconds: a full 2,000-row file took about 11 against
   the remote test database, past Prisma's 5-second default.
+  A workbook's comments and notes are dropped before exceljs loads it
+  (`guest-import.engine.ts`, `withoutComments`): exceljs 4.4.0 finds them
+  only at the path Excel itself writes, and any other valid layout (an
+  absolute Target, a comments part in a subfolder, a VML drawing by another
+  name, as other spreadsheet apps write) threw "Cannot read properties of
+  undefined (reading 'comments')", a 500. The import reads only the first
+  sheet's first five columns, so nothing it uses is lost. The workbook is
+  unpacked part by part with the bytes counted as they inflate (never the
+  sizes the file declares, which a crafted file can fake) and refused as
+  unreadable past 3 MB in any one part (`MAX_UNPACKED_PART_BYTES`) or
+  4 MB in all (`MAX_UNPACKED_WORKBOOK_BYTES`): a few KB uploaded can
+  unpack to gigabytes, and exceljs holds the whole workbook in memory. A
+  real 2,000-row list unpacks to about 0.6 MB, so the caps are 5 and 6.5
+  times a full import, and `MAX_IMPORT_ROWS` already caps the rows.
+  Measured 2026-10-25, reading alone in a fresh process: that list about
+  21 MB and 0.1 s; 2,000 rows with extra columns unpacking to 3.9 MB, just
+  under the total, about 75 MB and 0.35 s. The rest of the import doesn't
+  grow with columns it never reads. The template
+  therefore has no cell comments: its notes are on an "Instructions" sheet
+  after "Guests" (a notes row under the header would be imported as a
+  guest). Measured 2026-10-25 (`tests/perf/import-timing.test.ts`, each
+  case in a fresh process, remote test database): 300 rows about 6 s and
+  under 60 MB above the starting memory, .xlsx or .csv; 2,000 rows about
+  10 s (.xlsx, +113 MB) and 11 s (.csv, +139 MB). Reading the file is the
+  small part (2,000 rows of .xlsx: about 0.2 s and 21 MB; .csv: nothing
+  measurable); the rest is validating and writing. Against staging's
+  512 MB that is room for one import at a time; the server's own idle
+  memory on Render and several 2,000-row imports at once have not been
+  measured.
 - **Invitation and reminder emails: 2,000 per event in any rolling 24 hours**
   (`EVENT_EMAILS_PER_DAY`, `event-email-limit.util.ts`). A 300-guest event's
   invitations and a reminder round are 600; a 1,000-guest event still fits
@@ -2809,7 +2857,23 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     no one; a DROPDOWN answer outside its options (`RSVP_ANSWER_INVALID`)
     and the same question twice (`RSVP_ANSWER_DUPLICATE`, was a 500)
     refused at registration and at RSVP alike; a repeat registration stores
-    no second answers.
+    no second answers; a CHECKBOX answer other than "true" or "false"
+    refused at both, and a CHECKBOX answer not sent storing and returning
+    nothing.
+  - **Guest import, comments and unreadable files**
+    (`tests/guest/guest-import-unreadable.test.ts`): a real Excel workbook
+    with a note in the layout that crashed (`fixtures/guest-list-with-note.xlsx`,
+    absolute comment Targets) imports every guest, as do comments in a
+    subfolder and a renamed VML drawing, and Excel's own layout still does;
+    a non-workbook, a damaged workbook, a zip with no sheets and a broken
+    CSV are each 422 `GUEST_IMPORT_UNREADABLE_FILE` with nothing checked or
+    written; a small upload unpacking just past either cap and inside the
+    other (one part past 3 MB, or parts under it together past 4 MB) is the
+    same 422 with nothing written, while a real 2,000-row list unpacks well
+    under them and imports every guest; the template has no comments, its notes are on an Instructions
+    sheet after Guests, and it imports as-is. Time and memory for 300 and
+    2,000 rows: `tests/perf/import-timing.test.ts`, opt-in
+    (`MEASURE_IMPORT_TIMING=1`).
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
