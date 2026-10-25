@@ -128,8 +128,11 @@ describe('sms off — the guest import template', () => {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
     const sheet = workbook.getWorksheet('Guests')!;
-    const note = sheet.getCell('C1').note;
-    const noteText = typeof note === 'string' ? note : (note?.texts ?? []).map((t) => t.text).join('');
+    // The Contact column's note, on the Instructions sheet (no cell comments).
+    let noteText = '';
+    workbook.getWorksheet('Instructions')!.eachRow((row) => {
+      if (row.getCell(1).value === 'Contact') noteText = String(row.getCell(2).value);
+    });
     const contacts = [2, 3, 4].map((r) => String(sheet.getCell(`C${r}`).value ?? ''));
     return { noteText, contacts };
   };

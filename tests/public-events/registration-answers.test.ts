@@ -175,6 +175,59 @@ describe('registering with answers', () => {
     expect((await rsvp('S')).status).toBe(200);
   }, 90000);
 
+  // What's stored is exactly what was sent, and comes back as stored: a
+  // CHECKBOX answer not sent stores nothing and returns nothing; "false" is
+  // stored only when sent. Pages read anything but "true" as No (or show
+  // it raw), so only "true" or "false" is accepted.
+  it('a CHECKBOX answer is "true" or "false" only, at registration and at RSVP alike; an untouched box stores nothing', async () => {
+    const ev = await createPublicEvent();
+    const { dietary } = await addQuestions(ev);
+    const by = ev.organiser.id;
+    const parking = await prisma.rsvpField.create({
+      data: { eventId: ev.eventId, label: 'Need parking', fieldType: 'CHECKBOX', isRequired: false, order: 4, createdBy: by, updatedBy: by },
+    });
+    const expected = { message: "Tick the box for 'Need parking', or leave it unticked.", code: 'RSVP_ANSWER_INVALID' };
+    const answers = (value?: string) => [
+      { rsvpFieldId: dietary.id, value: 'None' },
+      ...(value === undefined ? [] : [{ rsvpFieldId: parking.id, value }]),
+    ];
+
+    const { invite } = await createTestGuestWithInvite(ev.eventId, ev.organiser.id, [ev.dayIds[0]!]);
+    const rsvp = (value?: string) =>
+      request(app).post('/api/rsvp/submit').send({ token: invite.token, attending: true, firstName: 'Lebo', attendingDayIds: [ev.dayIds[0]], rsvpResponses: answers(value) });
+
+    for (const value of ['yes', 'on', '1', 'True', 'FALSE', ' true']) {
+      const reg = await register(ev.shareToken, { rsvpResponses: answers(value) });
+      expect(reg.status, value).toBe(422);
+      expect(reg.body, value).toMatchObject(expected);
+      const refused = await rsvp(value);
+      expect(refused.status, value).toBe(422);
+      expect(refused.body, value).toMatchObject(expected);
+    }
+    expect(await registrantsOf(ev.eventId)).toHaveLength(0);
+    expect((await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).status).toBe('PENDING');
+
+    // Registration: stored as sent, "true", "false", or (untouched) not at all.
+    for (const value of ['true', 'false', undefined]) {
+      const email = freshEmail();
+      expect((await register(ev.shareToken, { email, rsvpResponses: answers(value) })).status, String(value)).toBe(201);
+      const registrant = (await registrantsOf(ev.eventId)).find((g) => g.email === email)!;
+      const stored = registrant.invites[0]!.rsvpResponses.find((r) => r.rsvpFieldId === parking.id);
+      expect(stored?.value, String(value)).toBe(value);
+    }
+
+    // RSVP: the same, and the guest's page gets back exactly what's stored.
+    const returned = async () =>
+      (await request(app).get(`/api/rsvp/validate/${invite.token}`)).body.data.rsvpResponses
+        .find((r: { rsvpFieldId: string }) => r.rsvpFieldId === parking.id)?.value;
+    expect((await rsvp(undefined)).status).toBe(200);
+    expect(await returned()).toBeUndefined();
+    expect((await rsvp('false')).status).toBe(200);
+    expect(await returned()).toBe('false');
+    expect((await rsvp('true')).status).toBe(200);
+    expect(await returned()).toBe('true');
+  }, 120000);
+
   it('the same question twice in one submission is a coded 422, never a 500, at registration and at RSVP', async () => {
     const ev = await createPublicEvent();
     const { dietary } = await addQuestions(ev);

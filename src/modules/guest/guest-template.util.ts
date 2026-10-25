@@ -59,19 +59,53 @@ export const buildImportTemplateWorkbook = async (
     row.font = { italic: true, color: { argb: 'FF808080' } };
   }
 
-  sheet.getCell('C1').note =
-    (emailOnly
-      ? "Enter one email address per guest. Every guest needs an email address: text messages aren't available yet. "
-      : 'Enter one email OR one phone number (e.g. +27 82 123 4567) per guest, not both. ') +
-    'First Name and Surname may be left blank; the guest can supply their name later when they RSVP.';
-
-  sheet.getCell('E1').note =
-    'Optional: leave blank for 0. The number of extra guests (plus-ones) this person may bring, ' +
-    'declared by name when they RSVP.';
+  // The notes go on their own sheet, never in cell comments: a comment
+  // re-saved by another spreadsheet app can come back in a layout exceljs
+  // can't load (guest-import.engine.ts strips them for that reason), and a
+  // notes row under the header would be imported as a guest. The import
+  // reads only the first sheet, so this one is never read.
+  const instructions = workbook.addWorksheet('Instructions');
+  instructions.columns = [
+    { header: 'Column', key: 'column', width: 20 },
+    { header: 'What to enter', key: 'note', width: 100 },
+  ];
+  instructions.getRow(1).font = { bold: true };
+  const columnNotes: { column: string; note: string }[] = [
+    {
+      column: 'First Name, Surname',
+      note: 'May be left blank; the guest can supply their name later when they RSVP.',
+    },
+    {
+      column: 'Contact',
+      note: emailOnly
+        ? "Enter one email address per guest. Every guest needs an email address: text messages aren't available yet."
+        : 'Enter one email OR one phone number (e.g. +27 82 123 4567) per guest, not both.',
+    },
+    {
+      column: 'Day',
+      note:
+        eventDays.length >= 2
+          ? "Must match one of this event's day labels exactly. See the \"Valid Days\" sheet."
+          : singleDayLabel
+            ? `This event has only one day ("${singleDayLabel}"), so you may leave this column blank.`
+            : '',
+    },
+    {
+      column: 'Plus-Ones Allowed',
+      note:
+        'Optional: leave blank for 0. The number of extra guests (plus-ones) this person may bring, ' +
+        'declared by name when they RSVP.',
+    },
+    {
+      column: '',
+      note: 'Fill in the "Guests" sheet only, replacing the grey example rows. Only that sheet is imported.',
+    },
+  ];
+  for (const n of columnNotes.filter((c) => c.note)) {
+    instructions.addRow(n).alignment = { wrapText: true, vertical: 'top' };
+  }
 
   if (eventDays.length >= 2) {
-    sheet.getCell('D1').note = "Must match one of this event's day labels exactly. See the \"Valid Days\" sheet.";
-
     const daysSheet = workbook.addWorksheet('Valid Days');
     daysSheet.columns = [
       { header: 'Day Label', key: 'label', width: 25 },
@@ -81,8 +115,6 @@ export const buildImportTemplateWorkbook = async (
     for (const day of eventDays) {
       daysSheet.addRow({ label: day.label, date: day.date.toISOString().slice(0, 10) });
     }
-  } else if (singleDayLabel) {
-    sheet.getCell('D1').note = `This event has only one day ("${singleDayLabel}"), so you may leave this column blank.`;
   }
 
   const arrayBuffer = await workbook.xlsx.writeBuffer();

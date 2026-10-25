@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { parse as parseCsvSync } from 'csv-parse/sync';
 import { type DeliveryMethod } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -28,6 +29,25 @@ import {
 export const MAX_IMPORT_ROWS = 2000;
 export const GUEST_IMPORT_TOO_MANY_ROWS = 'GUEST_IMPORT_TOO_MANY_ROWS';
 
+// A file named .xlsx or .csv that can't be read as one (422): not a real
+// workbook (an .xls or a web page renamed), a damaged one, or a CSV the
+// parser refuses. Was a 500 for a workbook exceljs threw on, and an
+// uncoded 400 with the parser's own words for a CSV.
+export const GUEST_IMPORT_UNREADABLE_FILE = 'GUEST_IMPORT_UNREADABLE_FILE';
+export const GUEST_IMPORT_UNREADABLE_FILE_MESSAGE = "We couldn't read this file. Save it as .xlsx or .csv and try again.";
+
+// How far an uploaded workbook may unpack, refused past either as
+// unreadable (GUEST_IMPORT_UNREADABLE_FILE). A real 2,000-row guest list
+// unpacks to about 0.6 MB and takes about 21 MB of memory to read; 3 MB
+// for any one part and 4 MB in all are 5 and 6.5 times that, and
+// MAX_IMPORT_ROWS already caps the rows. Measured 2026-10-25: 2,000 rows
+// with extra columns, unpacking to 3.9 MB, took about 75 MB to read (0.35 s);
+// the rest of the import doesn't grow with columns it never reads.
+export const MAX_UNPACKED_WORKBOOK_BYTES = 4 * 1024 * 1024;
+export const MAX_UNPACKED_PART_BYTES = 3 * 1024 * 1024;
+
+const unreadableFile = (): HttpError => new HttpError(422, GUEST_IMPORT_UNREADABLE_FILE_MESSAGE, GUEST_IMPORT_UNREADABLE_FILE);
+
 export interface ParsedImportRow {
   rowNumber: number; // the actual row the user sees in Excel (header = row 1)
   firstNameRaw: string;
@@ -56,14 +76,88 @@ const cellValueToString = (value: unknown): string => {
   return String(value).trim();
 };
 
+// Relationships to a sheet's comments and notes: legacy comments (what
+// Excel calls notes), the VML drawing that positions them, and Excel 365's
+// threaded comments.
+const COMMENT_RELATIONSHIP =
+  /<(?:\w+:)?Relationship\b[^>]*?\bType\s*=\s*["'][^"']*\/(?:comments|vmlDrawing|threadedComment)["'][^>]*?\/>/g;
+const COMMENT_PART = /^xl\/(?:comments[^/]*\.xml|comments\/.*|threadedComments\/.*|persons\/.*|drawings\/[^/]*\.vml)$/i;
+
+// The workbook without its comments and notes, which the import never
+// reads. exceljs (4.4.0) finds a sheet's comments by the exact path Excel
+// itself writes (Target="../comments1.xml", part xl/commentsN.xml); any
+// other valid layout (an absolute Target, a comments part in a subfolder,
+// a VML drawing by another name, as other spreadsheet apps write) is a
+// TypeError, "Cannot read properties of undefined (reading 'comments')",
+// thrown from load(). Dropping these parts before load() keeps the same
+// reader, and the same cell values, for every file that already imported.
+//
+// Unpacked part by part, counting the bytes as they inflate, never trusting
+// the sizes the file declares (a crafted file can lie about them), and
+// refused as unreadable past either cap: a few hundred KB uploaded can
+// unpack to gigabytes, and exceljs holds the whole workbook in memory.
+// loadAsync only reads the file's index, so nothing is unpacked before the
+// count starts, and the comment parts are never unpacked at all.
+const withoutComments = async (buffer: Buffer): Promise<Buffer> => {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    throw unreadableFile();
+  }
+  const out = new JSZip();
+  let total = 0;
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir || COMMENT_PART.test(entry.name)) continue;
+    const chunks: Buffer[] = [];
+    let size = 0;
+    await new Promise<void>((resolve, reject) => {
+      let refused = false;
+      const stream = entry.nodeStream('nodebuffer');
+      stream
+        .on('data', (chunk: Buffer) => {
+          if (refused) return;
+          size += chunk.length;
+          total += chunk.length;
+          if (size > MAX_UNPACKED_PART_BYTES || total > MAX_UNPACKED_WORKBOOK_BYTES) {
+            refused = true;
+            stream.pause();
+            reject(unreadableFile());
+            return;
+          }
+          chunks.push(chunk);
+        })
+        .on('error', () => reject(unreadableFile()))
+        .on('end', () => resolve());
+    });
+    const content = Buffer.concat(chunks);
+    out.file(
+      entry.name,
+      /^xl\/worksheets\/_rels\/[^/]+\.rels$/i.test(entry.name)
+        ? content.toString('utf8').replace(COMMENT_RELATIONSHIP, '')
+        : content
+    );
+  }
+  // STORE: exceljs inflates it straight back, so compressing is wasted work.
+  return out.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+};
+
 const parseXlsxRows = async (buffer: Buffer): Promise<RawRow[]> => {
   const workbook = new ExcelJS.Workbook();
-  // exceljs's bundled Buffer typing doesn't line up with this repo's
-  // @types/node version (a generic-parameter mismatch, not a real type
-  // hazard — buffer is a genuine Node Buffer at runtime either way).
-  await workbook.xlsx.load(buffer as never);
+  const readable = await withoutComments(buffer);
+  try {
+    // exceljs's bundled Buffer typing doesn't line up with this repo's
+    // @types/node version (a generic-parameter mismatch, not a real type
+    // hazard — buffer is a genuine Node Buffer at runtime either way).
+    await workbook.xlsx.load(readable as never);
+  } catch {
+    // Anything else exceljs can't take (a damaged or unusual workbook):
+    // the organiser can re-save it, which a 500 never told them.
+    throw unreadableFile();
+  }
+  // A real workbook always has a sheet: none is a zip that isn't one.
   const worksheet = workbook.worksheets[0];
-  if (!worksheet) return [];
+  if (!worksheet) throw unreadableFile();
 
   const rows: RawRow[] = [];
   worksheet.eachRow({ includeEmpty: false }, (row) => {
@@ -77,8 +171,8 @@ const parseCsvRows = (buffer: Buffer): RawRow[] => {
   let records: string[][];
   try {
     records = parseCsvSync(buffer, { relax_column_count: true, bom: true }) as string[][];
-  } catch (err) {
-    throw new HttpError(400, `Could not parse CSV file: ${(err as Error).message}`);
+  } catch {
+    throw unreadableFile();
   }
   return records.map((cells, idx) => ({
     rowNumber: idx + 1,

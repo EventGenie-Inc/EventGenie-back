@@ -14,8 +14,9 @@ import { isValidEmail, isInternationalPhoneNumber, PHONE_FORMAT_MESSAGE } from '
 export const RSVP_ANSWER_ERROR_CODES = {
   // A required question left blank by someone attending (422).
   REQUIRED: 'RSVP_ANSWER_REQUIRED',
-  // An answer that isn't its question's type: EMAIL, PHONE, NUMBER, or a
-  // DROPDOWN answer that isn't one of its options (422).
+  // An answer that isn't its question's type: EMAIL, PHONE, NUMBER, a
+  // DROPDOWN answer that isn't one of its options, or a CHECKBOX answer
+  // other than "true" or "false" (422).
   INVALID: 'RSVP_ANSWER_INVALID',
   // The same question answered twice in one submission (422; the unique
   // (inviteId, rsvpFieldId) index made it a 500).
@@ -63,14 +64,17 @@ const choicesOf = (options: string | null): string[] => {
 };
 
 // The message for an answer that isn't its question's type, or null.
-// EMAIL, PHONE and NUMBER have a format, and a DROPDOWN answer must be one
-// of its choices (the form sends the choice as written); every other type
-// takes any text.
+// EMAIL, PHONE and NUMBER have a format, a DROPDOWN answer must be one of
+// its choices (the form sends the choice as written), and a CHECKBOX is
+// exactly "true" or "false", as stored (the RSVP page and the export read
+// anything but "true" as No); every other type takes any text.
 const customAnswerProblem = (field: AnswerableField, value: string): string | null => {
   const { fieldType, label } = field;
   const answer = typeof value === 'string' ? value.trim() : '';
   if (!answer) return null;
   switch (fieldType) {
+    case 'CHECKBOX':
+      return value === 'true' || value === 'false' ? null : `Tick the box for '${label}', or leave it unticked.`;
     case 'DROPDOWN':
       return choicesOf(field.options).includes(answer) ? null : `Choose one of the options for '${label}'.`;
     case 'EMAIL':
@@ -88,7 +92,8 @@ const customAnswerProblem = (field: AnswerableField, value: string): string | nu
 // required must be answered when attending (a decline needs no answers:
 // nothing to cater for). Then an answer to a typed question must be that
 // type: EMAIL an email address (guest import's pattern), PHONE an
-// international number, NUMBER a number, DROPDOWN one of its choices.
+// international number, NUMBER a number, DROPDOWN one of its choices,
+// CHECKBOX "true" or "false".
 // Checked attending or not, since answers are stored either way; a blank
 // answer is no answer, and required-ness is checked before type. Unknown
 // field ids are assertAnswersKnown's (RSVP checks them later, inside its
