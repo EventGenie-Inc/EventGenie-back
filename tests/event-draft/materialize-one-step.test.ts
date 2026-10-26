@@ -48,7 +48,7 @@ const DAY = (label: string, date: string) => ({ label, date: `${date}T00:00:00`,
 const TWO_DAYS = [DAY('Saturday', '2030-03-02'), DAY('Sunday', '2030-03-03')];
 
 const materialize = async (payload: Record<string, unknown>) => {
-  await eventDraftRepository.upsert(tenantId, userId, { currentStep: 4, payload: { name: 'One step', ...payload } });
+  await eventDraftRepository.upsert(tenantId, userId, { currentStep: 4, payload: { name: 'One step', hostName: 'Test Host', ...payload } });
   return eventDraftService.materialize(tenantId, userId);
 };
 

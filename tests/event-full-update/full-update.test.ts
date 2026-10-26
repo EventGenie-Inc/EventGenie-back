@@ -82,7 +82,7 @@ const seed = async (): Promise<Seeded> => {
   const by = owner.id;
   const tenantId = owner.tenantId!;
   const event = await prisma.event.create({
-    data: { tenantId, createdByUserId: by, name: 'Original name', status: 'PUBLISHED', createdBy: by, updatedBy: by },
+    data: { tenantId, createdByUserId: by, name: 'Original name', hostName: 'Original Host', status: 'PUBLISHED', createdBy: by, updatedBy: by },
   });
   const hub = await prisma.memoryHub.create({ data: { eventId: event.id, isPublic: false, createdBy: by, updatedBy: by } });
   const days = [];

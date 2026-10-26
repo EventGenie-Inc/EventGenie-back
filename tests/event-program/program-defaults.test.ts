@@ -105,6 +105,7 @@ describe('programs are visible to guests by default', () => {
       currentStep: 4,
       payload: {
         name: 'Wizard program',
+        hostName: 'Test Host',
         days: [{ label: 'Day 1', date: '2030-01-01T00:00:00', location: 'Somewhere', address: '1 Test Road' }],
         program: { title: 'Programme', items: [{ title: 'Welcome', startTime: '2030-01-01T10:00' }] },
       },

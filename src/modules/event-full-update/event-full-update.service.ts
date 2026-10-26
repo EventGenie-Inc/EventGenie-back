@@ -9,6 +9,7 @@ import {
   destroyReplacedCover,
 } from '../event/event.service.js';
 import { normalizeHostName } from '../event/event.repository.js';
+import { assertHostNamePresentAfterEdit } from '../event/event-host-name.util.js';
 import { parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { type UpdateEventDto } from '../event/event.types.js';
 import { type EventDayWrite, type EventDayPatch } from '../event-day/event-day.repository.js';
@@ -395,6 +396,11 @@ export const eventFullUpdateService = {
 
     const program = planProgram(event, programInput, days.resulting);
     const memoryHub = planMemoryHub(event, hubInput);
+
+    // Required on every save, even one that leaves the event's own fields
+    // alone: an older event with no host name gets one on its next edit.
+    // Last, so each part's own refusal (and its code) comes first.
+    assertHostNamePresentAfterEdit(event.hostName, eventFields?.hostName);
 
     const plan: FullUpdatePlan = {
       event: eventFields && eventFieldsChanged(event, eventFields) ? eventFields : null,

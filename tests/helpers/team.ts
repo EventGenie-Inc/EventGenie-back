@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { type PlatformRole } from '@prisma/client';
 import prisma from '../../src/shared/prisma/prisma.client.js';
 import { mockVerifyIdToken } from '../setup.js';
+import { termsAcceptedUnless } from './db.js';
 
 // ─────────────────────────────────────────
 //  Team Members batch fixtures: signed-in actors for HTTP tests, and a
@@ -35,7 +36,7 @@ export const createTenant = async (name = `Team Tenant ${randomUUID()}`) => {
   });
 };
 
-export const createActor = async (role: PlatformRole, tenantId: string | null): Promise<Actor> => {
+export const createActor = async (role: PlatformRole, tenantId: string | null, opts: { acceptTerms?: boolean } = {}): Promise<Actor> => {
   const suffix = randomUUID();
   const user = await prisma.user.create({
     data: {
@@ -46,6 +47,7 @@ export const createActor = async (role: PlatformRole, tenantId: string | null): 
       tenantId,
       isActive: true,
       isArchived: false,
+      ...termsAcceptedUnless(opts.acceptTerms === false),
     },
   });
   return { id: user.id, firebaseUid: user.firebaseUid, email: user.email, role: user.role, tenantId: user.tenantId, username: user.username };

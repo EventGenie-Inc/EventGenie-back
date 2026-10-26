@@ -91,6 +91,7 @@ const setup = async () => {
       currentStep: 4,
       payload: {
         name: `Wizard ${randomUUID()}`,
+        hostName: 'Test Host',
         days: [{ label: 'Day 1', date: '2030-03-02T00:00:00', location: 'Hall', address: '1 Road' }],
         ...payload,
       },
@@ -109,7 +110,7 @@ const planRefusal = { statusCode: 403, message: expect.stringMatching(/plan/) };
 describe('publicEvents off — no path makes an event PUBLIC', () => {
   it('create', async () => {
     const { tenant, organiser } = await setup();
-    const create = () => eventService.create(tenant.id, organiser.id, { name: `Pub ${randomUUID()}`, visibility: 'PUBLIC' });
+    const create = () => eventService.create(tenant.id, organiser.id, { name: `Pub ${randomUUID()}`, hostName: 'Test Host', visibility: 'PUBLIC' });
     vi.stubEnv('FEATURES_DISABLED', '');
     await expect(create()).rejects.toMatchObject(planRefusal);
     vi.stubEnv('FEATURES_DISABLED', 'publicEvents');

@@ -14,14 +14,13 @@ Conventions every contributor and AI coding agent must follow.
 >
 > | | Windows | Mac |
 > |---|---|---|
-> | Backend | `C:\dev\EventGenie-back` | `~/EventGenie-back` |
-> | Frontend | `C:\dev\eventgenie-front` | `~/eventgenie-front-1` |
+> | Backend | `C:\Users\Levy\Desktop\EventGenie-back` | `~/EventGenie-back` |
+> | Frontend | `C:\Users\Levy\Desktop\eventgenie-front` | `~/eventgenie-front-1` |
 >
 > The frontend has this file's copy at its root (`STEERING.md`) and the
 > Angular app in its `eventgenie-front` subfolder. On the Mac,
 > `~/EventGenie-front` is a legacy prototype, not the frontend. Ignore any
-> older path in notes or memory, such as a OneDrive or `C:\Users\Levy\…`
-> one.
+> older path in notes or memory, such as a OneDrive or `C:\dev\…` one.
 
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
@@ -910,6 +909,27 @@ permissions"): every 422 carries a code naming its field
 /api/memory-hub/guest-items` and the public-sharing toggle) is 422
 `PUBLIC_SHARING_PHOTOS_ONLY`.
 
+Terms of Service (see "Terms of Service" under Non-negotiable rules):
+`TERMS_NOT_ACCEPTED` (403, "Please accept the Terms of Service to
+continue."), from every authenticated route except the exempt ones until
+the caller has accepted the current version; the client shows the Terms,
+it doesn't sign anyone out. Told apart from the uncoded 403 for an
+inactive account. And `TERMS_VERSION_MISMATCH` (`POST /api/terms/accept`,
+409): the version sent isn't the current one, because the page showed older
+Terms; reload them. A missing or non-text `version` is an uncoded 400.
+
+`EVENT_HOST_NAME_REQUIRED` (422, "Add the host's name. Guests see it on
+their invitation."): event create, `PUT /api/events/:id`, the full update
+and the wizard's materialize (see "Host name" under Domain rules). Checked
+last on each, so any other refusal and its code comes first. A host name
+over 200 characters stays the uncoded 422 it was.
+
+`TENANT_SLUG_INVALID` (`POST /api/auth/register`, 422): a typed
+organisation address that isn't lowercase letters, numbers and single
+hyphens, up to 60 characters; the form marks the address field. A taken
+one is never refused (see "Sign-up: the organisation address"); a
+non-text `tenantSlug` is an uncoded 400.
+
 A code must never subdivide a case that is already deliberately generic
 for security reasons. `DEVICE_NOT_RECOGNISED` covers missing, wrong,
 wrong-user, revoked, **and** expired device tokens — one code, matching
@@ -1405,6 +1425,69 @@ it.** It offered a catastrophic default as a choice: unticked meant
 would pick deliberately. Staying signed in is simply how the
 application works.
 
+### Terms of Service
+
+**Every account must have accepted the current Terms of Service before
+using e-velope.** The current version is `TERMS_VERSION`
+(`src/modules/terms/terms.service.ts`, a date string, `"2026-11-01"` at
+launch). Until a user has accepted that exact version, **every
+authenticated route answers 403 `TERMS_NOT_ACCEPTED`**, super admins
+included. The check lives in `authenticate` itself
+(`auth.middleware.ts`, read in the same query as the user), so a new
+route gets it without doing anything: it fails closed.
+
+The only authenticated routes that skip it use
+`authenticateAllowingPendingTerms` instead, and must stay this short list:
+
+| Route | Why |
+|---|---|
+| `GET /api/terms/status`, `POST /api/terms/accept` | how the person accepts |
+| `GET /api/tenants/me` | the app reads it right after sign-in, before it can show the Terms |
+
+`/api/auth/*` (session exchange, refresh, sign-out, and register, OTP and
+forgot-password) and `/api/config/features` never call `authenticate`, so
+they are never blocked either. Don't add a route to the exempt list
+without a reason a person who hasn't accepted needs it.
+
+**Who it covers:** new sign-ups (registering creates the account; its
+first authenticated request is a 403 until they accept), team members
+joining through an invitation (the same), and every existing user, on
+their next visit. **Guests are not accounts** (RSVP, public registration,
+Memory Hub guest routes, the share-link gallery): none of their routes
+authenticates, so none of this reaches them, whatever the organiser has
+accepted.
+
+**Acceptance is recorded append-only**: one `TermsAcceptance` row per
+user per version (`userId`, `version`, `acceptedAt`), never updated (a
+database trigger refuses it, as for `ConsentRecord`) and never deleted by
+product code (the foreign key cascades only so hard-deleted test fixtures
+take their rows with them). Accepting the same version again adds no row
+and keeps the first `acceptedAt`. **A refusal isn't stored**: the person
+simply can't continue.
+
+**Bumping `TERMS_VERSION` makes everyone accept again**: the check is for
+a row of the current version, not for any row. Old rows stay, as the
+record of what was accepted when.
+
+The two endpoints (both authenticated, both exempt):
+
+```
+GET /api/terms/status
+  200 { status: 'ok', data: {
+        currentVersion: string,          // TERMS_VERSION
+        acceptedVersion: string | null,  // the caller's latest acceptance, any version
+        acceptedAt: string | null,       // ISO time of that acceptance
+        mustAccept: boolean } }          // true until currentVersion itself is accepted
+
+POST /api/terms/accept   body { version: string }
+  200 the same shape as the status, after accepting (mustAccept: false)
+  409 TERMS_VERSION_MISMATCH  version isn't the current one: the page showed older Terms
+  400 (uncoded)               version missing or not a string
+```
+
+Only the current version can be accepted, so a page left open across a
+version change can't record acceptance of words the person never saw.
+
 ### TypeScript
 
 `exactOptionalPropertyTypes: true`. Use `?? null`, never `undefined`, in
@@ -1673,6 +1756,26 @@ remove their only contact (422). Each refusal carries its code (see
 send time, so a changed number reaches future invites and reminders by
 itself; removing the channel the invite goes out on moves
 `Invite.deliveryMethod` to the one they kept.
+
+### Host name
+
+**Every event has a host name** (`Event.hostName`): the "From" line guests
+see on the invitation and the sender name on guest emails. It is required
+on event create (`POST /api/events`), every edit (`PUT /api/events/:id` and
+the full update) and the wizard's materialize: missing, `null` or blank
+after trimming is 422 `EVENT_HOST_NAME_REQUIRED`, and nothing is written
+(`event-host-name.util.ts`'s `assertHostNamePresent`). Stored trimmed, at
+most 200 characters.
+
+**Older events saved without one aren't changed**: nothing backfills them,
+and reading, publishing, inviting and the guest pages work as before (the
+event name stands in, as it always has). **But their next edit must supply
+one**: an edit is judged on the host name the event will have once saved,
+the request's own when it sends `hostName`, else the stored one
+(`assertHostNamePresentAfterEdit`). So an edit that leaves `hostName` out
+is fine on an event that has one, and refused on one that hasn't, even a
+full update touching only a day. The column stays nullable for those older
+rows.
 
 ### Venue
 
@@ -2134,6 +2237,30 @@ undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
 
+### Sign-up: the organisation address
+
+The organisation's address (`Tenant.slug`, unique across every tenant,
+archived ones included) is **optional at sign-up** (`POST
+/api/auth/register`: `{ username, tenantName, tenantSlug? }`). The form
+fills it from the organisation's name but no longer presents it as a
+required field (`src/modules/auth/tenant-slug.util.ts`):
+
+- **Blank, missing or `null`**: made from `tenantName`: accents dropped,
+  lowercased, every run of other characters one hyphen, none at either end,
+  at most 60 characters. A name with no letters or digits gives
+  `organisation`.
+- **Typed**: trimmed and lowercased, then it must already be valid
+  (lowercase letters, digits and single hyphens, at most 60 characters), or
+  it is 422 `TENANT_SLUG_INVALID`. A typed address is never rewritten into
+  something the person didn't type.
+- **Taken** (typed or made): never refused. The next free one is used
+  instead, `name-2`, `name-3`, ..., shortening the base so the suffix fits
+  in 60. Two sign-ups racing for the same address: the loser looks again
+  (up to three times) instead of getting an error.
+
+`tenantName` is required and must not be blank (400). The response's
+`tenant.slug` is the address actually given.
+
 ### Team roles and invitations
 
 Behind the `teamMembers` flag. A tenant has two kinds of member:
@@ -2503,6 +2630,15 @@ is still a real remote Postgres, which is what catches round-trip bugs
 like the Prisma transaction timeout at 50 rows that a fast local database
 or a 5-row fixture would never show.
 
+**Every fixture user has accepted the current Terms of Service** unless the
+test says otherwise: the user helpers (`createTestTenantAndUser`,
+`createTestUserRow`, `createActor`) add the acceptance row in the same
+create (`termsAcceptedUnless`, `tests/helpers/db.ts`); pass `acceptTerms:
+false` for a user who hasn't. A user created another way (through
+register or a team invitation, or a bare `prisma.user.create`) has none,
+and gets 403 `TERMS_NOT_ACCEPTED` on any authenticated route until the test
+accepts for them.
+
 **Every feature flag is on in tests,** whatever `.env`'s
 `FEATURES_DISABLED` says: `tests/setup.ts` sets it empty before anything
 loads `.env`, so a developer's launch-mode `.env` can't make a test pass or
@@ -2568,6 +2704,13 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   doesn't show or send the event's questions (`rsvpFields`,
   `rsvpResponses`); and `isRsvpDeadlinePassed` and the reminder check in
   `event-display.util.ts`/`reminder.util.ts` compare the stored instant.
+- **The pilot polish needs its frontend half** (backend
+  `feature/pilot-polish`): a Terms screen answering `TERMS_NOT_ACCEPTED`,
+  event forms requiring a host name, and the sign-up form no longer
+  requiring the organisation address. **Deploy the frontend's Terms screen
+  with or before this backend**: without it, every signed-in user, super
+  admins included, gets 403 on every page. Remove this entry once both
+  are live.
 - **Automated test coverage is thin.** The backend has a Vitest suite
   (`npm test`, `tests/`) on real Postgres in a separate
   `DATABASE_URL_TEST` database (never the shared dev/prod one — see
@@ -2584,8 +2727,17 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     `DeviceToken.userAgent`, only the token's hash ever stored, the
     `authenticate` middleware, `register`, `request-otp` and `verify-otp`
     answering a rejected Firebase token with a 401 (and an outage still
-    with a 500), the test-database isolation guard, and
-    username escaping in auth emails.
+    with a 500), the test-database isolation guard,
+    username escaping in auth emails, and the organisation address at
+    sign-up (`register-slug.test.ts`: made from the name when blank, the
+    next free one when taken, a typed invalid one 422 `TENANT_SLUG_INVALID`).
+  - **Terms of Service** (`tests/terms/`): a new user blocked until they
+    accept, super admins too; the wrong or a missing version refused with
+    nothing stored; accepting twice keeps one row; a user holding only an
+    earlier version blocked again; the exempt routes (status, accept,
+    `/api/tenants/me`, `/api/config/features`, exchange, refresh, sign-out)
+    working before accepting; a new sign-up and a team member joining by
+    invitation blocked until they accept; a guest's RSVP page unaffected.
   - **Tenant scoping** (`tests/tenant-scope/`): fail-closed lookups for
     a caller with no tenant, event program and program items across
     tenants, vendor-space membership, `TENANT_ADMIN`/`EVENT_ADMIN`
@@ -2621,7 +2773,7 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   - **Day venues** (`tests/event-day/`): a day without a venue is 422
     on create and update, stale coordinates cleared, cross-tenant day
     update 404, the event no longer taking a venue, `hostName` trimmed and
-    blank stored as null, publish refusing a venue-less day, and the event
+    blank refused, publish refusing a venue-less day, and the event
     carrying no venue columns. (The venue migration's data-copy test was
     retired with the columns it read.) Guest side (`tests/rsvp/rsvp-day-venue.test.ts`):
     per-day venues on `/rsvp/validate`, `/rsvp/program` and the sent emails.
@@ -2648,9 +2800,11 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     whole-number durations, ticket quantities and tier limits, day end
     after start, an item's day on a multi-day event, SMS credits 1–5000,
     host name length, typed custom answers, and the international phone
-    message and code.
+    message and code. The host name required on create, edit, the full
+    update and materialize (`host-name-required.test.ts`), including an
+    older event with none.
   - **Wizard draft conversion** (`tests/event-draft/`): `hostName`
-    carried through (null when absent or blank), a legacy
+    carried through (refused when absent or blank), a legacy
     `invitationTemplate` in an old draft ignored, and each program item's
     day (`dayIndex`) and the program's visibility set in one step.
   - **Client-supplied Cloudinary assets** (`tests/cloudinary/`): foreign

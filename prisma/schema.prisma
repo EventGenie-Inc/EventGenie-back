@@ -402,6 +402,7 @@ model User {
   // Team Members batch — see EventAssignment and TeamInvite below.
   eventAssignments EventAssignment[]
   teamInvitesSent  TeamInvite[]      @relation("TeamInviteInvitedBy")
+  termsAcceptances TermsAcceptance[]
 }
 
 // ─────────────────────────────────────────
@@ -470,6 +471,30 @@ model DeviceToken {
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
+}
+
+// ─────────────────────────────────────────
+//  TERMS ACCEPTANCE
+//  One row per user per Terms of Service version they accepted
+//  (src/modules/terms/). APPEND-ONLY: never updated (a trigger refuses it,
+//  see the migration) and never deleted by product code. A user may use
+//  the app only with a row for the current TERMS_VERSION, so bumping the
+//  version asks everyone again. A refusal is not stored.
+//
+//  ON DELETE CASCADE only so a hard-deleted test fixture takes its rows
+//  with it; product code never hard-deletes a user.
+// ─────────────────────────────────────────
+
+model TermsAcceptance {
+  id         String   @id @default(cuid())
+  userId     String
+  version    String
+  acceptedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Accepting the same version twice keeps the first row.
+  @@unique([userId, version])
 }
 
 // ─────────────────────────────────────────
