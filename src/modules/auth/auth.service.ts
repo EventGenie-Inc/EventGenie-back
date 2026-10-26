@@ -21,6 +21,7 @@ import { sendEmail } from '../../shared/messaging/email.engine.js';
 import { normalizeEmail } from '../../shared/utils/email.util.js';
 import { verifyOr401 } from '../../shared/firebase/firebase-token-error.util.js';
 import { isUniqueViolationOn } from '../../shared/utils/prisma-error.util.js';
+import { resolveBaseSlug, slugCandidate } from './tenant-slug.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from './auth-email.util.js';
 import {
   buildPasswordResetLink,
@@ -47,7 +48,26 @@ const generateOtp = (): string =>
 const SESSION_TOKEN_TTL = '15m';
 
 const REGISTER_EMAIL_TAKEN_MESSAGE = 'An account with this email already exists. Please log in.';
-const REGISTER_SLUG_TAKEN_MESSAGE = 'This tenant slug is already taken. Please choose another.';
+// Only after REGISTER_SLUG_ATTEMPTS races in a row for the same address, or
+// no free one among the first SLUG_SEARCH_LIMIT: practically never.
+const REGISTER_SLUG_TAKEN_MESSAGE = "We couldn't reserve an address for your organisation. Please try again.";
+const REGISTER_SLUG_ATTEMPTS = 3;
+const SLUG_SEARCH_BATCH = 20;
+const SLUG_SEARCH_LIMIT = 1000;
+
+// The first of base, base-2, base-3, ... no tenant has, looked up 20 at a
+// time (one query for nearly every sign-up). A 409 when none of the first
+// SLUG_SEARCH_LIMIT is free.
+const findFreeSlug = async (base: string): Promise<string> => {
+  for (let start = 1; start <= SLUG_SEARCH_LIMIT; start += SLUG_SEARCH_BATCH) {
+    const candidates = Array.from({ length: SLUG_SEARCH_BATCH }, (_, i) => slugCandidate(base, start + i));
+    const taken = await authRepository.findTakenSlugs(candidates);
+    const free = candidates.find((slug) => !taken.has(slug));
+    if (free) return free;
+  }
+  throw new HttpError(409, REGISTER_SLUG_TAKEN_MESSAGE);
+};
+
 // request-otp and verify-otp: the Firebase sign-in behind the code step is
 // no longer valid (it expired while the person read their email, or was
 // revoked). Uncoded, like register's: the frontend's interceptor leaves an
@@ -96,10 +116,9 @@ export const authService = {
       throw new HttpError(409, 'An account already exists for this user. Please log in.');
     }
 
-    const existingTenant = await authRepository.findTenantBySlug(data.tenantSlug);
-    if (existingTenant) {
-      throw new HttpError(409, REGISTER_SLUG_TAKEN_MESSAGE);
-    }
+    // A typed address that isn't valid is refused here; a taken one is not
+    // (see tenant-slug.util.ts).
+    const baseSlug = resolveBaseSlug(data.tenantSlug, data.tenantName);
 
     // Stored and compared lowercase and trimmed (shared/utils/email.util.ts).
     // Firebase already lowercases the address in its tokens; this makes it
@@ -121,20 +140,24 @@ export const authService = {
     }
 
     let registered;
-    try {
-      registered = await authRepository.registerTenantAndAdmin(decoded.uid, email, data);
-    } catch (err) {
-      // Two registrations racing past the checks above: the unique index
-      // stops the second, and it gets the same 409 the check would have
-      // given, never a 500. (Tenant.email is the same address.)
-      if (isUniqueViolationOn(err, 'User', 'email') || isUniqueViolationOn(err, 'Tenant', 'email')) {
-        throw new HttpError(409, REGISTER_EMAIL_TAKEN_MESSAGE);
+    for (let attempt = 1; !registered && attempt <= REGISTER_SLUG_ATTEMPTS; attempt++) {
+      const slug = await findFreeSlug(baseSlug);
+      try {
+        registered = await authRepository.registerTenantAndAdmin(decoded.uid, email, data, slug);
+      } catch (err) {
+        // Two registrations racing past the checks above: the unique index
+        // stops the second, and it gets the same 409 the check would have
+        // given, never a 500. (Tenant.email is the same address.)
+        if (isUniqueViolationOn(err, 'User', 'email') || isUniqueViolationOn(err, 'Tenant', 'email')) {
+          throw new HttpError(409, REGISTER_EMAIL_TAKEN_MESSAGE);
+        }
+        // Another sign-up took this address between the lookup and the
+        // insert: look again for the next free one.
+        if (isUniqueViolationOn(err, 'Tenant', 'slug')) continue;
+        throw err;
       }
-      if (isUniqueViolationOn(err, 'Tenant', 'slug')) {
-        throw new HttpError(409, REGISTER_SLUG_TAKEN_MESSAGE);
-      }
-      throw err;
     }
+    if (!registered) throw new HttpError(409, REGISTER_SLUG_TAKEN_MESSAGE);
     const { user, tenant } = registered;
 
     return {

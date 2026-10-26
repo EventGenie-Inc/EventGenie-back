@@ -140,7 +140,7 @@ describe('a locked member (assigned to one event)', () => {
   }, 60000);
 
   it('is assigned automatically to an event they create', async () => {
-    const created = await request(app).post('/api/events').set(headersFor(member)).send({ name: 'Made while locked' });
+    const created = await request(app).post('/api/events').set(headersFor(member)).send({ name: 'Made while locked', hostName: 'Test Host' });
     expect(created.status).toBe(201);
     const assignment = await prisma.eventAssignment.findUnique({
       where: { userId_eventId: { userId: member.id, eventId: created.body.data.id } },
@@ -152,7 +152,7 @@ describe('a locked member (assigned to one event)', () => {
 
 describe('creating an event while unlocked', () => {
   it('assigns nothing (that would lock the member to one event)', async () => {
-    const created = await request(app).post('/api/events').set(headersFor(member)).send({ name: 'Made while unlocked' });
+    const created = await request(app).post('/api/events').set(headersFor(member)).send({ name: 'Made while unlocked', hostName: 'Test Host' });
     expect(created.status).toBe(201);
     expect(await prisma.eventAssignment.count({ where: { userId: member.id } })).toBe(0);
   }, 60000);

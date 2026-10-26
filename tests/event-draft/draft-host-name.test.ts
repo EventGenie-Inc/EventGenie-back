@@ -11,11 +11,12 @@ import {
 } from '../helpers/fixtures.js';
 
 // ─────────────────────────────────────────
-//  WIZARD DRAFT -> EVENT — hostName is carried through
+//  WIZARD DRAFT -> EVENT — hostName is carried through, and required
 //
 //  materialize used to drop hostName, so an organiser who typed a host in
 //  the wizard got an event with no host line on the invitation/RSVP page.
-//  It must be stored as typed, and null when absent or blank.
+//  It must be stored as typed (trimmed). Since the pilot polish it is also
+//  required: absent or blank is 422 EVENT_HOST_NAME_REQUIRED.
 // ─────────────────────────────────────────
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -27,7 +28,7 @@ afterEach(async () => {
 });
 
 describe('eventDraftService.materialize — hostName', () => {
-  it('a draft with a hostName produces an event with it; absent or blank produces null', async () => {
+  it('a draft with a hostName produces an event with it; absent or blank is refused', async () => {
     const tenant = await createTestTenant();
     const user = await createTestUserRow({ role: 'TENANT_ADMIN', tenantId: tenant.id });
     cleanup.push(
@@ -53,7 +54,14 @@ describe('eventDraftService.materialize — hostName', () => {
     };
 
     expect((await convert({ hostName: 'The Mashilo Family' })).hostName).toBe('The Mashilo Family');
-    expect((await convert({})).hostName).toBeNull();
-    expect((await convert({ hostName: '   ' })).hostName).toBeNull();
+    expect((await convert({ hostName: '  Thandi & Sipho ' })).hostName).toBe('Thandi & Sipho');
+
+    // Required (EVENT_HOST_NAME_REQUIRED): absent or blank creates nothing.
+    const before = await prisma.event.count({ where: { tenantId: tenant.id } });
+    for (const extra of [{}, { hostName: '   ' }, { hostName: null }]) {
+      const err = await convert(extra).catch((e) => e);
+      expect(err).toMatchObject({ statusCode: 422, code: 'EVENT_HOST_NAME_REQUIRED' });
+    }
+    expect(await prisma.event.count({ where: { tenantId: tenant.id } })).toBe(before);
   }, 60000);
 });

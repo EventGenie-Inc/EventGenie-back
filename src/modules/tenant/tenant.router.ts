@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { tenantService } from './tenant.service.js';
-import { authenticate } from '../../shared/middleware/auth.middleware.js';
+import { authenticate, authenticateAllowingPendingTerms } from '../../shared/middleware/auth.middleware.js';
 import { requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
@@ -8,7 +8,9 @@ const router = Router();
 
 // Self-service lookup of the caller's own tenant — must be registered before
 // the blanket SUPER_ADMIN guard below, since any authenticated user needs it.
-router.get('/me', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+// Reachable before the current Terms are accepted (auth.middleware.ts): the
+// app reads it straight after sign-in, before it can show the Terms.
+router.get('/me', authenticateAllowingPendingTerms, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     if (!auth.user.tenantId) {

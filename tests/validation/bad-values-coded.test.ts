@@ -112,6 +112,7 @@ describe("the wizard's draft question options", () => {
       currentStep: 3,
       payload: {
         name: 'Options draft',
+        hostName: 'Test Host',
         days: [{ label: 'Day 1', date: '2030-03-02T00:00:00', location: 'Hall', address: '1 Main Rd' }],
         customFields: [{ label: 'Shirt size', fieldType: 'DROPDOWN', isRequired: false, options }],
       },
@@ -169,7 +170,7 @@ describe("the Memory Hub's opening time", () => {
   it('the wizard refuses it too', async () => {
     await eventDraftRepository.upsert(organiser.tenantId!, organiser.id, {
       currentStep: 3,
-      payload: { name: 'Album draft', days: [{ label: 'Day 1', date: '2030-03-02T00:00:00', location: 'Hall', address: '1 Main Rd' }], memoryHub: { opensAt: 'whenever' } },
+      payload: { name: 'Album draft', hostName: 'Test Host', days: [{ label: 'Day 1', date: '2030-03-02T00:00:00', location: 'Hall', address: '1 Main Rd' }], memoryHub: { opensAt: 'whenever' } },
     });
     await expect(eventDraftService.materialize(organiser.tenantId!, organiser.id)).rejects.toMatchObject({ statusCode: 422, code: 'MEMORY_HUB_OPENS_AT_INVALID' });
   }, 60000);

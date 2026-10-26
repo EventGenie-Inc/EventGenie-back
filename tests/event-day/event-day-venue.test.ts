@@ -162,26 +162,30 @@ describe('event day venue — update', () => {
 });
 
 describe('event — the venue is no longer the event\'s', () => {
-  it('create ignores an event-level venue, requires a name, and stores a blank hostName as null', async () => {
+  it('create ignores an event-level venue, requires a name, refuses a blank hostName and trims one', async () => {
     const h = headersFor(owner);
     const noName = await request(app).post('/api/events').set(h).send({ hostName: 'X' });
     expect(noName.status).toBe(422);
     expect(noName.body.message).toMatch(/needs a name/);
 
+    const blankHost = await request(app).post('/api/events').set(h).send({ name: 'No host', hostName: '   ' });
+    expect(blankHost.status).toBe(422);
+    expect(blankHost.body.code).toBe('EVENT_HOST_NAME_REQUIRED');
+
     const res = await request(app)
       .post('/api/events')
       .set(h)
-      .send({ name: 'Venue-less event', location: 'Old Venue', address: 'Old Address', latitude: 1, longitude: 1, hostName: '   ' });
+      .send({ name: 'Venue-less event', location: 'Old Venue', address: 'Old Address', latitude: 1, longitude: 1, hostName: '  Thandi & Sipho ' });
     expect(res.status).toBe(201);
     createdEventIds.push(res.body.data.id);
     const row = await prisma.event.findUniqueOrThrow({ where: { id: res.body.data.id } });
     // The Event has no venue columns any more; an old client's venue keys are
     // ignored, not refused, and never reach the row.
-    expect(row.hostName).toBeNull();
+    expect(row.hostName).toBe('Thandi & Sipho');
     for (const key of ['location', 'address', 'latitude', 'longitude']) expect(row).not.toHaveProperty(key);
   }, 60000);
 
-  it('update ignores an event-level venue, refuses a blank name, and trims hostName (blank → null)', async () => {
+  it('update ignores an event-level venue, refuses a blank name, trims hostName and refuses a blank one', async () => {
     const h = headersFor(owner);
 
     const blankName = await request(app).put(`/api/events/${eventId}`).set(h).send({ name: '  ' });
@@ -194,9 +198,10 @@ describe('event — the venue is no longer the event\'s', () => {
     expect(row).not.toHaveProperty('location');
 
     const blank = await request(app).put(`/api/events/${eventId}`).set(h).send({ hostName: '   ' });
-    expect(blank.status).toBe(200);
+    expect(blank.status).toBe(422);
+    expect(blank.body.code).toBe('EVENT_HOST_NAME_REQUIRED');
     row = await prisma.event.findUniqueOrThrow({ where: { id: eventId } });
-    expect(row.hostName).toBeNull();
+    expect(row.hostName).toBe('Sarah & Tom');
   }, 60000);
 
   it('publish refuses an event with a day that has no venue (a pre-migration leftover)', async () => {

@@ -53,7 +53,7 @@ const setup = async () => {
     () => deleteTestTenant(tenant.id)
   );
   const makeEvent = async (data: Record<string, unknown>) => {
-    const event = await eventRepository.create(tenant.id, organiser.id, { name: `Gap ${randomUUID()}`, ...data });
+    const event = await eventRepository.create(tenant.id, organiser.id, { name: `Gap ${randomUUID()}`, hostName: 'Test Host', ...data });
     const day = await createTestEventDay(event.id, organiser.id);
     return { event, day };
   };

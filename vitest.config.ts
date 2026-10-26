@@ -26,6 +26,17 @@ export default defineConfig({
     // exhaustion against a small Neon branch. Revisit if the suite grows
     // large enough for this to matter.
     fileParallelism: false,
-    testTimeout: 15000,
+    // A hung test or hook fails in seconds, never hours. These apply to
+    // every test and hook that doesn't set its own; the default ones are
+    // small, and 30s covers the worst ordinary wait: waking the idle Neon
+    // test branch (the pool's 15s connect timeout, then ~2.5s for the first
+    // query). A test or hook that needs longer passes its own timeout, at
+    // most 3 minutes outside tests/perf/ (the slowest, the rate-limit tests,
+    // take ~70s). tests/perf/ is opt-in and sets its own. A stalled query
+    // fails sooner still, through query_timeout (tests/setup.ts).
+    // Nothing here can fire while the machine sleeps: timers stop. A full
+    // run needs the machine kept awake.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });

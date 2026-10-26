@@ -1,7 +1,9 @@
 export interface RegisterDto {
   username: string;
   tenantName: string;
-  tenantSlug: string;
+  // Optional: blank or missing is made from tenantName, and a taken one
+  // becomes the next free one (tenant-slug.util.ts).
+  tenantSlug?: string | null;
 }
 
 export interface VerifyOtpDto {

@@ -177,12 +177,12 @@ describe('ticketing off — guests and event creation', () => {
 
     vi.stubEnv('FEATURES_DISABLED', '');
     await expect(
-      eventService.create(tenant.id, organiser.id, { name: `Launch Mode ${randomUUID()}`, ticketing: 'PAID' })
+      eventService.create(tenant.id, organiser.id, { name: `Launch Mode ${randomUUID()}`, hostName: 'Test Host', ticketing: 'PAID' })
     ).rejects.toMatchObject({ statusCode: 403, message: expect.stringMatching(/plan/) });
 
     vi.stubEnv('FEATURES_DISABLED', 'ticketing');
     await expect(
-      eventService.create(tenant.id, organiser.id, { name: `Launch Mode ${randomUUID()}`, ticketing: 'PAID' })
+      eventService.create(tenant.id, organiser.id, { name: `Launch Mode ${randomUUID()}`, hostName: 'Test Host', ticketing: 'PAID' })
     ).rejects.toMatchObject({ statusCode: 422, message: TICKETING_UNAVAILABLE_MESSAGE });
   }, 60000);
 });
