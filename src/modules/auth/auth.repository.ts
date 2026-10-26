@@ -23,10 +23,12 @@ export const authRepository = {
       include: { tenant: true },
     }),
 
-  findTenantBySlug: (slug: string) =>
-    prisma.tenant.findUnique({
-      where: { slug },
-    }),
+  // Which of these addresses a tenant already has, archived tenants
+  // included (Tenant.slug is unique across all of them).
+  findTakenSlugs: async (slugs: string[]): Promise<Set<string>> => {
+    const rows = await prisma.tenant.findMany({ where: { slug: { in: slugs } }, select: { slug: true } });
+    return new Set(rows.map((row) => row.slug));
+  },
 
   // ─────────────────────────────────────────
   //  Register — creates Tenant + User in one
@@ -36,13 +38,14 @@ export const authRepository = {
   registerTenantAndAdmin: async (
     firebaseUid: string,
     email: string,
-    data: RegisterDto
+    data: RegisterDto,
+    slug: string
   ) =>
     prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
         data: {
           name: data.tenantName,
-          slug: data.tenantSlug,
+          slug,
           email,
           subscriptionTier: 'SPARK',
           subscriptionStatus: 'ACTIVE',

@@ -48,18 +48,19 @@ const extractBearerToken = (req: Request, code?: string): string => {
 
 // ─────────────────────────────────────────
 //  POST /api/auth/register
-//  Body: { username, tenantName, tenantSlug }
+//  Body: { username, tenantName, tenantSlug? }
 //  Creates Tenant + TENANT_ADMIN in one tx.
+//  tenantSlug is optional: see tenant-slug.util.ts.
 // ─────────────────────────────────────────
 router.post('/register', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const firebaseToken = extractBearerToken(req);
     const body = req.body as RegisterDto;
 
-    if (!body.username || !body.tenantName || !body.tenantSlug) {
+    if (!body.username || typeof body.tenantName !== 'string' || !body.tenantName.trim()) {
       res.status(400).json({
         status: 'error',
-        message: 'username, tenantName, and tenantSlug are required',
+        message: 'username and tenantName are required',
       });
       return;
     }

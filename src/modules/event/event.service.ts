@@ -8,7 +8,7 @@ import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from '
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
-import { assertValidHostName } from './event-host-name.util.js';
+import { assertValidHostName, assertHostNamePresent, assertHostNamePresentAfterEdit } from './event-host-name.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
 import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
@@ -305,6 +305,8 @@ export const eventService = {
     if (data.ticketing === 'PAID') {
       await assertTenantReadyToSellTickets(tenantId);
     }
+    // Last, so every other refusal (and its code) comes first.
+    assertHostNamePresent(data.hostName);
     return eventRepository.create(tenantId, userId, data, await isCreatorLocked(userId));
   },
 
@@ -316,6 +318,9 @@ export const eventService = {
     // their own to fall back on.
     const event = await eventService.getById(id, requestingRole, tenantId);
     await assertEventUpdateAllowed(event, data, event.eventDays);
+    // Last, as in the full update: an older event with no host name gets
+    // one on its next edit.
+    assertHostNamePresentAfterEdit(event.hostName, data.hostName);
     await eventRepository.update(id, userId, data);
     destroyReplacedCover(event, data);
 

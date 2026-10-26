@@ -78,7 +78,7 @@ describe('per IP', () => {
     const ip = freshIp();
     const statuses = await inBatches(450, () => register(`no-such-${randomUUID()}`, { email: freshEmail() }, ip));
     expect(statuses.filter((s) => s !== 404)).toEqual([]);
-  }, 300000);
+  }, 180000);
 
   it(`refused past ${PUBLIC_REGISTRATIONS_PER_IP_PER_15_MIN} in 15 minutes from one IP; another IP is unaffected`, async () => {
     const ip = freshIp();
@@ -91,7 +91,7 @@ describe('per IP', () => {
     expect(refused.body.message).toBe('Too many registration attempts. Please wait a few minutes and try again.');
 
     expect((await register(`no-such-${randomUUID()}`, { email: freshEmail() })).status).toBe(404);
-  }, 300000);
+  }, 180000);
 });
 
 describe('per event', () => {
@@ -101,7 +101,7 @@ describe('per event', () => {
     const link = `no-such-${randomUUID()}`;
     const statuses = await inBatches(180, () => register(link, { email: freshEmail() }));
     expect(statuses.filter((s) => s !== 404)).toEqual([]);
-  }, 300000);
+  }, 180000);
 
   it(`refused past ${PUBLIC_REGISTRATIONS_PER_EVENT_PER_5_MIN} in five minutes on one link, from any IPs; another link is unaffected`, async () => {
     const link = `no-such-${randomUUID()}`;
@@ -112,5 +112,5 @@ describe('per event', () => {
     expect(refused.body.message).toBe('Registration for this event is receiving a high volume of requests right now. Please try again in a moment.');
 
     expect((await register(`no-such-${randomUUID()}`, { email: freshEmail() })).status).toBe(404);
-  }, 300000);
+  }, 180000);
 });

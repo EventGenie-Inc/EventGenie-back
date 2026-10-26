@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import prisma from '../../src/shared/prisma/prisma.client.js';
+import { TERMS_VERSION } from '../../src/modules/terms/terms.service.js';
 
 // ─────────────────────────────────────────
 //  Test fixtures — real Postgres rows on DATABASE_URL_TEST (see
@@ -13,6 +14,13 @@ import prisma from '../../src/shared/prisma/prisma.client.js';
 //  told to resolve for a given test.
 // ─────────────────────────────────────────
 
+// Every fixture user has accepted the current Terms of Service unless a
+// test says otherwise: without it every authenticated route is a 403
+// TERMS_NOT_ACCEPTED (auth.middleware.ts), and only tests/terms/ is about
+// that. Nested into the user's own create; the row cascades with the user.
+export const termsAcceptedUnless = (skip: boolean) =>
+  skip ? {} : { termsAcceptances: { create: { version: TERMS_VERSION } } };
+
 export interface TestUser {
   id: string;
   tenantId: string;
@@ -21,7 +29,7 @@ export interface TestUser {
 }
 
 export const createTestTenantAndUser = async (
-  opts: { role?: 'TENANT_ADMIN' | 'EVENT_ADMIN' | 'EVENT_VENDOR'; isActive?: boolean; isArchived?: boolean } = {}
+  opts: { role?: 'TENANT_ADMIN' | 'EVENT_ADMIN' | 'EVENT_VENDOR'; isActive?: boolean; isArchived?: boolean; acceptTerms?: boolean } = {}
 ): Promise<TestUser> => {
   const suffix = randomUUID();
   const tenant = await prisma.tenant.create({
@@ -45,6 +53,7 @@ export const createTestTenantAndUser = async (
       tenantId: tenant.id,
       isActive: opts.isActive ?? true,
       isArchived: opts.isArchived ?? false,
+      ...termsAcceptedUnless(opts.acceptTerms === false),
     },
   });
 

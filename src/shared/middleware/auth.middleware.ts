@@ -5,6 +5,7 @@ import { firebaseAdmin } from '../firebase/firebase.admin.js';
 import { prisma } from '../prisma/prisma.client.js';
 import { type SessionTokenPayload } from '../../modules/auth/auth.types.js';
 import { runAsRequestViewer } from '../context/request-viewer.context.js';
+import { TERMS_VERSION, TERMS_NOT_ACCEPTED, TERMS_NOT_ACCEPTED_MESSAGE } from '../../modules/terms/terms.service.js';
 
 // ─────────────────────────────────────────
 //  Extend Express Request to carry the
@@ -49,8 +50,19 @@ declare global {
 //
 //  Both must be valid. Either failing
 //  results in a 401.
+//
+//  Then the Terms of Service: a user who
+//  has not accepted TERMS_VERSION gets 403
+//  TERMS_NOT_ACCEPTED (terms.service.ts),
+//  super admins included. Only the routes a
+//  person needs in order to accept use
+//  authenticateAllowingPendingTerms instead:
+//  /api/terms/* and GET /api/tenants/me.
+//  (/api/auth/* and /api/config/features
+//  never use either.) Fails closed: a new
+//  route gets the check unless it opts out.
 // ─────────────────────────────────────────
-export const authenticate = async (
+const authenticateWith = (opts: { requireTerms: boolean }) => async (
   req: Request,
   res: Response,
   next: NextFunction
@@ -142,6 +154,8 @@ export const authenticate = async (
         tenantId: true,
         isActive: true,
         isArchived: true,
+        // In the same query: no extra round trip on every request.
+        termsAcceptances: { where: { version: TERMS_VERSION }, select: { id: true }, take: 1 },
       },
     });
 
@@ -157,6 +171,15 @@ export const authenticate = async (
       res.status(403).json({
         status: 'error',
         message: 'Account is inactive or has been archived',
+      });
+      return;
+    }
+
+    if (opts.requireTerms && user.termsAcceptances.length === 0) {
+      res.status(403).json({
+        status: 'error',
+        message: TERMS_NOT_ACCEPTED_MESSAGE,
+        code: TERMS_NOT_ACCEPTED,
       });
       return;
     }
@@ -210,3 +233,9 @@ export const authenticate = async (
     next(error);
   }
 };
+
+export const authenticate = authenticateWith({ requireTerms: true });
+
+// For the routes someone who hasn't accepted the current Terms must still
+// reach (see above). Never for anything else.
+export const authenticateAllowingPendingTerms = authenticateWith({ requireTerms: false });

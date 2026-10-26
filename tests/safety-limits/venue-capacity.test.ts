@@ -42,14 +42,14 @@ describe('venue capacity', () => {
     installFirebaseMock();
     const before = await prisma.event.count({ where: { tenantId: organiser.tenantId! } });
     for (const capacity of BAD_VALUES) {
-      const res = await request(app).post('/api/events').set(headersFor(organiser)).send({ name: 'Capacity check', capacity });
+      const res = await request(app).post('/api/events').set(headersFor(organiser)).send({ name: 'Capacity check', hostName: 'Test Host', capacity });
       expect(res.status, `capacity ${String(capacity)}`).toBe(422);
       expect(res.body).toEqual(INVALID);
     }
     expect(await prisma.event.count({ where: { tenantId: organiser.tenantId! } })).toBe(before);
 
     for (const capacity of [1, 100_000]) {
-      const res = await request(app).post('/api/events').set(headersFor(organiser)).send({ name: 'Capacity check', capacity });
+      const res = await request(app).post('/api/events').set(headersFor(organiser)).send({ name: 'Capacity check', hostName: 'Test Host', capacity });
       expect(res.status).toBe(201);
       expect(res.body.data.capacity).toBe(capacity);
     }
@@ -57,7 +57,7 @@ describe('venue capacity', () => {
 
   it('update: the tester’s 100,000,000,000 is 422, never a 500, and the stored value is untouched; null clears it', async () => {
     installFirebaseMock();
-    await prisma.event.update({ where: { id: eventId }, data: { capacity: 250 } });
+    await prisma.event.update({ where: { id: eventId }, data: { capacity: 250, hostName: 'Test Host' } });
     const res = await request(app).put(`/api/events/${eventId}`).set(headersFor(organiser)).send({ capacity: 100_000_000_000 });
     expect(res.status).toBe(422);
     expect(res.body).toEqual(INVALID);
@@ -74,6 +74,7 @@ describe('venue capacity', () => {
       currentStep: 4,
       payload: {
         name: 'Wizard capacity',
+        hostName: 'Test Host',
         capacity: 100_000_000_000,
         days: [{ label: 'Day 1', date: '2030-03-02T00:00:00', location: 'Hall', address: '1 Road' }],
       },

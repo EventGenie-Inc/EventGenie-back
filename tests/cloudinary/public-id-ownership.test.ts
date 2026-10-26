@@ -203,6 +203,7 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
     const err = await eventService
       .create(s.tenantA.id, s.userA.id, {
         name: 'Cover attack',
+        hostName: 'Test Host',
         coverImageUrl: 'https://example.test/c.jpg',
         coverImagePublicId: `${coverFolder(s.tenantB.id)}/${randomUUID()}`,
         coverImageBytes: OVERSIZED,
@@ -236,7 +237,7 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
     const s = await setup();
     await prisma.event.update({ where: { id: s.ownEvent.id }, data: { coverImagePublicId: 'legacy-cover-id' } });
     const updated = await eventService.update(s.ownEvent.id, s.userA.id, s.userA.role, s.tenantA.id, {
-      name: 'Renamed', coverImagePublicId: 'legacy-cover-id',
+      name: 'Renamed', hostName: 'Test Host', coverImagePublicId: 'legacy-cover-id',
     });
     expect(updated.name).toBe('Renamed');
     expect(mockDestroyAsset).not.toHaveBeenCalled();
@@ -248,6 +249,7 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
       currentStep: 4,
       payload: {
         name: 'Draft attack',
+        hostName: 'Test Host',
         // A complete day (venue included), so the 422 below can only come
         // from the cover ownership check, not a missing required field.
         days: [{ label: 'Day 1', date: '2030-01-01T00:00:00', location: 'Somewhere', address: '1 Test Road' }],

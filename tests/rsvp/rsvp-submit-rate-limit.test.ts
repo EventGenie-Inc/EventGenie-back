@@ -61,5 +61,5 @@ describe('per invite', () => {
       message: "You've sent a lot of replies in a short time. Please wait a while and try again.",
     });
     expect((await send(other, 1000)).status).toBe(200);
-  }, 300000);
+  }, 180000);
 });

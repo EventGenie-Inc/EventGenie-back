@@ -53,7 +53,8 @@ const lunch = async (date: string, event: Record<string, unknown> = {}) => {
     where: { id: day.id },
     data: { date: new Date(`${date}T00:00:00Z`), startTime: new Date(`${date}T12:00:00Z`), endTime: new Date(`${date}T14:00:00Z`) },
   });
-  if (Object.keys(event).length) await prisma.event.update({ where: { id: e.id }, data: event });
+  // A host name, as every event saved through the app has.
+  await prisma.event.update({ where: { id: e.id }, data: { hostName: 'Test Host', ...event } });
   return { eventId: e.id, dayId: day.id };
 };
 
@@ -95,6 +96,7 @@ describe('a deadline on the event’s own (last) day is allowed', () => {
       currentStep: 4,
       payload: {
         name: 'Tomorrow’s lunch',
+        hostName: 'Test Host',
         rsvpDeadline: `${date}T23:59:59`,
         days: [{ label: 'Lunch', date: `${date}T00:00:00`, startTime: `${date}T12:00:00`, endTime: `${date}T14:00:00`, location: 'Hall', address: '1 Road' }],
       },
@@ -104,10 +106,10 @@ describe('a deadline on the event’s own (last) day is allowed', () => {
   }, 60000);
 
   it('POST /api/events: a date-only deadline of today is not "in the past"', async () => {
-    const res = await request(app).post('/api/events').set(headersFor(owner)).send({ name: 'Same-day create', rsvpDeadline: today() });
+    const res = await request(app).post('/api/events').set(headersFor(owner)).send({ name: 'Same-day create', hostName: 'Test Host', rsvpDeadline: today() });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.data.rsvpDeadline).toBe(`${today()}T23:59:59.999Z`);
-    const yesterday = await request(app).post('/api/events').set(headersFor(owner)).send({ name: 'Past create', rsvpDeadline: addDays(today(), -1) });
+    const yesterday = await request(app).post('/api/events').set(headersFor(owner)).send({ name: 'Past create', hostName: 'Test Host', rsvpDeadline: addDays(today(), -1) });
     expect(yesterday.status).toBe(400);
   }, 60000);
 });

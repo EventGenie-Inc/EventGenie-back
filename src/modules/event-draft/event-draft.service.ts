@@ -19,7 +19,7 @@ import {
   assertItemStartsOnItsDay,
   assertProgramVisibilityFlag,
 } from '../program-item/program-item-validation.util.js';
-import { assertValidHostName } from '../event/event-host-name.util.js';
+import { assertValidHostName, assertHostNamePresent } from '../event/event-host-name.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
 import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
@@ -159,6 +159,9 @@ export const eventDraftService = {
       ...(p.ticketing !== undefined && { ticketing: p.ticketing as EventTicketing }),
       hasCustomRsvpFields: customFields.length > 0,
     });
+    // Last, so every other refusal (and its code) comes first, as on the
+    // direct create.
+    assertHostNamePresent(p.hostName);
 
     // A locked member is assigned to the event they create, in the same
     // transaction (eventService.create does the same; see isCreatorLocked).

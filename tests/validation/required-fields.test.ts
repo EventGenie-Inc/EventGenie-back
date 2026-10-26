@@ -140,6 +140,8 @@ describe('wizard materialize refuses the same blanks', () => {
       [{ name: 'E', days: [VALID_DAY], program: { items: [{ title: 'Vows' }] } }, /'Vows' needs a start/],
       [{ name: 'E', days: [VALID_DAY], customFields: [{ label: '', fieldType: 'TEXT' }] }, /needs a label/],
       [{ name: 'E', days: [VALID_DAY], ticketing: 'PAID', tickets: [{ name: '', price: 10 }] }, /needs a name/],
+      [{ name: 'E', days: [VALID_DAY] }, /Add the host's name/],
+      [{ name: 'E', hostName: '  ', days: [VALID_DAY] }, /Add the host's name/],
     ];
     for (const [payload, message] of cases) {
       const err = await materialize(payload);

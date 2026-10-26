@@ -49,6 +49,7 @@ import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
 import featureConfigRouter from './modules/feature-config/feature-config.router.js';
+import termsRouter from './modules/terms/terms.router.js';
 import systemHealthRouter from './modules/system-health/system-health.router.js';
 import feedbackRouter from './modules/feedback/feedback.router.js';
 import feedbackAdminRouter from './modules/feedback/feedback-admin.router.js';
@@ -233,6 +234,14 @@ app.use('/api/ticket-purchases', ticketPurchaseRouter);
 //  AUTH ROUTES
 // ─────────────────────────────────────────
 app.use('/api/auth', authRouter);
+
+// ─────────────────────────────────────────
+//  TERMS OF SERVICE (authenticated; reachable before the current Terms
+//  are accepted, which every other authenticated route requires)
+//  /api/terms/status  GET
+//  /api/terms/accept  POST
+// ─────────────────────────────────────────
+app.use('/api/terms', termsRouter);
 
 // ─────────────────────────────────────────
 //  MEMORY HUB ROUTES

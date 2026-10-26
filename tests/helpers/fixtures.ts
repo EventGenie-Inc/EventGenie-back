@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import prisma from '../../src/shared/prisma/prisma.client.js';
 import { eventRepository } from '../../src/modules/event/event.repository.js';
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
+import { termsAcceptedUnless } from './db.js';
 
 // ─────────────────────────────────────────
 //  Security sweep before G3 — fixtures for the tenant-scoping / RSVP
@@ -41,6 +42,7 @@ export const deleteTestTenant = async (tenantId: string): Promise<void> => {
 export const createTestUserRow = async (opts: {
   role: 'SUPER_ADMIN' | 'TENANT_ADMIN' | 'EVENT_ADMIN' | 'EVENT_VENDOR';
   tenantId?: string | null;
+  acceptTerms?: boolean;
 }) => {
   const suffix = randomUUID();
   return prisma.user.create({
@@ -52,6 +54,7 @@ export const createTestUserRow = async (opts: {
       tenantId: opts.tenantId ?? null,
       isActive: true,
       isArchived: false,
+      ...termsAcceptedUnless(opts.acceptTerms === false),
     },
   });
 };

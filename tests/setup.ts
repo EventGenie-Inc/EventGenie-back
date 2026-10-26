@@ -1,4 +1,5 @@
 import { vi, beforeEach } from 'vitest';
+import dotenv from 'dotenv';
 
 // ─────────────────────────────────────────
 //  NODE_ENV=test — set here, not just in the npm script, so it is true
@@ -34,6 +35,30 @@ process.env.PRISMA_TEST_ADAPTER = 'pg';
 //  vi.stubEnv('FEATURES_DISABLED', …); vi.unstubAllEnvs() comes back here.
 // ─────────────────────────────────────────
 process.env.FEATURES_DISABLED = '';
+
+// ─────────────────────────────────────────
+//  A STALLED DATABASE QUERY FAILS, IT DOESN'T WAIT.
+//
+//  query_timeout on the test database's URL, which the test-only pg pool in
+//  prisma.client.ts reads: pg copies URL parameters into its connection
+//  config. It's a client-side timer, so a dropped connection the server
+//  never answers on fails with "Query read timeout" in 30 seconds instead
+//  of hanging the run; no legitimate query here takes more than a few.
+//  (Connecting already has a 15-second limit, in that pool's own config.)
+//  statement_timeout can't be set this way: Neon's pooler silently ignores
+//  it in the URL and refuses it in `options`. Only the test URL changes;
+//  the isolation guard compares hosts, which this leaves alone. dotenv is
+//  loaded here first, so .env's value is the one extended; it never
+//  overwrites a variable that already exists (FEATURES_DISABLED above).
+// ─────────────────────────────────────────
+export const TEST_QUERY_TIMEOUT_MS = 30_000;
+
+dotenv.config({ quiet: true });
+if (process.env.DATABASE_URL_TEST) {
+  const testUrl = new URL(process.env.DATABASE_URL_TEST);
+  testUrl.searchParams.set('query_timeout', String(TEST_QUERY_TIMEOUT_MS));
+  process.env.DATABASE_URL_TEST = testUrl.toString();
+}
 
 // ─────────────────────────────────────────
 //  FIREBASE ADMIN — stubbed at ONE boundary: verifyIdToken.
