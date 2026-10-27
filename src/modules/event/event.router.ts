@@ -5,21 +5,34 @@ import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin, requireEventAdminOrVendor, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
+import { HttpError } from '../../shared/errors/http-error.js';
 
 const router = Router();
+
+// GET /api/events?archived=true — the archived events instead of the live
+// ones: read-only, for the organiser's Archived list and its countdown to
+// the Memory Hub purge (archivedAt, mediaPurgeAt).
+const parseArchivedFlag = (raw: unknown): boolean => {
+  if (raw === undefined || raw === 'false') return false;
+  if (raw === 'true') return true;
+  throw new HttpError(400, 'archived must be true or false.');
+};
 
 router.get('/', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const events = await eventService.getAll(auth.user.role, auth.user.tenantId);
+    const archived = parseArchivedFlag(req.query['archived']);
+    const events = await eventService.getAll(auth.user.role, auth.user.tenantId, { archived });
     res.status(200).json({ status: 'ok', data: events });
   } catch (err) { next(err); }
 });
 
+// An archived event opens too (read-only: every write still 404s), so its
+// organisers can see when its Memory Hub media will be deleted.
 router.get('/:id', authenticate, requireEventAdminOrVendor, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const event = await eventService.getDetail(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    const event = await eventService.getDetail(req.params['id'] as string, auth.user.role, auth.user.tenantId, { includeArchived: true });
     res.status(200).json({ status: 'ok', data: event });
   } catch (err) { next(err); }
 });

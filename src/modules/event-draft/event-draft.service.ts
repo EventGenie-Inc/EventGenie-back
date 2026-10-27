@@ -2,6 +2,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { eventDraftRepository } from './event-draft.repository.js';
 import { eventRepository } from '../event/event.repository.js';
 import { isCreatorLocked } from '../event/event.service.js';
+import { withMediaRetention } from '../event/event-media-retention.util.js';
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
@@ -315,6 +316,7 @@ export const eventDraftService = {
     // Only delete the draft after the transaction fully succeeds.
     await eventDraftRepository.delete(draft.id);
 
-    return eventRepository.findById(result.id);
+    const event = await eventRepository.findById(result.id);
+    return event ? withMediaRetention(event) : null;
   },
 };

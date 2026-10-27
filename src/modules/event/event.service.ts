@@ -2,7 +2,8 @@ import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { assertEventCreatable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertEventCreatable, assertEventRestorable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { withMediaRetention } from './event-media-retention.util.js';
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
@@ -194,10 +195,16 @@ export const eventService = {
   // feedbackGiven: whether the event has its organiser feedback (the
   // card's "How did it go?" prompt), read for the whole list in one query.
   // Left out while `feedback` is off, like the feature's routes.
-  getAll: async (requestingRole: PlatformRole, tenantId: string | null) => {
+  //
+  // archived: the caller's archived events instead (GET /api/events?archived=true),
+  // read-only, the same scope and lock. Every event carries archivedAt and
+  // when its Memory Hub media is deleted (withMediaRetention).
+  getAll: async (requestingRole: PlatformRole, tenantId: string | null, { archived = false }: { archived?: boolean } = {}) => {
     if (isTenantScopeEmptyForList(requestingRole, tenantId)) return [];
     const scope = await resolveEventScope(requestingRole, tenantId);
-    const events = (await eventRepository.findAll(scope.tenantId, false, scope.eventIds)).map(withEffectiveStatus);
+    const events = (await eventRepository.findAll(scope.tenantId, archived ? 'ARCHIVED' : 'LIVE', scope.eventIds))
+      .map(withEffectiveStatus)
+      .map((event) => withMediaRetention(event));
     if (!isFeatureEnabled('feedback')) return events;
     const withFeedback = await feedbackRepository.findEventIdsWithFeedback(events.map((e) => e.id));
     return events.map((e) => ({ ...e, feedbackGiven: withFeedback.has(e.id) }));
@@ -213,12 +220,16 @@ export const eventService = {
   // (rsvpFields), the write endpoints that return the event in their
   // response (update/publish/cancel/reactivate), and getDetail. Every other
   // caller wants getScoped or getScopedWithPass below.
+  //
+  // includeArchived is also true for the read-only views of an archived
+  // event an organiser may open (getDetail, the Memory Hub's reads and
+  // download): never for a write.
   getById: async (id: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
     const scope = await resolveEventScope(requestingRole, tenantId);
     const event = await eventRepository.findById(id, includeArchived, scope.tenantId, scope.eventIds);
 
     if (!event) throw new HttpError(404, 'Event not found');
-    return withEffectiveStatus(event);
+    return withMediaRetention(withEffectiveStatus(event));
   },
 
   // THE LEAN OWNERSHIP GATE — the event row plus its live days, two queries
@@ -264,8 +275,11 @@ export const eventService = {
   // denominator that check compares against (organiser-added guests,
   // excluding plus-ones), not acceptedGuestCount above, which counts a
   // different thing (accepted invites, plus-ones included).
-  getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    const event = await eventService.getById(id, requestingRole, tenantId);
+  //
+  // An archived event is readable here (includeArchived), so an organiser can
+  // open it from their Archived list and see its retention dates.
+  getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null, { includeArchived = false }: { includeArchived?: boolean } = {}) => {
+    const event = await eventService.getById(id, requestingRole, tenantId, includeArchived);
     const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
     const guestLimitInfo = await resolveGuestLimit(event);
     const currentGuestCount = await guestRepository.countForEvent(id);
@@ -343,11 +357,18 @@ export const eventService = {
   //  for why archiving an event doesn't cascade to them in the first
   //  place, which is what makes "just flip isArchived back" sufficient
   //  here.
+  //
+  //  Restoring makes it active again, so it is held to the plan's event
+  //  limit (403 EVENT_LIMIT_REACHED). Restoring before its Memory Hub media
+  //  is purged cancels the purge (archivedAt cleared); after, the event
+  //  comes back without its media (media-retention.service.ts).
   // ─────────────────────────────────────────
   reactivate: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
     // to find an event that is currently archived and un-archive it.
-    await eventService.getById(id, requestingRole, tenantId, true);
+    const event = await eventService.getById(id, requestingRole, tenantId, true);
+    if (!event.isArchived) return event;
+    await assertEventRestorable(event);
     await eventRepository.reactivate(id, userId);
     return eventService.getById(id, requestingRole, tenantId, true);
   },

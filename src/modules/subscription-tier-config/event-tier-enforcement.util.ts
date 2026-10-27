@@ -47,6 +47,10 @@ export const paidTicketingRefusal = (tier: SubscriptionTier, passHint = false): 
     launchUnavailableMessage('Paid ticketing')
   );
 
+// The plan's active-event limit, on creating an event and on restoring an
+// archived one: told apart from the other tier 403s.
+export const EVENT_LIMIT_REACHED = 'EVENT_LIMIT_REACHED';
+
 // Called before creating a new event (POST /api/events and event-draft
 // materialize). CREATION-TIME: correctly bound by the tenant's CURRENT
 // effective tier (Subscription Billing batch) — a lapsed tenant cannot
@@ -72,10 +76,37 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
         tierRefusalMessage(
           `The ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`,
           launchLimitMessage(`You've reached the limit of ${config.maxEvents} active event(s)`, 'Archive an event you no longer need')
-        )
+        ),
+        EVENT_LIMIT_REACHED
       );
     }
   }
+};
+
+// Called before restoring an archived event (event.service.ts's reactivate,
+// a super admin action): restoring makes it active again, so it is held to
+// the same maxEvents as creating one, against the tenant's current
+// effective tier. An event that has ever held an Event Pass isn't counted
+// as active (countActive), so restoring one never reaches the limit. Worded
+// for whoever restores it, never for a guest.
+export const assertEventRestorable = async (event: { tenantId: string; eventPass: unknown }): Promise<void> => {
+  if (event.eventPass) return;
+  const tenant = await tenantRepository.findById(event.tenantId);
+  if (!tenant) throw new HttpError(404, 'Tenant not found');
+
+  const effectiveTier = resolveEffectiveTier(tenant);
+  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
+  if (config?.maxEvents == null) return;
+  if ((await eventRepository.countActive(event.tenantId)) < config.maxEvents) return;
+
+  throw new HttpError(
+    403,
+    tierRefusalMessage(
+      `This organisation's ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive another of its events, then restore this one.`,
+      `This organisation has reached its limit of ${config.maxEvents} active event(s) during its free trial. Archive another of its events, then restore this one.`
+    ),
+    EVENT_LIMIT_REACHED
+  );
 };
 
 // Called before updating an existing event (PUT /api/events/:id). No

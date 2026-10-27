@@ -74,6 +74,7 @@ describe('GET /api/config/features', () => {
       memoryHubVideo: true,
       memoryHubDownload: true,
       feedback: true,
+      archiveMediaPurge: true,
     });
   });
 

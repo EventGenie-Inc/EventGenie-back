@@ -1,4 +1,3 @@
-import { type PlatformRole } from '@prisma/client';
 import { feedbackRepository } from './feedback.repository.js';
 import { buildFeedbackRequestEmail } from './feedback-request-email.util.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
@@ -6,9 +5,11 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { sendEmailBatch } from '../../shared/messaging/email.engine.js';
 import { isUniqueViolationOn } from '../../shared/utils/prisma-error.util.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
+import { resolveEventOrganisers } from '../event-assignment/event-organisers.util.js';
 
 // ─────────────────────────────────────────
-//  ASKING FOR FEEDBACK — the one scheduled job in this codebase
+//  ASKING FOR FEEDBACK — a scheduled job (the other is the archived-event
+//  media retention sweep, media-retention.service.ts, built the same way)
 //
 //  Until now nothing here ran on a timer, by choice: COMPLETED is derived at
 //  read time, ticket holds are swept lazily, reminders are a button. An
@@ -37,7 +38,7 @@ import { reportError } from '../../shared/monitoring/error-reporting.js';
 //
 //  Organisers: whoever created the event and the members assigned to it,
 //  active and still able to open it (the assignment lock); when none is, the
-//  tenant's active TENANT_ADMINs.
+//  tenant's active TENANT_ADMINs (event-organisers.util.ts).
 // ─────────────────────────────────────────
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -52,36 +53,6 @@ export const FEEDBACK_SWEEP_FIRST_RUN_DELAY_MS = 60 * 1000;
 
 const isoDate = (date: Date): string => date.toISOString().slice(0, 10);
 
-interface Recipient {
-  id: string;
-  email: string;
-}
-
-type EventForRequest = NonNullable<Awaited<ReturnType<typeof feedbackRepository.findEventForFeedbackRequest>>>;
-type RequestUser = EventForRequest['createdByUser'];
-
-const ORGANISER_ROLES: PlatformRole[] = ['TENANT_ADMIN', 'EVENT_ADMIN'];
-
-const resolveRecipients = async (event: EventForRequest): Promise<Recipient[]> => {
-  const usable = (user: RequestUser): boolean =>
-    user.isActive && !user.isArchived && user.tenantId === event.tenantId && ORGANISER_ROLES.includes(user.role);
-
-  const assigned = event.assignments.map((a) => a.user).filter(usable);
-  const recipients = new Map<string, Recipient>(assigned.map((u) => [u.id, { id: u.id, email: u.email }]));
-
-  const creator = event.createdByUser;
-  if (usable(creator) && !recipients.has(creator.id)) {
-    // A locked EVENT_ADMIN who isn't assigned to this event can't open its
-    // feedback page, so isn't asked.
-    const canOpen = creator.role === 'TENANT_ADMIN' || (await feedbackRepository.countAssignmentsForUser(creator.id)) === 0;
-    if (canOpen) recipients.set(creator.id, { id: creator.id, email: creator.email });
-  }
-
-  if (recipients.size > 0) return [...recipients.values()];
-  const admins = await feedbackRepository.findActiveTenantAdmins(event.tenantId);
-  return admins.map((u) => ({ id: u.id, email: u.email }));
-};
-
 export interface FeedbackRequestOutcome {
   eventId: string;
   recipientCount: number;
@@ -95,7 +66,7 @@ export const feedbackRequestService = {
     const event = await feedbackRepository.findEventForFeedbackRequest(eventId);
     if (!event || resolveEffectiveStatus(event) !== 'COMPLETED') return null;
 
-    const recipients = await resolveRecipients(event);
+    const recipients = await resolveEventOrganisers(event);
 
     try {
       await feedbackRepository.createRequestClaim(event.id, recipients.length);

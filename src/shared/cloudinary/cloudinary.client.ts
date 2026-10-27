@@ -9,7 +9,7 @@ import { signCloudinaryParams } from './cloudinary-signature.util.js';
 //  upload.service.ts (that's where the purpose-specific constraints —
 //  folder, formats — are decided); this file only knows how to talk to
 //  Cloudinary's API once told what to sign, plus the one operation
-//  callers need directly: deleting an asset by id.
+//  callers need directly: deleting assets by id, one or a batch.
 // ─────────────────────────────────────────
 
 interface CloudinaryConfig {
@@ -77,6 +77,68 @@ export const destroyAsset = async (publicId: string, resourceType: 'image' | 'vi
     }
 
     return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : 'Unknown error' };
+  }
+};
+
+// Cloudinary's Admin API deletes at most 100 assets per call.
+export const CLOUDINARY_DELETE_BATCH_LIMIT = 100;
+const DELETE_BATCH_TIMEOUT_MS = 30_000;
+
+export type DestroyAssetsResult =
+  // deleted: every id now gone ("deleted", or "not_found": already gone).
+  // failed: every other id, with Cloudinary's word for it.
+  | { ok: true; deleted: string[]; failed: { publicId: string; reason: string }[] }
+  // The whole call failed: nothing is known to be deleted.
+  | { ok: false; reason: string };
+
+// Deletes up to CLOUDINARY_DELETE_BATCH_LIMIT assets of one resource type in
+// one call: the Admin API's "delete resources" (Basic auth with the API key
+// and secret, unlike destroyAsset's signed Upload API call). `invalidate`
+// also clears the CDN's cached copies, so a deleted photo stops loading
+// from a URL someone kept. Never throws. An id missing from Cloudinary's
+// answer counts as failed, so it is tried again rather than assumed gone.
+// Used by the archived-event media purge (media-retention.service.ts), whose
+// ids are all checked against the event's own folder first.
+export const destroyAssets = async (publicIds: string[], resourceType: 'image' | 'video' = 'image'): Promise<DestroyAssetsResult> => {
+  if (publicIds.length === 0) return { ok: true, deleted: [], failed: [] };
+  if (publicIds.length > CLOUDINARY_DELETE_BATCH_LIMIT) {
+    return { ok: false, reason: `At most ${CLOUDINARY_DELETE_BATCH_LIMIT} assets per call` };
+  }
+
+  let config: CloudinaryConfig;
+  try {
+    config = requireCloudinaryConfig();
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : "Uploads aren't available right now." };
+  }
+
+  const query = [
+    ...publicIds.map((id) => `${encodeURIComponent('public_ids[]')}=${encodeURIComponent(id)}`),
+    'invalidate=true',
+  ].join('&');
+  const auth = Buffer.from(`${config.apiKey}:${config.apiSecret}`).toString('base64');
+
+  try {
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${config.cloudName}/resources/${resourceType}/upload?${query}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Basic ${auth}` },
+      signal: AbortSignal.timeout(DELETE_BATCH_TIMEOUT_MS),
+    });
+    const json = (await res.json().catch(() => ({}))) as { deleted?: Record<string, string>; error?: { message?: string } };
+    if (!res.ok || !json.deleted) {
+      return { ok: false, reason: json.error?.message ?? `HTTP ${res.status}` };
+    }
+
+    const deleted: string[] = [];
+    const failed: { publicId: string; reason: string }[] = [];
+    for (const publicId of publicIds) {
+      const outcome = json.deleted[publicId];
+      if (outcome === 'deleted' || outcome === 'not_found') deleted.push(publicId);
+      else failed.push({ publicId, reason: outcome ?? 'missing from the response' });
+    }
+    return { ok: true, deleted, failed };
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : 'Unknown error' };
   }

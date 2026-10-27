@@ -40,6 +40,11 @@ export const FEATURE_NAMES = [
   // guests' own photo opt-in, the "How did it go?" email and the super
   // admin's feedback screens.
   'feedback',
+  // Archived events' Memory Hub media deleted 30 days after archiving
+  // (media-retention.service.ts): the sweep's reminders and purges, and the
+  // super admin's purge. Off: nothing is reminded or deleted; archiving
+  // still records archivedAt, so switching it on later counts from there.
+  'archiveMediaPurge',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];
