@@ -84,7 +84,9 @@ export const eventProgramService = {
       throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
     }
 
-    if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
+    // An archived event shows its guests nothing, the same answer as every
+    // other blocked state.
+    if (invite.event.isArchived || resolveEffectiveStatus(invite.event) === 'CANCELLED') {
       return { available: false as const };
     }
 

@@ -53,6 +53,16 @@ export const PUBLIC_SHARING_PHOTOS_ONLY = 'PUBLIC_SHARING_PHOTOS_ONLY';
 
 const INVALID_INVITE_MESSAGE = "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.";
 
+// A guest upload to an archived event's album. Neutral like the share
+// link's "This link isn't active.": it never says the event was archived,
+// and the guest's view of the album simply isn't available (getGuestView).
+// Organisers keep their read-only access.
+export const PHOTO_ALBUM_UNAVAILABLE_MESSAGE = "This photo album isn't available.";
+
+const assertEventNotArchivedForGuest = (event: { isArchived: boolean }): void => {
+  if (event.isArchived) throw new HttpError(404, PHOTO_ALBUM_UNAVAILABLE_MESSAGE);
+};
+
 const assertSharingIsForAPhoto = (mediaType: MediaType): void => {
   if (mediaType !== 'IMAGE') {
     throw new HttpError(422, 'Only photos can be shared publicly, not videos.', PUBLIC_SHARING_PHOTOS_ONLY);
@@ -238,8 +248,20 @@ export const memoryHubService = {
   // no backfill — see event.repository.ts's create()). SUPER_ADMIN
   // bypasses, same as every other tier gate in this codebase: support
   // access isn't bound by a tenant's plan.
-  getByEventId: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventService.getById(eventId, requestingRole, tenantId); // throws 404 if wrong tenant
+  //
+  // archivedEvent: the event may be archived. Only the organiser's READS
+  // pass it (the hub's detail, its items, the download), so an archived
+  // event's photos can be seen and downloaded until they are purged
+  // (media-retention.service.ts); every write keeps the live-only lookup and
+  // 404s.
+  getByEventId: async (
+    eventId: string,
+    requestingRole: PlatformRole,
+    tenantId: string | null,
+    includeArchived = false,
+    { archivedEvent = false }: { archivedEvent?: boolean } = {}
+  ) => {
+    const event = await eventService.getById(eventId, requestingRole, tenantId, archivedEvent); // throws 404 if wrong tenant
     if (requestingRole !== 'SUPER_ADMIN') {
       await assertMemoryHubAccessible(event);
     }
@@ -265,8 +287,8 @@ export const memoryHubService = {
   // null unambiguously means unlimited (same convention as every other
   // max* column) — there is no separate "unknown" state to represent.
   getDetailByEventId: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    const hub = await memoryHubService.getByEventId(eventId, requestingRole, tenantId);
-    const event = await eventService.getById(eventId, requestingRole, tenantId);
+    const hub = await memoryHubService.getByEventId(eventId, requestingRole, tenantId, false, { archivedEvent: true });
+    const event = await eventService.getById(eventId, requestingRole, tenantId, true);
     const usedBytes = await memoryHubRepository.sumBytesForEvent(eventId);
     const limitBytes = await getMemoryHubQuotaBytes(event);
     return { ...hub, usedBytes, limitBytes };
@@ -280,9 +302,17 @@ export const memoryHubService = {
   // its URL"). It used to gate only on the hub's own event, so any of a
   // tenant's hubs could be edited under any of its events' URLs. The
   // parent event is the default (live-only) lookup: an archived event's
-  // hub can't be reached, nor restored before the event is.
-  hubInScope: async (eventId: string, hubId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
-    const event = await eventService.getById(eventId, requestingRole, tenantId);
+  // hub can't be reached, nor restored before the event is. Only the item
+  // READS pass archivedEvent (see getByEventId).
+  hubInScope: async (
+    eventId: string,
+    hubId: string,
+    requestingRole: PlatformRole,
+    tenantId: string | null,
+    includeArchived = false,
+    { archivedEvent = false }: { archivedEvent?: boolean } = {}
+  ) => {
+    const event = await eventService.getById(eventId, requestingRole, tenantId, archivedEvent);
     const hub = await memoryHubRepository.findById(hubId, includeArchived);
     if (!hub || hub.eventId !== eventId) throw new HttpError(404, 'Memory hub not found');
     return { hub, event };
@@ -297,9 +327,10 @@ export const memoryHubService = {
     itemId: string,
     requestingRole: PlatformRole,
     tenantId: string | null,
-    includeArchived = false
+    includeArchived = false,
+    { archivedEvent = false }: { archivedEvent?: boolean } = {}
   ) => {
-    await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId);
+    await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId, false, { archivedEvent });
     const item = await memoryHubRepository.findItemById(itemId, includeArchived);
     if (!item || item.memoryHubId !== hubId) throw new HttpError(404, 'Memory item not found');
     return item;
@@ -379,6 +410,8 @@ export const memoryHubService = {
   // silently picking one, per STEERING's own instruction for handling
   // contradictions.
   //
+  // An archived event answers the same way (findByShareToken doesn't find
+  // it), from the moment it is archived, not only once its media is purged.
   // A plan without Memory Hub (lapsed, downgraded, pass expired) answers
   // exactly like an unknown token, so the response never tells a link
   // holder anything about the organiser's billing. Videos are left out
@@ -406,14 +439,15 @@ export const memoryHubService = {
 
   // ── Memory Items — organiser/curation side, tenant-scoped ─────────
 
+  // Reads: an archived event's items too (see getByEventId).
   getAllItems: async (eventId: string, hubId: string, requestingRole: PlatformRole, tenantId: string | null, status?: 'PENDING' | 'APPROVED' | 'REJECTED') => {
-    await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId);
+    await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId, false, { archivedEvent: true });
     const items = await memoryHubRepository.findAllItems(hubId, status);
     return items.map(toCuratedItem);
   },
 
   getItemById: async (eventId: string, hubId: string, id: string, requestingRole: PlatformRole, tenantId: string | null) =>
-    toCuratedItem(await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId)),
+    toCuratedItem(await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, false, { archivedEvent: true })),
 
   // ORGANISER upload persist — items land APPROVED immediately (an
   // organiser reviewing their own upload is pointless friction).
@@ -467,10 +501,10 @@ export const memoryHubService = {
   // codebase's "nothing is truly deleted" philosophy; leaving it
   // counting against quota would mean a flood of rejected guest
   // uploads could exhaust an event's storage limit with content the
-  // organiser already said no to. The asset stays until an explicit
-  // purge — not built in this batch (archiving an item, below, is the
-  // only removal action that exists today; a true irreversible delete
-  // is future work if storage cost demands it).
+  // organiser already said no to. The asset stays until the event's
+  // media is purged, 30 days after the event is archived
+  // (media-retention.service.ts); archiving an item, below, is the only
+  // removal an organiser has.
   curateItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, status: 'APPROVED' | 'REJECTED') => {
     await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId);
     return memoryHubRepository.updateItemStatus(id, userId, status);
@@ -489,7 +523,13 @@ export const memoryHubService = {
     // The item including archived; its hub via the DEFAULT (non-archived-
     // required) lookup — same "restore the parent first" precedent as the
     // hub's own reactivate.
-    await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, true);
+    const item = await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, true);
+    // Its file was deleted with the archived event's media
+    // (media-retention.service.ts): restoring the row would show a photo
+    // that no longer loads.
+    if (item.purgedAt) {
+      throw new HttpError(409, 'This photo or video was deleted 30 days after its event was archived, so it can no longer be restored.');
+    }
     await memoryHubRepository.reactivateItem(id, userId);
     return memoryHubService.getItemById(eventId, hubId, id, requestingRole, tenantId);
   },
@@ -521,6 +561,7 @@ export const memoryHubService = {
       throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
     }
 
+    assertEventNotArchivedForGuest(invite.event);
     if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
       throw new HttpError(403, 'This event has been cancelled.');
     }
@@ -558,7 +599,9 @@ export const memoryHubService = {
       throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
     }
 
-    if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
+    // An archived event shows its guests nothing, the same answer as every
+    // other blocked state.
+    if (invite.event.isArchived || resolveEffectiveStatus(invite.event) === 'CANCELLED') {
       return { available: false as const };
     }
 
@@ -664,6 +707,19 @@ export const memoryHubService = {
       throw new HttpError(404, INVALID_INVITE_MESSAGE);
     }
 
+    if (invite.event.isArchived) {
+      // An upload signed before the event was archived can still land here.
+      // Its file is in this event's folder only if we signed it; then it is
+      // removed rather than left as a file no record names (the purge
+      // deletes only recorded items). Anything else is never touched.
+      if (isSignedPublicIdInFolder(data.cloudinaryPublicId, memoryHubFolder(invite.event.tenantId, invite.eventId))) {
+        const resourceType = data.mediaType === 'VIDEO' ? 'video' : 'image';
+        void destroyAsset(data.cloudinaryPublicId, resourceType).then((result) => {
+          if (!result.ok) console.error('[cloudinary cleanup] failed to delete an upload to an archived event:', result.reason);
+        });
+      }
+      assertEventNotArchivedForGuest(invite.event);
+    }
     if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
       throw new HttpError(403, 'This event has been cancelled.');
     }

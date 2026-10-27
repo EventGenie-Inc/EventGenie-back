@@ -53,6 +53,7 @@ import termsRouter from './modules/terms/terms.router.js';
 import systemHealthRouter from './modules/system-health/system-health.router.js';
 import feedbackRouter from './modules/feedback/feedback.router.js';
 import feedbackAdminRouter from './modules/feedback/feedback-admin.router.js';
+import mediaRetentionRouter from './modules/media-retention/media-retention.router.js';
 
 // ─────────────────────────────────────────
 //  FEATURE FLAGS
@@ -314,6 +315,13 @@ app.use('/api/admin/system', systemHealthRouter);
 //  /api/admin/feedback — every event's feedback, shareable photos, CSV
 // ─────────────────────────────────────────
 app.use('/api/admin/feedback', feedbackAdminRouter);
+
+// ─────────────────────────────────────────
+//  ARCHIVED-EVENT MEDIA (super admin only; anyone else gets the global 404)
+//  /api/admin/events/:eventId/media-purge — delete an archived event's
+//  Memory Hub media now (media-retention.service.ts)
+// ─────────────────────────────────────────
+app.use('/api/admin/events', mediaRetentionRouter);
 
 // ─────────────────────────────────────────
 //  404 HANDLER

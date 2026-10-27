@@ -47,9 +47,13 @@ export const memoryHubRepository = {
   // share-link holder (see memory-hub.service.ts's toGalleryItem). Event
   // included with eventDays and eventPass, so its effective status and
   // its Memory Hub entitlement can be resolved before this goes out.
+  //
+  // An archived event's hub is not found, from the moment it is archived:
+  // the link answers as an inactive one (memory-hub.service.ts's
+  // viewByShareToken), whatever the hub's own state.
   findByShareToken: (shareToken: string, opts: { includeVideos: boolean }) =>
     prisma.memoryHub.findFirst({
-      where: { shareToken, isArchived: false },
+      where: { shareToken, isArchived: false, event: { isArchived: false } },
       include: {
         event: { include: { eventDays: { where: { isArchived: false } }, eventPass: true } },
         memoryItems: {

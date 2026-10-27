@@ -1,5 +1,6 @@
 import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
+import { EVENT_ORGANISERS_SELECT } from '../event-assignment/event-organisers.util.js';
 
 type Tx = Prisma.TransactionClient;
 type Db = Tx | typeof prisma;
@@ -163,25 +164,12 @@ export const feedbackRepository = {
       where: { id: eventId, isArchived: false },
       select: {
         id: true,
-        tenantId: true,
         name: true,
         status: true,
         createdByUserId: true,
         eventDays: { where: { isArchived: false }, select: { date: true, endTime: true } },
-        assignments: {
-          select: { user: { select: { id: true, email: true, username: true, role: true, tenantId: true, isActive: true, isArchived: true } } },
-        },
-        createdByUser: { select: { id: true, email: true, username: true, role: true, tenantId: true, isActive: true, isArchived: true } },
+        ...EVENT_ORGANISERS_SELECT,
       },
-    }),
-
-  countAssignmentsForUser: (userId: string) => prisma.eventAssignment.count({ where: { userId } }),
-
-  findActiveTenantAdmins: (tenantId: string) =>
-    prisma.user.findMany({
-      where: { tenantId, role: 'TENANT_ADMIN', isActive: true, isArchived: false },
-      select: { id: true, email: true, username: true },
-      orderBy: { createdAt: 'asc' },
     }),
 
   // The claim: one row per event, ever. Throws a unique violation when the

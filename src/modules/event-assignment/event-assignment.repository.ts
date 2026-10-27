@@ -28,6 +28,15 @@ export const eventAssignmentRepository = {
 
   countForUser: (userId: string, tx: Tx = prisma) => tx.eventAssignment.count({ where: { userId } }),
 
+  // The tenant's active admins, oldest first: who is emailed about an event
+  // when none of its own organisers can be (event-organisers.util.ts).
+  findActiveTenantAdmins: (tenantId: string) =>
+    prisma.user.findMany({
+      where: { tenantId, role: 'TENANT_ADMIN', isActive: true, isArchived: false },
+      select: { id: true, email: true, username: true },
+      orderBy: { createdAt: 'asc' },
+    }),
+
   // Replaces a user's whole assignment list with eventIds, in one
   // transaction: removes the rows no longer wanted, adds the new ones.
   replaceForUser: (tenantId: string, userId: string, eventIds: string[], createdBy: string) =>

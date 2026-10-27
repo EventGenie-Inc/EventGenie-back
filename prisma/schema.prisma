@@ -570,6 +570,12 @@ model Event {
   // backend acts on. Meaningless (and unused) while ticketing is FREE.
   ticketsRefundable           Boolean         @default(false)
   isArchived                  Boolean         @default(false)
+  // When the event was archived; null while it is live (restoring clears
+  // it). Starts the Memory Hub retention clock: 30 days later its photos
+  // and videos are deleted from Cloudinary (media-retention.service.ts).
+  // Events archived before the column existed were given the migration's
+  // own time (20261026090000_archive_media_retention), never an older one.
+  archivedAt                  DateTime?
   createdAt                   DateTime        @default(now())
   updatedAt                   DateTime        @updatedAt
   createdBy                   String
@@ -605,6 +611,9 @@ model Event {
   invitationDesigns       InvitationDesign[]
   // Team Members batch — which EVENT_ADMINs this event is assigned to.
   assignments             EventAssignment[]
+  // Archived-event retention — see EventMediaPurge.
+  mediaPurges             EventMediaPurge[]
+  mediaPurgeReminderClaims MediaPurgeReminderClaim[]
 }
 
 // ─────────────────────────────────────────
@@ -895,6 +904,10 @@ model MemoryItem {
   caption            String?
   status             MemoryItemStatus @default(PENDING)
   isArchived         Boolean          @default(false)
+  // Its Cloudinary asset was deleted by an archived event's media purge
+  // (media-retention.service.ts). The row stays, archived as well, so every
+  // live-items query leaves it out; it can never be restored.
+  purgedAt           DateTime?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
   createdBy          String
@@ -1831,4 +1844,67 @@ model FeedbackRequestClaim {
   claimedAt      DateTime @default(now())
 
   event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────
+//  ARCHIVED EVENTS: MEMORY HUB RETENTION
+//  (media-retention.service.ts)
+// ─────────────────────────────────────────
+
+enum EventMediaPurgeReason {
+  // The sweep, 30 days after the event was archived.
+  RETENTION
+  // A super admin, through POST /api/admin/events/:eventId/media-purge.
+  SUPER_ADMIN
+}
+
+// One purge of an archived event's Memory Hub media, for one archiving
+// (the event's archivedAt when it began): unique per (eventId,
+// archivedAt), so a purge is claimed once however many sweeps race, and an
+// event restored and archived again gets a purge of its own. Inserted under
+// the event's row lock, only while the event is still archived at that
+// archivedAt, so a restore either comes first (no purge) or after (the
+// event comes back without its media).
+//
+// Kept, never deleted. Once begun a purge always finishes, a restore
+// included: only the items that existed when it began are deleted, and an
+// item whose deletion failed is retried by the next sweep (completedAt
+// still null). The lease keeps two sweeps off the same purge at once.
+model EventMediaPurge {
+  id            String                @id @default(cuid())
+  eventId       String
+  archivedAt    DateTime
+  reason        EventMediaPurgeReason
+  // The super admin's User.id; null for the sweep. No relation (same as
+  // Announcement.sentBy).
+  requestedBy   String?
+  startedAt     DateTime              @default(now())
+  completedAt   DateTime?
+  leaseUntil    DateTime?
+  attemptCount  Int                   @default(0)
+  lastAttemptAt DateTime?
+  purgedCount   Int                   @default(0)
+  // Items left after the latest attempt; 0 once complete.
+  failedCount   Int                   @default(0)
+  lastError     String?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, archivedAt])
+  @@index([completedAt])
+}
+
+// The "Photos from <event> will be deleted on <date>" email, claimed once
+// per event and archiving BEFORE it is sent, like FeedbackRequestClaim.
+// Append-only: written once, never edited.
+model MediaPurgeReminderClaim {
+  id             String   @id @default(cuid())
+  eventId        String
+  archivedAt     DateTime
+  recipientCount Int
+  claimedAt      DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, archivedAt])
 }

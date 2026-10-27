@@ -134,8 +134,11 @@ export const memoryHubDownloadService = {
   downloadAll: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<DownloadAllResult> => {
     // The organiser gate every Memory Hub route uses: the event (tenant
     // scope and the assignment lock), the plan's Memory Hub, the hub itself.
-    const hub = await memoryHubService.getByEventId(eventId, requestingRole, tenantId);
-    const event = await eventService.getById(eventId, requestingRole, tenantId);
+    // An archived event too: downloading is how its organisers keep the
+    // photos before they are purged (media-retention.service.ts). Purged
+    // items are archived, so they are never in a zip.
+    const hub = await memoryHubService.getByEventId(eventId, requestingRole, tenantId, false, { archivedEvent: true });
+    const event = await eventService.getById(eventId, requestingRole, tenantId, true);
 
     // The hub's live items, filtered to approved ones in this event's own
     // folder (every stored id was checked on the way in; this keeps an older
