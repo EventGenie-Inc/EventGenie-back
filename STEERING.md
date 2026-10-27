@@ -328,6 +328,10 @@ reaches whoever the link was forwarded to, not only guests, so:
   on every view; without Memory Hub it is the same 404 as an unknown,
   revoked or archived token, so a link holder learns nothing about the
   organiser's billing.
+- **An archived event answers as an unknown link** too, from the moment it
+  is archived (`findByShareToken` requires a live event), not only once its
+  media is purged. Until 2026-10 the gallery kept serving an archived
+  event's photos.
 - **The 404 assumes no viewer:** "This link isn't active."
   (`INACTIVE_SHARE_LINK_MESSAGE`), never "ask the organiser".
 - **Videos only while `memoryHubVideo` is on.**
@@ -471,8 +475,10 @@ into the HTML part and the plain-text part, so the two always match.
 Builders: `invite-message.util.ts` (invitation, reminder, registration,
 announcement, cancellation),
 `auth-email.util.ts` (sign-in code, password reset),
-`user-invite-email.util.ts` (team invitation) and
-`feedback-request-email.util.ts` (the feedback request).
+`user-invite-email.util.ts` (team invitation),
+`feedback-request-email.util.ts` (the feedback request) and
+`media-purge-reminder-email.util.ts` (an archived event's photos about to
+be deleted).
 
 **Escaping lives in the layout.** Every text and every URL in a block goes
 through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
@@ -560,6 +566,15 @@ subject "How did <event> go?" (the event name header-safe), one button
 "Share your feedback" to `<FRONTEND_BASE_URL>/events/<id>/feedback`, and a
 line that every permission is optional and can be changed later.
 
+**The archived-media reminder** (see "Archived events: Memory Hub
+retention") reads like the feedback request: the same From, no seal,
+subject "Photos from <event> will be deleted on <date>" (the event name
+header-safe, the date UTC through `formatGuestDate`), a line that the event
+is archived and its Memory Hub photos and videos will be permanently deleted
+on that date, a line to download them first (the event, its cover and its
+invitation design are kept), and one button "Download your photos" to
+`<FRONTEND_BASE_URL>/events/<id>/manage/memories`.
+
 **Auth emails** use the same layout, calm and functional: no seal, no
 wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
 code" (the code, its validity from `OTP_TTL_MINUTES`, the ignore line) and
@@ -603,8 +618,8 @@ Seven documented exceptions:
   deliberately no update/delete method anywhere in
   `payment-ledger.repository.ts`.
 - The append-only send logs `SmsSendLog`, `InviteReminderLog`,
-  `Announcement`, `AnnouncementDelivery`, `EventEmailClaim` and
-  `FeedbackRequestClaim` — a message was sent, or failed to be, recorded
+  `Announcement`, `AnnouncementDelivery`, `EventEmailClaim`,
+  `FeedbackRequestClaim` and `MediaPurgeReminderClaim` — a message was sent, or failed to be, recorded
   once and never edited or archived. An `Announcement` is
   written when its send is claimed, so its failure count is summed from
   its delivery rows at read time, never written back onto it.
@@ -625,6 +640,14 @@ has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
 `isArchived` on, and none should be added.
 
+**Files are the one thing deleted, and only one kind.** An archived event's
+Memory Hub photos and videos are deleted from Cloudinary 30 days after it
+was archived (see "Archived events: Memory Hub retention"). Their
+`MemoryItem` rows stay, marked `purgedAt` and archived; the purge itself is
+recorded (`EventMediaPurge`, kept, written only while it runs). No other
+file is deleted for retention: covers, invitation designs and feedback
+logos stay, and a live event's media is never purged.
+
 **Every archive needs a working restore.** And restore's own lookup must
 **not** filter archived records out:
 
@@ -638,6 +661,9 @@ This exact bug has shipped **three times** — `user.reactivate`,
 
 Also: if archiving hides a record from the only list an admin could use
 to restore it, the feature is broken even though every method works.
+
+An event restored after its Memory Hub media was purged comes back without
+it, and a purged item can't be restored (409): its file is gone.
 
 ### Errors
 
@@ -874,6 +900,23 @@ that is neither .xlsx nor .csv stays an uncoded 400.
 Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
 `MEMORY_HUB_NOTHING_TO_DOWNLOAD` (no approved items) and 429
 `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`.
+
+The plan's active-event limit: 403 `EVENT_LIMIT_REACHED`, on creating an
+event (`POST /api/events`, the wizard's materialize) and on restoring an
+archived one (`POST /api/events/:id/reactivate`, "Archive another of its
+events, then restore this one."), told apart from the other tier 403s. It
+was uncoded until 2026-10. Archived-event media (see "Archived events:
+Memory Hub retention"), `POST /api/admin/events/:eventId/media-purge`: 409
+`EVENT_NOT_ARCHIVED` (a live event's media is never purged) and 409
+`MEDIA_PURGE_ALREADY_STARTED` (this archiving's purge has begun or
+finished; the message says which), and 422 `ARCHIVE_MEDIA_PURGE_OFF` while
+`archiveMediaPurge` is off, checked first. Restoring a purged Memory Hub
+item is an uncoded 409. A guest upload (signature or save) to an archived
+event's album is an uncoded 404, "This photo album isn't available.", the
+same words whatever the cause behind it, never "archived". The guest's
+invitation for an archived event (RSVP validate, submit, ticket quote) is an
+uncoded 410, "This event is no longer available.", like an expired link's
+410 and with nothing to tell apart for the page: both show the message.
 
 Dates on days and program items (see "Event days and program items"):
 a new or changed day date before UTC today minus one day is 422
@@ -1116,7 +1159,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
-  `feedback`.
+  `feedback`, `archiveMediaPurge`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1203,6 +1246,15 @@ codebase: a feature is switched off by configuration, **never deleted**.
     through); guest-view has no `publicSharing`; the feedback request sweep
     sends nothing (an event asked later still gets its one email, while
     inside the window). Consent records already given stay.
+  - `archiveMediaPurge` off (see "Archived events: Memory Hub retention"):
+    the retention sweep does nothing (no reminder, no new purge, no retry of
+    one begun), the super admin purge is 422 `ARCHIVE_MEDIA_PURGE_OFF` (the
+    route only answers a super admin, who a flag never hides from, so the
+    refusal is in the service), and events report no `mediaPurgeAt` unless
+    a purge had already begun. Archiving still records `archivedAt`, and an
+    archived event is still private to its guests: the flag is about
+    deleting, not hiding. Switched back on, nothing is deleted at once: an
+    overdue event is reminded first and purged a week later.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1540,7 +1592,9 @@ Guest creation and import are allowed in `DRAFT` — organisers build
 their list before going live. Guest-facing Memory Hub access (the
 public share-token gallery, and guest uploads) is governed by `opensAt`
 **and** the event not being `CANCELLED` — not independent of event
-status. Neither gate checks `Event.isArchived`. Organiser-side Memory
+status. **An archived event is private at once**: the gallery answers as an
+inactive link, guest-view as unavailable, and guest uploads are refused
+(see "Archived events: Memory Hub retention"). Organiser-side Memory
 Hub management (`memory-hub.service.ts`'s non-guest methods) checks
 neither `opensAt` nor cancellation — only tenant scoping and tier.
 
@@ -1945,9 +1999,10 @@ The body, every key optional (a key left out leaves that part alone):
 ### Reminders
 
 Manual only — the organiser presses a button. Nothing here runs on a
-timer by deliberate choice, with one exception, the feedback request sweep
-(see "Feedback and sharing permissions"), which is built to be correct
-whether or not its timer fires. They go through the same dispatch path as
+timer by deliberate choice, with two exceptions, the feedback request sweep
+(see "Feedback and sharing permissions") and the archived-media retention
+sweep (see "Archived events: Memory Hub retention"), both built to be
+correct whether or not their timer fires. They go through the same dispatch path as
 invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
@@ -2207,12 +2262,14 @@ Memory Hub download-style zip links of the originals, 30 minutes) and `GET
 /export` (the list as CSV; every cell an organiser typed is defused for
 spreadsheets, a leading `=`, `+`, `-`, `@`, tab or CR prefixed with `'`).
 
-**The request email** (`feedback-request.service.ts`) is **the one
-scheduled job**: a periodic in-process sweep, started by `server.ts` (never
+**The request email** (`feedback-request.service.ts`) is **a scheduled
+job** (one of two, with the archived-media retention sweep): a periodic
+in-process sweep, started by `server.ts` (never
 `app.ts`, so tests start no timer), every 15 minutes. From 08:00 UTC the
 day after an event's last day, once it is `COMPLETED`, its organisers (the
 creator and the members assigned to it, active and able to open it; none
-left, the tenant's active `TENANT_ADMIN`s) are emailed once. **Once is the
+left, the tenant's active `TENANT_ADMIN`s: `resolveEventOrganisers`,
+`event-organisers.util.ts`) are emailed once. **Once is the
 claim, not the timer:** a `FeedbackRequestClaim` row, unique per event, is
 inserted before anything is sent, so two sweeps racing (on one server or
 several) or a restart email once; a send that fails after the claim is not
@@ -2220,6 +2277,109 @@ retried. It catches up: a server asleep at the due time sends on its next
 sweep, for events whose last day was within the last 7 days, and never for
 older ones. Never for a cancelled, draft or archived event, an archived
 tenant, an event with feedback already given, or with `feedback` off.
+
+### Archived events: Memory Hub retention
+
+**30 days after an event is archived, its Memory Hub photos and videos are
+deleted from Cloudinary** (`MEDIA_RETENTION_DAYS`,
+`event/event-media-retention.util.ts`; the sweep is
+`media-retention/media-retention.service.ts`). Everything else is kept: the
+event, its cover photo, its invitation design, and every `MemoryItem` row,
+marked `purgedAt` and archived, so every live-items query (the gallery,
+guest-view, the download, the storage quota, the feedback photos) leaves it
+out with no check of its own. Until 2026-10 archiving changed nothing in
+Cloudinary and the media was kept forever.
+
+- **The clock.** Archiving sets `Event.archivedAt`; restoring clears it.
+  Only a live event can be archived, so the clock never moves while
+  archived. Events archived before the column existed were given the
+  migration's own time (`20261026090000_archive_media_retention`), never an
+  older guess, so nothing was purged at deploy.
+- **The purge** is one `EventMediaPurge` per event and archiving (unique
+  `(eventId, archivedAt)`), inserted under the event's row lock while it is
+  still archived and due, so it is claimed once however many sweeps race on
+  however many servers, and a restore lands either before it (cancelled) or
+  after (the event comes back without its media). Working on it takes a
+  lease (a conditional write, 10 minutes), so one sweep at a time. Every
+  item of the hub that existed when the purge began is deleted, whatever
+  its status, by exact public id in Cloudinary Admin API batches of 100
+  (`destroyAssets`, `cloudinary.client.ts`, with the CDN cache
+  invalidated), each id checked against the event's own Memory Hub folder
+  first (`isSignedPublicIdInFolder`): one outside it is hidden, never sent.
+  Each item is marked as its batch succeeds; one Cloudinary refuses stays
+  unpurged, the purge records `failedCount` and `lastError`, Sentry hears of
+  it, and the next sweep tries again. "Not found" counts as deleted, so a
+  rerun is always safe. A purge that has begun always finishes, a restore
+  included, and never touches an item uploaded after it began.
+- **The reminder.** 7 days before (`MEDIA_PURGE_REMINDER_DAYS_BEFORE`), the
+  event's organisers (`resolveEventOrganisers`, as the feedback request)
+  get one email (see "Email"), claimed once per event and archiving
+  (`MediaPurgeReminderClaim`) before it is sent. Not for a restored event,
+  one whose purge has already begun, or one with nothing to download (no
+  live approved item). **A purge never runs until its reminder went at least
+  7 days earlier** (`mediaPurgeDueAt(archivedAt, remindedAt)`, the later of
+  archivedAt + 30 days and remindedAt + 7 days): a late reminder (the sweep
+  down, or `archiveMediaPurge` off past the 30 days) goes on the next sweep,
+  however late, with the date a week on, and the purge waits for that date.
+  The claim records the sweep's own time as `claimedAt`, the time the
+  email's date was worked out from. Only an event with nothing to download
+  needs no reminder, and is purged at 30 days.
+- **The sweep** runs every 15 minutes, in-process, started by `server.ts`
+  only (two minutes after startup, after the feedback request's first): the
+  reminders due, then the purges due, then every unfinished purge no other
+  sweep holds. One event failing never stops the others.
+- **Organisers can read an archived event, never write to it.** `GET
+  /api/events?archived=true` lists the caller's archived events (scope and
+  assignment lock as ever); `GET /api/events/:id`, the Memory Hub's detail,
+  its items and its download open an archived event, so its organisers can
+  keep the photos. Every other route, and every write, is still the 404.
+  Restoring stays a super admin action (`POST /api/events/:id/reactivate`),
+  held to the plan's active-event limit (403 `EVENT_LIMIT_REACHED`; an event
+  that has held an Event Pass doesn't count, as at creation).
+- **The countdown.** Every event in the lists (`GET /api/events`, with or
+  without `archived`, and the super admin's `/api/tenants/:id/events`) and
+  every event view (`GET /api/events/:id` and every response built on it)
+  carries `archivedAt` (null while live), `mediaPurgeAt` (while archived:
+  when the media is or was deleted: the purge's own start once begun; else
+  `archivedAt` + 30 days, or a week after a late reminder; with a reminder
+  overdue but not yet sent, a week from now, the earliest it can be; null
+  while live, and while `archiveMediaPurge` is off unless a purge had
+  begun) and `mediaPurgedAt` (when its
+  media was last deleted completely, kept after a restore; null if never)
+  (`withMediaRetention`). The frontend shows these and keeps no copy of the
+  30 days.
+- **A super admin can purge now:** `POST
+  /api/admin/events/:eventId/media-purge`, `SUPER_ADMIN` only, the global
+  404 for everyone else (`requireSuperAdminHidden`). The same claim and run
+  as the sweep, recorded with who asked (`requestedBy`) and when
+  (`startedAt`, `reason: SUPER_ADMIN`); it answers with the purge
+  (`eventId`, `reason`, `requestedBy`, `startedAt`, `completedAt`,
+  `purgedCount`, `failedCount`). A live event is 409 `EVENT_NOT_ARCHIVED`;
+  a purge already begun for this archiving is 409
+  `MEDIA_PURGE_ALREADY_STARTED`.
+- **Private to guests at once.** From the moment it is archived (not 30
+  days later), an event's album is closed to everyone but its organisers:
+  the share link answers exactly as an unknown one (404, "This link isn't
+  active."), guest-view is `{ available: false }` like every other blocked
+  state, and a guest upload signature or save is 404 "This photo album isn't
+  available." An upload signed before the archive and saved after has its
+  file removed (only if it is in this event's folder). None of these says
+  why. The guest's public-sharing toggle still works, so a guest can always
+  withdraw. Restoring the event opens the album again (without its media,
+  once purged).
+- **The guest's invitation closes too.** `GET /api/rsvp/validate/:token`
+  for an archived event is 410 "This event is no longer available." (one
+  neutral line, nothing about the event), and `POST /api/rsvp/submit` and
+  the ticket quote are the same 410 before anything is read or written;
+  the Program tab (`POST /api/rsvp/program`) is `{ available: false }`.
+  Until 2026-10 an archived event's invitation showed in full and still
+  took RSVP changes. Restoring opens it again.
+- **Behind `archiveMediaPurge`** (on unless switched off; see "Feature
+  flags"): off, nothing is reminded or deleted. Archiving still records
+  `archivedAt`, so the clock keeps running, but the purge still waits for
+  its reminder: **switched back on, an event archived more than 30 days
+  earlier is reminded on the next sweep and purged a week after it**,
+  never at once.
 
 ### Check-in
 
@@ -2380,7 +2540,11 @@ date. Never compare a deadline with `<` on the stored value.
 | **Archive** | Everything else | Soft-deleted, reversible |
 | **Cancel** | Events only | Called off, irreversible |
 
-Never use "Delete" in user-facing copy. Nothing is deleted.
+Never use "Delete" in user-facing copy. Nothing is deleted, with one
+exception that says so plainly: an archived event's Memory Hub photos and
+videos really are deleted after 30 days, so their reminder, the countdown
+and their refusals say "deleted" (see "Archived events: Memory Hub
+retention"). "Archive" there would promise a restore that can't happen.
 
 ---
 
@@ -2704,6 +2868,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   doesn't show or send the event's questions (`rsvpFields`,
   `rsvpResponses`); and `isRsvpDeadlinePassed` and the reminder check in
   `event-display.util.ts`/`reminder.util.ts` compare the stored instant.
+- **Archived-event retention needs its frontend half** (backend
+  `feature/archive-retention`): an Archived list (`GET
+  /api/events?archived=true`) with the countdown to `mediaPurgeAt`, an
+  archived event opening read-only (its Memories tab and download working,
+  every write hidden), and the super admin's purge button. Until then the
+  reminder's button opens the event's Memories tab, which the current
+  frontend may not show for an archived event. Remove this entry once
+  built.
 - **The pilot polish needs its frontend half** (backend
   `feature/pilot-polish`): a Terms screen answering `TERMS_NOT_ACCEPTED`,
   event forms requiring a host name, and the sign-up form no longer
@@ -3028,6 +3200,42 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     sheet after Guests, and it imports as-is. Time and memory for 300 and
     2,000 rows: `tests/perf/import-timing.test.ts`, opt-in
     (`MEASURE_IMPORT_TIMING=1`).
+  - **Archived-event media retention**
+    (`tests/media-retention/media-retention.test.ts`, Cloudinary's
+    `destroyAssets` mocked): archiving records `archivedAt`; at 29 days
+    nothing is deleted, past 30 every item's file goes (any status, each by
+    its resource type), the rows are kept purged and archived, and the event
+    and its cover stay; a restore before the purge cancels it, one after
+    brings the event back without its media and a purged item can't be
+    restored; two sweeps racing delete each file once, in one purge and one
+    attempt, and two attempts at one purge at the same moment run once (the
+    lease; the two-sweep test alone doesn't catch a broken lease, since the
+    sweep skips a leased purge before taking it); a refused item, or a whole refused batch, is recorded and only
+    it retried by the next sweep; the reminder once, through the layout,
+    with its button, also with two sweeps racing, never for a restored event,
+    one with nothing to download or one not yet due; the super admin purge
+    recorded with who, the global 404 for a tenant admin, an event admin and
+    another tenant, `EVENT_NOT_ARCHIVED` and `MEDIA_PURGE_ALREADY_STARTED`;
+    the migration's backfill giving an old archived event the migration's
+    time, so its first sweep purges and reminds nothing; restoring past the
+    plan's event limit 403 `EVENT_LIMIT_REACHED` (free-trial wording with
+    payments off), as creating is; the archived list, detail, Memory Hub
+    and download readable with the dates, a write still 404, another tenant
+    404; an archived event private to its guests at once (the share link
+    byte for byte an unknown one's 404, guest-view `{ available: false }`,
+    upload signature and save 404 in neutral words with a late upload's
+    file removed, a file in another event's folder never touched, the
+    organiser still reading it); `archiveMediaPurge` off: no reminder, no
+    purge, no retry, the super admin 422 `ARCHIVE_MEDIA_PURGE_OFF`, no
+    `mediaPurgeAt`, `archivedAt` still recorded, and back on, the work done;
+    off past the 30 days and then on: the reminder first, giving a date a
+    week on, which `mediaPurgeAt` reports, nothing deleted six days later,
+    purged after seven; an event with nothing to download purged at 30 days
+    with no reminder; the guest's invitation for an archived event 410 "This
+    event is no longer available." with nothing of the event in it, an RSVP
+    change refused with nothing written, the Program tab unavailable, and
+    restoring opening it again. Each guarantee was shown to fail with its
+    fix reverted (2026-10-26).
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and

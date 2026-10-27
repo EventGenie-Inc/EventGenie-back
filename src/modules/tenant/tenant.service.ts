@@ -3,6 +3,7 @@ import { tenantRepository } from './tenant.repository.js';
 import { eventRepository } from '../event/event.repository.js';
 import { vendorRepository } from '../vendor/vendor.repository.js';
 import { withEffectiveStatus } from '../event/event-status.util.js';
+import { withMediaRetention } from '../event/event-media-retention.util.js';
 import { withEffectiveTier } from '../subscription/effective-tier.util.js';
 import { resolveVendorSpaceLimit } from '../vendor/vendor-tier-enforcement.util.js';
 import { resolvePlanSettings } from '../subscription-tier-config/plan-settings.util.js';
@@ -120,8 +121,8 @@ export const tenantService = {
   // event still reports correctly.
   getEvents: async (id: string) => {
     await tenantService.getById(id);
-    const events = await eventRepository.findAll(id, true);
-    return events.map(withEffectiveStatus);
+    const events = await eventRepository.findAll(id, 'ALL');
+    return events.map(withEffectiveStatus).map((event) => withMediaRetention(event));
   },
 
   // Locks out the entire tenant and cascades to archiving every

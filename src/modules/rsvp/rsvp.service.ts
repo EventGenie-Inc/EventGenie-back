@@ -51,6 +51,16 @@ export const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
   CANCELLED: 'This event has been cancelled.',
 };
 
+// An archived event, to its guests: one neutral line, never "archived",
+// and nothing about the event (validate shows nothing of it; submit and
+// the ticket quote change nothing). 410 like an expired link: the
+// invitation existed and is gone. Restoring the event opens it again.
+export const EVENT_NO_LONGER_AVAILABLE_MESSAGE = 'This event is no longer available.';
+
+const assertEventNotArchived = (event: { isArchived: boolean }): void => {
+  if (event.isArchived) throw new HttpError(410, EVENT_NO_LONGER_AVAILABLE_MESSAGE);
+};
+
 // 403 — the guest is correctly identified (their token is valid), but
 // the event's current state means RSVPs aren't accepted right now. Not
 // a 409: nothing about THIS submission conflicts with anything; the
@@ -241,6 +251,7 @@ export const rsvpService = {
     if (!invite) {
       throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
     }
+    assertEventNotArchived(invite.event);
     if (invite.expiresAt && invite.expiresAt < new Date()) {
       throw new HttpError(410, `This invitation link expired on ${formatGuestDate(invite.expiresAt)}. Contact the organiser for a new one.`);
     }
@@ -264,6 +275,8 @@ export const rsvpService = {
     if (!invite) {
       throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
     }
+    // An archived event's page shows only that it is no longer available.
+    assertEventNotArchived(invite.event);
 
     const isExpired = !!invite.expiresAt && invite.expiresAt < new Date();
     // Switched-off features reach the guest as if the event never had
@@ -443,6 +456,8 @@ export const rsvpService = {
       if (!invite) {
         throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
       }
+      // Before anything is written: an archived event takes no RSVP change.
+      assertEventNotArchived(invite.event);
       // 410 — same reasoning as the RSVP-deadline case below: this
       // specific link had a lifespan and it has passed, distinct from
       // "not accepting RSVPs right now" (403) or "closed" (410, deadline).

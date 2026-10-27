@@ -5,6 +5,7 @@ import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { withPlainCoordinates } from './event-coordinates.util.js';
 import { parseDeadline } from './event-rsvp-deadline.util.js';
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
+import { MEDIA_PURGES_INCLUDE } from './event-media-retention.util.js';
 
 // A blank host name means "no host line" — stored as null, never "", the
 // same as the wizard's materialize path (event-draft.service.ts) has always
@@ -34,6 +35,14 @@ const scopedWhere = (id: string, includeArchived: boolean, tenantId?: string, ev
 
 type Tx = Prisma.TransactionClient;
 
+// Which events a list holds: the live ones (every organiser list), only the
+// archived ones (an organiser's read-only Archived list), or both (the
+// super admin's view of a tenant).
+export type EventArchiveFilter = 'LIVE' | 'ARCHIVED' | 'ALL';
+
+const archiveWhere = (filter: EventArchiveFilter) =>
+  filter === 'LIVE' ? { isArchived: false } : filter === 'ARCHIVED' ? { isArchived: true } : {};
+
 export const eventRepository = {
 
   // The full event update (event-full-update.service.ts): every part of an
@@ -56,17 +65,19 @@ export const eventRepository = {
   // why): Decimal columns must not reach a caller or a JSON response.
 
   // eventIds: the assignment lock, as in scopedWhere above.
-  findAll: async (tenantId?: string, includeArchived = false, eventIds?: string[]) =>
+  // mediaPurges: the archived-media retention fields
+  // (event-media-retention.util.ts's withMediaRetention).
+  findAll: async (tenantId?: string, archived: EventArchiveFilter = 'LIVE', eventIds?: string[]) =>
     (
       await prisma.event.findMany({
         where: {
-          ...(includeArchived ? {} : { isArchived: false }),
+          ...archiveWhere(archived),
           ...(tenantId ? { tenantId } : {}),
           ...(eventIds ? { id: { in: eventIds } } : {}),
         },
         // Ordered by date so "the first day" — whose venue an organiser
         // list shows, now that the venue belongs to the day — is stable.
-        include: { eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } } },
+        include: { eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } }, ...MEDIA_PURGES_INCLUDE },
         orderBy: { createdAt: 'desc' },
       })
     ).map(withPlainCoordinates),
@@ -89,6 +100,7 @@ export const eventRepository = {
         // resolve entitlement (event-entitlement.util.ts's
         // EntitlementDerivableEvent) with no extra query.
         eventPass: true,
+        ...MEDIA_PURGES_INCLUDE,
       },
     });
     return event ? withPlainCoordinates(event) : null;
@@ -254,21 +266,26 @@ export const eventRepository = {
       },
     }).then(withPlainCoordinates),
 
+  // archivedAt starts the Memory Hub retention clock
+  // (media-retention.service.ts). Only a live event is archived (the caller
+  // looks it up live first), so archiving never moves an existing clock.
   archive: (id: string, userId: string) =>
     prisma.event
       .update({
         where: { id },
-        data: { isArchived: true, updatedBy: userId },
+        data: { isArchived: true, archivedAt: new Date(), updatedBy: userId },
       })
       .then(withPlainCoordinates),
 
   // SUPER_ADMIN support action — mirrors user.repository.ts/tenant.repository.ts's
-  // reactivate exactly.
+  // reactivate. Clearing archivedAt cancels a media purge that hasn't begun:
+  // the sweep only claims an event still archived at that archivedAt, under
+  // this same row (media-retention.repository.ts's claimPurge locks it).
   reactivate: (id: string, userId: string) =>
     prisma.event
       .update({
         where: { id },
-        data: { isArchived: false, updatedBy: userId },
+        data: { isArchived: false, archivedAt: null, updatedBy: userId },
       })
       .then(withPlainCoordinates),
 
