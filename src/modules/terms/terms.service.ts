@@ -13,7 +13,7 @@ import { type TermsStatus } from './terms.types.js';
 //  accept again on their next request. Guests (RSVP, registration, Memory
 //  Hub) are not accounts and never see this.
 // ─────────────────────────────────────────
-export const TERMS_VERSION = '2026-11-01';
+export const TERMS_VERSION = '2026-10-30';
 
 export const TERMS_NOT_ACCEPTED = 'TERMS_NOT_ACCEPTED';
 export const TERMS_NOT_ACCEPTED_MESSAGE = 'Please accept the Terms of Service to continue.';

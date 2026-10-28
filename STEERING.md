@@ -1481,8 +1481,9 @@ application works.
 
 **Every account must have accepted the current Terms of Service before
 using e-velope.** The current version is `TERMS_VERSION`
-(`src/modules/terms/terms.service.ts`, a date string, `"2026-11-01"` at
-launch). Until a user has accepted that exact version, **every
+(`src/modules/terms/terms.service.ts`, a date string: `"2026-11-01"` at
+launch, now `"2026-10-30"`, the Terms of Service and Privacy Policy as
+updated after legal review). Until a user has accepted that exact version, **every
 authenticated route answers 403 `TERMS_NOT_ACCEPTED`**, super admins
 included. The check lives in `authenticate` itself
 (`auth.middleware.ts`, read in the same query as the user), so a new
