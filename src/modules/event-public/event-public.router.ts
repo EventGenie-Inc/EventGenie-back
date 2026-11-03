@@ -6,7 +6,11 @@ import {
   publicRegistrationIpLimiter,
   publicRegistrationEmailLimiter,
   publicRegistrationEventLimiter,
+  registrationDocumentIpLimiter,
+  registrationDocumentEventLimiter,
 } from '../../shared/middleware/rate-limit.middleware.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { receiveDocument } from '../guest-document/guest-document.router.js';
 
 // Fully public surface — a registrant holds nothing but the event's
 // shareToken, never a platform session. No `authenticate` anywhere in
@@ -42,6 +46,29 @@ router.post(
     try {
       const result = await eventPublicService.register(req.params['shareToken'] as string, req.body);
       res.status(201).json({ status: 'ok', data: result });
+    } catch (err) { next(err); }
+  }
+);
+
+// POST /api/public-events/:shareToken/documents
+// multipart: rsvpFieldId, file. A registrant's file for one of the event's
+// DOCUMENT questions, before they register (guest-document.service.ts).
+// Answers 201 with the document; the registration names its id as that
+// question's answer. Its own per-IP and per-event limits, before the file
+// is read.
+router.post(
+  '/:shareToken/documents',
+  registrationDocumentIpLimiter,
+  registrationDocumentEventLimiter,
+  receiveDocument,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const document = await guestDocumentService.uploadForRegistration(
+        req.params['shareToken'] as string,
+        req.body?.rsvpFieldId,
+        req.file ? { buffer: req.file.buffer, originalname: req.file.originalname } : undefined
+      );
+      res.status(201).json({ status: 'ok', data: document });
     } catch (err) { next(err); }
   }
 );

@@ -165,6 +165,10 @@ export const vendorService = {
     // venue an organiser list shows. Coordinates are already plain numbers
     // (withPlainCoordinates converts eventDays too).
     const firstDay = event.eventDays[0];
+    // An online first day has no place to be near (event-day-venue.util.ts).
+    if (firstDay?.locationType === 'ONLINE') {
+      throw new HttpError(422, "This event's first day is online, so there's no venue to find vendors near.");
+    }
     if (!firstDay || firstDay.latitude === null || firstDay.longitude === null) {
       throw new HttpError(
         422,

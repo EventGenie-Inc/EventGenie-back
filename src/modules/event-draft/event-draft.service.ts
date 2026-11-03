@@ -10,7 +10,7 @@ import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
 import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
-import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions } from '../rsvp-field/rsvp-field-validation.util.js';
+import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions, resolveFieldDescription } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
   requireItemStartTime,
@@ -123,7 +123,13 @@ export const eventDraftService = {
       // The same rule and code as the other paths (RSVP_FIELD_OPTIONS_INVALID),
       // instead of storing whatever the draft holds.
       const options = resolveDraftFieldOptions(field.options, label);
-      return { ...field, label, fieldType, options } as Record<string, unknown> & { label: string; fieldType: RsvpFieldType; options: string | null };
+      const description = resolveFieldDescription(field.description, label) ?? null;
+      return { ...field, label, fieldType, options, description } as Record<string, unknown> & {
+        label: string;
+        fieldType: RsvpFieldType;
+        options: string | null;
+        description: string | null;
+      };
     });
     const program = p.program as Record<string, unknown> | undefined;
     // Each item names its day by `dayIndex`, its position in the draft's
@@ -205,6 +211,8 @@ export const eventDraftService = {
             address: day.venue.address,
             latitude: day.venue.latitude,
             longitude: day.venue.longitude,
+            locationType: day.venue.locationType,
+            onlineUrl: day.venue.onlineUrl,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,
@@ -241,6 +249,7 @@ export const eventDraftService = {
             fieldType: field.fieldType,
             isRequired: (field.isRequired as boolean) ?? false,
             options: field.options,
+            description: field.description,
             order: index,
             isArchived: false,
             createdBy: userId,

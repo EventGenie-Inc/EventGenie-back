@@ -1,4 +1,4 @@
-import { type RsvpFieldType } from '@prisma/client';
+import { type EventDayLocationType, type RsvpFieldType } from '@prisma/client';
 
 // Public self-registration — everything arrives from an unauthenticated
 // POST body, so every field is checked at runtime (event-public.service.ts's
@@ -67,6 +67,7 @@ export interface PublicEventView {
     date: Date;
     startTime: Date | null;
     endTime: Date | null;
+    locationType: EventDayLocationType;
     location: string | null;
     address: string | null;
     openForRegistration: boolean;
@@ -76,6 +77,7 @@ export interface PublicEventView {
   rsvpFields: {
     id: string;
     label: string;
+    description: string | null;
     fieldType: RsvpFieldType;
     isRequired: boolean;
     options: string | null;

@@ -45,6 +45,12 @@ export const FEATURE_NAMES = [
   // super admin's purge. Off: nothing is reminded or deleted; archiving
   // still records archivedAt, so switching it on later counts from there.
   'archiveMediaPurge',
+  // DOCUMENT questions: a guest uploads a file (a proof of payment, say) with
+  // their RSVP or registration (guest-document module). Off: no DOCUMENT
+  // question can be added, the upload routes refuse with
+  // DOCUMENT_FIELDS_UNAVAILABLE, guests are never shown one, and the
+  // organiser's view link is 404. Documents already received are kept.
+  'documentFields',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

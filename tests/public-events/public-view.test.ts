@@ -39,11 +39,11 @@ describe('GET /api/public-events/:shareToken', () => {
     );
     for (const day of data.days) {
       expect(Object.keys(day).sort()).toEqual(
-        ['address', 'date', 'endTime', 'id', 'label', 'location', 'openForRegistration', 'startTime'].sort()
+        ['address', 'date', 'endTime', 'id', 'label', 'location', 'locationType', 'openForRegistration', 'startTime'].sort()
       );
     }
     expect(data.rsvpFields).toHaveLength(1);
-    expect(Object.keys(data.rsvpFields[0]).sort()).toEqual(['fieldType', 'id', 'isRequired', 'label', 'options']);
+    expect(Object.keys(data.rsvpFields[0]).sort()).toEqual(['description', 'fieldType', 'id', 'isRequired', 'label', 'options']);
     expect(data).toMatchObject({
       hostName: 'Acme HR',
       description: 'Drinks and dinner',

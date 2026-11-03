@@ -84,6 +84,22 @@ enum RsvpFieldType {
   DROPDOWN
   CHECKBOX
   DATE
+  // A file the guest uploads (a proof of payment, say): the answer is a
+  // GuestDocument's id. Behind the documentFields flag.
+  DOCUMENT
+}
+
+// Where an event day happens: a real venue, or online. See EventDay.
+enum EventDayLocationType {
+  VENUE
+  ONLINE
+}
+
+// How a GuestDocument was uploaded: with an invitation's token, or on a
+// public event's registration page before the registrant has one.
+enum GuestDocumentSource {
+  INVITE
+  REGISTRATION
 }
 
 enum InviteStatus {
@@ -614,6 +630,8 @@ model Event {
   // Archived-event retention — see EventMediaPurge.
   mediaPurges             EventMediaPurge[]
   mediaPurgeReminderClaims MediaPurgeReminderClaim[]
+  // Files guests uploaded for DOCUMENT questions — see GuestDocument.
+  guestDocuments          GuestDocument[]
 }
 
 // ─────────────────────────────────────────
@@ -645,6 +663,14 @@ model EventDay {
   address             String?
   latitude            Decimal?  @db.Decimal(10, 7)
   longitude           Decimal?  @db.Decimal(10, 7)
+  // VENUE (a real place: location and address required, as above) or
+  // ONLINE (no venue, address or coordinates; an optional https link in
+  // onlineUrl, shown only to people invited or registered). Every day
+  // saved before it existed is a VENUE (the column's default; nullable
+  // only so its migration is additive, and null reads as VENUE). See
+  // event-day-venue.util.ts.
+  locationType        EventDayLocationType? @default(VENUE)
+  onlineUrl           String?
   // Public self-registration: a registrant can choose (and is invited to)
   // only the days marked open. On by default, so a single-day event and
   // every day added later need nothing set.
@@ -753,6 +779,7 @@ model Invite {
   ticketPurchases TicketPurchase[]
   smsSendLogs     SmsSendLog[]
   reminderLogs    InviteReminderLog[]
+  documents       GuestDocument[]
 }
 
 // ─────────────────────────────────────────
@@ -1022,6 +1049,9 @@ model RsvpField {
   id         String        @id @default(cuid())
   eventId    String
   label      String
+  // Optional help text under the question, e.g. where to pay before
+  // uploading the proof. Null for every question saved before it existed.
+  description String?
   fieldType  RsvpFieldType
   isRequired Boolean       @default(false)
   options    String?
@@ -1034,6 +1064,7 @@ model RsvpField {
 
   event     Event          @relation(fields: [eventId], references: [id])
   responses RsvpResponse[]
+  documents GuestDocument[]
 }
 
 // ─────────────────────────────────────────
@@ -1051,6 +1082,56 @@ model RsvpResponse {
   rsvpField RsvpField @relation(fields: [rsvpFieldId], references: [id])
 
   @@unique([inviteId, rsvpFieldId])
+}
+
+// ─────────────────────────────────────────
+//  GUEST DOCUMENT
+//
+//  A file a guest uploaded for a DOCUMENT question (guest-document module):
+//  a proof of payment, say, which can hold bank details. Stored in
+//  Cloudinary as a PRIVATE raw asset in the event's documents folder, never
+//  at a public URL; an organiser reads it through a 5-minute signed link.
+//  The answer (RsvpResponse.value) is this row's id.
+//
+//  The id is a random UUID minted by the server: a registration upload has
+//  no other credential before the registration that references it, so the
+//  id is what ties the two together.
+//
+//  Never hard-deleted. The FILE is deleted (deleteRequestedAt, then
+//  deletedAt once Cloudinary confirms): replaced by another upload, never
+//  attached within 24 hours, its guest removed, its event deleted, or the
+//  archived event's media purge. A requested deletion that failed is
+//  retried by the documents sweep.
+// ─────────────────────────────────────────
+
+model GuestDocument {
+  id                 String              @id
+  eventId            String
+  rsvpFieldId        String
+  // The invite it belongs to: set at upload for an INVITE upload, and when
+  // the registration that references it is created for a REGISTRATION one.
+  inviteId           String?
+  source             GuestDocumentSource
+  cloudinaryPublicId String              @unique
+  // The name the guest's file had, for the organiser. Never logged.
+  fileName           String
+  contentType        String
+  sizeBytes          Int
+  uploadedAt         DateTime            @default(now())
+  // When an RSVP or registration referenced it. Unattached for 24 hours:
+  // deleted by the sweep.
+  attachedAt         DateTime?
+  deleteRequestedAt  DateTime?
+  deletedAt          DateTime?
+  lastDeleteError    String?
+
+  event     Event     @relation(fields: [eventId], references: [id])
+  rsvpField RsvpField @relation(fields: [rsvpFieldId], references: [id])
+  invite    Invite?   @relation(fields: [inviteId], references: [id])
+
+  @@index([eventId])
+  @@index([inviteId])
+  @@index([deletedAt, attachedAt, uploadedAt])
 }
 
 // ─────────────────────────────────────────

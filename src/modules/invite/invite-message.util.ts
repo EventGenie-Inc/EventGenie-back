@@ -1,4 +1,5 @@
-import { type InvitationDesignKind } from '@prisma/client';
+import { type EventDayLocationType, type InvitationDesignKind } from '@prisma/client';
+import { ONLINE_VENUE_LABEL } from '../event-day/event-day-venue.util.js';
 import { normalizeSmsPunctuation } from '../../shared/messaging/sms-segments.util.js';
 import { renderEmail, type EmailBlock } from '../../shared/messaging/email-layout.js';
 import { formatFromHeader, sanitizeDisplayName, sanitizeHeaderText } from '../../shared/messaging/email-address.util.js';
@@ -41,7 +42,19 @@ export interface InviteDayLine {
   endTime?: Date | null;
   location: string | null;
   address: string | null;
+  // An online day (event-day-venue.util.ts): "Online" and its link instead
+  // of a venue and address. Left out (an older caller) reads as a venue.
+  locationType?: EventDayLocationType | null;
+  onlineUrl?: string | null;
 }
+
+// Where a day happens, as email lines: its venue and address, or "Online"
+// and its link. Every email that carries day lines goes to someone invited
+// or registered, so the link may be shown.
+const whereLines = (day: InviteDayLine): (string | null | undefined)[] =>
+  day.locationType === 'ONLINE'
+    ? [ONLINE_VENUE_LABEL, day.onlineUrl?.trim()]
+    : [day.location?.trim(), day.address?.trim()];
 
 const whenText = (day: InviteDayLine): string => {
   const start = day.startTime ? formatGuestTime(day.startTime) : null;
@@ -56,7 +69,7 @@ const dayGroups = (days: InviteDayLine[], fallbackDateLabel: string | null) => {
   }
   return days.map((day) => ({
     heading: days.length > 1 ? day.label.trim() : null,
-    lines: [whenText(day), day.location?.trim(), day.address?.trim()].filter((l): l is string => !!l),
+    lines: [whenText(day), ...whereLines(day)].filter((l): l is string => !!l),
   }));
 };
 
@@ -132,7 +145,7 @@ export const buildInviteFromHeader = (input: SenderSource): string =>
 const preheaderFor = (input: InviteEmailInput): string => {
   const first = input.days[0];
   const parts = first
-    ? [input.eventName, formatGuestDate(first.date), first.location?.trim()]
+    ? [input.eventName, formatGuestDate(first.date), first.locationType === 'ONLINE' ? ONLINE_VENUE_LABEL : first.location?.trim()]
     : [input.eventName, input.fallbackDateLabel];
   return parts.filter((p): p is string => !!p).join(' · ');
 };

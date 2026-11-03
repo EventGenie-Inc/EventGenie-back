@@ -5,6 +5,8 @@ export interface CreateRsvpFieldDto {
   fieldType: RsvpFieldType;
   isRequired?: boolean;
   options?: string;
+  // Help text under the question; resolveFieldDescription's rules.
+  description?: string | null;
   order: number;
 }
 
@@ -13,5 +15,6 @@ export interface UpdateRsvpFieldDto {
   fieldType?: RsvpFieldType;
   isRequired?: boolean;
   options?: string | null;
+  description?: string | null;
   order?: number;
 }

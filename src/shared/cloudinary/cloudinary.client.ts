@@ -101,7 +101,13 @@ export type DestroyAssetsResult =
 // answer counts as failed, so it is tried again rather than assumed gone.
 // Used by the archived-event media purge (media-retention.service.ts), whose
 // ids are all checked against the event's own folder first.
-export const destroyAssets = async (publicIds: string[], resourceType: 'image' | 'video' = 'image'): Promise<DestroyAssetsResult> => {
+// `type` is the delivery type the assets were stored with: 'upload' for
+// every public asset, 'private' for guest documents (uploadPrivateRawAsset).
+export const destroyAssets = async (
+  publicIds: string[],
+  resourceType: 'image' | 'video' | 'raw' = 'image',
+  type: 'upload' | 'private' = 'upload'
+): Promise<DestroyAssetsResult> => {
   if (publicIds.length === 0) return { ok: true, deleted: [], failed: [] };
   if (publicIds.length > CLOUDINARY_DELETE_BATCH_LIMIT) {
     return { ok: false, reason: `At most ${CLOUDINARY_DELETE_BATCH_LIMIT} assets per call` };
@@ -121,7 +127,7 @@ export const destroyAssets = async (publicIds: string[], resourceType: 'image' |
   const auth = Buffer.from(`${config.apiKey}:${config.apiSecret}`).toString('base64');
 
   try {
-    const res = await fetch(`https://api.cloudinary.com/v1_1/${config.cloudName}/resources/${resourceType}/upload?${query}`, {
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${config.cloudName}/resources/${resourceType}/${type}?${query}`, {
       method: 'DELETE',
       headers: { Authorization: `Basic ${auth}` },
       signal: AbortSignal.timeout(DELETE_BATCH_TIMEOUT_MS),

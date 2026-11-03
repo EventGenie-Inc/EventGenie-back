@@ -46,7 +46,7 @@ const createDay = (eventId: string, userId: string, label: string, date: string)
     data: { eventId, label, date: new Date(date), ...venueFor(label), isArchived: false, createdBy: userId, updatedBy: userId },
   });
 
-const venueFor = (label: string) => ({ location: `${label} Venue`, address: `1 ${label} Rd`, latitude: null, longitude: null });
+const venueFor = (label: string) => ({ locationType: 'VENUE' as const, location: `${label} Venue`, address: `1 ${label} Rd`, latitude: null, longitude: null, onlineUrl: null });
 
 describe('POST /api/rsvp/program — eventProgramService.getProgramForInvite (Contract A)', () => {
   it('unknown token: 404, not 500', async () => {

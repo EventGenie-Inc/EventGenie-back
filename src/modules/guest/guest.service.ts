@@ -24,6 +24,8 @@ import { buildGuestExportWorkbook } from './guest-export.util.js';
 import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { guestDocumentRepository } from '../guest-document/guest-document.repository.js';
 
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
@@ -199,6 +201,12 @@ export const guestService = {
       }
     });
 
+    // Their uploaded documents (proofs of payment, which can hold bank
+    // details) are deleted from Cloudinary now, not kept for a restore:
+    // restoring the guest brings their answers back without the files.
+    // A deletion Cloudinary refuses is retried by the documents sweep.
+    await guestDocumentService.deleteForGuest(id);
+
     return guestRepository.findById(id, true);
   },
 
@@ -298,6 +306,9 @@ export const guestService = {
     await assertGuestExportEnabled(event);
 
     const guests = await guestRepository.findAllForExport(eventId);
-    return buildGuestExportWorkbook(event, event.eventDays, event.rsvpFields, guests);
+    // A DOCUMENT answer is exported as "Received" while its file is kept,
+    // never as a link or an id.
+    const receivedDocumentIds = await guestDocumentRepository.findLiveAttachedIdsForEvent(eventId);
+    return buildGuestExportWorkbook(event, event.eventDays, event.rsvpFields, guests, receivedDocumentIds);
   },
 };

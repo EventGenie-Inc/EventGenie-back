@@ -1,3 +1,5 @@
+import { dayHasVenue } from '../event-day/event-day-venue.util.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
@@ -345,9 +347,16 @@ export const eventService = {
     return eventService.getById(id, requestingRole, tenantId);
   },
 
+  // Deleting an event archives it. Its guests' uploaded documents are
+  // deleted from Cloudinary at once (they can hold bank details; Memory
+  // Hub media waits 30 days for its download), and a restore brings the
+  // event back without them. The archived-media purge deletes any still
+  // left (guest-document.service.ts).
   archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     await eventService.getById(id, requestingRole, tenantId);
-    return eventRepository.archive(id, userId);
+    const archived = await eventRepository.archive(id, userId);
+    await guestDocumentService.deleteForEvent(id);
+    return archived;
   },
 
   // ─────────────────────────────────────────
@@ -445,7 +454,8 @@ export const eventService = {
     // but a day that came through the venue migration from an event that
     // had none still exists without one — and guests must not be invited
     // to a day with nowhere to go.
-    const daysWithoutVenue = event.eventDays.filter((d) => !d.location?.trim() || !d.address?.trim());
+    // An online day needs no venue (dayHasVenue).
+    const daysWithoutVenue = event.eventDays.filter((d) => !dayHasVenue(d));
     if (daysWithoutVenue.length) {
       missing.push(`a venue for ${daysWithoutVenue.map((d) => `'${d.label}'`).join(', ')}`);
     }

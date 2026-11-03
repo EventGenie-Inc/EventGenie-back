@@ -75,6 +75,7 @@ describe('GET /api/config/features', () => {
       memoryHubDownload: true,
       feedback: true,
       archiveMediaPurge: true,
+      documentFields: true,
     });
   });
 

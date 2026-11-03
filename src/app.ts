@@ -54,6 +54,7 @@ import systemHealthRouter from './modules/system-health/system-health.router.js'
 import feedbackRouter from './modules/feedback/feedback.router.js';
 import feedbackAdminRouter from './modules/feedback/feedback-admin.router.js';
 import mediaRetentionRouter from './modules/media-retention/media-retention.router.js';
+import guestDocumentRouter from './modules/guest-document/guest-document.router.js';
 
 // ─────────────────────────────────────────
 //  FEATURE FLAGS
@@ -227,6 +228,7 @@ app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
 app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
 app.use('/api/events/:eventId/announcements', announcementRouter);
 app.use('/api/events/:eventId/feedback', feedbackRouter);
+app.use('/api/events/:eventId/documents', guestDocumentRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);

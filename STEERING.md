@@ -193,6 +193,7 @@ before the pilot merge:
 | `/feedback` (body `selectedPhotoIds`) | safe (the event's own eligible photos only) |
 | `/pass/purchases/:purchaseId/reconcile` and the SMS bundle's | safe (looked up by id and event) |
 | `/full` (every row id) | safe (matched against the event's own live rows, else that part's 404) |
+| `/documents/:documentId/link` | safe (`getScoped` on the URL's event, then the document's own `eventId`; vendors the global 404) |
 
 `/api/guests/:id` has no event in its URL and goes through
 `resolveEventScope` (see "The assignment lock").
@@ -417,6 +418,17 @@ or for a request with no email its IP through `ipKeyGenerator`. A shared
 fallback bucket (it used to be one `'unknown'` key for every email-less
 request) lets one caller refuse everyone else.
 
+**Document uploads** (see "Document fields") follow the same two shapes.
+`POST /api/rsvp/documents`: per invite, 20 / 5 minutes
+(`documentUploadInviteLimiter`, `GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN`,
+the SHA-256 of the token; it runs after the file is read, since the token
+is in the multipart body), behind an IP backstop of 100 failed / 5 minutes
+(`documentUploadIpLimiter`, before the file is read). `POST
+/api/public-events/:shareToken/documents`: registration's numbers with their
+own budgets, 500 / 15 minutes per IP (`registrationDocumentIpLimiter`) and
+300 / 5 minutes per event (`registrationDocumentEventLimiter`), both before
+the file is read.
+
 **RSVP submit is limited per invite** (`rsvpSubmitInviteLimiter`, 20 an
 hour, every request counted, keyed by the SHA-256 of the invite token).
 It bounds how fast one invite can test addresses through the email-change
@@ -444,6 +456,28 @@ event covers (create, update, wizard materialize) and Memory Hub
 `mediaUrl`; invitation designs and feedback logos were built with both
 checks. An id
 already stored on a record is not re-checked when re-sent unchanged.
+
+### Private storage: guests' documents
+
+**A file a guest uploads for a DOCUMENT question is never publicly
+reachable.** A proof of payment can hold bank details, so unlike every other
+upload it never goes browser-to-Cloudinary with a signature: the browser
+sends it to this server, which checks it (see "Document fields") and
+stores it itself (`uploadPrivateRawAsset`,
+`shared/cloudinary/cloudinary-private-asset.util.ts`) as a `raw` asset of
+delivery type **`private`**, in the event's own documents folder
+(`guestDocumentFolder`: `eventgenie/<tenantId>/documents/<eventId>`, beside
+the event's Memory Hub and invitation-design folders). No delivery URL
+serves a private original, and none is ever stored or returned. The only
+way to read one is a **signed Cloudinary `download` link that expires
+after 5 minutes** (`buildPrivateDownloadUrl`), minted per view for an
+organiser who can open the event, never stored, never emailed, never in
+the export. Deleting one names its type: `destroyAssets(ids, 'raw',
+'private')`. The public id is `<folder>/<uuid>/<safe name>.<ext>` (the safe
+name is what the download is called), checked with
+`isGuestDocumentPublicIdInFolder` before any delete or link. A new kind of
+sensitive upload follows the same path; it never gets a public URL "for
+now".
 
 ### Email
 
@@ -523,7 +557,8 @@ replies reach a person; there is none if that user is archived. Subjects:
 waiting". **Never "RSVP" in a subject.** Body: the seal, the eyebrow, the
 event name in serif, "From <host>" when there is one, an UPLOAD design's
 image, each invited day (date and UTC time via `guest-date.util.ts`,
-venue, address; labelled when there are several), and one button, "Open
+venue, address, or for an online day "Online" and its link; labelled when
+there are several), and one button, "Open
 your e-velope". The preheader is the event name, plus the date and venue of
 the guest's first invited day. A reminder adds the reply deadline when
 there is one. **The registration email** (public self-registration, see
@@ -640,13 +675,18 @@ has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
 `isArchived` on, and none should be added.
 
-**Files are the one thing deleted, and only one kind.** An archived event's
+**Files are the one thing deleted, and only two kinds.** An archived event's
 Memory Hub photos and videos are deleted from Cloudinary 30 days after it
 was archived (see "Archived events: Memory Hub retention"). Their
 `MemoryItem` rows stay, marked `purgedAt` and archived; the purge itself is
-recorded (`EventMediaPurge`, kept, written only while it runs). No other
-file is deleted for retention: covers, invitation designs and feedback
-logos stay, and a live event's media is never purged.
+recorded (`EventMediaPurge`, kept, written only while it runs). And guests'
+uploaded documents (see "Document fields"), deleted when replaced, when
+never attached within 24 hours, when their guest is removed, when their
+event is deleted, and by that same purge. Their `GuestDocument` rows stay,
+marked `deleteRequestedAt` then `deletedAt`; they have no `isArchived`.
+Restoring the guest or the event never brings a document back. No other
+file is deleted: covers, invitation designs and feedback logos stay, and a
+live event's media is never purged.
 
 **Every archive needs a working restore.** And restore's own lookup must
 **not** filter archived records out:
@@ -795,6 +835,31 @@ submission; checked first, it was a 500 from the unique
 question this event doesn't have, archived ones included). Until 2026-10
 all of these were uncoded at RSVP.
 
+Document fields (see "Document fields"), at RSVP submit, registration and
+the two upload routes: `DOCUMENT_REQUIRED` (422, a required DOCUMENT
+question with no file from someone attending, checked after
+`RSVP_ANSWER_REQUIRED`: "Please upload 'Proof of payment'. The organiser
+needs it to confirm your place."), `DOCUMENT_TYPE_NOT_ALLOWED` (422, the
+upload isn't a PDF, JPG, PNG or XLSX by its content (a CSV included), or
+its name says another type: "This file type can't be uploaded. Use a PDF,
+JPG, PNG or XLSX file."), `DOCUMENT_TOO_LARGE` (413, over 5 MB, like a guest import's),
+`DOCUMENT_REFERENCE_INVALID` (422, an answer naming a document that isn't
+this guest's or this registration's upload for that question on this event,
+or one since deleted: one message, "The file for '<label>' couldn't be
+found. Please upload it again.", whatever the cause, so it never says
+whether another guest's document exists) and `DOCUMENT_FIELDS_UNAVAILABLE`
+(422, `documentFields` off: an upload, or a DOCUMENT question added or a
+question changed to one). An upload for a question that isn't one of the
+event's DOCUMENT questions is 400 `RSVP_ANSWER_UNKNOWN_FIELD`; no file, or a
+malformed multipart body (two files), an uncoded 400; Cloudinary failing an
+uncoded 503. A question's description over 500 characters is 422
+`RSVP_FIELD_DESCRIPTION_TOO_LONG` (every path that saves a question).
+Changing a question's type to or from DOCUMENT once it has answers (a
+blank answer is none) is 409 `RSVP_FIELD_TYPE_LOCKED` ("'<label>' already
+has answers, so it can't be changed to or from a file upload. Add a new
+field instead."), on `PUT .../rsvp-fields/:id` and the full update, with
+nothing saved; any other type change is allowed as before.
+
 An answer is stored exactly as sent and returned as stored (the guest page's
 `rsvpResponses`, the organiser's guest details, the export); the backend
 never fills one in. A CHECKBOX the form didn't send stores nothing and
@@ -929,6 +994,14 @@ another day."; item create and update, materialize and the full update).
 The full event update (`PUT /api/events/:eventId/full`) has no codes of its
 own: every refusal is its part's own endpoint's, code included.
 
+Online days (see "Venue"): `EVENT_DAY_ONLINE_URL_INVALID` (422, an online
+day's link that isn't a full https address: "The link for '<day>' must be
+a full https:// address, like https://example.com/tournament.") and
+`EVENT_DAY_LOCATION_TYPE_INVALID` (422, a `locationType` other than
+`VENUE` or `ONLINE`), on day create and update, the full update and the
+wizard's materialize. A venue day without its venue name or address stays
+the uncoded 422 it was.
+
 Values that used to reach Prisma unchecked as a 500 (all 422):
 `RSVP_FIELD_OPTIONS_INVALID` ("The choices for '<label>' must be a list of
 text options.": a question's `options` that isn't a JSON-encoded list of
@@ -1018,7 +1091,10 @@ strings, any header outside a short allowlist (`Authorization` and
 team-invite tokens (in a URL path too: `/rsvp/validate/:token` is masked),
 oobCodes, OTP codes, passwords, and **any email address or phone number
 anywhere** (message, URL, exception text, breadcrumb, extra, tags), all
-masked. A JSON parse error's message is withheld whole, since it quotes the
+masked. **A file's name** (a guest's document, which can carry their name)
+is a contact detail too: a `fileName`/`originalname`/public id key goes
+whole, and the name at the end of a document's public id in any text is
+masked; no log line names a file either (ids and counts only). A JSON parse error's message is withheld whole, since it quotes the
 body (a malformed request body is now a 400 and never reported; the rule
 stays for any other parse error). The user is `id`, `role` and `tenantId`, never email, name or phone.
 A new kind of credential is a new scrubber rule and a new value in
@@ -1159,7 +1235,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
-  `feedback`, `archiveMediaPurge`.
+  `feedback`, `archiveMediaPurge`, `documentFields`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1255,6 +1331,20 @@ codebase: a feature is switched off by configuration, **never deleted**.
     archived event is still private to its guests: the flag is about
     deleting, not hiding. Switched back on, nothing is deleted at once: an
     overdue event is reminded first and purged a week later.
+  - `documentFields` off (see "Document fields"): no DOCUMENT question can
+    be added, nor a question changed to one (422
+    `DOCUMENT_FIELDS_UNAVAILABLE`, on the rsvp-field endpoints, the full
+    update and the wizard's materialize; a saved one re-sent unchanged
+    still saves); both upload routes refuse with the same 422 (checked
+    first, so the code is the answer however the request is shaped, rather
+    than a `requireFeature` 404); guests are never shown a DOCUMENT
+    question (`/rsvp/validate`, the public view), so it is never required
+    and an answer to one is `RSVP_ANSWER_UNKNOWN_FIELD`; the organiser's
+    view link is the global 404. **Documents already received are kept**:
+    an RSVP edit keeps the guest's DOCUMENT answer and its file. Deleting
+    is never switched off: guest removal, event deletion, the purge and
+    the sweep still delete files. Events with no DOCUMENT question are
+    exactly as before.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1640,10 +1730,12 @@ their own invitation.
   (see "Dates").
 - **The view** (`GET /api/public-events/:shareToken`) is exactly what the
   registration page shows, as an explicit allowlist: name, host,
-  description, cover, the live days with their venue and whether each is
-  open, the event's questions (`rsvpFields`: `id`, `label`, `fieldType`,
-  `isRequired`, `options`, live ones in order, exactly as the RSVP form
-  receives them), and `registration` (`isOpen`, `reason`
+  description, cover, the live days with their venue (`locationType`,
+  `location`, `address`; an online day reads "Online", and its link is
+  never here) and whether each is open, the event's questions (`rsvpFields`: `id`, `label`, `description`,
+  `fieldType`, `isRequired`, `options`, live ones in order, exactly as the
+  RSVP form receives them; DOCUMENT ones only while `documentFields` is
+  on), and `registration` (`isOpen`, `reason`
   CANCELLED/CLOSED/FULL, `code`, its guest-facing `message`, `closesAt`,
   `plusOnesAllowed`, `allowedEmailDomains`). Day and question ids are the
   only ids in it (the form sends them back as `dayIds` and
@@ -1727,6 +1819,84 @@ their own invitation.
   public page, so the refusal reveals nothing. Only a change is checked:
   an address the guest already had before the domains were set never
   blocks their reply.
+
+### Document fields
+
+Behind `documentFields`. An additional field of type **DOCUMENT** asks the
+guest for a file with their RSVP or registration (a club running a
+tournament wants a proof of payment). It is a question like any other
+(`RsvpField`: `label`, the optional `description` every question now has,
+`isRequired`), saved through the same paths (the rsvp-field endpoints, the
+full update, the wizard's materialize). The answer is a document id: one
+file per DOCUMENT question per guest (`src/modules/guest-document/`). Once
+a question has answers it can't be changed to or from DOCUMENT (409
+`RSVP_FIELD_TYPE_LOCKED`, `assertFieldTypeChangeAllowed`): the organiser
+adds a new question instead.
+
+- **Uploading goes through this server**, never browser-to-Cloudinary,
+  so the file can be checked, then stored privately (see "Private
+  storage"). Two routes, both public, multipart with the file in `file`:
+  `POST /api/rsvp/documents` (`token`, `rsvpFieldId`; the invitation's own
+  gates in RSVP submit's order: a link that isn't valid or whose guest was
+  removed 404, archived 410, expired 410, not accepting replies 403, the
+  deadline 410) and `POST /api/public-events/:shareToken/documents`
+  (`rsvpFieldId`; only while registration is open, refused with
+  registration's own code; not refused for being full). Each answers 201
+  with the document: `{ id, rsvpFieldId, fileName, contentType,
+  sizeBytes, uploadedAt }`.
+- **The content decides the type**, never the name or the stated type
+  (`guest-document-content.util.ts`): PDF (`%PDF-`), PNG and JPG by their
+  signatures, XLSX as a zip whose content types name the plain workbook
+  part and nothing that runs code (no VBA project, macro sheets, ActiveX,
+  embedded objects, template or add-in; only the index and
+  `[Content_Types].xml` are read, counted as they inflate). The name's
+  extension must then be that type's own. Anything else, a renamed
+  executable, a PNG called .pdf, an .xlsm under any name, a CSV or any
+  other text file (a CSV opened in a spreadsheet can run formulas on the
+  organiser's machine), is 422 `DOCUMENT_TYPE_NOT_ALLOWED`. At most **5
+  MB** (`GUEST_DOCUMENT_MAX_BYTES`): one byte more is 413
+  `DOCUMENT_TOO_LARGE`, refused by multer before the rest is read. Never
+  written to disk.
+- **The id is the answer.** RSVP submit and registration send it as the
+  DOCUMENT question's `rsvpResponses` value; it must be a live upload for
+  that question on this event, and the guest's own (their invite's, at
+  RSVP) or an unclaimed registration upload (at registration), else 422
+  `DOCUMENT_REFERENCE_INVALID`. It is then attached, in the answer's
+  transaction. A required DOCUMENT question without one is 422
+  `DOCUMENT_REQUIRED` (attending only). The id is a random UUID: a
+  registration upload has no other credential.
+- **Replacing deletes the old file.** A second upload for the same
+  question deletes the guest's earlier unsubmitted one; an RSVP naming a
+  different file (or none) deletes the one sent before, once it commits.
+- **Never attached within 24 hours: deleted** by the documents sweep
+  (`guest-document.service.ts`, every 15 minutes, started by `server.ts`
+  only), which also retries any deletion Cloudinary refused. A repeat
+  registration stores no second answers, so its upload is left to it.
+- **Deleted with its guest and its event.** Removing a guest (`DELETE
+  /api/guests/:id`) or deleting an event (`DELETE /api/events/:id`) deletes
+  their files at once (bank details are not kept for a restore, unlike
+  Memory Hub photos), and the archived-media purge deletes any left, counted
+  in its `purgedCount`/`failedCount`. A deletion never fails the request
+  that caused it; it is retried.
+- **The organiser** reads them in the guest details: `GET
+  /api/invites/:inviteId/rsvp-responses` gives every answer a `document`,
+  for a DOCUMENT answer whose file is kept `{ id, fileName, contentType,
+  sizeBytes, uploadedAt }`, else `null` (a DOCUMENT question with no
+  answer, or `document: null`, means nothing was received). To open one:
+  `GET /api/events/:eventId/documents/:documentId/link` (event admins
+  under tenant scoping and the assignment lock; `{ url, expiresAt,
+  fileName, contentType, sizeBytes }`, the link downloading the file for 5
+  minutes). Another tenant, a locked member, another event's document, an
+  unsubmitted or deleted one: 404; a vendor, or anyone while the flag is
+  off: the global 404. The guest export says "Received" or blank, never a
+  link or an id.
+- **The guest** gets their own files back on `/rsvp/validate` as
+  `documents` (the same shape as the upload's answer), and a DOCUMENT
+  answer whose file has been deleted is left out of `rsvpResponses`, so the
+  form asks for it again.
+- **Storage.** Every kept document counts in the event's storage
+  (`memoryHubRepository.sumBytesForEvent`, so the Memory Hub's `usedBytes`
+  and quota). A document upload is never refused for the quota.
 
 ### Guest contact
 
@@ -1838,7 +2008,8 @@ rows.
 has its own `location` (venue name), `address`, `latitude`, `longitude`.
 The columns are nullable only so the migration that introduced them could
 backfill old events; the API requires a non-blank location and address on
-every day create and update (422), judged on the day an update leaves
+every venue day's create and update (422; an Online day has neither, see
+below), judged on the day an update leaves
 behind (`event-day-venue.util.ts`, shared with the wizard's materialize).
 Coordinates come from the frontend's HERE address lookup, both-or-neither,
 and are cleared when the address changes without new ones — this backend
@@ -1854,6 +2025,43 @@ still sending one is ignored, not refused). The Event's own `location`,
 `event.location`/`address` and coordinates remain as compatibility keys,
 filled from the first day's venue. The public event view no longer has
 them: no client ever read it, and it shows each day's venue.
+
+**A day can be Online instead** (`EventDay.locationType`: `VENUE`, the
+default, or `ONLINE`; `onlineUrl`), for an event that happens on the
+internet, an online chess tournament, say. Not behind any flag: it is a
+plain option for every event. One place decides it, `event-day-venue.util.ts`,
+on every path that saves a day (day create and update, the full update,
+the wizard's materialize):
+
+- **Online: no venue.** No venue name, address or coordinates (stored
+  null whatever is sent), so no map and no address search. An optional
+  link, **https only**: a full `https://` URL with a host, no user name or
+  password, at most 2,000 characters, else 422
+  `EVENT_DAY_ONLINE_URL_INVALID`. Blank or null is no link. A type other
+  than `VENUE` or `ONLINE` is 422 `EVENT_DAY_LOCATION_TYPE_INVALID`.
+- **Left out, nothing changes:** a new day is a `VENUE`, a saved day keeps
+  its type, an online day keeps its link unless one is sent. Switching
+  back to a venue needs a venue name and address like any venue, and drops
+  the link. Publishing accepts an online day with no venue
+  (`dayHasVenue`).
+- **Existing events are unchanged.** The migration
+  (`20261102100000_event_day_online`) adds the columns with `VENUE` as the
+  default, so every saved day is the physical venue it was; a null type is
+  read as `VENUE` too.
+- **Everyone sees "Online"** (`ONLINE_VENUE_LABEL`) where a venue would be,
+  with no address and no coordinates: `toDayVenueView` makes it so for the
+  guest's invitation and Program tab, the public registration page, the
+  check-in roster, and the `/rsvp/validate` compatibility keys.
+- **The link only reaches people invited or registered:** the guest's
+  own invitation (`/rsvp/validate`'s days, `toDayVenueView(day, {
+  withOnlineUrl: true })`, which is also the RSVP confirmation's data),
+  the Program tab, and the invitation, reminder and registration emails
+  ("Online" and the link in place of the venue and address). **Never the
+  public registration page** (`GET /api/public-events/:shareToken`), which
+  shows `locationType` and "Online" only. Organisers get it on their own
+  event views and the check-in roster. The cancellation email lists dates
+  only, as before. Vendor proximity refuses an online first day with its
+  own message (there is nowhere to be near).
 
 ### Event program
 
@@ -1943,10 +2151,10 @@ The body, every key optional (a key left out leaves that part alone):
   event?:      { name?, description?, hostName?, coverImageUrl?, coverImagePublicId?,
                  coverImageBytes?, visibility?, ticketing?, rsvpDeadline?, capacity?,
                  ticketsRefundable? },                      // PUT /api/events/:id's body
-  days?:       [{ id?, label?, date?, startTime?, endTime?, location?, address?,
-                  latitude?, longitude? }],                 // PUT .../days/:id's body
+  days?:       [{ id?, label?, date?, startTime?, endTime?, locationType?, location?, address?,
+                  latitude?, longitude?, onlineUrl? }],     // PUT .../days/:id's body
   tickets?:    [{ id?, name?, description?, price?, currency?, totalQuantity?, isAvailable? }],
-  rsvpFields?: [{ id?, label?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings
+  rsvpFields?: [{ id?, label?, description?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings
   program?:    { title?, isPublished?,
                  items?: [{ id?, title?, description?, startTime?, durationMins?, dayIndex? }] },
   memoryHub?:  { opensAt?: string | null }
@@ -2000,10 +2208,11 @@ The body, every key optional (a key left out leaves that part alone):
 ### Reminders
 
 Manual only — the organiser presses a button. Nothing here runs on a
-timer by deliberate choice, with two exceptions, the feedback request sweep
-(see "Feedback and sharing permissions") and the archived-media retention
-sweep (see "Archived events: Memory Hub retention"), both built to be
-correct whether or not their timer fires. They go through the same dispatch path as
+timer by deliberate choice, with three exceptions, the feedback request
+sweep (see "Feedback and sharing permissions"), the archived-media
+retention sweep (see "Archived events: Memory Hub retention") and the
+documents sweep (see "Document fields"), all built to be correct whether
+or not their timer fires. They go through the same dispatch path as
 invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
@@ -2546,6 +2755,9 @@ exception that says so plainly: an archived event's Memory Hub photos and
 videos really are deleted after 30 days, so their reminder, the countdown
 and their refusals say "deleted" (see "Archived events: Memory Hub
 retention"). "Archive" there would promise a restore that can't happen.
+The same goes for guests' uploaded documents (see "Document fields"):
+copy about removing a guest or deleting an event that has them says the
+files are deleted.
 
 ---
 
@@ -2884,6 +3096,23 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   with or before this backend**: without it, every signed-in user, super
   admins included, gets 403 on every page. Remove this entry once both
   are live.
+- **Document fields need their frontend half** (backend
+  `feature/document-fields`): the DOCUMENT type with its description in the
+  wizard's additional fields, the upload on the RSVP and registration forms
+  (sending the returned `id` as the answer, showing `documents`), the
+  organiser's guest details showing what was received with a "View" that
+  asks for the link, and the codes placed on the right field. Remove this
+  entry once built.
+- **Online days need their frontend half** (backend
+  `feature/document-fields`): a venue-or-online choice on each day in the
+  wizard and day editor (online: no address search, no map, an optional
+  https link, the two codes placed on it), and "Online" with the link on
+  the invitation page and RSVP confirmation, "Online" alone on the public
+  page and in the event lists. Remove this entry once built.
+- **Calendar files are not built.** Neither repo makes an .ics file today,
+  so nothing gives a calendar entry "Online" and the link. When one is
+  built, an online day's location is "Online" plus its link, for invited
+  or registered people only.
 - **Automated test coverage is thin.** The backend has a Vitest suite
   (`npm test`, `tests/`) on real Postgres in a separate
   `DATABASE_URL_TEST` database (never the shared dev/prod one — see
@@ -3237,6 +3466,44 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     change refused with nothing written, the Program tab unavailable, and
     restoring opening it again. Each guarantee was shown to fail with its
     fix reverted (2026-10-26).
+  - **Document fields** (`tests/guest-document/guest-documents.test.ts`,
+    Cloudinary's private upload and batch delete mocked, the signed link
+    built for real): a PDF stored privately in the event's documents folder
+    and every allowed type (PDF, JPG, PNG, XLSX) accepted by content; a
+    renamed executable, a PNG called .pdf, a macro workbook as .xlsx or
+    .xlsm, and a CSV (as .csv, with or without a BOM, or as .xlsx) refused
+    with nothing stored; a question's type changed to or from DOCUMENT
+    refused with 409 `RSVP_FIELD_TYPE_LOCKED` once it has answers, on both
+    edit paths, and allowed while it has none (a blank answer is none);
+    exactly 5 MB taken, one byte more 413; a required question
+    without a file `DOCUMENT_REQUIRED` (a decline fine); another guest's,
+    another event's, a deleted and an unknown document
+    `DOCUMENT_REFERENCE_INVALID`; a replaced file deleted, at upload and at
+    RSVP; registration's upload attached to the new registrant, a missing
+    one and an invitation's refused; the guest details' `document` and the
+    export's "Received"; the link private, 5 minutes, its expiry signed;
+    another tenant, a locked member, a vendor, another event and an
+    unsubmitted upload 404; storage counted; deletion on guest removal, on
+    event deletion and by the purge, a refused deletion retried by the
+    sweep; the 24-hour orphan sweep; file names out of logs and Sentry; the
+    flag off (uploads and new questions refused, the question hidden, what
+    was received kept, the link 404, an event without documents unchanged).
+    Each guarantee was shown to fail with its fix reverted (2026-11-02).
+  - **Online days** (`tests/event-day/online-days.test.ts`): an online day
+    saved without an address (a venue, address and coordinates sent are
+    dropped; the link optional); a non-https, javascript:, bare, credentialed,
+    host-less or spaced link and a non-string refused with
+    `EVENT_DAY_ONLINE_URL_INVALID`, an unknown type with
+    `EVENT_DAY_LOCATION_TYPE_INVALID`, nothing saved; switching back to a
+    venue needing one and dropping the link; the full update turning a day
+    online and publishing accepting it; an invited guest seeing "Online"
+    and the link on their invitation (and the compatibility keys) and the
+    Program tab; the public page showing "Online" with the link nowhere in
+    the response, and registering emailing it; invitation and reminder
+    emails with "Online" and the link; a day saved before Online existed
+    (its type null) reading and editing as the venue it was, and a new day
+    without a type held to the venue rules. Each guarantee was shown to fail
+    with its fix reverted (2026-11-02).
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and

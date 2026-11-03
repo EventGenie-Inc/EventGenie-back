@@ -22,6 +22,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
 
 // ─────────────────────────────────────────
 //  ARCHIVED EVENTS: MEMORY HUB MEDIA DELETED AFTER 30 DAYS
@@ -164,6 +165,7 @@ export const mediaRetentionService = {
     let purgedCount = 0;
     let lastError: string | null = null;
     const failedIds = new Set<string>();
+    let documentsFailed = 0;
 
     try {
       const items = await mediaRetentionRepository.findItemsToPurge(purge.eventId, purge.startedAt);
@@ -195,6 +197,14 @@ export const mediaRetentionService = {
           purgedCount += (await mediaRetentionRepository.markItemsPurged(done.map((i) => i.id), now, actor)).count;
         }
       }
+
+      // Its guests' uploaded documents too (guest-document.service.ts),
+      // counted with the items. Archiving already deleted them, so this is
+      // the backstop for any left, retried like an item until none fail.
+      const documents = await guestDocumentService.purgeForEvent(purge.eventId, purge.startedAt, now);
+      purgedCount += documents.deleted;
+      documentsFailed = documents.failed;
+      if (documents.failed > 0) lastError = documents.lastError;
     } catch (err) {
       // A database failure mid-run: release the lease so the next sweep
       // retries now, not when the lease runs out. What was deleted is
@@ -208,17 +218,18 @@ export const mediaRetentionService = {
       throw err;
     }
 
-    const completed = failedIds.size === 0;
+    const failedCount = failedIds.size + documentsFailed;
+    const completed = failedCount === 0;
     await mediaRetentionRepository.finishAttempt(purgeId, {
       purgedCount,
-      failedCount: failedIds.size,
+      failedCount,
       lastError: completed ? null : lastError,
       completedAt: completed ? now : null,
     });
     if (!completed) {
-      reportError(new Error(`[media retention] ${failedIds.size} item(s) of event ${purge.eventId} could not be deleted from Cloudinary, retried next sweep: ${lastError}`));
+      reportError(new Error(`[media retention] ${failedCount} item(s) of event ${purge.eventId} could not be deleted from Cloudinary, retried next sweep: ${lastError}`));
     }
-    return { purgeId, eventId: purge.eventId, reason: purge.reason, purgedCount, failedCount: failedIds.size, completed };
+    return { purgeId, eventId: purge.eventId, reason: purge.reason, purgedCount, failedCount, completed };
   },
 
   // One pass: reminders due, purges due claimed, then every unfinished
