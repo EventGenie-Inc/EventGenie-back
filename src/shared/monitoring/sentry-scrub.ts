@@ -36,8 +36,10 @@ const HEADER_ALLOWLIST = new Set(['user-agent', 'content-type', 'content-length'
 const USER_KEYS = ['id', 'role', 'tenantId'] as const;
 
 // An object key naming a secret or a contact detail: its value goes whole.
+// A file's name (a guest's uploaded document: "Proof of payment Thandi
+// Nkosi.pdf") is a contact detail too.
 const SENSITIVE_KEY =
-  /pass(word)?|secret|token|authori[sz]ation|cookie|session|otp|oob_?code|^code$|e-?mail|phone|mobile|msisdn|api[-_]?key|signature|credential/i;
+  /pass(word)?|secret|token|authori[sz]ation|cookie|session|otp|oob_?code|^code$|e-?mail|phone|mobile|msisdn|api[-_]?key|signature|credential|file_?name|original_?name|^public_?id$|cloudinary_?public_?id/i;
 
 // Path segments that are themselves credentials. Real tokens are 64 hex
 // and would be masked by the text rules anyway; these also catch a
@@ -51,6 +53,9 @@ const TOKEN_PATH_RULES: RegExp[] = [
 ];
 
 const TEXT_RULES: Array<[RegExp, string]> = [
+  // A guest document's Cloudinary public id ends in the file's own name
+  // (guest-document.service.ts): the name goes, the folder stays.
+  [/(\/documents\/[^/\s"']+\/[0-9a-f-]{36}\/)[^\s"'?#]+/gi, `$1${FILTERED}`],
   // A JSON parse error's message quotes the request body itself.
   [/^.*(?:is not valid JSON|in JSON at position|Unexpected token|Unexpected end of JSON).*$/gim, 'Malformed JSON (message withheld: it can quote the request body)'],
   // Absolute URLs: drop query string and fragment.

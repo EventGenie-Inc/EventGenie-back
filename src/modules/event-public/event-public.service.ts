@@ -17,8 +17,11 @@ import {
   assertAnswersValid,
   assertAnswersKnown,
   isValidRsvpResponseShape,
+  answerableFields,
   type RsvpAnswer,
 } from '../rsvp/rsvp-answers.util.js';
+import { toDayVenueView } from '../event-day/event-day-venue.util.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import {
   REGISTRATION_ERROR_CODES,
   resolveRegistrationState,
@@ -82,20 +85,28 @@ const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicE
   description: event.description,
   coverImageUrl: event.coverImageUrl,
   // Live days, earliest first (eventRepository.findByShareToken).
-  days: event.eventDays.map((d) => ({
-    id: d.id,
-    label: d.label,
-    date: d.date,
-    startTime: d.startTime,
-    endTime: d.endTime,
-    location: d.location,
-    address: d.address,
-    openForRegistration: d.openForRegistration,
-  })),
+  // An online day reads "Online" with no address. Its link is never here:
+  // only people invited or registered see it (event-day-venue.util.ts).
+  days: event.eventDays.map((d) => {
+    const venue = toDayVenueView(d);
+    return {
+      id: d.id,
+      label: d.label,
+      date: d.date,
+      startTime: d.startTime,
+      endTime: d.endTime,
+      locationType: venue.locationType,
+      location: venue.location,
+      address: venue.address,
+      openForRegistration: d.openForRegistration,
+    };
+  }),
   // Live questions in order (findByShareToken), the RSVP form's projection.
-  rsvpFields: event.rsvpFields.map((f) => ({
+  // DOCUMENT questions only while documentFields is on (answerableFields).
+  rsvpFields: answerableFields(event.rsvpFields).map((f) => ({
     id: f.id,
     label: f.label,
+    description: f.description,
     fieldType: f.fieldType,
     isRequired: f.isRequired,
     options: f.options,
@@ -325,6 +336,14 @@ export const eventPublicService = {
     // codes; a registrant is attending, so required ones must be answered).
     assertAnswersValid(event.rsvpFields, input.answers, true);
     assertAnswersKnown(event.rsvpFields, input.answers, UNKNOWN_QUESTION_MESSAGE);
+    // A DOCUMENT answer names an unclaimed upload made on this page for that
+    // question (guest-document.service.ts). Checked before the lock and the
+    // same way whether or not the email is already a guest; attached only
+    // when a registrant is created (a repeat registration stores no second
+    // answers, so its upload is left for the sweep).
+    const documents = isFeatureEnabled('documentFields')
+      ? await guestDocumentService.checkReferences(undefined, event.id, event.rsvpFields, input.answers, { inviteId: null })
+      : { referenced: [], toAttach: [] };
 
     const { limit } = await resolveGuestLimit(event);
 
@@ -366,6 +385,9 @@ export const eventPublicService = {
         },
         new Date()
       );
+      // In the same transaction: a file the sweep (or a racing
+      // registration) took first refuses this registration whole.
+      await guestDocumentService.attach(tx, documents.toAttach, registrant.invite.id, new Date());
       return { registrant } as const;
     }).catch((err: unknown) => {
       // The unique index on a live guest's email: an organiser (who takes no

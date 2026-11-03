@@ -55,9 +55,9 @@ describe('the public view', () => {
     const res = await view(ev.shareToken);
     expect(res.status).toBe(200);
     expect(res.body.data.rsvpFields).toEqual([
-      { id: dietary.id, label: 'Dietary needs', fieldType: 'TEXT', isRequired: true, options: null },
-      { id: shirt.id, label: 'T-shirt size', fieldType: 'DROPDOWN', isRequired: false, options: '["S","M","L"]' },
-      { id: seats.id, label: 'Seats', fieldType: 'NUMBER', isRequired: false, options: null },
+      { id: dietary.id, label: 'Dietary needs', description: null, fieldType: 'TEXT', isRequired: true, options: null },
+      { id: shirt.id, label: 'T-shirt size', description: null, fieldType: 'DROPDOWN', isRequired: false, options: '["S","M","L"]' },
+      { id: seats.id, label: 'Seats', description: null, fieldType: 'NUMBER', isRequired: false, options: null },
     ]);
   }, 60000);
 });

@@ -1,7 +1,7 @@
 import { type PlatformRole } from '@prisma/client';
 import { rsvpFieldRepository } from './rsvp-field.repository.js';
 import { type CreateRsvpFieldDto, type UpdateRsvpFieldDto } from './rsvp-field.types.js';
-import { resolveNewField, resolveFieldChanges } from './rsvp-field-validation.util.js';
+import { assertFieldTypeChangeAllowed, resolveNewField, resolveFieldChanges } from './rsvp-field-validation.util.js';
 import { eventService } from '../event/event.service.js';
 import { assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -45,7 +45,9 @@ export const rsvpFieldService = {
 
   update: async (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateRsvpFieldDto) => {
     const field = await fieldInScope(id, eventId, requestingRole, tenantId);
-    return rsvpFieldRepository.update(id, userId, { ...data, ...resolveFieldChanges(data, field) });
+    const changes = resolveFieldChanges(data, field);
+    await assertFieldTypeChangeAllowed(field, changes.fieldType);
+    return rsvpFieldRepository.update(id, userId, { ...data, ...changes });
   },
 
   archive: async (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {

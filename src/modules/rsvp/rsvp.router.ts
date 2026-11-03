@@ -2,7 +2,16 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { rsvpService } from './rsvp.service.js';
 import { eventProgramService } from '../event-program/event-program.service.js';
-import { ticketQuoteLimiter, rsvpProgramLimiter, rsvpProgramIpLimiter, rsvpSubmitInviteLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import {
+  ticketQuoteLimiter,
+  rsvpProgramLimiter,
+  rsvpProgramIpLimiter,
+  rsvpSubmitInviteLimiter,
+  documentUploadInviteLimiter,
+  documentUploadIpLimiter,
+} from '../../shared/middleware/rate-limit.middleware.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { receiveDocument } from '../guest-document/guest-document.router.js';
 
 // Fully public surface — a guest only has a bare invite token, never a
 // platform session. No auth middleware anywhere in this file.
@@ -45,6 +54,24 @@ router.post('/submit', rsvpSubmitInviteLimiter, async (req: Request, res: Respon
   try {
     const result = await rsvpService.submit(req.body);
     res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/rsvp/documents
+// multipart: token, rsvpFieldId, file. A guest's file for one of the
+// event's DOCUMENT questions, through this server (guest-document.service.ts
+// checks what it really is and stores it privately). Answers 201 with the
+// document; RSVP submit then names its id as that question's answer. The IP
+// backstop before the file is read, the per-invite limit after (the token
+// is in the multipart body).
+router.post('/documents', documentUploadIpLimiter, receiveDocument, documentUploadInviteLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const document = await guestDocumentService.uploadForInvite(
+      req.body?.token,
+      req.body?.rsvpFieldId,
+      req.file ? { buffer: req.file.buffer, originalname: req.file.originalname } : undefined
+    );
+    res.status(201).json({ status: 'ok', data: document });
   } catch (err) { next(err); }
 });
 

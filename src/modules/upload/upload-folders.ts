@@ -34,6 +34,13 @@ export const invitationDesignFolder = (tenantId: string, eventId: string): strin
 // tenant's own folder, since the logo is the company's, not the event's.
 export const feedbackLogoFolder = (tenantId: string): string => `eventgenie/${tenantId}/feedback-logos`;
 
+// A guest's uploaded document (guest-document module): the event's own
+// documents folder, beside its Memory Hub and invitation-design folders.
+// Uploaded by this server itself (never signed for a browser) as private
+// raw assets.
+export const guestDocumentFolder = (tenantId: string, eventId: string): string =>
+  `eventgenie/${tenantId}/documents/${eventId}`;
+
 // crypto.randomUUID() output: lowercase hex, version 4.
 export const SIGNED_PUBLIC_ID_UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 
@@ -43,6 +50,15 @@ const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\
 // segments, so neither "../" tricks nor a sibling folder can match.
 export const isSignedPublicIdInFolder = (publicId: unknown, folder: string): publicId is string =>
   typeof publicId === 'string' && new RegExp(`^${escapeRegExp(folder)}/${SIGNED_PUBLIC_ID_UUID_PATTERN}$`).test(publicId);
+
+// A document's public id: `<folder>/<uuid>/<safe name>.<ext>`. The last
+// segment is the guest's file name reduced to safe characters
+// (guest-document-content.util.ts's safeDownloadName), because Cloudinary
+// names a downloaded file after it. Checked like isSignedPublicIdInFolder
+// before any delete.
+export const isGuestDocumentPublicIdInFolder = (publicId: unknown, folder: string): publicId is string =>
+  typeof publicId === 'string' &&
+  new RegExp(`^${escapeRegExp(folder)}/${SIGNED_PUBLIC_ID_UUID_PATTERN}/[A-Za-z0-9][A-Za-z0-9_-]{0,79}\\.(?:pdf|jpg|png|xlsx)$`).test(publicId);
 
 // The URL a stored record displays must be OUR account's Cloudinary
 // delivery URL for exactly the publicId that was checked above, or the

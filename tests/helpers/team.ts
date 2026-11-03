@@ -104,6 +104,7 @@ export const deleteTenantsDeep = async (tenantIds: string[]) => {
   const users = await prisma.user.findMany({ where: { tenantId: { in: tenantIds } }, select: { id: true } });
   const userIds = users.map((u) => u.id);
 
+  await prisma.guestDocument.deleteMany({ where: { eventId: { in: eventIds } } });
   await prisma.checkIn.deleteMany({ where: { inviteId: { in: inviteIds } } });
   await prisma.attendance.deleteMany({ where: { inviteId: { in: inviteIds } } });
   await prisma.rsvpResponse.deleteMany({ where: { inviteId: { in: inviteIds } } });

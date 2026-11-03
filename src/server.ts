@@ -7,6 +7,7 @@ import { flushErrorMonitoring } from './shared/monitoring/sentry.config.js';
 import { reportError } from './shared/monitoring/error-reporting.js';
 import { startFeedbackRequestSweeps } from './modules/feedback/feedback-request.service.js';
 import { startMediaRetentionSweeps } from './modules/media-retention/media-retention.service.js';
+import { startGuestDocumentSweeps } from './modules/guest-document/guest-document.service.js';
 
 // ─────────────────────────────────────────
 //  PORT
@@ -18,7 +19,8 @@ const PORT = process.env.PORT ?? 5000;
 //  1. Verify database connection
 //  2. Start Express server
 //  3. Start the feedback-request sweep (feedback-request.service.ts) and
-//     the archived-media retention sweep (media-retention.service.ts) —
+//     the archived-media retention sweep (media-retention.service.ts) and
+//     the guest documents sweep (guest-document.service.ts) —
 //     here, not in app.ts, so nothing that imports the app (the tests)
 //     starts a timer
 // ─────────────────────────────────────────
@@ -37,6 +39,7 @@ const start = async (): Promise<void> => {
 
     startFeedbackRequestSweeps();
     startMediaRetentionSweeps();
+    startGuestDocumentSweeps();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

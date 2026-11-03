@@ -54,6 +54,8 @@ export const eventDayRepository = {
           address: data.venue.address,
           latitude: data.venue.latitude,
           longitude: data.venue.longitude,
+          locationType: data.venue.locationType,
+          onlineUrl: data.venue.onlineUrl,
           isArchived: false,
           createdBy: userId,
           updatedBy: userId,
@@ -77,6 +79,8 @@ export const eventDayRepository = {
           address: data.venue.address,
           latitude: data.venue.latitude,
           longitude: data.venue.longitude,
+          locationType: data.venue.locationType,
+          onlineUrl: data.venue.onlineUrl,
           updatedBy: userId,
         },
       })

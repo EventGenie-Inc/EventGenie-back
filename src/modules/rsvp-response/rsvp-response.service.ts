@@ -3,6 +3,7 @@ import { inviteRepository } from '../invite/invite.repository.js';
 import { eventService } from '../event/event.service.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
 
 // RsvpResponse has no tenantId and no eventId of its own: it scopes
 // through the invite in its URL, then that invite's event, gated on
@@ -17,9 +18,13 @@ const assertInviteVisible = async (inviteId: string, requestingRole: PlatformRol
 
 export const rsvpResponseService = {
 
+  // Each answer carries `document`: for a DOCUMENT question, the received
+  // file's name, type, size and upload time while it is kept, else null
+  // (guest-document.service.ts's withDocumentInfo). Never a link: the
+  // organiser asks GET /api/events/:eventId/documents/:id/link for one.
   getAll: async (inviteId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     await assertInviteVisible(inviteId, requestingRole, tenantId);
-    return rsvpResponseRepository.findAll(inviteId);
+    return guestDocumentService.withDocumentInfo(await rsvpResponseRepository.findAll(inviteId));
   },
 
   // The response must belong to the invite in the URL, not merely to a
@@ -28,6 +33,7 @@ export const rsvpResponseService = {
     await assertInviteVisible(inviteId, requestingRole, tenantId);
     const response = await rsvpResponseRepository.findById(id);
     if (!response || response.inviteId !== inviteId) throw new HttpError(404, 'RSVP response not found');
-    return response;
+    const [withDocument] = await guestDocumentService.withDocumentInfo([response]);
+    return withDocument;
   },
 };

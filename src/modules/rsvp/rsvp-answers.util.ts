@@ -1,6 +1,8 @@
 import { type RsvpFieldType } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { isValidEmail, isInternationalPhoneNumber, PHONE_FORMAT_MESSAGE } from '../guest/guest-validation.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { DOCUMENT_ERROR_CODES } from '../guest-document/guest-document.types.js';
 
 // ─────────────────────────────────────────
 //  ANSWERS TO THE EVENT'S OWN QUESTIONS (RsvpField)
@@ -25,6 +27,12 @@ export const RSVP_ANSWER_ERROR_CODES = {
   // a tampered request).
   UNKNOWN_FIELD: 'RSVP_ANSWER_UNKNOWN_FIELD',
 } as const;
+
+// The questions a guest can answer: every one, except DOCUMENT questions
+// while documentFields is off. Those are never shown to a guest then, so
+// they are never required, and an answer to one is an unknown question.
+export const answerableFields = <T extends { fieldType: RsvpFieldType }>(fields: T[]): T[] =>
+  isFeatureEnabled('documentFields') ? fields : fields.filter((f) => f.fieldType !== 'DOCUMENT');
 
 export interface RsvpAnswer {
   rsvpFieldId: string;
@@ -113,20 +121,32 @@ export const assertAnswersValid = (fields: AnswerableField[], answers: RsvpAnswe
     seen.add(answer.rsvpFieldId);
   }
 
+  const visible = answerableFields(fields);
   if (attending) {
     const answered = new Set(answers.filter((r) => r.value.trim().length > 0).map((r) => r.rsvpFieldId));
-    const unanswered = fields.filter((f) => f.isRequired && !answered.has(f.id));
-    if (unanswered.length > 0) {
+    const unanswered = visible.filter((f) => f.isRequired && !answered.has(f.id));
+    // Typed questions first, as before; then a required file (its own code:
+    // the form marks the upload, not a text box).
+    const unansweredQuestions = unanswered.filter((f) => f.fieldType !== 'DOCUMENT');
+    if (unansweredQuestions.length > 0) {
       throw new HttpError(
         422,
-        `Please answer ${unanswered.map((f) => `'${f.label}'`).join(', ')}. The organiser needs ${unanswered.length === 1 ? 'this' : 'these'} to plan for you.`,
+        `Please answer ${unansweredQuestions.map((f) => `'${f.label}'`).join(', ')}. The organiser needs ${unansweredQuestions.length === 1 ? 'this' : 'these'} to plan for you.`,
         RSVP_ANSWER_ERROR_CODES.REQUIRED
+      );
+    }
+    const missingFiles = unanswered.filter((f) => f.fieldType === 'DOCUMENT');
+    if (missingFiles.length > 0) {
+      throw new HttpError(
+        422,
+        `Please upload ${missingFiles.map((f) => `'${f.label}'`).join(', ')}. The organiser needs ${missingFiles.length === 1 ? 'it' : 'them'} to confirm your place.`,
+        DOCUMENT_ERROR_CODES.REQUIRED
       );
     }
   }
 
   for (const answer of answers) {
-    const field = fields.find((f) => f.id === answer.rsvpFieldId);
+    const field = visible.find((f) => f.id === answer.rsvpFieldId);
     const message = field ? customAnswerProblem(field, answer.value) : null;
     if (message) throw new HttpError(422, message, RSVP_ANSWER_ERROR_CODES.INVALID);
   }
@@ -136,8 +156,8 @@ export const assertAnswersValid = (fields: AnswerableField[], answers: RsvpAnswe
 // malformed submission (stale page or tampered request), not something to
 // let fall through to a foreign-key violation at write time. `message` is
 // the caller's words for where the answer came from.
-export const assertAnswersKnown = (fields: { id: string }[], answers: RsvpAnswer[], message: string): void => {
-  const validFieldIds = new Set(fields.map((f) => f.id));
+export const assertAnswersKnown = (fields: { id: string; fieldType: RsvpFieldType }[], answers: RsvpAnswer[], message: string): void => {
+  const validFieldIds = new Set(answerableFields(fields).map((f) => f.id));
   if (answers.some((a) => !validFieldIds.has(a.rsvpFieldId))) {
     throw new HttpError(400, message, RSVP_ANSWER_ERROR_CODES.UNKNOWN_FIELD);
   }

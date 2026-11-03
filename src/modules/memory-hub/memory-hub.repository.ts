@@ -3,6 +3,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type MemoryItemStatus, type Prisma } from '@prisma/client';
 import { type CreateMemoryHubDto, type UpdateMemoryHubDto } from './memory-hub.types.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { guestDocumentRepository } from '../guest-document/guest-document.repository.js';
 
 // MemoryHub/MemoryItem have no tenantId of their own — ownership is
 // transitive through eventId -> Event.tenantId (MemoryHub) and two hops
@@ -129,6 +130,13 @@ export const memoryHubRepository = {
   // the batch report). Archived items never count either way. This is
   // the ONLY source of truth for "how much storage is this event
   // using" — no running counter exists anywhere to drift out of sync.
+  //
+  // Guests' uploaded documents count too, every one whose file is still
+  // kept (guestDocumentRepository.sumLiveBytesForEvent): the event's storage
+  // is everything it holds in Cloudinary for its guests. They are never
+  // refused for it (a required proof of payment can't wait on the photo
+  // album's space; GUEST_DOCUMENT_MAX_BYTES bounds each one), but they take
+  // up room photos then can't.
   sumBytesForEvent: async (eventId: string): Promise<number> => {
     const result = await prisma.memoryItem.aggregate({
       where: {
@@ -138,7 +146,7 @@ export const memoryHubRepository = {
       },
       _sum: { bytes: true },
     });
-    return result._sum.bytes ?? 0;
+    return (result._sum.bytes ?? 0) + (await guestDocumentRepository.sumLiveBytesForEvent(eventId));
   },
 
   // ── Memory Items ──────────────────────────

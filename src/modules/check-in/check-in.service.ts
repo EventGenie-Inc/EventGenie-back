@@ -1,4 +1,5 @@
 import { type EventStatus, type PlatformRole } from '@prisma/client';
+import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { checkInRepository, type RosterInvite } from './check-in.repository.js';
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -39,6 +40,13 @@ const displayName = (guest: { firstName: string | null; surname: string | null }
 // force a support call. (A day's check-in is NOT restricted to "today" — an
 // organiser rehearsing, or fixing yesterday, must not be blocked by a clock,
 // and "today" would depend on a timezone events don't have.)
+// The day's venue on the door screen: an online day reads "Online" with its
+// link (an organiser screen; event-day-venue.util.ts), never a map.
+const rosterVenue = (day: Parameters<typeof toDayVenueView>[0]) => {
+  const { locationType, location, address, onlineUrl } = toDayVenueView(day, { withOnlineUrl: true });
+  return { locationType, location, address, onlineUrl: onlineUrl ?? null };
+};
+
 const CHECK_IN_BLOCKED: Partial<Record<EventStatus, string>> = {
   DRAFT: 'This event is still a draft. Publish it before checking guests in.',
   CANCELLED: 'This event has been cancelled, so nobody can be checked in.',
@@ -155,7 +163,8 @@ export const checkInService = {
     // The day's own venue — the venue belongs to the day, and a door screen
     // for a multi-venue event should say which door it is.
     return {
-      day: { id: day.id, label: day.label, date: day.date, location: day.location, address: day.address },
+      // An online day: "Online", no address, and its link for the organiser.
+      day: { id: day.id, label: day.label, date: day.date, ...rosterVenue(day) },
       counts: countRows(guests),
       guests,
     };
