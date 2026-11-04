@@ -10,7 +10,7 @@ import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@
 import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
 import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
-import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions, resolveFieldDescription } from '../rsvp-field/rsvp-field-validation.util.js';
+import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions, resolveFieldDescription, assertChoiceOptions } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
   requireItemStartTime,
@@ -123,6 +123,8 @@ export const eventDraftService = {
       // The same rule and code as the other paths (RSVP_FIELD_OPTIONS_INVALID),
       // instead of storing whatever the draft holds.
       const options = resolveDraftFieldOptions(field.options, label);
+      // A new question: a choice one's options held to the same rules.
+      assertChoiceOptions(fieldType, options, label);
       const description = resolveFieldDescription(field.description, label) ?? null;
       return { ...field, label, fieldType, options, description } as Record<string, unknown> & {
         label: string;

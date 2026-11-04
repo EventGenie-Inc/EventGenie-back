@@ -81,12 +81,17 @@ enum RsvpFieldType {
   NUMBER
   EMAIL
   PHONE
+  // One of the question's options ("Multiple choice" in the interface).
   DROPDOWN
   CHECKBOX
   DATE
   // A file the guest uploads (a proof of payment, say): the answer is a
   // GuestDocument's id. Behind the documentFields flag.
   DOCUMENT
+  // One or more of the question's options (stored like DROPDOWN's); the
+  // answer is a JSON-encoded list of the chosen options, in
+  // RsvpResponse.value.
+  MULTI_SELECT
 }
 
 // Where an event day happens: a real venue, or online. See EventDay.

@@ -6,7 +6,7 @@ import { ticketPurchaseService, type ReservedPurchase } from '../ticket-purchase
 import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
-import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape, answerableFields } from './rsvp-answers.util.js';
+import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape, answerableFields, withAnswerValues } from './rsvp-answers.util.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
@@ -360,7 +360,8 @@ export const rsvpService = {
       attendingDayIds: invite.attendances
         .map((a) => a.eventDayId)
         .filter((id) => invite.inviteEventDay.some((d) => d.eventDayId === id)),
-      rsvpResponses: previousAnswers.map((r) => ({ rsvpFieldId: r.rsvpFieldId, value: r.value })),
+      // A MULTI_SELECT answer as its list of choices, as the form sends it.
+      rsvpResponses: withAnswerValues(previousAnswers, invite.event.rsvpFields).map((r) => ({ rsvpFieldId: r.rsvpFieldId, value: r.value })),
       // The guest's own files already sent with their reply, one per
       // DOCUMENT question answered: what the form shows beside the upload
       // ("proof.pdf, 210 KB"). Their own names only; empty while
@@ -784,7 +785,9 @@ export const rsvpService = {
         // sections above.
         const responseRows = answerRows(invite.id, submittedResponses);
         await tx.rsvpResponse.createMany({ data: responseRows });
-        rsvpResponses.push(...responseRows);
+        // Returned as validate() returns them: a MULTI_SELECT answer as
+        // its list of choices.
+        rsvpResponses.push(...withAnswerValues(responseRows, invite.event.rsvpFields));
       }
 
       // A DOCUMENT answer names one of this guest's own uploads for that

@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { answerValue } from '../rsvp/rsvp-answers.util.js';
 
 interface TemplateEvent {
   id: string;
@@ -20,6 +21,15 @@ interface ExportRsvpField {
 // file is kept, else blank. Never a link (it would outlive its 5 minutes
 // and carry the file's name into a spreadsheet passed around), never the id.
 export const DOCUMENT_RECEIVED_LABEL = 'Received';
+
+// A MULTI_SELECT answer is a stored list of choices: the cell joins them
+// with "; " (an option can hold a comma), blank for none chosen.
+export const MULTI_SELECT_SEPARATOR = '; ';
+
+const multiSelectCell = (answer: string): string => {
+  const choices = answerValue('MULTI_SELECT', answer);
+  return Array.isArray(choices) ? choices.join(MULTI_SELECT_SEPARATOR) : choices;
+};
 
 interface ExportInvite {
   status: string;
@@ -133,7 +143,9 @@ export const buildGuestExportWorkbook = async (
       const answer = responseByField.get(field.id) ?? '';
       row[`field_${field.id}`] = field.fieldType === 'DOCUMENT'
         ? (receivedDocumentIds.has(answer) ? DOCUMENT_RECEIVED_LABEL : '')
-        : answer;
+        : field.fieldType === 'MULTI_SELECT'
+          ? multiSelectCell(answer)
+          : answer;
     }
 
     sheet.addRow(row);

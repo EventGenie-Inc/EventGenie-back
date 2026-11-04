@@ -2,7 +2,9 @@ export interface SubmitRsvpDto {
   token: string;
   attending: boolean;
   attendingDayIds?: string[];
-  rsvpResponses?: { rsvpFieldId: string; value: string }[];
+  // value: text, or for a MULTI_SELECT question the list of chosen options
+  // (rsvp-answers.util.ts).
+  rsvpResponses?: { rsvpFieldId: string; value: string | string[] }[];
   ticketId?: string;
   ticketQuantity?: number;
   paymentRef?: string;

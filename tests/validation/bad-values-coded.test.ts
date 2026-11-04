@@ -107,14 +107,14 @@ describe("the wizard's draft question options", () => {
   // The draft holds options as a list (the frontend's draft model); it is
   // stored as its JSON, and anything that isn't a list of text is refused
   // with the other paths' code, with no event created.
-  const materializeWith = async (options: unknown) => {
+  const materializeWith = async (options: unknown, fieldType = 'DROPDOWN') => {
     await eventDraftRepository.upsert(organiser.tenantId!, organiser.id, {
       currentStep: 3,
       payload: {
         name: 'Options draft',
         hostName: 'Test Host',
         days: [{ label: 'Day 1', date: '2030-03-02T00:00:00', location: 'Hall', address: '1 Main Rd' }],
-        customFields: [{ label: 'Shirt size', fieldType: 'DROPDOWN', isRequired: false, options }],
+        customFields: [{ label: 'Shirt size', fieldType, isRequired: false, options }],
       },
     });
     return eventDraftService.materialize(organiser.tenantId!, organiser.id);
@@ -134,13 +134,15 @@ describe("the wizard's draft question options", () => {
     }, 60000);
   }
 
+  // A choice question needs two distinct options (choice-options.test.ts),
+  // so "none" is a TEXT question's.
   it('a list of choices is stored as its JSON, a JSON string as it is, and none as null', async () => {
-    for (const [options, stored] of [
-      [['S', 'M'], '["S","M"]'],
-      ['["L"]', '["L"]'],
-      [undefined, null],
+    for (const [options, stored, fieldType] of [
+      [['S', 'M'], '["S","M"]', 'DROPDOWN'],
+      ['["L","XL"]', '["L","XL"]', 'DROPDOWN'],
+      [undefined, null, 'TEXT'],
     ] as const) {
-      const event = await materializeWith(options);
+      const event = await materializeWith(options, fieldType);
       const field = await prisma.rsvpField.findFirstOrThrow({ where: { eventId: event!.id } });
       expect(field.options).toBe(stored);
     }

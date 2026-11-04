@@ -247,7 +247,10 @@ export const guestDocumentService = {
     owner: { inviteId: string | null }
   ): Promise<{ referenced: string[]; toAttach: string[] }> => {
     const documentFields = new Map(fields.filter((f) => f.fieldType === 'DOCUMENT').map((f) => [f.id, f]));
-    const documentAnswers = answers.filter((a) => documentFields.has(a.rsvpFieldId) && a.value.trim().length > 0);
+    // A DOCUMENT answer is text (a list was refused by assertAnswersValid).
+    const documentAnswers = answers.filter(
+      (a): a is RsvpAnswer & { value: string } => documentFields.has(a.rsvpFieldId) && typeof a.value === 'string' && a.value.trim().length > 0
+    );
     if (documentAnswers.length === 0) return { referenced: [], toAttach: [] };
 
     const docs = new Map(

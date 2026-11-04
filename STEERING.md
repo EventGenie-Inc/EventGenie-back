@@ -833,7 +833,16 @@ unticked."; a blank answer is no answer),
 submission; checked first, it was a 500 from the unique
 `(inviteId, rsvpFieldId)` index) and `RSVP_ANSWER_UNKNOWN_FIELD` (400, a
 question this event doesn't have, archived ones included). Until 2026-10
-all of these were uncoded at RSVP.
+all of these were uncoded at RSVP. MULTI_SELECT questions (see
+"Multi-select fields") add `RSVP_ANSWER_UNKNOWN_OPTION` (422, a choice that
+isn't one of the question's options: "Choose only from the options for
+'Dietary needs'.") and `RSVP_ANSWER_NONE_CHOSEN` (422, a required one with
+nothing chosen by someone attending, checked after `RSVP_ANSWER_REQUIRED`
+and before `DOCUMENT_REQUIRED`: "Please choose at least one option for
+'Dietary needs'. The organiser needs this to plan for you."); a choice
+given twice, text for a MULTI_SELECT question or a list for any other is
+`RSVP_ANSWER_INVALID`, and a list holding anything but text the uncoded
+400 of any malformed body.
 
 Document fields (see "Document fields"), at RSVP submit, registration and
 the two upload routes: `DOCUMENT_REQUIRED` (422, a required DOCUMENT
@@ -854,11 +863,13 @@ event's DOCUMENT questions is 400 `RSVP_ANSWER_UNKNOWN_FIELD`; no file, or a
 malformed multipart body (two files), an uncoded 400; Cloudinary failing an
 uncoded 503. A question's description over 500 characters is 422
 `RSVP_FIELD_DESCRIPTION_TOO_LONG` (every path that saves a question).
-Changing a question's type to or from DOCUMENT once it has answers (a
-blank answer is none) is 409 `RSVP_FIELD_TYPE_LOCKED` ("'<label>' already
-has answers, so it can't be changed to or from a file upload. Add a new
-field instead."), on `PUT .../rsvp-fields/:id` and the full update, with
-nothing saved; any other type change is allowed as before.
+Changing a question's type to or from DOCUMENT or MULTI_SELECT once it
+has answers (a blank answer, or none chosen, is none) is 409
+`RSVP_FIELD_TYPE_LOCKED` ("'<label>' already has answers, so it can't be
+changed to or from a file upload. Add a new field instead.", or "... to or
+from multi-select. ..." when no DOCUMENT is involved), on
+`PUT .../rsvp-fields/:id` and the full update, with nothing saved; any
+other type change is allowed as before.
 
 An answer is stored exactly as sent and returned as stored (the guest page's
 `rsvpResponses`, the organiser's guest details, the export); the backend
@@ -1001,6 +1012,22 @@ a full https:// address, like https://example.com/tournament.") and
 `VENUE` or `ONLINE`), on day create and update, the full update and the
 wizard's materialize. A venue day without its venue name or address stays
 the uncoded 422 it was.
+
+A choice question's options (DROPDOWN, "Multiple choice" in the interface,
+and MULTI_SELECT), once they are a valid list, all 422 and checked in this
+order (`assertChoiceOptions`): `RSVP_FIELD_OPTION_BLANK` ("Each option for
+'<label>' needs text. Remove the blank one."), `RSVP_FIELD_OPTION_DUPLICATE`
+(the same option twice, compared trimmed and ignoring case: "'<label>' has
+the option '<option>' more than once.") and `RSVP_FIELD_OPTIONS_TOO_FEW`
+(fewer than two, none sent included: "'<label>' needs at least 2
+options."). Checked when the question is created (POST `.../rsvp-fields`,
+the full update, the wizard's materialize) or changed so that its type
+becomes a choice one or its options differ from what is stored (PUT
+`.../rsvp-fields/:id`, the full update). Stored options are never
+rewritten: a question saved before the rule (one option, a blank, a
+duplicate) keeps them, and still saves when re-sent as it is or edited
+elsewhere (its label, required flag, order). Other types' options are not
+checked.
 
 Values that used to reach Prisma unchecked as a 500 (all 422):
 `RSVP_FIELD_OPTIONS_INVALID` ("The choices for '<label>' must be a list of
@@ -1898,6 +1925,38 @@ adds a new question instead.
   (`memoryHubRepository.sumBytesForEvent`, so the Memory Hub's `usedBytes`
   and quota). A document upload is never refused for the quota.
 
+### Multi-select fields
+
+Two choice types. **DROPDOWN** is the single-answer question; the
+interface calls it "Multiple choice", the stored type keeps its name.
+**MULTI_SELECT** lets the guest pick one or more of the options. Not
+behind a flag.
+
+- **Options** are stored as a DROPDOWN's: `RsvpField.options`, a
+  JSON-encoded list of text (`'["Vegan","Nuts, peanuts and tree nuts"]'`),
+  held to `RSVP_FIELD_OPTIONS_INVALID` on every path that saves a question.
+  A comma inside an option is safe. The options were never stored as
+  comma-separated text. Both choice types need at least two options, none
+  blank and none twice (trimmed, ignoring case), when the question is
+  created or its type or options change; see "Errors" for the codes.
+- **The answer is a list.** At RSVP submit and registration,
+  `rsvpResponses: [{ rsvpFieldId, value: ["Vegan", "Halaal"] }]`; every
+  other type's `value` stays text. Each choice must be one of the options
+  (compared trimmed), none twice; `[]` is no answer. Required means at
+  least one chosen when attending. Codes: see "Errors" (answers).
+- **Stored** in `RsvpResponse.value` as the JSON-encoded list of the
+  trimmed choices in the order given, or `''` for none (no answer, as a
+  blank one is).
+- **Read back as a list** (`answerValue`): the guest page's
+  `rsvpResponses` (`/rsvp/validate`, so the form prefills with what it
+  sends), the submit response's `rsvpResponses`, and the organiser's guest
+  details (`GET /api/invites/:inviteId/rsvp-responses` and `/:id`, `value`
+  a list for a MULTI_SELECT answer, text for every other). The export joins
+  the choices with "; " in one cell.
+- **Type changes:** once a question has answers it can't be changed to or
+  from MULTI_SELECT (409 `RSVP_FIELD_TYPE_LOCKED`, as DOCUMENT): the stored
+  lists and single answers don't fit each other.
+
 ### Guest contact
 
 Exactly **one** of email or phone **at creation** (organiser create and
@@ -2154,7 +2213,7 @@ The body, every key optional (a key left out leaves that part alone):
   days?:       [{ id?, label?, date?, startTime?, endTime?, locationType?, location?, address?,
                   latitude?, longitude?, onlineUrl? }],     // PUT .../days/:id's body
   tickets?:    [{ id?, name?, description?, price?, currency?, totalQuantity?, isAvailable? }],
-  rsvpFields?: [{ id?, label?, description?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings
+  rsvpFields?: [{ id?, label?, description?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings (DROPDOWN and MULTI_SELECT)
   program?:    { title?, isPublished?,
                  items?: [{ id?, title?, description?, startTime?, durationMins?, dayIndex? }] },
   memoryHub?:  { opensAt?: string | null }
@@ -3504,6 +3563,33 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     (its type null) reading and editing as the venue it was, and a new day
     without a type held to the venue rules. Each guarantee was shown to fail
     with its fix reverted (2026-11-02).
+  - **Multi-select fields** (`tests/public-events/multi-select-answers.test.ts`):
+    a MULTI_SELECT question saved by POST `.../rsvp-fields` and the full
+    update, its options held to `RSVP_FIELD_OPTIONS_INVALID`; answers at
+    RSVP and registration stored as a JSON list of trimmed choices,
+    returned as a list by submit, `/rsvp/validate` and the guest details
+    (both reads), exported joined with "; " (an option holding a comma
+    intact), an edit replacing the list and `[]` storing no answer; a
+    choice outside the options (part of a comma-holding one, or blank)
+    `RSVP_ANSWER_UNKNOWN_OPTION`, a choice twice, text for the question or
+    a list for a TEXT one `RSVP_ANSWER_INVALID`, a non-text choice the 400,
+    nothing chosen on a required one `RSVP_ANSWER_NONE_CHOSEN` (a decline
+    fine), nothing created on any refusal; the type locked to and from
+    MULTI_SELECT once answered on both edit paths, free while none chosen.
+    Each guarantee was shown to fail with its fix reverted (2026-11-04).
+  - **Choice options** (`tests/validation/choice-options.test.ts`), for
+    DROPDOWN and MULTI_SELECT alike: a blank or empty option
+    `RSVP_FIELD_OPTION_BLANK`, a duplicate (trimmed, ignoring case)
+    `RSVP_FIELD_OPTION_DUPLICATE`, one option or none
+    `RSVP_FIELD_OPTIONS_TOO_FEW`, each with its message naming the question,
+    on create, on changing a saved question's options, on making a text
+    question a choice one, on the full update's new and changed questions
+    and on the wizard's materialize, nothing written and no event created;
+    two or more distinct options saved as sent on every path; a question
+    saved before the rule (one option, a blank, a case duplicate, none) kept
+    as it is and still saved when re-sent or edited elsewhere; other types
+    not checked. Each guarantee was shown to fail with its fix reverted
+    (2026-11-04).
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
