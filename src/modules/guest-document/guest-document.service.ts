@@ -19,12 +19,13 @@ import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { assertEventAcceptsRsvp, assertEventNotArchived, assertRsvpDeadlineNotPassed } from '../rsvp/rsvp-guards.util.js';
 import { RSVP_ANSWER_ERROR_CODES, type RsvpAnswer } from '../rsvp/rsvp-answers.util.js';
 import { assertRegistrationOpen, resolveRegistrationState } from '../event-public/registration-rules.util.js';
-import { guestDocumentFolder, guestDocumentFolders, isGuestDocumentPublicIdInAnyFolder } from '../upload/upload-folders.js';
-import { GUEST_DOCUMENT_MAX_BYTES } from '../upload/upload-constants.js';
+import { guestDocumentFolder } from '../upload/upload-folders.js';
 import { uploadPrivateRawAsset } from '../../shared/cloudinary/cloudinary-private-asset.util.js';
-import { CLOUDINARY_DELETE_BATCH_LIMIT, destroyAssets } from '../../shared/cloudinary/cloudinary.client.js';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { storedFileService } from '../storage/stored-file.service.js';
+import { storageDeletionWorker } from '../storage/storage-deletion.worker.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { documentStorageFull, documentTooLarge, resolveDocumentLimits } from './guest-document-allowance.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
@@ -38,7 +39,9 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //
 //  - THROUGH THIS SERVER, never signed for the browser: the bytes are
 //    checked for what the file really is (guest-document-content.util.ts),
-//    capped at GUEST_DOCUMENT_MAX_BYTES, then stored in Cloudinary as a
+//    held to the plan's size per document and the event's document
+//    storage (guest-document-allowance.util.ts, the latter under the
+//    event's row lock), then stored in Cloudinary as a
 //    PRIVATE raw asset in the event's documents folder. No URL serves it;
 //    an organiser reads it through a 5-minute signed link
 //    (guest-document-organiser.service.ts).
@@ -48,12 +51,16 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //    question's and this guest's (or, at registration, an unclaimed
 //    registration upload), and attached. Never attached within 24 hours:
 //    deleted by the sweep.
-//  - FILES ARE DELETED, ROWS KEPT. Replaced (another upload for the same
-//    question, or an RSVP naming another file), its guest removed, its
-//    event deleted, the archived event's media purge, or never attached:
-//    the file goes from Cloudinary and the row records when
-//    (deleteRequestedAt, then deletedAt). A deletion Cloudinary refused is
-//    retried by the sweep.
+//  - FILES ARE DELETED, ROWS KEPT, THROUGH THE STORAGE WORKER. Replaced
+//    (another upload for the same question, or an RSVP naming another
+//    file), its event deleted, the archived event's media purge, never
+//    attached, or a retention rule (storage-retention.service.ts: its
+//    guest, invite or question still archived when the event finishes, 90
+//    days after it finishes, 30 days after it is cancelled): the row is
+//    marked (deleteRequestedAt) with its StoredFile, in one write, and the
+//    storage worker deletes the file and marks the row (deletedAt),
+//    retrying a refusal with backoff. Removing a guest deletes nothing:
+//    restoring them brings their files back.
 //  - NAMES AND CONTENTS ARE NEVER LOGGED. A file name can carry a person's
 //    name; log lines carry ids and counts only, and no error message here
 //    names the file (Sentry: sentry-scrub.ts masks file names and document
@@ -63,6 +70,8 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //    (isDocumentFieldVisible); everything already received stays, and is
 //    still deleted by every rule above.
 // ─────────────────────────────────────────
+
+type DocumentEvent = EntitlementDerivableEvent & { id: string };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const ORPHAN_DOCUMENT_AFTER_MS = DAY_MS;
@@ -74,7 +83,6 @@ const INVALID_INVITE_MESSAGE = "This invitation link isn't valid. Check the link
 const INVALID_REGISTRATION_LINK_MESSAGE = "This registration link isn't valid. Check the link, or ask the organiser for a new one.";
 const UNKNOWN_QUESTION_MESSAGE = "This question isn't part of this event. Please refresh the page and try again.";
 const UPLOAD_FAILED_MESSAGE = "We couldn't save your file just now. Please try again in a moment.";
-export const DOCUMENT_TOO_LARGE_MESSAGE = `This file is larger than ${GUEST_DOCUMENT_MAX_BYTES / (1024 * 1024)} MB. Choose a smaller file.`;
 
 const NO_SEATS = { primaryGuests: 0, registeredSeats: 0, totalGuests: 0 };
 
@@ -91,9 +99,6 @@ export const assertDocumentFieldsEnabled = (): void => {
 // questions and every check of a guest's answers.
 export const isDocumentFieldVisible = (field: { fieldType: RsvpFieldType }): boolean =>
   field.fieldType !== 'DOCUMENT' || isFeatureEnabled('documentFields');
-
-export const documentTooLarge = (): HttpError =>
-  new HttpError(413, DOCUMENT_TOO_LARGE_MESSAGE, DOCUMENT_ERROR_CODES.TOO_LARGE);
 
 // ── Views ─────────────────────────────────
 
@@ -114,12 +119,6 @@ const toOrganiserInfo = (doc: GuestDocument): OrganiserDocumentInfo => ({
   uploadedAt: doc.uploadedAt,
 });
 
-const chunk = <T>(items: T[], size: number): T[][] => {
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
-  return chunks;
-};
-
 // The DOCUMENT question an upload is for: one of the event's live ones.
 const documentFieldFor = (fields: { id: string; fieldType: RsvpFieldType }[], rsvpFieldId: unknown) => {
   const field = typeof rsvpFieldId === 'string' ? fields.find((f) => f.id === rsvpFieldId && f.fieldType === 'DOCUMENT') : undefined;
@@ -135,13 +134,25 @@ const documentFieldFor = (fields: { id: string; fieldType: RsvpFieldType }[], rs
 // deletes it ("not found" if it never arrived). If even that request
 // can't be written, the StoredFile stays SIGNED and the unsaved-uploads
 // sweep takes it after 24 hours.
+//
+// Sizes: over the plan's size per document, 413 before anything is stored.
+// Over the event's document storage: 403 DOCUMENT_STORAGE_FULL, checked
+// once before the upload (so a full event costs no upload) and again, for
+// certain, under the event's row lock with the row's own write; a file
+// refused there is requested for deletion.
 const storeUpload = async (
-  event: { id: string; tenantId: string },
+  event: DocumentEvent,
   rsvpFieldId: string,
   file: UploadedFile,
   owner: { source: 'INVITE'; inviteId: string } | { source: 'REGISTRATION' }
 ): Promise<GuestDocument> => {
-  if (file.buffer.length > GUEST_DOCUMENT_MAX_BYTES) throw documentTooLarge();
+  const size = file.buffer.length;
+  const limits = await resolveDocumentLimits(event);
+  if (size > limits.maxBytesPerDocument) throw documentTooLarge(limits.maxBytesPerDocument);
+  const overAllowance = async (db?: Prisma.TransactionClient): Promise<boolean> =>
+    limits.maxBytesPerEvent !== null && (await guestDocumentRepository.sumLiveBytesForEvent(event.id, db)) + size > limits.maxBytesPerEvent;
+  if (await overAllowance()) throw documentStorageFull();
+
   const format = await detectDocumentFormat(file.buffer, file.originalname);
   const fileName = cleanFileName(file.originalname, format);
   const contentType = DOCUMENT_CONTENT_TYPES[format];
@@ -175,6 +186,8 @@ const storeUpload = async (
 
   try {
     return await prisma.$transaction(async (tx) => {
+      await guestDocumentRepository.lockEvent(tx, event.id);
+      if (await overAllowance(tx)) throw documentStorageFull();
       await storedFileService.recordMeasured(tx, record.id, stored.bytes, format);
       return guestDocumentRepository.create({
         id: randomUUID(),
@@ -185,21 +198,32 @@ const storeUpload = async (
         cloudinaryPublicId: publicId,
         fileName,
         contentType,
-        sizeBytes: file.buffer.length,
+        sizeBytes: size,
         storedFileId: record.id,
       }, tx);
-    });
+    }, { maxWait: 10_000, timeout: 15_000 });
   } catch (err) {
     await giveUp();
     throw err;
   }
 };
 
-export interface PendingDeletionOutcome {
-  deleted: number;
-  failed: number;
-  lastError: string | null;
-}
+// Writes a StoredFile for any live document matching `where` that has none
+// (a row older than the records), so every document is deleted the same
+// way. Inside the caller's transaction.
+const recordMissingFiles = async (db: Prisma.TransactionClient | typeof prisma, where: Prisma.GuestDocumentWhereInput, now: Date): Promise<void> => {
+  for (const doc of await guestDocumentRepository.findLiveWithoutFile(where, db)) {
+    const fileId = await storedFileService.ensureRecorded(db, {
+      publicId: doc.cloudinaryPublicId,
+      resourceType: 'RAW',
+      deliveryType: 'PRIVATE',
+      kind: 'GUEST_DOCUMENT',
+      tenantId: doc.event.tenantId,
+      eventId: doc.eventId,
+    }, now);
+    await guestDocumentRepository.setStoredFile(doc.id, fileId, db);
+  }
+};
 
 export const guestDocumentService = {
 
@@ -228,11 +252,11 @@ export const guestDocumentService = {
 
     const doc = await storeUpload(invite.event, field.id, file, { source: 'INVITE', inviteId: invite.id });
 
-    const replaced = await guestDocumentRepository.requestDeletion(
-      { inviteId: invite.id, rsvpFieldId: field.id, attachedAt: null, id: { not: doc.id } },
-      new Date()
+    const replaced = await guestDocumentService.requestDeletion(
+      prisma,
+      { inviteId: invite.id, rsvpFieldId: field.id, attachedAt: null, id: { not: doc.id } }
     );
-    if (replaced > 0) await guestDocumentService.deletePendingQuietly({ inviteId: invite.id });
+    if (replaced > 0) await guestDocumentService.deleteRequestedNow({ inviteId: invite.id });
     return toGuestDocumentView(doc);
   },
 
@@ -322,9 +346,9 @@ export const guestDocumentService = {
 
   // Inside RSVP submit's transaction: every file this invite had attached
   // that the new answer no longer names is marked for deletion (a replaced
-  // or removed file). Deleted after the commit (deletePendingQuietly).
+  // or removed file). Deleted after the commit (deleteRequestedNow).
   requestReplacedDeletion: (tx: Prisma.TransactionClient, inviteId: string, keepIds: string[], now: Date) =>
-    guestDocumentRepository.requestDeletion({ inviteId, attachedAt: { not: null }, id: { notIn: keepIds } }, now, tx),
+    guestDocumentService.requestDeletion(tx, { inviteId, attachedAt: { not: null }, id: { notIn: keepIds } }, now),
 
   // ── Reading ─────────────────────────────
 
@@ -336,7 +360,7 @@ export const guestDocumentService = {
       : [],
 
   // The guest page's answers: a DOCUMENT answer whose file was deleted
-  // since (its guest removed and restored, say) is left out, so the form
+  // since (replaced, or its event's retention rules ran) is left out, so the form
   // asks for it again instead of re-sending a dead reference.
   liveAnswersOnly: async <T extends { rsvpFieldId: string; value: string }>(
     answers: T[],
@@ -365,98 +389,58 @@ export const guestDocumentService = {
   },
 
   // ── Deleting ────────────────────────────
+  //
+  // Every deletion is a request, recorded with the change that made the
+  // file unwanted; the storage worker deletes the file (and marks the row
+  // deleted), retrying a refusal with backoff. deleteRequestedNow asks for
+  // it at once where the person is waiting on it; whatever isn't done then,
+  // the worker does within a minute.
 
-  // Deletes from Cloudinary every file marked for deletion matching
-  // `where`, in batches, recording each one done; whatever Cloudinary
-  // refused stays marked, for the sweep. A public id outside its event's
-  // documents folder (never written by this server) is never sent, since
-  // it could name another event's asset: its row is closed all the same.
-  processPendingDeletions: async (where: Prisma.GuestDocumentWhereInput = {}, now: Date = new Date()): Promise<PendingDeletionOutcome> => {
-    const pending = await guestDocumentRepository.findPendingDeletion(where);
-    const inside = pending.filter((d) => isGuestDocumentPublicIdInAnyFolder(d.cloudinaryPublicId, guestDocumentFolders(d.event.tenantId, d.eventId)));
-    const outside = pending.filter((d) => !inside.includes(d));
-    if (outside.length > 0) {
-      console.warn(`[guest documents] ${outside.length} document(s) outside their folder closed, not sent to Cloudinary`);
-      await guestDocumentRepository.markDeleted(outside.map((d) => d.id), now);
-    }
-
-    let deleted = outside.length;
-    let failed = 0;
-    let lastError: string | null = null;
-    for (const batch of chunk(inside, CLOUDINARY_DELETE_BATCH_LIMIT)) {
-      const result = await destroyAssets(batch.map((d) => d.cloudinaryPublicId), 'raw', 'private');
-      if (!result.ok) {
-        failed += batch.length;
-        lastError = result.reason;
-        await guestDocumentRepository.recordDeleteFailure(batch.map((d) => d.id), result.reason);
-        continue;
-      }
-      const gone = new Set(result.deleted);
-      const done = batch.filter((d) => gone.has(d.cloudinaryPublicId));
-      const refused = batch.filter((d) => !gone.has(d.cloudinaryPublicId));
-      deleted += (await guestDocumentRepository.markDeleted(done.map((d) => d.id), now)).count;
-      if (refused.length > 0) {
-        failed += refused.length;
-        lastError = result.failed[0]?.reason ?? 'missing from the response';
-        await guestDocumentRepository.recordDeleteFailure(refused.map((d) => d.id), lastError);
-      }
-    }
-    return { deleted, failed, lastError };
+  // Marks every live document matching `where` (and its StoredFile) for
+  // deletion, in the caller's transaction (`db`), writing a StoredFile
+  // first for any document that has none. Returns the number marked.
+  requestDeletion: async (db: Prisma.TransactionClient | typeof prisma, where: Prisma.GuestDocumentWhereInput, now: Date = new Date()): Promise<number> => {
+    await recordMissingFiles(db, where, now);
+    return guestDocumentRepository.requestDeletion(where, now, db);
   },
 
-  // After a request has already succeeded (a guest removed, an event
-  // deleted, an RSVP replacing a file): the deletion is the sweep's to
-  // retry, never a reason to fail what the person did. Counts only in
-  // the log and in Sentry.
-  deletePendingQuietly: async (where: Prisma.GuestDocumentWhereInput): Promise<void> => {
+  // The files of documents matching `where` that are requested and not yet
+  // deleted, deleted now if due (storageDeletionWorker.deleteNow). Never
+  // throws: after a request has succeeded (an event deleted, an RSVP
+  // replacing a file) the deletion is the worker's to retry, never a
+  // reason to fail what the person did.
+  deleteRequestedNow: async (where: Prisma.GuestDocumentWhereInput, now: Date = new Date()): Promise<void> => {
     try {
-      const outcome = await guestDocumentService.processPendingDeletions(where);
-      if (outcome.failed > 0) {
-        reportError(new Error(`[guest documents] ${outcome.failed} document(s) could not be deleted from Cloudinary, retried by the sweep`));
-      }
+      await storageDeletionWorker.deleteNow(await guestDocumentRepository.findRequestedFileIds(where), now);
     } catch (err) {
-      console.error('[guest documents] deleting documents failed, retried by the sweep');
+      console.error('[guest documents] deleting documents failed, retried by the storage worker');
       reportError(err);
     }
-  },
-
-  // A guest removed (guestService.archive): every file of every invite of
-  // theirs. Restoring the guest doesn't bring them back.
-  deleteForGuest: async (guestId: string): Promise<void> => {
-    await guestDocumentRepository.requestDeletion({ invite: { guestId } }, new Date());
-    await guestDocumentService.deletePendingQuietly({ invite: { guestId } });
   },
 
   // An event deleted (eventService.archive): every file of the event, at
   // once, not 30 days later: these are bank details, not photos to
   // download. Restoring the event doesn't bring them back.
   deleteForEvent: async (eventId: string): Promise<void> => {
-    await guestDocumentRepository.requestDeletion({ eventId }, new Date());
-    await guestDocumentService.deletePendingQuietly({ eventId });
+    await guestDocumentService.requestDeletion(prisma, { eventId });
+    await guestDocumentService.deleteRequestedNow({ eventId });
   },
 
   // The archived event's media purge (media-retention.service.ts): every
-  // file uploaded before it began. Archiving already deleted them, so this
-  // is the backstop for any still left. Throws on a database failure, as
-  // the purge's own steps do.
-  purgeForEvent: async (eventId: string, startedAt: Date, now: Date): Promise<PendingDeletionOutcome> => {
-    await guestDocumentRepository.requestDeletion({ eventId, uploadedAt: { lte: startedAt } }, now);
-    return guestDocumentService.processPendingDeletions({ eventId }, now);
-  },
+  // document uploaded before it began, requested for deletion in the
+  // purge's transaction. Archiving already did, so this is the backstop for
+  // any still left. Returns the number requested.
+  requestPurgeForEvent: (db: Prisma.TransactionClient, eventId: string, startedAt: Date, now: Date): Promise<number> =>
+    guestDocumentService.requestDeletion(db, { eventId, uploadedAt: { lte: startedAt } }, now),
 
-  // One pass: uploads never attached within 24 hours marked for deletion,
-  // then every file marked and not yet deleted (these, and earlier
-  // failures) deleted. Not behind the flag: deleting is never switched off.
-  sweep: async (now: Date = new Date()): Promise<{ orphaned: number } & PendingDeletionOutcome> => {
-    const orphaned = await guestDocumentRepository.requestDeletion(
-      { attachedAt: null, uploadedAt: { lt: new Date(now.getTime() - ORPHAN_DOCUMENT_AFTER_MS) } },
-      now
-    );
-    const outcome = await guestDocumentService.processPendingDeletions({}, now);
-    if (outcome.failed > 0) {
-      reportError(new Error(`[guest documents] ${outcome.failed} document(s) could not be deleted from Cloudinary, retried next sweep`));
-    }
-    return { orphaned, ...outcome };
+  // One pass: uploads never attached within 24 hours requested for
+  // deletion, and deleted now if the worker can. Not behind any flag:
+  // an upload nobody answered with was never kept.
+  sweep: async (now: Date = new Date()): Promise<{ orphaned: number }> => {
+    const where: Prisma.GuestDocumentWhereInput = { attachedAt: null, uploadedAt: { lt: new Date(now.getTime() - ORPHAN_DOCUMENT_AFTER_MS) } };
+    const orphaned = await guestDocumentService.requestDeletion(prisma, where, now);
+    if (orphaned > 0) await guestDocumentService.deleteRequestedNow(where, now);
+    return { orphaned };
   },
 };
 

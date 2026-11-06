@@ -12,6 +12,10 @@ export interface CreateSubscriptionTierConfigDto {
   maxSmsPerMonth?: number | null;
   maxVendorSpaces?: number | null;
   maxMemoryHubBytesPerEvent?: number | null;
+  // Guests' documents: the event's allowance and one document's limit, in
+  // bytes (null = unlimited; one document: the route's fixed ceiling).
+  maxDocumentBytesPerEvent?: number | null;
+  maxDocumentBytesPerFile?: number | null;
   emailEnabled: boolean;
   smsEnabled: boolean;
   vendorMarketplace: boolean;
@@ -33,6 +37,8 @@ export interface UpdateSubscriptionTierConfigDto {
   maxSmsPerMonth?: number | null;
   maxVendorSpaces?: number | null;
   maxMemoryHubBytesPerEvent?: number | null;
+  maxDocumentBytesPerEvent?: number | null;
+  maxDocumentBytesPerFile?: number | null;
   emailEnabled?: boolean;
   smsEnabled?: boolean;
   vendorMarketplace?: boolean;

@@ -16,7 +16,9 @@ import {
 import { eventService } from '../event/event.service.js';
 import { resolveEventOrganisers } from '../event-assignment/event-organisers.util.js';
 import { isSignedPublicIdInAnyFolder, memoryHubFolders } from '../upload/upload-folders.js';
-import { CLOUDINARY_DELETE_BATCH_LIMIT, destroyAssets } from '../../shared/cloudinary/cloudinary.client.js';
+import { memoryHubRepository } from '../memory-hub/memory-hub.repository.js';
+import { storedFileService } from '../storage/stored-file.service.js';
+import { DELETE_BATCH_SIZE, storageDeletionWorker } from '../storage/storage-deletion.worker.js';
 import { sendEmailBatch } from '../../shared/messaging/email.engine.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
@@ -46,15 +48,17 @@ import { guestDocumentService } from '../guest-document/guest-document.service.j
 //    one insert succeeds. A restore before the claim cancels the purge (the
 //    event is no longer archived); after it, the event is restored without
 //    its media.
-//  - ONE SWEEP AT A TIME, AND RETRIED. Working on a purge takes its lease (a
-//    conditional write, so one sweep wins). Items are deleted in Cloudinary
-//    batches of CLOUDINARY_DELETE_BATCH_LIMIT and each is marked purged as
-//    its batch succeeds; whatever failed stays unpurged, the failure is
-//    recorded on the purge (failedCount, lastError) and reported, and the
-//    next sweep tries again. Deleting an already deleted asset counts as
-//    done, so a rerun is always safe. A purge that has begun always
+//  - ONE SWEEP AT A TIME, THROUGH THE STORAGE WORKER. Working on a purge
+//    takes its lease (a conditional write, so one sweep wins). Its items are
+//    claimed in batches of DELETE_BATCH_SIZE: each batch marked purged (and
+//    archived) with its files requested for deletion, in one transaction;
+//    the storage worker deletes them (one by one, with invalidate), at once
+//    (deleteNow) and then on its own schedule, retrying a failure with
+//    backoff. The purge is complete when every one of its files is deleted;
+//    until then each sweep records what is left (failedCount, lastError)
+//    and asks again for any that are due. A purge that has begun always
 //    finishes, a restore included, and only for the items that existed
-//    when it began.
+//    when it began; a purged item can never be restored.
 //  - THE REMINDER is claimed once per event and archiving
 //    (MediaPurgeReminderClaim) before it is sent, like the feedback
 //    request. Not for a restored event, one whose purge has begun (a super
@@ -95,6 +99,10 @@ const RETENTION_ACTOR = 'media-retention';
 export const EVENT_NOT_ARCHIVED = 'EVENT_NOT_ARCHIVED';
 export const MEDIA_PURGE_ALREADY_STARTED = 'MEDIA_PURGE_ALREADY_STARTED';
 export const ARCHIVE_MEDIA_PURGE_OFF = 'ARCHIVE_MEDIA_PURGE_OFF';
+
+// Shown on a purge whose files are waiting for the worker without having
+// failed (storageDeletion off, or a lease held elsewhere).
+const WAITING_FOR_WORKER = 'Waiting for the storage worker';
 
 const chunk = <T>(items: T[], size: number): T[][] => {
   const chunks: T[][] = [];
@@ -155,17 +163,22 @@ export const mediaRetentionService = {
   },
 
   // One attempt at a purge, or null when it is finished or another sweep
-  // holds it. Deletes what is left of it in Cloudinary batches, marking
-  // each item purged as its batch succeeds.
+  // holds it. Claims what is left of it a batch at a time (items marked
+  // purged, their files requested, one transaction per batch), requests any
+  // document still kept, then asks the storage worker to delete every file
+  // of the purge still there and due. Complete once none is left.
+  //
+  // purgedCount: items (and documents) claimed by this attempt. failedCount:
+  // files of the purge still not deleted after it, retried by the worker
+  // and checked again by the next sweep.
   runPurge: async (purgeId: string, now: Date = new Date()): Promise<MediaPurgeOutcome | null> => {
     if (!(await mediaRetentionRepository.takeLease(purgeId, now, new Date(now.getTime() + MEDIA_PURGE_LEASE_MS)))) return null;
 
     const purge = await mediaRetentionRepository.findPurge(purgeId);
     const actor = purge.requestedBy ?? RETENTION_ACTOR;
+    const owner = { tenantId: purge.event.tenantId, eventId: purge.eventId };
     let purgedCount = 0;
-    let lastError: string | null = null;
-    const failedIds = new Set<string>();
-    let documentsFailed = 0;
+    let left: { id: string; lastDeleteError: string | null }[];
 
     try {
       const items = await mediaRetentionRepository.findItemsToPurge(purge.eventId, purge.startedAt);
@@ -181,34 +194,28 @@ export const mediaRetentionService = {
       }
 
       const inside = items.filter((i) => isSignedPublicIdInAnyFolder(i.cloudinaryPublicId, folders));
-      for (const [mediaType, resourceType] of [['IMAGE', 'image'], ['VIDEO', 'video']] as const) {
-        const ofType = inside.filter((i) => i.mediaType === mediaType);
-        for (const batch of chunk(ofType, CLOUDINARY_DELETE_BATCH_LIMIT)) {
-          const result = await destroyAssets(batch.map((i) => i.cloudinaryPublicId), resourceType);
-          if (!result.ok) {
-            batch.forEach((i) => failedIds.add(i.id));
-            lastError = result.reason;
-            continue;
-          }
-          const deleted = new Set(result.deleted);
-          const done = batch.filter((i) => deleted.has(i.cloudinaryPublicId));
-          batch.filter((i) => !deleted.has(i.cloudinaryPublicId)).forEach((i) => failedIds.add(i.id));
-          if (result.failed.length > 0) lastError = result.failed[0]!.reason;
-          purgedCount += (await mediaRetentionRepository.markItemsPurged(done.map((i) => i.id), now, actor)).count;
-        }
+      for (const batch of chunk(inside, DELETE_BATCH_SIZE)) {
+        purgedCount += await mediaRetentionRepository.withTransaction(async (tx) => {
+          const claimed = await memoryHubRepository.claimItemsForDeletion(tx, { id: { in: batch.map((i) => i.id) } }, now, actor);
+          await storedFileService.requestItemFiles(tx, claimed, owner, now);
+          return claimed.length;
+        });
       }
 
       // Its guests' uploaded documents too (guest-document.service.ts),
-      // counted with the items. Archiving already deleted them, so this is
-      // the backstop for any left, retried like an item until none fail.
-      const documents = await guestDocumentService.purgeForEvent(purge.eventId, purge.startedAt, now);
-      purgedCount += documents.deleted;
-      documentsFailed = documents.failed;
-      if (documents.failed > 0) lastError = documents.lastError;
+      // counted with the items. Archiving already requested them, so this
+      // is the backstop for any left.
+      purgedCount += await mediaRetentionRepository.withTransaction((tx) =>
+        guestDocumentService.requestPurgeForEvent(tx, purge.eventId, purge.startedAt, now)
+      );
+
+      const outstanding = await mediaRetentionRepository.findOutstandingFiles(purge.eventId, purge.startedAt);
+      await storageDeletionWorker.deleteNow(outstanding.map((f) => f.id), now);
+      left = outstanding.length ? await mediaRetentionRepository.findOutstandingFiles(purge.eventId, purge.startedAt) : [];
     } catch (err) {
       // A database failure mid-run: release the lease so the next sweep
-      // retries now, not when the lease runs out. What was deleted is
-      // deleted again harmlessly ("not found" counts as done).
+      // retries now, not when the lease runs out. Whatever was claimed is
+      // requested, and the worker deletes it either way.
       await mediaRetentionRepository.finishAttempt(purgeId, {
         purgedCount,
         failedCount: purge.failedCount,
@@ -218,16 +225,14 @@ export const mediaRetentionService = {
       throw err;
     }
 
-    const failedCount = failedIds.size + documentsFailed;
+    const failedCount = left.length;
     const completed = failedCount === 0;
-    await mediaRetentionRepository.finishAttempt(purgeId, {
-      purgedCount,
-      failedCount,
-      lastError: completed ? null : lastError,
-      completedAt: completed ? now : null,
-    });
+    const lastError = completed ? null : left.find((f) => f.lastDeleteError)?.lastDeleteError ?? WAITING_FOR_WORKER;
+    await mediaRetentionRepository.finishAttempt(purgeId, { purgedCount, failedCount, lastError, completedAt: completed ? now : null });
     if (!completed) {
-      reportError(new Error(`[media retention] ${failedCount} item(s) of event ${purge.eventId} could not be deleted from Cloudinary, retried next sweep: ${lastError}`));
+      // Counts only. The worker reports a file that keeps failing to Sentry
+      // itself (the 3rd failure in a row, and every 10th after).
+      console.warn(`[media retention] ${failedCount} file(s) of event ${purge.eventId} not deleted yet, checked again next sweep`);
     }
     return { purgeId, eventId: purge.eventId, reason: purge.reason, purgedCount, failedCount, completed };
   },

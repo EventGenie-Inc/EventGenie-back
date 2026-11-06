@@ -24,10 +24,12 @@ import { eventDraftService } from '../event-draft/event-draft.service.js';
 //  deleted, and requests keep piling up as rows to be deleted once it is
 //  back on. Requests themselves are never switched off.
 //
-//  Not here: a guest document's file (guest-document.service.ts deletes
-//  those, in its own recorded and retried batches, and closes the row)
-//  and an archived event's Memory Hub media (media-retention.service.ts,
-//  likewise). Both mark the StoredFile DELETED when they are done.
+//  Every file goes this way: covers, designs, logos, unsaved uploads,
+//  guests' documents (a document's row is marked deleted with its file),
+//  an archived event's Memory Hub media (media-retention.service.ts), and
+//  everything the retention rules delete (storage-retention.service.ts).
+//  Each of those requests deletion in its own transaction, then may ask
+//  for it now (deleteNow); what isn't done then, the worker does.
 // ─────────────────────────────────────────
 
 export const DELETE_BATCH_SIZE = 100;
@@ -118,14 +120,23 @@ export const storageDeletionWorker = {
     return { skipped: false, deleted, failed };
   },
 
-  // These files now, if due (a released upload). Whatever fails stays
-  // requested, for the next run. Never throws: the request is recorded.
+  // These files now, if due (a released upload, a replaced document, a
+  // purge), claimed a batch of DELETE_BATCH_SIZE at a time. Whatever fails
+  // (or isn't due yet: backing off, or another worker's) stays requested,
+  // for the next run. Never throws: the request is recorded.
   deleteNow: async (ids: string[], now: Date = new Date()): Promise<DeletionRunResult> => {
     if (ids.length === 0 || !isFeatureEnabled('storageDeletion')) return { skipped: true, deleted: 0, failed: 0 };
     try {
-      const batch = await storedFileRepository.claimDue(now, new Date(now.getTime() + DELETE_LEASE_MS), DELETE_BATCH_SIZE, ids);
-      if (batch.length === 0) return { skipped: false, deleted: 0, failed: 0 };
-      return { skipped: false, ...(await deleteBatch(batch, now)) };
+      let deleted = 0;
+      let failed = 0;
+      for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
+        const batch = await storedFileRepository.claimDue(now, new Date(now.getTime() + DELETE_LEASE_MS), DELETE_BATCH_SIZE, ids.slice(i, i + DELETE_BATCH_SIZE));
+        if (batch.length === 0) continue;
+        const outcome = await deleteBatch(batch, now);
+        deleted += outcome.deleted;
+        failed += outcome.failed;
+      }
+      return { skipped: false, deleted, failed };
     } catch (err) {
       console.error('[storage] immediate delete failed, retried by the worker');
       reportError(err);

@@ -1,5 +1,6 @@
 import { optionalWholeNumber } from '../../shared/utils/whole-number.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { GUEST_DOCUMENT_CEILING_BYTES } from '../upload/upload-constants.js';
 
 // The four tier limits a SUPER_ADMIN edits on the Subscription Tiers page,
 // with the labels that page shows. null means unlimited (STEERING.md "Tier
@@ -10,13 +11,17 @@ import { HttpError } from '../../shared/errors/http-error.js';
 // maxMemoryHubBytesPerEvent, in bytes, is a BIGINT column (above 2 GB is
 // allowed) and must also be a safe integer: past 2^53 a JSON number no
 // longer holds whole bytes exactly, and past the column's range Prisma
-// refuses it with a 500.
+// refuses it with a 500. maxDocumentBytesPerEvent is a BIGINT too.
+// maxDocumentBytesPerFile is held to the upload route's fixed safety ceiling
+// (GUEST_DOCUMENT_CEILING_BYTES): a larger figure could never be uploaded.
 export const TIER_LIMIT_LABELS = {
   maxEvents: 'Max events',
   maxGuestsPerEvent: 'Max guests / event',
   maxSmsPerMonth: 'Max SMS / month',
   maxVendorSpaces: 'Max vendor spaces',
   maxMemoryHubBytesPerEvent: 'Memory Hub storage per event (bytes)',
+  maxDocumentBytesPerEvent: 'Document storage per event (bytes)',
+  maxDocumentBytesPerFile: 'Size per document (bytes)',
 } as const;
 
 export type TierLimitField = keyof typeof TIER_LIMIT_LABELS;
@@ -25,6 +30,12 @@ export const normalizeTierLimit = (value: unknown, field: TierLimitField): numbe
   const message = `Enter a whole number of 0 or more for ${TIER_LIMIT_LABELS[field]}, or leave it blank for unlimited.`;
   const limit = optionalWholeNumber(value, message);
   if (limit !== null && !Number.isSafeInteger(limit)) throw new HttpError(422, message);
+  if (field === 'maxDocumentBytesPerFile' && limit !== null && (limit < 1 || limit > GUEST_DOCUMENT_CEILING_BYTES)) {
+    throw new HttpError(
+      422,
+      `Enter a whole number from 1 to ${GUEST_DOCUMENT_CEILING_BYTES} for ${TIER_LIMIT_LABELS[field]} (at most ${GUEST_DOCUMENT_CEILING_BYTES / (1024 * 1024)} MB), or leave it blank for the most allowed.`
+    );
+  }
   return limit;
 };
 

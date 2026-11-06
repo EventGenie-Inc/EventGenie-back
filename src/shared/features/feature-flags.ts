@@ -57,6 +57,15 @@ export const FEATURE_NAMES = [
   // keep being recorded, to be deleted once it is back on. An emergency
   // stop; the documents pipeline and the archived-media purge have their own.
   'storageDeletion',
+  // The storage retention rules (storage-retention.service.ts): rejected or
+  // removed Memory Hub items deleted 7 days later; guests' documents deleted
+  // when their event finishes (archived guests', invites' and questions'),
+  // 90 days after it finishes (the rest), and 30 days after it is cancelled
+  // (all), with the organisers' emails before the last two. Off: none of
+  // these deletes anything or emails anyone, and no countdown (deletesAt)
+  // is reported. The clocks keep running (rejectedAt, removedAt,
+  // cancelledAt are recorded), so switching it on catches up.
+  'storageRetention',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

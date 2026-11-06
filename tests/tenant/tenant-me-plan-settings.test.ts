@@ -63,6 +63,8 @@ describe('GET /api/tenants/me — planSettings', () => {
       maxSmsPerMonth: 0,
       maxVendorSpaces: 0,
       maxMemoryHubBytesPerEvent: 0,
+      maxDocumentBytesPerEvent: 500 * 1024 * 1024,
+      maxDocumentBytesPerFile: 5 * 1024 * 1024,
       smsEnabled: false,
       memoryHubEnabled: false,
       guestExportEnabled: false,
@@ -79,6 +81,8 @@ describe('GET /api/tenants/me — planSettings', () => {
       maxGuestsPerEvent: 300,
       memoryHubEnabled: true,
       maxMemoryHubBytesPerEvent: 1024,
+      maxDocumentBytesPerEvent: 2048,
+      maxDocumentBytesPerFile: 1024,
       guestExportEnabled: true,
       vendorMarketplace: true,
       publicEventsEnabled: true,
@@ -101,6 +105,9 @@ describe('GET /api/tenants/me — planSettings', () => {
       maxSmsPerMonth: null,
       maxVendorSpaces: null,
       maxMemoryHubBytesPerEvent: null,
+      // Documents: unlimited per event, the upload route's 20 MB ceiling per document.
+      maxDocumentBytesPerEvent: null,
+      maxDocumentBytesPerFile: 20 * 1024 * 1024,
       smsEnabled: false,
       memoryHubEnabled: false,
       guestExportEnabled: false,
@@ -124,9 +131,9 @@ describe('GET /api/tenants/me — planSettings', () => {
   it('a switched-off feature’s settings are left out', async () => {
     installFirebaseMock();
     await onTier('SPARK');
-    vi.stubEnv('FEATURES_DISABLED', 'vendors,sms,ticketing,publicEvents');
+    vi.stubEnv('FEATURES_DISABLED', 'vendors,sms,ticketing,publicEvents,documentFields');
     const settings = await me();
-    for (const key of ['maxVendorSpaces', 'vendorMarketplace', 'vendorPriorityPlacement', 'maxSmsPerMonth', 'smsEnabled', 'paidTicketingEnabled', 'publicEventsEnabled']) {
+    for (const key of ['maxVendorSpaces', 'vendorMarketplace', 'vendorPriorityPlacement', 'maxSmsPerMonth', 'smsEnabled', 'paidTicketingEnabled', 'publicEventsEnabled', 'maxDocumentBytesPerEvent', 'maxDocumentBytesPerFile']) {
       expect(settings).not.toHaveProperty(key);
     }
     expect(Object.keys(settings).sort()).toEqual(

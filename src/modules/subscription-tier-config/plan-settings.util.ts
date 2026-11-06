@@ -2,6 +2,7 @@ import { type SubscriptionTier } from '@prisma/client';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { resolveTierCapability } from './tier-capabilities.util.js';
 import { isFeatureEnabled, type FeatureName } from '../../shared/features/feature-flags.js';
+import { documentLimitsFromConfig } from '../guest-document/guest-document-allowance.util.js';
 
 // ─────────────────────────────────────────
 //  PLAN SETTINGS — what a tenant's plan allows, for the frontend.
@@ -31,6 +32,11 @@ export interface PlanSettings {
   maxSmsPerMonth?: number | null;
   maxVendorSpaces?: number | null;
   maxMemoryHubBytesPerEvent: number | null;
+  // Guests' documents (documentFields): the event's allowance (null =
+  // unlimited) and the most one document may be (always a number: the
+  // plan's, else the upload route's fixed ceiling).
+  maxDocumentBytesPerEvent?: number | null;
+  maxDocumentBytesPerFile?: number;
   smsEnabled?: boolean;
   memoryHubEnabled: boolean;
   guestExportEnabled: boolean;
@@ -48,7 +54,9 @@ type FeatureSettingKey =
   | 'vendorMarketplace'
   | 'vendorPriorityPlacement'
   | 'publicEventsEnabled'
-  | 'paidTicketingEnabled';
+  | 'paidTicketingEnabled'
+  | 'maxDocumentBytesPerEvent'
+  | 'maxDocumentBytesPerFile';
 
 // Which feature flag each optional setting belongs to.
 const SETTING_FEATURE: Record<FeatureSettingKey, FeatureName> = {
@@ -59,6 +67,8 @@ const SETTING_FEATURE: Record<FeatureSettingKey, FeatureName> = {
   vendorPriorityPlacement: 'vendors',
   publicEventsEnabled: 'publicEvents',
   paidTicketingEnabled: 'ticketing',
+  maxDocumentBytesPerEvent: 'documentFields',
+  maxDocumentBytesPerFile: 'documentFields',
 };
 
 export const resolvePlanSettings = async (tier: SubscriptionTier): Promise<PlanSettings> => {
@@ -70,6 +80,9 @@ export const resolvePlanSettings = async (tier: SubscriptionTier): Promise<PlanS
     maxSmsPerMonth: config?.maxSmsPerMonth ?? null,
     maxVendorSpaces: config?.maxVendorSpaces ?? null,
     maxMemoryHubBytesPerEvent: config?.maxMemoryHubBytesPerEvent ?? null,
+    // The same resolution the upload enforces (guest-document-allowance.util.ts).
+    maxDocumentBytesPerEvent: documentLimitsFromConfig(config).maxBytesPerEvent,
+    maxDocumentBytesPerFile: documentLimitsFromConfig(config).maxBytesPerDocument,
     smsEnabled: config?.smsEnabled ?? false,
     memoryHubEnabled: config?.memoryHubEnabled ?? false,
     guestExportEnabled: config?.guestExportEnabled ?? false,

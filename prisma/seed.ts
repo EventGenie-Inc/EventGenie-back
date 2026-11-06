@@ -146,6 +146,10 @@ const TIER_CONFIGS = [
     // Unreachable too — memoryHubEnabled:false below blocks SPARK from
     // Memory Hub entirely, before this is ever checked.
     maxMemoryHubBytesPerEvent: 0,
+    // Guests' documents have their own allowance (20261106090000_storage_rules),
+    // the same on every tier at launch.
+    maxDocumentBytesPerEvent: 500 * 1024 * 1024,
+    maxDocumentBytesPerFile: 5 * 1024 * 1024,
     emailEnabled: true,
     smsEnabled: false,
     vendorMarketplace: false,
@@ -169,6 +173,8 @@ const TIER_CONFIGS = [
     // per-file reasoning), while keeping storage cost per event bounded
     // on the mid tier. ELEVATE is unlimited below.
     maxMemoryHubBytesPerEvent: 500 * 1024 * 1024,
+    maxDocumentBytesPerEvent: 500 * 1024 * 1024,
+    maxDocumentBytesPerFile: 5 * 1024 * 1024,
     emailEnabled: true,
     smsEnabled: true,
     vendorMarketplace: true,
@@ -188,6 +194,8 @@ const TIER_CONFIGS = [
     maxSmsPerMonth: null,
     maxVendorSpaces: null,
     maxMemoryHubBytesPerEvent: null,
+    maxDocumentBytesPerEvent: 500 * 1024 * 1024,
+    maxDocumentBytesPerFile: 5 * 1024 * 1024,
     emailEnabled: true,
     smsEnabled: true,
     vendorMarketplace: true,

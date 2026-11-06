@@ -2,16 +2,20 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateSubscriptionTierConfigDto, type UpdateSubscriptionTierConfigDto } from './subscription-tier-config.type.js';
 import { type SubscriptionTier, type SubscriptionTierConfig } from '@prisma/client';
 
-// maxMemoryHubBytesPerEvent is a BIGINT column (limits above 2 GB), which
-// Prisma returns as a JS bigint. Every row leaves this file with it as a
-// plain number instead: a bigint can't be written to JSON (every response
+// maxMemoryHubBytesPerEvent and maxDocumentBytesPerEvent are BIGINT columns
+// (limits above 2 GB), which Prisma returns as a JS bigint. Every row leaves
+// this file with them as plain numbers instead: a bigint can't be written to JSON (every response
 // carrying a config would be a 500) and can't be compared with the
 // number of bytes in use. A number holds whole bytes exactly up to 8 PB.
-export type TierConfigRow = Omit<SubscriptionTierConfig, 'maxMemoryHubBytesPerEvent'> & { maxMemoryHubBytesPerEvent: number | null };
+export type TierConfigRow = Omit<SubscriptionTierConfig, 'maxMemoryHubBytesPerEvent' | 'maxDocumentBytesPerEvent'> & {
+  maxMemoryHubBytesPerEvent: number | null;
+  maxDocumentBytesPerEvent: number | null;
+};
 
 const toPlain = (row: SubscriptionTierConfig): TierConfigRow => ({
   ...row,
   maxMemoryHubBytesPerEvent: row.maxMemoryHubBytesPerEvent === null ? null : Number(row.maxMemoryHubBytesPerEvent),
+  maxDocumentBytesPerEvent: row.maxDocumentBytesPerEvent === null ? null : Number(row.maxDocumentBytesPerEvent),
 });
 const toPlainOrNull = (row: SubscriptionTierConfig | null): TierConfigRow | null => (row ? toPlain(row) : null);
 
@@ -40,6 +44,8 @@ export const subscriptionTierConfigRepository = {
         maxSmsPerMonth: data.maxSmsPerMonth ?? null,
         maxVendorSpaces: data.maxVendorSpaces ?? null,
         maxMemoryHubBytesPerEvent: data.maxMemoryHubBytesPerEvent ?? null,
+        maxDocumentBytesPerEvent: data.maxDocumentBytesPerEvent ?? null,
+        maxDocumentBytesPerFile: data.maxDocumentBytesPerFile ?? null,
         emailEnabled: data.emailEnabled,
         smsEnabled: data.smsEnabled,
         vendorMarketplace: data.vendorMarketplace,
@@ -62,6 +68,8 @@ export const subscriptionTierConfigRepository = {
         ...(data.maxSmsPerMonth !== undefined && { maxSmsPerMonth: data.maxSmsPerMonth ?? null }),
         ...(data.maxVendorSpaces !== undefined && { maxVendorSpaces: data.maxVendorSpaces ?? null }),
         ...(data.maxMemoryHubBytesPerEvent !== undefined && { maxMemoryHubBytesPerEvent: data.maxMemoryHubBytesPerEvent ?? null }),
+        ...(data.maxDocumentBytesPerEvent !== undefined && { maxDocumentBytesPerEvent: data.maxDocumentBytesPerEvent ?? null }),
+        ...(data.maxDocumentBytesPerFile !== undefined && { maxDocumentBytesPerFile: data.maxDocumentBytesPerFile ?? null }),
         ...(data.emailEnabled !== undefined && { emailEnabled: data.emailEnabled }),
         ...(data.smsEnabled !== undefined && { smsEnabled: data.smsEnabled }),
         ...(data.vendorMarketplace !== undefined && { vendorMarketplace: data.vendorMarketplace }),

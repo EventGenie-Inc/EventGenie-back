@@ -9,7 +9,7 @@ import {
   EVENT_COVER_MAX_BYTES,
   FEEDBACK_LOGO_ALLOWED_FORMATS,
   FEEDBACK_LOGO_MAX_BYTES,
-  GUEST_DOCUMENT_MAX_BYTES,
+  GUEST_DOCUMENT_CEILING_BYTES,
   INVITATION_DESIGN_ALLOWED_FORMATS,
   INVITATION_DESIGN_MAX_BYTES,
   MEMORY_ITEM_IMAGE_ALLOWED_FORMATS,
@@ -56,7 +56,7 @@ export const maxBytesFor = (kind: StoredFileKind, resourceType: StoredFileResour
     case 'COVER': return EVENT_COVER_MAX_BYTES;
     case 'INVITATION_DESIGN': return INVITATION_DESIGN_MAX_BYTES;
     case 'FEEDBACK_LOGO': return FEEDBACK_LOGO_MAX_BYTES;
-    case 'GUEST_DOCUMENT': return GUEST_DOCUMENT_MAX_BYTES;
+    case 'GUEST_DOCUMENT': return GUEST_DOCUMENT_CEILING_BYTES;
     case 'MEMORY_ITEM': return resourceType === 'VIDEO' ? MEMORY_ITEM_VIDEO_MAX_BYTES : MEMORY_ITEM_IMAGE_MAX_BYTES;
   }
 };
@@ -263,10 +263,46 @@ export const storedFileService = {
 
   // ── Deleting ────────────────────────────
 
+  // The id of the StoredFile for a file whose owner names none (a legacy
+  // row is written: storedFileRepository.ensureLegacy).
+  ensureRecorded: (db: Db, data: NewStoredFile, now: Date = new Date()): Promise<string> =>
+    storedFileRepository.ensureLegacy(data, now, db),
+
   // Recorded, never done here: the worker deletes. Pass the transaction of
   // the change that made the files unwanted, so the two land together.
   requestDeletion: (db: Db, where: Prisma.StoredFileWhereInput, now: Date = new Date()): Promise<number> =>
     storedFileRepository.requestDeletion(where, now, db),
+
+  // Memory Hub items whose files are to go (an archived event's purge, the
+  // 7-day rule for rejected and removed items): each item's StoredFile
+  // requested for deletion, a legacy row written first for an item that
+  // names none. In the caller's transaction, with the items' own claim.
+  // Returns the files' ids, for an immediate delete.
+  requestItemFiles: async (
+    db: Db,
+    items: { id: string; cloudinaryPublicId: string; mediaType: 'IMAGE' | 'VIDEO'; storedFileId: string | null }[],
+    owner: { tenantId: string; eventId: string },
+    now: Date = new Date()
+  ): Promise<string[]> => {
+    const fileIds: string[] = [];
+    for (const item of items) {
+      let fileId = item.storedFileId;
+      if (!fileId) {
+        fileId = await storedFileRepository.ensureLegacy({
+          publicId: item.cloudinaryPublicId,
+          resourceType: item.mediaType === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+          deliveryType: 'UPLOAD',
+          kind: 'MEMORY_ITEM',
+          tenantId: owner.tenantId,
+          eventId: owner.eventId,
+        }, now, db);
+        await storedFileRepository.linkMemoryItem(item.id, fileId, db);
+      }
+      fileIds.push(fileId);
+    }
+    if (fileIds.length > 0) await storedFileRepository.requestDeletion({ id: { in: fileIds } }, now, db);
+    return fileIds;
+  },
 
   // The file a record named before it was replaced (an old cover, design or
   // logo): requested for deletion, unless it is the file now kept.

@@ -24,7 +24,6 @@ import { buildGuestExportWorkbook } from './guest-export.util.js';
 import { assertGuestExportEnabled } from '../subscription-tier-config/guest-export-tier-enforcement.util.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
-import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { guestDocumentRepository } from '../guest-document/guest-document.repository.js';
 
 // PUBLIC events have no organiser-built guest list by design — guests
@@ -78,6 +77,15 @@ export const guestService = {
 
     if (!guest) throw new HttpError(404, 'Guest not found');
     return guest;
+  },
+
+  // GET /api/guests/:id: the guest, plus documentCount, the documents
+  // they sent with their replies that are still kept (every invite of
+  // theirs). The organiser is warned with it before archiving: documents
+  // of a guest still archived when the event finishes are deleted then.
+  getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null) => {
+    const guest = await guestService.getById(id, requestingRole, tenantId);
+    return { ...guest, documentCount: await guestDocumentRepository.countLiveForGuest(id) };
   },
 
   getAllForEvent: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null, includeArchived = false) => {
@@ -201,12 +209,10 @@ export const guestService = {
       }
     });
 
-    // Their uploaded documents (proofs of payment, which can hold bank
-    // details) are deleted from Cloudinary now, not kept for a restore:
-    // restoring the guest brings their answers back without the files.
-    // A deletion Cloudinary refuses is retried by the documents sweep.
-    await guestDocumentService.deleteForGuest(id);
-
+    // Their uploaded documents are kept, so restoring the guest brings
+    // them back. Still archived when the event finishes, they are deleted
+    // then (storage-retention.service.ts); the guest details' documentCount
+    // is what the organiser is warned with before archiving.
     return guestRepository.findById(id, true);
   },
 

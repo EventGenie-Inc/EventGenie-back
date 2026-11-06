@@ -1,5 +1,6 @@
 import { dayHasVenue } from '../event-day/event-day-venue.util.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { resolveEventDocumentStorage } from '../storage-retention/document-storage.util.js';
 import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
@@ -253,13 +254,19 @@ export const eventService = {
   //
   // An archived event is readable here (includeArchived), so an organiser can
   // open it from their Archived list and see its retention dates.
+  //
+  // documentStorage (while documentFields is on): the guests' documents'
+  // own storage, used against the plan's allowance, nearLimit over 80%, and
+  // deletesAt for the retention countdown (document-storage.util.ts).
   getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null, { includeArchived = false }: { includeArchived?: boolean } = {}) => {
     const event = await eventService.getById(id, requestingRole, tenantId, includeArchived);
     const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
     const guestLimitInfo = await resolveGuestLimit(event);
     const currentGuestCount = await guestRepository.countForEvent(id);
+    const documentStorage = isFeatureEnabled('documentFields') ? await resolveEventDocumentStorage(event) : undefined;
     return {
       ...event,
+      ...(documentStorage && { documentStorage }),
       acceptedGuestCount,
       guestLimit: {
         limit: guestLimitInfo.limit, // null = unlimited; the object itself is always present

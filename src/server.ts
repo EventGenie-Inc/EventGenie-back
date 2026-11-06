@@ -9,6 +9,7 @@ import { startFeedbackRequestSweeps } from './modules/feedback/feedback-request.
 import { startMediaRetentionSweeps } from './modules/media-retention/media-retention.service.js';
 import { startGuestDocumentSweeps } from './modules/guest-document/guest-document.service.js';
 import { startStorageSweeps } from './modules/storage/storage-deletion.worker.js';
+import { startStorageRetentionSweeps } from './modules/storage-retention/storage-retention.service.js';
 import { assertStorageEnvValid } from './modules/upload/upload-folders.js';
 
 // ─────────────────────────────────────────
@@ -48,6 +49,7 @@ const start = async (): Promise<void> => {
     startMediaRetentionSweeps();
     startGuestDocumentSweeps();
     startStorageSweeps();
+    startStorageRetentionSweeps();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

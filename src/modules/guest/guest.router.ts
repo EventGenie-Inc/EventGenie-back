@@ -19,7 +19,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const guest = await guestService.getById(req.params['id'] as string, auth.user.role, auth.user.tenantId);
+    const guest = await guestService.getDetail(req.params['id'] as string, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: guest });
   } catch (err) { next(err); }
 });

@@ -22,6 +22,7 @@ import {
 } from '../rsvp/rsvp-answers.util.js';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { resolveDocumentLimits } from '../guest-document/guest-document-allowance.util.js';
 import {
   REGISTRATION_ERROR_CODES,
   resolveRegistrationState,
@@ -79,7 +80,7 @@ const rulesFor = (event: ShareTokenEvent): RegistrationRulesEvent => ({
 // shows (PublicEventView). Built as an explicit allowlist, never a spread
 // of the Prisma row, so a column added to Event or EventDay later can't
 // start leaking by itself (STEERING "Guest-facing responses").
-const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicEventView => ({
+const toPublicView = (event: ShareTokenEvent, state: RegistrationState, maxDocumentBytes: number | null): PublicEventView => ({
   name: event.name,
   hostName: event.hostName,
   description: event.description,
@@ -120,6 +121,7 @@ const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicE
     plusOnesAllowed: event.registrationPlusOnesAllowed,
     allowedEmailDomains: event.registrationEmailDomains,
   },
+  maxDocumentBytes,
 });
 
 // ─────────────────────────────────────────
@@ -286,7 +288,8 @@ export const eventPublicService = {
   viewByShareToken: async (shareToken: string): Promise<PublicEventView> => {
     const event = await findPublicEvent(shareToken);
     const [seats, { limit }] = await Promise.all([eventPublicRepository.countSeats(event.id), resolveGuestLimit(event)]);
-    return toPublicView(event, resolveRegistrationState(rulesFor(event), seats, limit));
+    const maxDocumentBytes = isFeatureEnabled('documentFields') ? (await resolveDocumentLimits(event)).maxBytesPerDocument : null;
+    return toPublicView(event, resolveRegistrationState(rulesFor(event), seats, limit), maxDocumentBytes);
   },
 
   // Creates the guest and their accepted invite (their days, their

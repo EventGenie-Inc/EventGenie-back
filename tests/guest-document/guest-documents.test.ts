@@ -11,23 +11,22 @@ import JSZip from 'jszip';
 //  token, or on a public event's registration page; the upload's id is
 //  the answer. The bytes decide the type, 5 MB at most, stored privately;
 //  an organiser views it through a 5-minute signed link; the file is
-//  deleted when replaced, when its guest is removed, when its event is
-//  deleted, by the archived-event purge, and when never attached within
-//  24 hours. Behind documentFields.
+//  deleted when replaced, when its event is deleted, by the archived-event
+//  purge, and when never attached within 24 hours, always by the storage
+//  worker (Round B: one deletion path). Removing a guest keeps their files
+//  (tests/storage-retention/ has what happens at the event's finish).
+//  Behind documentFields.
 //
-//  Cloudinary is mocked at its two calls, the private upload and the batch
-//  delete, so nothing real is stored or deleted; the signed link is built
-//  for real (it makes no call) against test credentials.
+//  Cloudinary's private upload is mocked; deletes reach the fake Cloudinary
+//  (tests/helpers/fake-cloudinary.ts) through the worker's single destroy,
+//  so nothing real is stored or deleted; the signed link is built for real
+//  (it makes no call) against test credentials.
 // ─────────────────────────────────────────
 
-const { mockUpload, mockDestroyAssets } = vi.hoisted(() => ({ mockUpload: vi.fn(), mockDestroyAssets: vi.fn() }));
+const { mockUpload } = vi.hoisted(() => ({ mockUpload: vi.fn() }));
 vi.mock('../../src/shared/cloudinary/cloudinary-private-asset.util.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/shared/cloudinary/cloudinary-private-asset.util.js')>()),
   uploadPrivateRawAsset: mockUpload,
-}));
-vi.mock('../../src/shared/cloudinary/cloudinary.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/shared/cloudinary/cloudinary.client.js')>()),
-  destroyAssets: mockDestroyAssets,
 }));
 
 import app from '../../src/app.js';
@@ -36,6 +35,9 @@ import { guestRepository } from '../../src/modules/guest/guest.repository.js';
 import { guestDocumentService } from '../../src/modules/guest-document/guest-document.service.js';
 import { mediaRetentionService } from '../../src/modules/media-retention/media-retention.service.js';
 import { memoryHubRepository } from '../../src/modules/memory-hub/memory-hub.repository.js';
+import { guestDocumentRepository } from '../../src/modules/guest-document/guest-document.repository.js';
+import { storageDeletionWorker } from '../../src/modules/storage/storage-deletion.worker.js';
+import { fakeCloudinary } from '../helpers/fake-cloudinary.js';
 import { guestDocumentFolder } from '../../src/modules/upload/upload-folders.js';
 import { ROUTE_NOT_FOUND_BODY } from '../../src/shared/middleware/feature.middleware.js';
 import { scrubValue, scrubText } from '../../src/shared/monitoring/sentry-scrub.js';
@@ -72,8 +74,6 @@ beforeEach(() => {
   vi.stubEnv('CLOUDINARY_API_SECRET', API_SECRET);
   mockUpload.mockReset();
   mockUpload.mockImplementation(async (publicId: string, file: Buffer) => ({ ok: true, publicId, bytes: file.length }));
-  mockDestroyAssets.mockReset();
-  mockDestroyAssets.mockImplementation(async (publicIds: string[]) => ({ ok: true, deleted: publicIds, failed: [] }));
 });
 
 afterEach(() => {
@@ -181,7 +181,10 @@ const receivedDocument = async (setup: Setup) => {
 
 const documentRow = (id: string) => prisma.guestDocument.findUniqueOrThrow({ where: { id } });
 
-const destroyedIds = (): string[] => mockDestroyAssets.mock.calls.flatMap((call) => call[0] as string[]);
+// What the storage worker asked Cloudinary to destroy, of this event's documents.
+const destroyedIds = (): string[] => fakeCloudinary.destroyedIds().filter((id) => id.includes('/document/'));
+// Each destroy is of a private raw file.
+const destroyCallFor = (publicId: string) => fakeCloudinary.callsTo('destroy').find((c) => c.publicIds[0] === publicId)!;
 
 // ── Uploading ─────────────────────────────
 
@@ -303,7 +306,7 @@ describe('uploading with an invitation', () => {
     const firstRow = await documentRow(first.body.data.id);
     expect(firstRow.deletedAt).not.toBeNull();
     expect(destroyedIds()).toEqual([firstRow.cloudinaryPublicId]);
-    expect(mockDestroyAssets.mock.calls[0]!.slice(1)).toEqual(['raw', 'private']);
+    expect(destroyCallFor(firstRow.cloudinaryPublicId)).toMatchObject({ resourceType: 'raw', params: { type: 'private' } });
     expect((await documentRow(second.body.data.id)).deletedAt).toBeNull();
   });
 
@@ -398,7 +401,7 @@ describe('a DOCUMENT answer at RSVP', () => {
     const setup = await newEvent();
     const { token, documentId } = await receivedDocument(setup);
     const replacement = await uploadAsGuest(token, setup.fieldId, PNG, 'new.png');
-    expect(mockDestroyAssets).not.toHaveBeenCalled(); // the submitted file stays until the new reply
+    expect(destroyedIds()).toEqual([]); // the submitted file stays until the new reply
 
     expect((await submit(token, setup, replacement.body.data.id)).status).toBe(200);
 
@@ -536,42 +539,46 @@ describe('the organiser viewing a document', () => {
     expect((await request(app).get(`/api/events/${setup.eventId}/documents/${documentId}/link`)).status).toBe(401);
   });
 
-  it('counts kept documents in the event\'s storage', async () => {
+  it('counts kept documents in the event\'s own document storage, never the Memory Hub\'s', async () => {
     const setup = await newEvent();
-    const before = await memoryHubRepository.sumBytesForEvent(setup.eventId);
+    const hubBefore = await memoryHubRepository.sumBytesForEvent(setup.eventId);
     await receivedDocument(setup);
-    expect(await memoryHubRepository.sumBytesForEvent(setup.eventId)).toBe(before + PDF.length);
+    expect(await guestDocumentRepository.sumLiveBytesForEvent(setup.eventId)).toBe(PDF.length);
+    expect(await memoryHubRepository.sumBytesForEvent(setup.eventId)).toBe(hubBefore);
   });
 });
 
 // ── Deleting ──────────────────────────────
 
 describe('deleting documents', () => {
-  it('deletes a guest\'s files when the guest is removed, and the link is gone', async () => {
+  it('keeps a guest\'s files when the guest is removed: the link still works, and restoring brings them back', async () => {
     const setup = await newEvent();
     const { guestId, documentId } = await receivedDocument(setup);
-    const kept = await receivedDocument(setup);
 
     const res = await request(app).delete(`/api/guests/${guestId}`).set(headersFor(organiser));
     expect(res.status).toBe(200);
 
-    const row = await documentRow(documentId);
-    expect(row.deletedAt).not.toBeNull();
-    expect(destroyedIds()).toEqual([row.cloudinaryPublicId]);
-    expect(mockDestroyAssets.mock.calls[0]!.slice(1)).toEqual(['raw', 'private']);
-    expect((await documentRow(kept.documentId)).deletedAt).toBeNull();
-    expect((await request(app).get(`/api/events/${setup.eventId}/documents/${documentId}/link`).set(headersFor(organiser))).status).toBe(404);
+    expect(await documentRow(documentId)).toMatchObject({ deletedAt: null, deleteRequestedAt: null });
+    expect(destroyedIds()).toEqual([]);
+    expect((await request(app).get(`/api/events/${setup.eventId}/documents/${documentId}/link`).set(headersFor(organiser))).status).toBe(200);
+
+    expect((await request(app).post(`/api/guests/${guestId}/reactivate`).set(headersFor(organiser))).status).toBe(200);
+    const detail = await request(app).get(`/api/guests/${guestId}`).set(headersFor(organiser));
+    expect(detail.body.data.documentCount).toBe(1);
   });
 
-  it('a deletion Cloudinary refuses stays pending and the sweep retries it', async () => {
+  it('a deletion Cloudinary refuses stays requested, with its reason, and the storage worker retries it', async () => {
     const setup = await newEvent();
-    const { guestId, documentId } = await receivedDocument(setup);
-    mockDestroyAssets.mockResolvedValueOnce({ ok: false, reason: 'HTTP 500' });
+    const { documentId } = await receivedDocument(setup);
+    const { cloudinaryPublicId } = await documentRow(documentId);
+    fakeCloudinary.failDestroy.add(cloudinaryPublicId);
 
-    expect((await request(app).delete(`/api/guests/${guestId}`).set(headersFor(organiser))).status).toBe(200);
-    expect(await documentRow(documentId)).toMatchObject({ deletedAt: null, deleteRequestedAt: expect.any(Date), lastDeleteError: 'HTTP 500' });
+    expect((await request(app).delete(`/api/events/${setup.eventId}`).set(headersFor(organiser))).status).toBe(200);
+    expect(await documentRow(documentId)).toMatchObject({ deletedAt: null, deleteRequestedAt: expect.any(Date) });
+    expect((await documentRow(documentId)).lastDeleteError).toBe('HTTP 500');
 
-    await guestDocumentService.sweep();
+    fakeCloudinary.failDestroy.clear();
+    await storageDeletionWorker.runOnce(new Date(Date.now() + 2 * 60_000));
     expect((await documentRow(documentId)).deletedAt).not.toBeNull();
   });
 
@@ -727,7 +734,7 @@ describe('documentFields off', () => {
     // What was received is kept: the answer, the file, and no deletion.
     expect(await prisma.rsvpResponse.count({ where: { inviteId, value: documentId } })).toBe(1);
     expect((await documentRow(documentId)).deleteRequestedAt).toBeNull();
-    expect(mockDestroyAssets).not.toHaveBeenCalled();
+    expect(destroyedIds()).toEqual([]);
 
     // The organiser's link is the global 404.
     const link = await request(app).get(`/api/events/${setup.eventId}/documents/${documentId}/link`).set(headersFor(organiser));
