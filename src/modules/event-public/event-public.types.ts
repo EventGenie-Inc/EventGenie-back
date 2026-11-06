@@ -87,6 +87,10 @@ export interface PublicEventView {
     plusOnesAllowed: number;
     allowedEmailDomains: string[];
   };
+  // The most one uploaded document may be, in bytes (the event's plan,
+  // guest-document-allowance.util.ts), for the upload to refuse a larger
+  // file before sending it. Null while documentFields is off.
+  maxDocumentBytes: number | null;
 }
 
 // One outcome: a repeat registration answers exactly as a new one does

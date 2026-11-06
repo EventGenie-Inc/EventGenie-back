@@ -556,11 +556,16 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   minutes, at most 6 hours apart) and never given up; Sentry hears on the
   3rd failure in a row and every 10th after (ids only, never a public id,
   which can carry a document's file name). Each batch is a lease taken
-  with `SKIP LOCKED`, so servers never take the same file. Two pipelines
-  delete their own files and close the rows: guest documents
-  (`guest-document.service.ts`) and an archived event's Memory Hub media
-  (`media-retention.service.ts`); the worker never claims a document's
-  file.
+  with `SKIP LOCKED`, so servers never take the same file. **It is the one
+  deletion path** (since Round B, 2026-11): guests' documents (the worker
+  marks the `GuestDocument` deleted with its file), an archived event's
+  Memory Hub media and every retention rule below request deletion and the
+  worker deletes. Where someone is waiting on it (a replaced document, an
+  event deleted, a purge, a release) the caller also asks for it at once
+  (`storageDeletionWorker.deleteNow`, claimed in batches of 100, never
+  throwing); what isn't done then, the worker does. A file whose owner has
+  no `StoredFile` (an unmatched legacy item) gets a legacy row first
+  (`storedFileService.ensureRecorded` / `requestItemFiles`).
 - **Only the current file is kept.** Replacing or clearing a cover (the
   event form, the full update), a design (or switching it to a template)
   or a feedback logo requests the old file's deletion with the save. A
@@ -588,7 +593,7 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
 - **Deleting an event** requests its cover and its invitation designs (and
   clears the event's cover fields and archives an uploaded design), and
   every upload signed for it and never saved, in the archive's own
-  transaction. Its guests' documents go at once (their pipeline). Its
+  transaction. Its guests' documents are requested and deleted at once. Its
   saved Memory Hub photos and videos wait 30 days, so they can still be
   downloaded (see "Archived events: Memory Hub retention"). A feedback
   logo is the company's and stays. Restoring the event never brings a
@@ -609,8 +614,62 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   each list capped at 200, a document's file name never shown), `POST` to
   run one now; the global 404 for everyone else.
 - **Behind `storageDeletion`** (on unless switched off): off, the worker
-  deletes nothing; requests keep being recorded and are deleted once it is
-  back on.
+  deletes nothing (documents and the archived-media purge included: a purge
+  then stays incomplete, "Waiting for the storage worker"); requests keep
+  being recorded and are deleted once it is back on.
+- **Retention rules** (`src/modules/storage-retention/`; the sweep every
+  15 minutes, started by `server.ts` only, five minutes after startup).
+  Each only requests deletion, in the transaction of its own claim; the
+  worker deletes:
+  - **Rejected and removed Memory Hub items: 7 days later**
+    (`MEMORY_ITEM_DELETION_DAYS`, `memory-hub/memory-item-retention.util.ts`).
+    Rejecting records `MemoryItem.rejectedAt` (rejecting again keeps the
+    first time), removing (`DELETE .../items/:id`, an archive) records
+    `removedAt`; approving clears `rejectedAt`, restoring clears
+    `removedAt`. Both set: whichever came first. The claim marks the item
+    purged (and archived) in one `UPDATE … RETURNING` whose WHERE re-checks
+    the rule, and requests its file in the same transaction; approve and
+    restore are conditional on `purgedAt` being null, so of a race exactly
+    one wins. After the claim, approving or restoring is **409
+    `MEMORY_ITEM_DELETED`**. Every item the organiser sees (the list, the
+    detail, approve, reject, remove, restore) carries **`deletesAt`** (null
+    when kept, and while `storageRetention` is off); the removed items still
+    restorable are listed by `GET .../items?removed=true`. Items already
+    rejected or removed got the migration's time (`20261106090000_storage_rules`).
+  - **Guests' documents of an archived guest, invite or DOCUMENT question:
+    when the event finishes** (the end of its last live day,
+    `eventFinishesAt`, the rule `resolveEffectiveStatus` uses). Archiving
+    any of them deletes nothing, and restoring before the finish brings the
+    documents back. The claim (`EventDocumentPurge`, reason
+    `ARCHIVED_AT_FINISH`, once per event) is taken under the event's row
+    lock, re-checks that the event has finished, and requests only the
+    documents whose owner is archived at that moment; guest and invite
+    restores take the same lock, so a restore during the sweep keeps them.
+    Archived after the finish: they go with the 90-day rule.
+  - **A cancelled event's documents: 30 days after cancelling**
+    (`Event.cancelledAt`, set by cancel; events already cancelled got the
+    migration's time), every one, archived guests' included.
+  - **A finished event's documents: 90 days after the finish**, every one
+    left. Whichever deletion comes first (this, the finish rule, deleting
+    the event) wins: each requests only what is still kept.
+  - **The organisers are emailed 7 days before** the 30- and 90-day
+    deletions (see "Email"), claimed once per event and rule
+    (`DocumentPurgeReminderClaim`) before it is sent, only while documents
+    are kept. **The deletion never runs until a week after its reminder**
+    (`documentPurgeDueAt`): a late reminder moves the date, as the
+    archived-media purge's does.
+  - **Behind `storageRetention`** (on unless switched off): off, none of
+    these deletes anything or emails anyone, and no countdown is reported.
+    The clocks keep being recorded.
+  - **Never a deletion without a full countdown.** The sweep records when
+    it last ran with the flag on (`StorageRetentionState`,
+    `retention-state.util.ts`). Finding that run more than 6 hours old
+    (`RETENTION_RESUME_GAP_MS`: the flag was off, the server down, or it is
+    the first run after deploy), it records a **resume**, and no rule
+    deletes anything until 7 days after it: every deletion is due at the
+    later of its own date and the resume + 7 days, and every `deletesAt`
+    and reminder date says so (with the last run stale and the sweep not yet
+    run, a read reports now + 7 days). Reminders still go during the week.
 
 ### Email
 
@@ -645,7 +704,8 @@ announcement, cancellation),
 `user-invite-email.util.ts` (team invitation),
 `feedback-request-email.util.ts` (the feedback request) and
 `media-purge-reminder-email.util.ts` (an archived event's photos about to
-be deleted).
+be deleted) and `document-purge-reminder-email.util.ts` (a cancelled or
+finished event's guest documents about to be deleted).
 
 **Escaping lives in the layout.** Every text and every URL in a block goes
 through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
@@ -742,6 +802,18 @@ is archived and its Memory Hub photos and videos will be permanently deleted
 on that date, a line to download them first (the event, its cover and its
 invitation design are kept), and one button "Download your photos" to
 `<FRONTEND_BASE_URL>/events/<id>/manage/memories`.
+
+**The documents reminder** (see "Storage", retention rules) is the same
+kind of email: From `"e-velope" <RESEND_EVENT_EMAIL>`, no seal, subject
+"Guest documents for <event> will be deleted on <date>"; a line that the
+event was cancelled (or has finished), so the documents its guests uploaded
+with their replies will be permanently deleted on that date; how to keep a
+copy (open the guest list, each guest's details, View on their document);
+for a cancelled event, to contact `admin@e-velope.co.za` before then if it
+was cancelled by mistake, and for a finished one that deleted documents
+can't be recovered; one button "Open the guest list" to
+`<FRONTEND_BASE_URL>/events/<id>/manage/guests`. Placeholder wording: the
+owner rewrites it; the facts each line carries are the contract.
 
 **Auth emails** use the same layout, calm and functional: no seal, no
 wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
@@ -986,7 +1058,13 @@ question with no file from someone attending, checked after
 needs it to confirm your place."), `DOCUMENT_TYPE_NOT_ALLOWED` (422, the
 upload isn't a PDF, JPG, PNG or XLSX by its content (a CSV included), or
 its name says another type: "This file type can't be uploaded. Use a PDF,
-JPG, PNG or XLSX file."), `DOCUMENT_TOO_LARGE` (413, over 5 MB, like a guest import's),
+JPG, PNG or XLSX file."), `DOCUMENT_TOO_LARGE` (413, over the plan's size per
+document, "This file is larger than <n> MB. Choose a smaller file.", or the
+route's 20 MB ceiling, "This file is too large. Choose a smaller file."),
+`DOCUMENT_STORAGE_FULL` (403, the upload would take the event's documents
+over the plan's document storage, checked under the event's row lock: "This
+event can't take any more files right now. Please contact the organiser.",
+safe to show a guest),
 `DOCUMENT_REFERENCE_INVALID` (422, an answer naming a document that isn't
 this guest's or this registration's upload for that question on this event,
 or one since deleted: one message, "The file for '<label>' couldn't be
@@ -1121,8 +1199,10 @@ Memory Hub retention"), `POST /api/admin/events/:eventId/media-purge`: 409
 `EVENT_NOT_ARCHIVED` (a live event's media is never purged) and 409
 `MEDIA_PURGE_ALREADY_STARTED` (this archiving's purge has begun or
 finished; the message says which), and 422 `ARCHIVE_MEDIA_PURGE_OFF` while
-`archiveMediaPurge` is off, checked first. Restoring a purged Memory Hub
-item is an uncoded 409. A guest upload (signature or save) to an archived
+`archiveMediaPurge` is off, checked first. Approving or restoring a
+Memory Hub item whose deletion has been claimed (7 days after it was
+rejected or removed, or by the archived-media purge) is 409
+`MEMORY_ITEM_DELETED` (was an uncoded 409 for a purged one). A guest upload (signature or save) to an archived
 event's album is an uncoded 404, "This photo album isn't available.", the
 same words whatever the cause behind it, never "archived". The guest's
 invitation for an archived event (RSVP validate, submit, ticket quote) is an
@@ -1315,7 +1395,10 @@ setting, never a tier name in an `if`.
 **The frontend decides from settings, never from the plan's name.**
 `GET /api/tenants/me` carries `planSettings`: the limits (`maxEvents`,
 `maxGuestsPerEvent`, `maxSmsPerMonth`, `maxVendorSpaces`,
-`maxMemoryHubBytesPerEvent`, `null` = unlimited) and the on/off settings
+`maxMemoryHubBytesPerEvent`, `maxDocumentBytesPerEvent`, `null` =
+unlimited, and `maxDocumentBytesPerFile`, always a number: the plan's, else
+the 20 MB ceiling; the two document settings only while `documentFields`
+is on) and the on/off settings
 (`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
 `vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
 `customRsvpFieldsEnabled`, `vendorPriorityPlacement`) of the tenant's
@@ -1335,7 +1418,17 @@ leaves every existing row unlimited — it fails **open**. Follow the `ADD
 COLUMN` with an `UPDATE "SubscriptionTierConfig" SET … WHERE "tier" = …` for
 each tier, and update `TIER_CONFIGS` in `prisma/seed.ts` to match. The seed
 cannot cover for you: it never touches a database it isn't pointed at, and it
-does not overwrite existing tier configs. `maxMemoryHubBytesPerEvent` (bytes) is a `BIGINT`, so a limit can be above
+does not overwrite existing tier configs. **Guests' documents have their own
+allowance** (`guest-document/guest-document-allowance.util.ts`), never
+counted in the Memory Hub's: `maxDocumentBytesPerEvent` (a `BIGINT`, every
+kept document of the event) and `maxDocumentBytesPerFile` (one document,
+1 byte to `GUEST_DOCUMENT_CEILING_BYTES`, 20 MB, the upload route's fixed
+safety ceiling: anything else is 422 at the tier admin). Both 500 MB and
+5 MB on every tier (`20261106090000_storage_rules`, seed to match), read
+from the event's entitlement like every event-scoped limit. Guests have no
+plan settings, so `/rsvp/validate` and the public event view carry
+`maxDocumentBytes` (null while `documentFields` is off).
+`maxMemoryHubBytesPerEvent` (bytes) is a `BIGINT`, so a limit can be above
 2 GB (`20261017090000_memory_hub_bytes_bigint`); Prisma reads it as a JS
 `bigint`, and `subscription-tier-config.repository.ts` hands every row on
 with it as a plain number (a `bigint` can't be written to JSON). Read tier
@@ -1397,7 +1490,8 @@ codebase: a feature is switched off by configuration, **never deleted**.
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
-  `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`.
+  `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`,
+  `storageRetention`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1504,14 +1598,18 @@ codebase: a feature is switched off by configuration, **never deleted**.
     and an answer to one is `RSVP_ANSWER_UNKNOWN_FIELD`; the organiser's
     view link is the global 404. **Documents already received are kept**:
     an RSVP edit keeps the guest's DOCUMENT answer and its file. Deleting
-    is never switched off: guest removal, event deletion, the purge and
-    the sweep still delete files. Events with no DOCUMENT question are
+    is never switched off by it: event deletion, the purge, the sweep and
+    the retention rules still delete files. Events with no DOCUMENT question are
     exactly as before.
   - `storageDeletion` off (see "Storage"): the storage worker deletes
     nothing, and an organiser's or guest's release is recorded but not
     deleted. Every deletion request is still written, to be carried out
-    once it is back on. The documents pipeline and the archived-media purge
-    have their own switches and are unaffected.
+    once it is back on. Documents and the archived-media purge go through
+    the worker too, so they wait as well.
+  - `storageRetention` off (see "Storage", retention rules): no rejected
+    or removed item, no document is deleted by a retention rule, no
+    reminder is sent, and `deletesAt` (items, and the event's
+    `documentStorage`) is null. The clocks are still recorded.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -2020,10 +2118,15 @@ adds a new question instead.
   extension must then be that type's own. Anything else, a renamed
   executable, a PNG called .pdf, an .xlsm under any name, a CSV or any
   other text file (a CSV opened in a spreadsheet can run formulas on the
-  organiser's machine), is 422 `DOCUMENT_TYPE_NOT_ALLOWED`. At most **5
-  MB** (`GUEST_DOCUMENT_MAX_BYTES`): one byte more is 413
-  `DOCUMENT_TOO_LARGE`, refused by multer before the rest is read. Never
-  written to disk.
+  organiser's machine), is 422 `DOCUMENT_TYPE_NOT_ALLOWED`. At most the
+  **plan's size per document** (5 MB at launch; checked by the service):
+  one byte more is 413 `DOCUMENT_TOO_LARGE` naming the limit. Multer reads
+  at most `GUEST_DOCUMENT_CEILING_BYTES` (20 MB), a fixed safety ceiling
+  above any plan's, refusing more before the rest is read. Never written
+  to disk. An upload that would take the event's kept documents over the
+  plan's **document storage** is 403 `DOCUMENT_STORAGE_FULL`, checked once
+  before the file is sent and again under the event's row lock with the
+  row's own write (a file refused there is requested for deletion).
 - **The id is the answer.** RSVP submit and registration send it as the
   DOCUMENT question's `rsvpResponses` value; it must be a live upload for
   that question on this event, and the guest's own (their invite's, at
@@ -2037,14 +2140,20 @@ adds a new question instead.
   different file (or none) deletes the one sent before, once it commits.
 - **Never attached within 24 hours: deleted** by the documents sweep
   (`guest-document.service.ts`, every 15 minutes, started by `server.ts`
-  only), which also retries any deletion Cloudinary refused. A repeat
-  registration stores no second answers, so its upload is left to it.
-- **Deleted with its guest and its event.** Removing a guest (`DELETE
-  /api/guests/:id`) or deleting an event (`DELETE /api/events/:id`) deletes
-  their files at once (bank details are not kept for a restore, unlike
-  Memory Hub photos), and the archived-media purge deletes any left, counted
-  in its `purgedCount`/`failedCount`. A deletion never fails the request
-  that caused it; it is retried.
+  only). A repeat registration stores no second answers, so its upload is
+  left to it. Every deletion goes through the storage worker, which
+  retries a refusal.
+- **Deleted with its event, kept with its guest.** Deleting an event
+  (`DELETE /api/events/:id`) deletes its files at once (bank details are
+  not kept for a restore, unlike Memory Hub photos), and the archived-media
+  purge deletes any left, counted in its `purgedCount`/`failedCount`.
+  Removing a guest, their invite or the question deletes nothing (since
+  Round B): restoring brings the files back, and those still archived when
+  the event finishes are deleted then; the rest go 30 days after a cancel
+  or 90 days after the finish (see "Storage", retention rules). `GET
+  /api/guests/:id` carries `documentCount` (their kept documents) for the
+  warning shown when archiving. A deletion never fails the request that
+  caused it; it is retried.
 - **The organiser** reads them in the guest details: `GET
   /api/invites/:inviteId/rsvp-responses` gives every answer a `document`,
   for a DOCUMENT answer whose file is kept `{ id, fileName, contentType,
@@ -2061,9 +2170,14 @@ adds a new question instead.
   `documents` (the same shape as the upload's answer), and a DOCUMENT
   answer whose file has been deleted is left out of `rsvpResponses`, so the
   form asks for it again.
-- **Storage.** Every kept document counts in the event's storage
-  (`memoryHubRepository.sumBytesForEvent`, so the Memory Hub's `usedBytes`
-  and quota). A document upload is never refused for the quota.
+- **Storage.** Documents have their own allowance (see "Tier
+  enforcement"), never the Memory Hub's: they don't count in its
+  `usedBytes` or quota. The organiser's event detail (`GET
+  /api/events/:id`, while `documentFields` is on) carries
+  `documentStorage: { usedBytes, limitBytes, nearLimit, deletesAt }`:
+  every kept document, the plan's allowance (null = unlimited), `nearLimit`
+  once usage passes 80%, and when the kept documents are deleted (null
+  unless cancelled or finished, none kept, or `storageRetention` off).
 
 ### Multi-select fields
 
@@ -2711,16 +2825,19 @@ Cloudinary and the media was kept forever.
   however many servers, and a restore lands either before it (cancelled) or
   after (the event comes back without its media). Working on it takes a
   lease (a conditional write, 10 minutes), so one sweep at a time. Every
-  item of the hub that existed when the purge began is deleted, whatever
-  its status, by exact public id in Cloudinary Admin API batches of 100
-  (`destroyAssets`, `cloudinary.client.ts`, with the CDN cache
-  invalidated), each id checked against the event's own Memory Hub folder
-  first (`isSignedPublicIdInFolder`): one outside it is hidden, never sent.
-  Each item is marked as its batch succeeds; one Cloudinary refuses stays
-  unpurged, the purge records `failedCount` and `lastError`, Sentry hears of
-  it, and the next sweep tries again. "Not found" counts as deleted, so a
-  rerun is always safe. A purge that has begun always finishes, a restore
-  included, and never touches an item uploaded after it began.
+  item of the hub that existed when the purge began, whatever its status,
+  is claimed in batches of 100: marked purged (and archived) with its file
+  requested, in one transaction, each id first checked against the event's
+  own Memory Hub folder (`isSignedPublicIdInFolder`; one outside it is
+  hidden and its record closed, never sent). The storage worker deletes the
+  files (one by one, with `invalidate`), at once and then on its schedule,
+  retrying a refusal with backoff. The purge is complete when every one of
+  its files is deleted; until then each sweep records what is left
+  (`failedCount`, `lastError`: the worker's reason) and asks again for any
+  due. `purgedCount` counts items (and documents) claimed. A purge that has
+  begun always finishes, a restore included, and never touches an item
+  uploaded after it began. A purged item can't be restored (409
+  `MEMORY_ITEM_DELETED`).
 - **The reminder.** 7 days before (`MEDIA_PURGE_REMINDER_DAYS_BEFORE`), the
   event's organisers (`resolveEventOrganisers`, as the feedback request)
   get one email (see "Email"), claimed once per event and archiving
@@ -3640,8 +3757,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     2,000 rows: `tests/perf/import-timing.test.ts`, opt-in
     (`MEASURE_IMPORT_TIMING=1`).
   - **Archived-event media retention**
-    (`tests/media-retention/media-retention.test.ts`, Cloudinary's
-    `destroyAssets` mocked): archiving records `archivedAt`; at 29 days
+    (`tests/media-retention/media-retention.test.ts`, the worker's
+    `destroyAsset` mocked since Round B): archiving records `archivedAt`; at 29 days
     nothing is deleted, past 30 every item's file goes (any status, each by
     its resource type), the rows are kept purged and archived, and the event
     and its cover stay; a restore before the purge cancels it, one after
@@ -3676,8 +3793,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     restoring opening it again. Each guarantee was shown to fail with its
     fix reverted (2026-10-26).
   - **Document fields** (`tests/guest-document/guest-documents.test.ts`,
-    Cloudinary's private upload and batch delete mocked, the signed link
-    built for real): a PDF stored privately in the event's documents folder
+    Cloudinary's private upload mocked, deletes through the worker to the
+    fake Cloudinary since Round B, the signed link built for real): a PDF stored privately in the event's documents folder
     and every allowed type (PDF, JPG, PNG, XLSX) accepted by content; a
     renamed executable, a PNG called .pdf, a macro workbook as .xlsx or
     .xlsm, and a CSV (as .csv, with or without a BOM, or as .xlsx) refused
@@ -3692,9 +3809,9 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     one and an invitation's refused; the guest details' `document` and the
     export's "Received"; the link private, 5 minutes, its expiry signed;
     another tenant, a locked member, a vendor, another event and an
-    unsubmitted upload 404; storage counted; deletion on guest removal, on
-    event deletion and by the purge, a refused deletion retried by the
-    sweep; the 24-hour orphan sweep; file names out of logs and Sentry; the
+    unsubmitted upload 404; storage counted (its own, since Round B);
+    files kept on guest removal (Round B), deletion on event deletion and
+    by the purge, a refused deletion retried by the storage worker; the 24-hour orphan sweep; file names out of logs and Sentry; the
     flag off (uploads and new questions refused, the question hidden, what
     was received kept, the link 404, an event without documents unchanged).
     Each guarantee was shown to fail with its fix reverted (2026-11-02).
@@ -3740,6 +3857,34 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     as it is and still saved when re-sent or edited elsewhere; other types
     not checked. Each guarantee was shown to fail with its fix reverted
     (2026-11-04).
+  - **Storage rules, Round B** (`tests/storage-retention/storage-retention.test.ts`,
+    the fake Cloudinary): a rejected photo deleted 7 days after, not 6,
+    through the worker with `invalidate`; approving on day 6 keeping it
+    and clearing `deletesAt`; a removed photo deleted at 7 days, one
+    restored on day 6 kept, the removed list; approve and restore after the
+    claim 409 `MEMORY_ITEM_DELETED`; approvals racing a sweep never both
+    approved and deleted; the backfills deleting nothing; documents out of
+    the Memory Hub's `usedBytes`; an upload over the allowance 403
+    `DOCUMENT_STORAGE_FULL` in guest-safe words with nothing sent; two
+    uploads racing for the last space (one stored, the other's file
+    requested); the plan's size per document and the 20 MB ceiling;
+    `maxDocumentBytes` for guests (null with `documentFields` off); the
+    organiser's `documentStorage` and its 80% warning; the tier admin's
+    validation and `/me`; the migration's per-tier figures; a guest
+    archived and restored before the finish keeping their documents, an
+    archived guest, invite and question losing them at the finish (not
+    before, once) while live guests keep theirs; `documentCount`; a
+    restore between the sweep's read and its claim keeping them; cancel
+    recording `cancelledAt`; a cancelled event's documents surviving 29
+    days and going on day 30 after the reminder, archived guests' included;
+    the reminder's content; a finished event's surviving 89 days and going
+    at 90 after its reminder; whichever deletion first; `storageRetention`
+    off deleting, emailing and counting down nothing, and switched back on
+    after a gap deleting nothing for 7 more days (the resume, its
+    `deletesAt` and reminder dates), a regular sweep never resuming.
+    Guest documents and the archived-media purge suites now observe the
+    worker's single deletes. Each guarantee was shown to fail with its fix
+    reverted (2026-11-06).
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
@@ -3783,16 +3928,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   token is never given to anyone.
 - **Twilio SMS is blocked** pending compliance approval. Everything
   except real delivery is testable.
-- **Storage, Round B** (decided to wait for review, not forgotten):
-  guest documents and the archived-media purge still delete through their
-  own batches (Admin API, recorded and retried) rather than the storage
-  worker; covers uploaded before their event exists stay in the tenant's
-  cover folder rather than a reserved event id (decided);
-  the frontend still posts its own fields rather than `params`, so the
-  upload notification stays off; a deleted event's feedback logo is kept,
-  and its saved Memory Hub media waits the 30 days (both decided);
-  the separate document storage allowance and the 7-day rejected-photo
-  deletion (audit decisions) are not built.
+- **Storage, still open after Round B**: covers uploaded before their
+  event exists stay in the tenant's cover folder rather than a reserved
+  event id (decided); the frontend still posts its own fields rather than
+  `params`, so the upload notification stays off; a deleted event's
+  feedback logo is kept, and its saved Memory Hub media waits the 30 days
+  (both decided). The document allowance is 500 MB / 5 MB on every tier
+  until the owner sets per-tier figures.
+- **Storage rules need their frontend half** (backend
+  `feature/storage-rules`): the countdown (`deletesAt`) on rejected and
+  removed Memory Hub items and a removed list (`?removed=true`) to
+  restore from, `MEMORY_ITEM_DELETED` placed; the warning with
+  `documentCount` before archiving a guest; the event's
+  `documentStorage` (used, allowance, the 80% warning, `deletesAt`); the
+  upload refusing a file over `maxDocumentBytes` before sending it and
+  showing `DOCUMENT_STORAGE_FULL`; the two plan settings on the super
+  admin's tier screen. Remove this entry once built.
 - A deferred technical debt register tracks tenant-isolation and
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —

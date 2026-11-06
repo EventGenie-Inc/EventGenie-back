@@ -33,6 +33,8 @@ import {
 } from './memory-item-limits.util.js';
 import { launchLimitMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { memoryItemDeleted, memoryItemDeletesAt, type RetainableItem } from './memory-item-retention.util.js';
+import { currentRetentionFloor } from '../storage-retention/retention-state.util.js';
 import { consentService } from '../consent/consent.service.js';
 import { currentConsentWording } from '../consent/consent-wording.js';
 import {
@@ -217,12 +219,15 @@ export const INACTIVE_SHARE_LINK_MESSAGE = "This link isn't active.";
 // falls back exactly like toPublicItem's guest branch does; a
 // completely unresolvable relation (neither id set) is defensive only,
 // not a state normal flows can reach.
-const toCuratedItem = <T extends {
+// deletesAt: when a rejected or removed item's file will be deleted (the
+// organiser's countdown, memory-item-retention.util.ts); null when it is
+// kept, and while storageRetention is off.
+const toCuratedItem = <T extends RetainableItem & {
   uploadedByGuestId: string | null;
   uploadedByUserId: string | null;
   uploadedByGuest: { firstName: string | null } | null;
   uploadedByUser: { username: string } | null;
-}>(item: T) => {
+}>(item: T, floor: Date | null) => {
   const { uploadedByGuest, uploadedByUser, ...rest } = item;
   const uploaderType: 'GUEST' | 'ORGANISER' | 'UNKNOWN' = item.uploadedByUserId
     ? 'ORGANISER'
@@ -234,7 +239,7 @@ const toCuratedItem = <T extends {
     : uploaderType === 'GUEST' ? uploadedByGuest?.firstName ?? 'A guest'
     : 'Unknown uploader';
 
-  return { ...rest, uploaderType, uploaderDisplayName };
+  return { ...rest, uploaderType, uploaderDisplayName, deletesAt: memoryItemDeletesAt(item, floor) };
 };
 
 export const memoryHubService = {
@@ -445,15 +450,25 @@ export const memoryHubService = {
 
   // ── Memory Items — organiser/curation side, tenant-scoped ─────────
 
-  // Reads: an archived event's items too (see getByEventId).
-  getAllItems: async (eventId: string, hubId: string, requestingRole: PlatformRole, tenantId: string | null, status?: 'PENDING' | 'APPROVED' | 'REJECTED') => {
+  // Reads: an archived event's items too (see getByEventId). removed: the
+  // items the organiser removed and can still restore (not yet deleted),
+  // each with its deletesAt, instead of the live ones.
+  getAllItems: async (
+    eventId: string,
+    hubId: string,
+    requestingRole: PlatformRole,
+    tenantId: string | null,
+    status?: 'PENDING' | 'APPROVED' | 'REJECTED',
+    { removed = false }: { removed?: boolean } = {}
+  ) => {
     await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId, false, { archivedEvent: true });
-    const items = await memoryHubRepository.findAllItems(hubId, status);
-    return items.map(toCuratedItem);
+    const items = await memoryHubRepository.findAllItems(hubId, status, false, { removed });
+    const floor = await currentRetentionFloor();
+    return items.map((i) => toCuratedItem(i, floor));
   },
 
   getItemById: async (eventId: string, hubId: string, id: string, requestingRole: PlatformRole, tenantId: string | null) =>
-    toCuratedItem(await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, false, { archivedEvent: true })),
+    toCuratedItem(await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, false, { archivedEvent: true }), await currentRetentionFloor()),
 
   // ORGANISER upload persist — items land APPROVED immediately (an
   // organiser reviewing their own upload is pointless friction).
@@ -510,29 +525,30 @@ export const memoryHubService = {
 
   // ── Curation (Task 3) ──────────────────────────────────────────────
   //
-  // Rejecting HIDES the item and excludes it from quota — it does NOT
-  // delete the Cloudinary asset. See memoryHubRepository.sumBytesForEvent
-  // (status IN (PENDING, APPROVED) only) and the batch report's full
-  // reasoning: a full delete is irreversible, contradicting this
-  // codebase's "nothing is truly deleted" philosophy; leaving it
-  // counting against quota would mean a flood of rejected guest
-  // uploads could exhaust an event's storage limit with content the
-  // organiser already said no to. The asset stays until the event's
-  // media is purged, 30 days after the event is archived
-  // (media-retention.service.ts); archiving an item, below, is the only
-  // removal an organiser has.
+  // Rejecting HIDES the item and excludes it from quota (see
+  // memoryHubRepository.sumBytesForEvent: status IN (PENDING, APPROVED)
+  // only), so a flood of rejected guest uploads can't exhaust an event's
+  // storage with content the organiser already said no to. Its file is
+  // deleted 7 days later (rejectedAt; storage-retention.service.ts) unless
+  // it is approved again first; the answer carries deletesAt for the
+  // countdown. Once that deletion is claimed (purgedAt), approving is
+  // refused: 409 MEMORY_ITEM_DELETED.
   curateItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, status: 'APPROVED' | 'REJECTED') => {
-    await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId);
-    return memoryHubRepository.updateItemStatus(id, userId, status);
+    // Including removed items, so a deleted one answers 409 rather than 404.
+    const item = await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, true);
+    if (item.purgedAt) throw memoryItemDeleted();
+    if (item.isArchived) throw new HttpError(404, 'Memory item not found');
+    if (!(await memoryHubRepository.updateItemStatus(id, userId, status))) throw memoryItemDeleted();
+    return memoryHubService.getItemById(eventId, hubId, id, requestingRole, tenantId);
   },
 
-  // Archiving ALSO excludes an item from quota (same query, same
-  // reasoning as reject) and does NOT touch its Cloudinary asset —
-  // consistent with the event cover precedent: archiving is reversible,
-  // deleting the asset would break restore.
+  // Removing (archiving) ALSO excludes an item from quota (same query, same
+  // reasoning as reject). Its file is deleted 7 days later (removedAt)
+  // unless it is restored first. Returns the removed item, with deletesAt.
   archiveItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId);
-    return memoryHubRepository.archiveItem(id, userId);
+    await memoryHubRepository.archiveItem(id, userId);
+    return toCuratedItem(await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, true, { archivedEvent: true }), await currentRetentionFloor());
   },
 
   reactivateItem: async (eventId: string, hubId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
@@ -540,13 +556,12 @@ export const memoryHubService = {
     // required) lookup — same "restore the parent first" precedent as the
     // hub's own reactivate.
     const item = await memoryHubService.itemInScope(eventId, hubId, id, requestingRole, tenantId, true);
-    // Its file was deleted with the archived event's media
-    // (media-retention.service.ts): restoring the row would show a photo
-    // that no longer loads.
-    if (item.purgedAt) {
-      throw new HttpError(409, 'This photo or video was deleted 30 days after its event was archived, so it can no longer be restored.');
-    }
-    await memoryHubRepository.reactivateItem(id, userId);
+    // Its file's deletion was claimed (7 days after it was removed or
+    // rejected, or with the archived event's media): restoring the row
+    // would show a photo that no longer loads. Conditional, so a sweep
+    // claiming it at this moment can't lose to the restore.
+    if (item.purgedAt) throw memoryItemDeleted();
+    if (!(await memoryHubRepository.reactivateItem(id, userId))) throw memoryItemDeleted();
     return memoryHubService.getItemById(eventId, hubId, id, requestingRole, tenantId);
   },
 

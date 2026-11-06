@@ -76,7 +76,23 @@ export const storedFileRepository = {
       data: { status: 'DELETE_REQUESTED', deleteRequestedAt: now, nextDeleteAttemptAt: null },
     })).count,
 
-  // Closed by a pipeline that deleted the file itself (guest documents).
+  // A file whose owner never had a row (a Memory Hub item the backfill
+  // couldn't match, or one written outside the upload flow): a legacy row
+  // for it, ATTACHED, so it can be requested for deletion like any other.
+  // An existing row with the same public id is kept as it is. Returns the id.
+  ensureLegacy: async (data: NewStoredFile, now: Date, db: Db = prisma): Promise<string> =>
+    (await db.storedFile.upsert({
+      where: { publicId: data.publicId },
+      create: { ...data, status: 'ATTACHED', legacy: true, signedAt: now, attachedAt: now },
+      update: {},
+      select: { id: true },
+    })).id,
+
+  linkMemoryItem: (itemId: string, fileId: string, db: Db = prisma) =>
+    db.memoryItem.update({ where: { id: itemId }, data: { storedFileId: fileId } }),
+
+  // Closed without being sent to Cloudinary: a file a pipeline won't send
+  // (a Memory Hub item outside its event's folder).
   markDeletedWhere: async (where: Prisma.StoredFileWhereInput, now: Date, db: Db = prisma): Promise<number> =>
     (await db.storedFile.updateMany({
       where: { AND: [where, { status: { not: 'DELETED' } }] },
@@ -87,9 +103,9 @@ export const storedFileRepository = {
 
   // Claims up to `limit` files due for deletion, by taking a lease on them
   // (nextDeleteAttemptAt = leaseUntil) in one statement: SKIP LOCKED, so two
-  // workers on two servers never take the same file. A guest document's
-  // file is never claimed: the documents pipeline deletes those
-  // (guest-document.service.ts). `ids`: only these (an immediate delete).
+  // workers on two servers never take the same file. Every kind, guest
+  // documents and purged Memory Hub media included: this is the one path a
+  // file is deleted by. `ids`: only these (an immediate delete).
   claimDue: (now: Date, leaseUntil: Date, limit: number, ids?: string[]): Promise<ClaimedFile[]> =>
     prisma.$queryRaw<ClaimedFile[]>`
       UPDATE "StoredFile" SET "nextDeleteAttemptAt" = ${leaseUntil}
@@ -97,7 +113,6 @@ export const storedFileRepository = {
         SELECT s."id" FROM "StoredFile" s
         WHERE s."status" = 'DELETE_REQUESTED'
           AND (s."nextDeleteAttemptAt" IS NULL OR s."nextDeleteAttemptAt" <= ${now})
-          AND NOT EXISTS (SELECT 1 FROM "GuestDocument" g WHERE g."storedFileId" = s."id")
           ${ids ? Prisma.sql`AND s."id" IN (${Prisma.join(ids.length ? ids : [''])})` : Prisma.empty}
         ORDER BY s."deleteRequestedAt" ASC NULLS FIRST
         LIMIT ${limit}
@@ -105,19 +120,30 @@ export const storedFileRepository = {
       )
       RETURNING "id", "publicId", "resourceType", "deliveryType", "deleteAttempts"`,
 
+  // A guest document's row records it too (deletedAt), in the same
+  // transaction: its file is gone.
   markDeleted: async (ids: string[], now: Date): Promise<number> =>
     ids.length === 0
       ? 0
-      : (await prisma.storedFile.updateMany({
-          where: { id: { in: ids }, status: 'DELETE_REQUESTED' },
-          data: { status: 'DELETED', deletedAt: now, nextDeleteAttemptAt: null, lastDeleteError: null },
-        })).count,
+      : prisma.$transaction(async (tx) => {
+          const { count } = await tx.storedFile.updateMany({
+            where: { id: { in: ids }, status: 'DELETE_REQUESTED' },
+            data: { status: 'DELETED', deletedAt: now, nextDeleteAttemptAt: null, lastDeleteError: null },
+          });
+          await tx.guestDocument.updateMany({
+            where: { storedFileId: { in: ids }, deletedAt: null },
+            data: { deletedAt: now, lastDeleteError: null },
+          });
+          return count;
+        }),
 
-  recordFailure: (id: string, attempts: number, nextAttemptAt: Date, reason: string) =>
-    prisma.storedFile.updateMany({
+  recordFailure: async (id: string, attempts: number, nextAttemptAt: Date, reason: string): Promise<void> => {
+    await prisma.storedFile.updateMany({
       where: { id, status: 'DELETE_REQUESTED' },
       data: { deleteAttempts: attempts, nextDeleteAttemptAt: nextAttemptAt, lastDeleteError: reason.slice(0, 500) },
-    }),
+    });
+    await prisma.guestDocument.updateMany({ where: { storedFileId: id, deletedAt: null }, data: { lastDeleteError: reason.slice(0, 500) } });
+  },
 
   // ── Reconciliation ────────────────────────
 

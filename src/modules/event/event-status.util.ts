@@ -32,17 +32,24 @@ export const endOfDayUtc = (date: Date): Date => {
   return end;
 };
 
+// When a published event finishes: the end of its last day (its endTime,
+// else the end of its date). Null for a draft, a cancelled event (it never
+// finishes) and one with no days. The one rule for "finished", which the
+// storage retention rules (storage-retention.service.ts) count from too.
+export const eventFinishesAt = (event: StatusDerivableEvent): Date | null => {
+  if (event.status !== 'PUBLISHED' || event.eventDays.length === 0) return null;
+  const lastDay = event.eventDays.reduce((latest, day) => (day.date > latest.date ? day : latest));
+  return lastDay.endTime ?? endOfDayUtc(lastDay.date);
+};
+
 export const resolveEffectiveStatus = (event: StatusDerivableEvent): EventStatus => {
   // Cancellation wins — a cancelled event never becomes "completed",
   // no matter how far in the past its days are.
   if (event.status === 'CANCELLED') return 'CANCELLED';
   if (event.status === 'DRAFT') return 'DRAFT';
 
-  if (event.status === 'PUBLISHED' && event.eventDays.length > 0) {
-    const lastDay = event.eventDays.reduce((latest, day) => (day.date > latest.date ? day : latest));
-    const lastDayEnd = lastDay.endTime ?? endOfDayUtc(lastDay.date);
-    if (lastDayEnd < new Date()) return 'COMPLETED';
-  }
+  const finishesAt = eventFinishesAt(event);
+  if (finishesAt && finishesAt < new Date()) return 'COMPLETED';
 
   return event.status;
 };

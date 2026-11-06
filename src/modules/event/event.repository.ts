@@ -313,11 +313,13 @@ export const eventRepository = {
   // record-not-found) when the event is already in that status. Cancel
   // passes CANCELLED, so of two cancels racing only one succeeds, and
   // guests get one cancellation email, not two.
+  // Cancelling records cancelledAt: the cancelled event's documents are
+  // deleted 30 days later (storage-retention.service.ts).
   updateStatus: (id: string, userId: string, status: EventStatus, unlessStatus?: EventStatus) =>
     prisma.event
       .update({
         where: { id, ...(unlessStatus ? { status: { not: unlessStatus } } : {}) },
-        data: { status, updatedBy: userId },
+        data: { status, updatedBy: userId, ...(status === 'CANCELLED' && { cancelledAt: new Date() }) },
       })
       .then(withPlainCoordinates),
 };

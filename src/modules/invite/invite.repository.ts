@@ -221,9 +221,15 @@ export const inviteRepository = {
       data: { isArchived: true, updatedBy: userId },
     }),
 
-  reactivate: (id: string, userId: string) =>
-    prisma.invite.update({
-      where: { id },
-      data: { isArchived: false, updatedBy: userId },
+  // Under the event's row lock, which the finish-time deletion of archived
+  // invites' documents takes too (storage-retention.service.ts): a restore
+  // lands wholly before that claim (its documents kept) or after it.
+  reactivate: (id: string, userId: string, eventId: string) =>
+    prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
+      return tx.invite.update({
+        where: { id },
+        data: { isArchived: false, updatedBy: userId },
+      });
     }),
 };

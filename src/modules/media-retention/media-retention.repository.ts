@@ -1,4 +1,4 @@
-import { type EventMediaPurge, type EventMediaPurgeReason } from '@prisma/client';
+import { type EventMediaPurge, type EventMediaPurgeReason, type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { EVENT_ORGANISERS_SELECT } from '../event-assignment/event-organisers.util.js';
 
@@ -170,20 +170,36 @@ export const mediaRetentionRepository = {
       include: { event: { select: { tenantId: true } } },
     }),
 
+  withTransaction: <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> => prisma.$transaction(fn),
+
   // Every item of the event's hub (any status, archived or not: each has a
   // file) that existed when the purge began and isn't purged yet. An item
   // uploaded after a restore is never part of an older purge.
   findItemsToPurge: (eventId: string, startedAt: Date) =>
     prisma.memoryItem.findMany({
       where: { memoryHub: { eventId }, purgedAt: null, createdAt: { lte: startedAt } },
-      select: { id: true, cloudinaryPublicId: true, mediaType: true },
+      select: { id: true, cloudinaryPublicId: true, mediaType: true, storedFileId: true },
       orderBy: { createdAt: 'asc' },
     }),
 
-  // Purged, and archived too, so every live-items query leaves it out. Its
-  // StoredFile is marked DELETED with it: the purge deleted the file itself
-  // (an item outside its folder was never sent, but its row is closed too,
-  // so nothing else ever sends it).
+  // The purge's files the storage worker hasn't deleted yet: its items'
+  // (purged, from before it began) and its documents' (requested, uploaded
+  // before it began). With the reason of the latest failure, if any.
+  findOutstandingFiles: (eventId: string, startedAt: Date) =>
+    prisma.storedFile.findMany({
+      where: {
+        status: { not: 'DELETED' },
+        OR: [
+          { memoryItems: { some: { memoryHub: { eventId }, purgedAt: { not: null }, createdAt: { lte: startedAt } } } },
+          { guestDocument: { is: { eventId, uploadedAt: { lte: startedAt }, deleteRequestedAt: { not: null } } } },
+        ],
+      },
+      select: { id: true, lastDeleteError: true },
+    }),
+
+  // An item outside its event's folder (an older row): purged, and archived
+  // too, and its StoredFile closed DELETED without the file ever being sent
+  // (it could name another event's asset), so nothing else ever sends it.
   markItemsPurged: (itemIds: string[], now: Date, actor: string) =>
     itemIds.length === 0
       ? Promise.resolve({ count: 0 })

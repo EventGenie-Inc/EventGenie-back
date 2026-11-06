@@ -3,7 +3,6 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type MemoryItemStatus, type Prisma } from '@prisma/client';
 import { type CreateMemoryHubDto, type UpdateMemoryHubDto } from './memory-hub.types.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
-import { guestDocumentRepository } from '../guest-document/guest-document.repository.js';
 
 // MemoryHub/MemoryItem have no tenantId of their own — ownership is
 // transitive through eventId -> Event.tenantId (MemoryHub) and two hops
@@ -128,15 +127,11 @@ export const memoryHubRepository = {
   //
   // PENDING + APPROVED count; REJECTED does not (Task 3 decision — see
   // the batch report). Archived items never count either way. This is
-  // the ONLY source of truth for "how much storage is this event
-  // using" — no running counter exists anywhere to drift out of sync.
+  // the ONLY source of truth for "how much storage is this event's Memory
+  // Hub using" — no running counter exists anywhere to drift out of sync.
   //
-  // Guests' uploaded documents count too, every one whose file is still
-  // kept (guestDocumentRepository.sumLiveBytesForEvent): the event's storage
-  // is everything it holds in Cloudinary for its guests. They are never
-  // refused for it (a required proof of payment can't wait on the photo
-  // album's space; GUEST_DOCUMENT_MAX_BYTES bounds each one), but they take
-  // up room photos then can't.
+  // Guests' uploaded documents don't count: they have their own allowance
+  // (guest-document-allowance.util.ts).
   sumBytesForEvent: async (eventId: string): Promise<number> => {
     const result = await prisma.memoryItem.aggregate({
       where: {
@@ -146,7 +141,7 @@ export const memoryHubRepository = {
       },
       _sum: { bytes: true },
     });
-    return (result._sum.bytes ?? 0) + (await guestDocumentRepository.sumLiveBytesForEvent(eventId));
+    return result._sum.bytes ?? 0;
   },
 
   // ── Memory Items ──────────────────────────
@@ -156,11 +151,13 @@ export const memoryHubRepository = {
   // shows a display name). Guest gets firstName only,
   // User gets username only — never email/phone; a display name is all
   // curation needs (see memory-hub.service.ts's toCuratedItem).
-  findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived = false) =>
+  // removed: only the items the organiser removed that are still
+  // restorable (archived, not purged).
+  findAllItems: (memoryHubId: string, status?: MemoryItemStatus, includeArchived = false, { removed = false }: { removed?: boolean } = {}) =>
     prisma.memoryItem.findMany({
       where: {
         memoryHubId,
-        ...(includeArchived ? {} : { isArchived: false }),
+        ...(removed ? { isArchived: true, purgedAt: null } : includeArchived ? {} : { isArchived: false }),
         ...(status ? { status } : {}),
       },
       include: {
@@ -263,21 +260,50 @@ export const memoryHubRepository = {
   // updateItemCaption for the same reason Event.status has its own
   // updateStatus: a curation decision must never be smuggled through a
   // plain caption edit.
-  updateItemStatus: (id: string, userId: string, status: MemoryItemStatus) =>
+  //
+  // Rejecting starts the item's 7 days (rejectedAt; rejecting it again
+  // keeps the first time), approving stops them. Conditional on its
+  // deletion not having been claimed (purgedAt): false when it has, and
+  // nothing is written.
+  updateItemStatus: async (id: string, userId: string, status: MemoryItemStatus, now: Date = new Date()): Promise<boolean> => {
+    const where = { id, purgedAt: null };
+    const data = { status, updatedBy: userId };
+    if (status === 'REJECTED') {
+      // Already rejected: the clock keeps its start.
+      const kept = await prisma.memoryItem.updateMany({ where: { ...where, status: 'REJECTED', rejectedAt: { not: null } }, data });
+      if (kept.count === 1) return true;
+      return (await prisma.memoryItem.updateMany({ where, data: { ...data, rejectedAt: now } })).count === 1;
+    }
+    return (await prisma.memoryItem.updateMany({ where, data: { ...data, rejectedAt: null } })).count === 1;
+  },
+
+  // Removed by the organiser: removedAt starts its 7 days
+  // (storage-retention.service.ts).
+  archiveItem: (id: string, userId: string, now: Date = new Date()) =>
     prisma.memoryItem.update({
       where: { id },
-      data: { status, updatedBy: userId },
+      data: { isArchived: true, removedAt: now, updatedBy: userId },
     }),
 
-  archiveItem: (id: string, userId: string) =>
-    prisma.memoryItem.update({
-      where: { id },
-      data: { isArchived: true, updatedBy: userId },
-    }),
+  // Restored: its 7 days stop. Conditional on its deletion not having been
+  // claimed (purgedAt): false when it has, and nothing is written.
+  reactivateItem: async (id: string, userId: string): Promise<boolean> =>
+    (await prisma.memoryItem.updateMany({
+      where: { id, purgedAt: null },
+      data: { isArchived: false, removedAt: null, updatedBy: userId },
+    })).count === 1,
 
-  reactivateItem: (id: string, userId: string) =>
-    prisma.memoryItem.update({
-      where: { id },
-      data: { isArchived: false, updatedBy: userId },
+  // ── Deleting items' files ─────────────────
+  //
+  // The claim: items matching `where` and not yet purged are marked purged
+  // (and archived, so every live-items query leaves them out), in one
+  // UPDATE ... RETURNING: an approve or restore racing it either lands
+  // first (the row no longer matches) or finds purgedAt set and is refused.
+  // The caller requests their files in the same transaction.
+  claimItemsForDeletion: (tx: Tx, where: Prisma.MemoryItemWhereInput, now: Date, actor: string) =>
+    tx.memoryItem.updateManyAndReturn({
+      where: { AND: [where, { purgedAt: null }] },
+      data: { purgedAt: now, isArchived: true, updatedBy: actor },
+      select: { id: true, cloudinaryPublicId: true, mediaType: true, storedFileId: true, memoryHubId: true },
     }),
 };

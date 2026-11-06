@@ -5,8 +5,8 @@ import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { requireEventAdminHidden } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { GUEST_DOCUMENT_MAX_BYTES } from '../upload/upload-constants.js';
-import { documentTooLarge } from './guest-document.service.js';
+import { GUEST_DOCUMENT_CEILING_BYTES } from '../upload/upload-constants.js';
+import { DOCUMENT_ERROR_CODES } from './guest-document.types.js';
 import { guestDocumentOrganiserService } from './guest-document-organiser.service.js';
 
 // ─────────────────────────────────────────
@@ -41,21 +41,22 @@ router.get('/:documentId/link', async (req: Request, res: Response, next: NextFu
 //  RECEIVING A GUEST'S FILE (multipart, field `file`)
 //
 //  Held in memory, never written to disk, and at most
-//  GUEST_DOCUMENT_MAX_BYTES: one byte more is 413 DOCUMENT_TOO_LARGE before
-//  the rest is read. One file, a few short text fields (token,
+//  GUEST_DOCUMENT_CEILING_BYTES, the fixed safety ceiling: one byte more is
+//  413 DOCUMENT_TOO_LARGE before the rest is read. The plan's own size per
+//  document, below it, is checked by the service. One file, a few short text fields (token,
 //  rsvpFieldId). File names are read as UTF-8 (multer's default is
 //  latin1, which garbles any accent), and never logged.
 // ─────────────────────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
   defParamCharset: 'utf8',
-  limits: { fileSize: GUEST_DOCUMENT_MAX_BYTES, files: 1, fields: 5, fieldSize: 1024 },
+  limits: { fileSize: GUEST_DOCUMENT_CEILING_BYTES, files: 1, fields: 5, fieldSize: 1024 },
 });
 
 export const receiveDocument = (req: Request, res: Response, next: NextFunction): void => {
   upload.single('file')(req, res, (err: unknown) => {
     if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      next(documentTooLarge());
+      next(new HttpError(413, 'This file is too large. Choose a smaller file.', DOCUMENT_ERROR_CODES.TOO_LARGE));
       return;
     }
     // Two files, an unexpected field, an oversized text field: a malformed

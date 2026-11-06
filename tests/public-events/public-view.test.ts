@@ -33,7 +33,8 @@ describe('GET /api/public-events/:shareToken', () => {
     expect(Object.keys(res.body)).toEqual(['status', 'data']);
 
     const data = res.body.data;
-    expect(Object.keys(data).sort()).toEqual(['coverImageUrl', 'days', 'description', 'hostName', 'name', 'registration', 'rsvpFields']);
+    // maxDocumentBytes: the size one document may be (Round B storage rules).
+    expect(Object.keys(data).sort()).toEqual(['coverImageUrl', 'days', 'description', 'hostName', 'maxDocumentBytes', 'name', 'registration', 'rsvpFields']);
     expect(Object.keys(data.registration).sort()).toEqual(
       ['allowedEmailDomains', 'closesAt', 'code', 'isOpen', 'message', 'plusOnesAllowed', 'reason'].sort()
     );

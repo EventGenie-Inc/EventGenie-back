@@ -8,6 +8,7 @@ import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
 import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape, answerableFields, withAnswerValues } from './rsvp-answers.util.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { resolveDocumentLimits } from '../guest-document/guest-document-allowance.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
@@ -256,6 +257,7 @@ export const rsvpService = {
       invite.event.rsvpFields
     );
     const documents = await guestDocumentService.liveDocumentsForInvite(invite.id);
+    const maxDocumentBytes = isFeatureEnabled('documentFields') ? (await resolveDocumentLimits(invite.event)).maxBytesPerDocument : null;
 
     return {
       // Deliberate, hand-picked projection — a guest sees an invitation,
@@ -367,6 +369,10 @@ export const rsvpService = {
       // ("proof.pdf, 210 KB"). Their own names only; empty while
       // documentFields is off.
       documents,
+      // The most one uploaded document may be, in bytes (the event's plan;
+      // guests have no plan settings), for the form to refuse a larger file
+      // before sending it. Null while documentFields is off.
+      maxDocumentBytes,
       plusOneNames: invite.guest.plusOnes.map((p) => p.firstName),
       ticketPurchase: ticketPurchase
         ? {
@@ -941,7 +947,7 @@ export const rsvpService = {
 
     // Files this reply replaced or removed, deleted now the reply is saved;
     // a failure is the documents sweep's to retry, never the guest's.
-    if (documentsReplaced > 0) await guestDocumentService.deletePendingQuietly({ inviteId: rest.invite.id });
+    if (documentsReplaced > 0) await guestDocumentService.deleteRequestedNow({ inviteId: rest.invite.id });
 
     // Explicit guest-facing shape — never the raw Invite/TicketPurchase
     // rows the transaction above worked with. `rest.invite` is

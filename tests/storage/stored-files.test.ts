@@ -254,7 +254,7 @@ describe('covers: only the current one is kept', () => {
   });
 });
 
-describe('designs and logos: replacement is covered in their own suites; documents keep their own pipeline', () => {
+describe('designs and logos: replacement is covered in their own suites (documents and purged media: tests/storage-retention/)', () => {
   it('a replaced design image is deleted by the worker', async () => {
     const event = await newEvent();
     const first = await signedUpload({ kind: 'INVITATION_DESIGN', tenantId, eventId: event.id, uploadedBy: { userId: organiser.id }, format: 'png' });
@@ -343,7 +343,8 @@ describe('the unsaved-uploads sweep', () => {
     await eventService.update(event.id, organiser.id, organiser.role, tenantId, { hostName: 'Host', coverImageUrl: attached.url, coverImagePublicId: attached.publicId });
     const draftHeld = await signCover();
     await putDraft(draftHeld);
-    // A document with its row is the documents sweep's, attached or not.
+    // A document with its row is the documents sweep's (24 hours unattached,
+    // by its own uploadedAt), attached or not.
     const docFile = await prisma.storedFile.create({ data: { publicId: `dev/t/${tenantId}/e/${event.id}/document/${crypto.randomUUID()}/a.pdf`, resourceType: 'RAW', deliveryType: 'PRIVATE', kind: 'GUEST_DOCUMENT', tenantId, eventId: event.id, status: 'UPLOADED' } });
     const field = await prisma.rsvpField.create({ data: { eventId: event.id, label: 'Proof', fieldType: 'DOCUMENT', isRequired: false, order: 0, createdBy: organiser.id, updatedBy: organiser.id } });
     await prisma.guestDocument.create({ data: { id: crypto.randomUUID(), eventId: event.id, rsvpFieldId: field.id, source: 'REGISTRATION', cloudinaryPublicId: docFile.publicId, fileName: 'a.pdf', contentType: 'application/pdf', sizeBytes: 1, storedFileId: docFile.id } });

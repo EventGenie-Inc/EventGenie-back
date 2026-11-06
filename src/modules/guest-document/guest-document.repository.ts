@@ -40,6 +40,8 @@ export const guestDocumentRepository = {
           select: {
             id: true,
             tenantId: true,
+            // The event's own entitlement, for its document allowance.
+            eventPass: { select: { passTier: true } },
             isArchived: true,
             status: true,
             rsvpDeadline: true,
@@ -100,17 +102,38 @@ export const guestDocumentRepository = {
 
   findById: (id: string) => prisma.guestDocument.findUnique({ where: { id } }),
 
-  // Counted in the event's storage (memory-hub.repository.ts's
-  // sumBytesForEvent): every document whose file is still kept.
-  sumLiveBytesForEvent: async (eventId: string): Promise<number> =>
-    (await prisma.guestDocument.aggregate({ where: { eventId, ...LIVE }, _sum: { sizeBytes: true } }))._sum.sizeBytes ?? 0,
+  // The event's document storage (its own allowance, never the Memory
+  // Hub's): every document whose file is still kept, attached or not.
+  sumLiveBytesForEvent: async (eventId: string, db: Db = prisma): Promise<number> =>
+    (await db.guestDocument.aggregate({ where: { eventId, ...LIVE }, _sum: { sizeBytes: true } }))._sum.sizeBytes ?? 0,
+
+  // The event's row lock: every upload's allowance check and its row are
+  // written under it, so two uploads can't both take the last of the space.
+  lockEvent: async (tx: Prisma.TransactionClient, eventId: string): Promise<void> => {
+    await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
+  },
+
+  // A guest's kept documents, every invite of theirs: the guest details'
+  // documentCount, for the warning before archiving them.
+  countLiveForGuest: (guestId: string) =>
+    prisma.guestDocument.count({ where: { invite: { guestId }, attachedAt: { not: null }, ...LIVE } }),
 
   // ── Deleting ──────────────────────────────
 
-  // Marks every live document matching `where` for deletion. The file is
-  // deleted afterwards (the service), and the sweep retries any not done.
-  // Their StoredFiles show the request too (the storage worker leaves a
-  // document's file alone: this pipeline deletes it).
+  // Live documents matching `where` that have no StoredFile (a row older
+  // than the records): the service writes one before requesting deletion.
+  findLiveWithoutFile: (where: Prisma.GuestDocumentWhereInput, db: Db = prisma) =>
+    db.guestDocument.findMany({
+      where: { ...where, ...LIVE, storedFileId: null },
+      select: { id: true, eventId: true, cloudinaryPublicId: true, event: { select: { tenantId: true } } },
+    }),
+
+  setStoredFile: (id: string, storedFileId: string, db: Db = prisma) =>
+    db.guestDocument.update({ where: { id }, data: { storedFileId } }),
+
+  // Marks every live document matching `where` for deletion, and its
+  // StoredFile with it: the storage worker deletes the file and marks the
+  // document deleted (stored-file.repository.ts's markDeleted).
   requestDeletion: async (where: Prisma.GuestDocumentWhereInput, now: Date, db: Db = prisma): Promise<number> => {
     await db.storedFile.updateMany({
       where: { guestDocument: { is: { ...where, ...LIVE } }, status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] } },
@@ -119,28 +142,11 @@ export const guestDocumentRepository = {
     return (await db.guestDocument.updateMany({ where: { ...where, ...LIVE }, data: { deleteRequestedAt: now } })).count;
   },
 
-  // Requested and not yet deleted, with the tenant for the folder check.
-  findPendingDeletion: (where: Prisma.GuestDocumentWhereInput = {}) =>
-    prisma.guestDocument.findMany({
-      where: { ...where, deleteRequestedAt: { not: null }, deletedAt: null },
-      select: { id: true, eventId: true, cloudinaryPublicId: true, event: { select: { tenantId: true } } },
-      orderBy: { deleteRequestedAt: 'asc' },
-    }),
-
-  // Their StoredFiles are closed with them.
-  markDeleted: (ids: string[], now: Date) =>
-    ids.length === 0
-      ? Promise.resolve({ count: 0 })
-      : prisma.$transaction(async (tx) => {
-          await tx.storedFile.updateMany({
-            where: { guestDocument: { is: { id: { in: ids } } }, status: { not: 'DELETED' } },
-            data: { status: 'DELETED', deletedAt: now, nextDeleteAttemptAt: null },
-          });
-          return tx.guestDocument.updateMany({ where: { id: { in: ids }, deletedAt: null }, data: { deletedAt: now, lastDeleteError: null } });
-        }),
-
-  recordDeleteFailure: (ids: string[], reason: string) =>
-    ids.length === 0
-      ? Promise.resolve({ count: 0 })
-      : prisma.guestDocument.updateMany({ where: { id: { in: ids }, deletedAt: null }, data: { lastDeleteError: reason.slice(0, 500) } }),
+  // The StoredFiles of documents requested and not yet deleted, matching
+  // `where`: what an immediate delete (deleteNow) is asked to do.
+  findRequestedFileIds: async (where: Prisma.GuestDocumentWhereInput, db: Db = prisma): Promise<string[]> =>
+    (await db.guestDocument.findMany({
+      where: { ...where, deleteRequestedAt: { not: null }, deletedAt: null, storedFileId: { not: null } },
+      select: { storedFileId: true },
+    })).map((d) => d.storedFileId!),
 };

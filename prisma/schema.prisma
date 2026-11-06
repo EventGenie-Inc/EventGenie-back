@@ -601,6 +601,11 @@ model Event {
   // Events archived before the column existed were given the migration's
   // own time (20261026090000_archive_media_retention), never an older one.
   archivedAt                  DateTime?
+  // When it was cancelled; null otherwise. Starts the cancelled event's
+  // document clock (storage-retention.service.ts): its guests' documents
+  // are deleted 30 days later. Events cancelled before the column existed
+  // were given the migration's own time (20261106090000_storage_rules).
+  cancelledAt                 DateTime?
   createdAt                   DateTime        @default(now())
   updatedAt                   DateTime        @updatedAt
   createdBy                   String
@@ -639,6 +644,9 @@ model Event {
   // Archived-event retention — see EventMediaPurge.
   mediaPurges              EventMediaPurge[]
   mediaPurgeReminderClaims MediaPurgeReminderClaim[]
+  // Guests' documents deleted by the retention rules (STEERING "Storage").
+  documentPurges           EventDocumentPurge[]
+  documentPurgeReminders   DocumentPurgeReminderClaim[]
   // Files guests uploaded for DOCUMENT questions — see GuestDocument.
   guestDocuments           GuestDocument[]
   coverFile                StoredFile?               @relation("EventCoverFile", fields: [coverFileId], references: [id], onDelete: SetNull)
@@ -946,6 +954,14 @@ model MemoryItem {
   // (media-retention.service.ts). The row stays, archived as well, so every
   // live-items query leaves it out; it can never be restored.
   purgedAt           DateTime?
+  // When the organiser rejected it, or removed it (archived it): 7 days
+  // later its file is requested for deletion and it is purged
+  // (storage-retention.service.ts), unless approved again (clears
+  // rejectedAt) or restored (clears removedAt) first. Items rejected or
+  // removed before the columns existed were given the migration's time
+  // (20261106090000_storage_rules).
+  rejectedAt         DateTime?
+  removedAt          DateTime?
   // Its StoredFile (storage module). Null only for a row the backfill
   // could not match.
   storedFileId       String?
@@ -959,6 +975,9 @@ model MemoryItem {
   uploadedByUser  User?           @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
   consentRecords  ConsentRecord[]
   storedFile      StoredFile?     @relation(fields: [storedFileId], references: [id], onDelete: SetNull)
+
+  @@index([rejectedAt])
+  @@index([removedAt])
 }
 
 // ─────────────────────────────────────────
@@ -1536,6 +1555,13 @@ model SubscriptionTierConfig {
   // repository hands it to the code as a plain number
   // (subscription-tier-config.repository.ts).
   maxMemoryHubBytesPerEvent BigInt?
+  // Guests' documents (DOCUMENT questions) have their own allowance, never
+  // counted in the Memory Hub's: the total bytes an event's kept documents
+  // may hold (BigInt, like the Memory Hub's), and the most one document may
+  // be (at most GUEST_DOCUMENT_CEILING_BYTES, the upload route's fixed
+  // safety ceiling). null = unlimited (one document: the ceiling).
+  maxDocumentBytesPerEvent  BigInt?
+  maxDocumentBytesPerFile   Int?
   emailEnabled              Boolean          @default(true)
   smsEnabled                Boolean          @default(false)
   vendorMarketplace         Boolean          @default(false)
@@ -1954,6 +1980,61 @@ model FeedbackRequestClaim {
 //  ARCHIVED EVENTS: MEMORY HUB RETENTION
 //  (media-retention.service.ts)
 // ─────────────────────────────────────────
+
+// ─────────────────────────────────────────
+//  GUESTS' DOCUMENTS: RETENTION (storage-retention.service.ts)
+// ─────────────────────────────────────────
+
+enum DocumentRetentionReason {
+  // The event finished (the end of its last day): documents of guests,
+  // invites and questions still archived then.
+  ARCHIVED_AT_FINISH
+  // 90 days after the event finished: every document left.
+  FINISHED
+  // 30 days after the event was cancelled: every document.
+  CANCELLED
+}
+
+// One deletion of an event's documents, per rule: claimed once, under the
+// event's row lock, in the same transaction as the deletion requests (the
+// storage worker deletes the files). requestedCount: documents requested.
+model EventDocumentPurge {
+  id             String                  @id @default(cuid())
+  eventId        String
+  reason         DocumentRetentionReason
+  claimedAt      DateTime                @default(now())
+  requestedCount Int                     @default(0)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, reason])
+}
+
+// The organisers' email 7 days before a FINISHED or CANCELLED deletion,
+// claimed once before it is sent. The deletion waits a full week after it.
+model DocumentPurgeReminderClaim {
+  id             String                  @id @default(cuid())
+  eventId        String
+  reason         DocumentRetentionReason
+  recipientCount Int
+  claimedAt      DateTime                @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, reason])
+}
+
+// One row (id "singleton"): when the retention sweep last ran with
+// storageRetention on, and when it last resumed after not running for a
+// while (the flag off, or the server down). No retention deletion happens
+// until 7 days after a resume, so nothing is ever deleted without a full
+// countdown first (storage-retention.service.ts).
+model StorageRetentionState {
+  id          String    @id @default("singleton")
+  lastSweptAt DateTime?
+  resumedAt   DateTime?
+  updatedAt   DateTime  @updatedAt
+}
 
 enum EventMediaPurgeReason {
   // The sweep, 30 days after the event was archived.

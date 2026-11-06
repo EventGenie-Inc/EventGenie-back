@@ -9,8 +9,12 @@ export const DOCUMENT_ERROR_CODES = {
   // Not a PDF, JPG, PNG or XLSX by its content, or named as another
   // type (422; guest-document-content.util.ts).
   TYPE_NOT_ALLOWED: 'DOCUMENT_TYPE_NOT_ALLOWED',
-  // Over GUEST_DOCUMENT_MAX_BYTES (413, like a guest import's).
+  // Over the plan's size per document, or the route's fixed ceiling (413,
+  // like a guest import's). guest-document-allowance.util.ts.
   TOO_LARGE: 'DOCUMENT_TOO_LARGE',
+  // The upload would take the event's documents over the plan's document
+  // storage (403), checked under the event's row lock. Guest-safe words.
+  STORAGE_FULL: 'DOCUMENT_STORAGE_FULL',
   // An answer naming a document that isn't this guest's (or this
   // registration's) upload for this question on this event, or that has
   // been deleted (422). One code and one message for every cause.

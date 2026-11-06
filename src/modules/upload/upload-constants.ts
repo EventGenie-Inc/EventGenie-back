@@ -78,7 +78,7 @@ export const FEEDBACK_LOGO_ALLOWED_FORMATS = 'jpg,png,webp';
 // ─────────────────────────────────────────
 //  GUEST DOCUMENTS (a file a guest uploads for a DOCUMENT question)
 //
-//  5MB: a proof of payment is a one-page PDF or a phone screenshot, well
+//  5MB (the plan's figure): a proof of payment is a one-page PDF or a phone screenshot, well
 //  under 1MB; a bank statement export a little more. The same ceiling as
 //  a cover and a guest import. The uploads come through this server (to
 //  check what the file really is), so the cap also bounds the memory one
@@ -91,5 +91,11 @@ export const FEEDBACK_LOGO_ALLOWED_FORMATS = 'jpg,png,webp';
 //  limited like registering itself: per IP and per event, the same numbers
 //  (rate-limit.middleware.ts).
 // ─────────────────────────────────────────
-export const GUEST_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024;
+//
+//  The size one document may be is the plan's (maxDocumentBytesPerFile,
+//  5 MB on every tier at launch), checked by the service
+//  (guest-document-allowance.util.ts). GUEST_DOCUMENT_CEILING_BYTES is the
+//  fixed safety ceiling above it: what the upload route (multer) reads at
+//  most, and the most a super admin may set a plan's limit to.
+export const GUEST_DOCUMENT_CEILING_BYTES = 20 * 1024 * 1024;
 export const GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN = 20;
