@@ -1,6 +1,6 @@
 import { type ConsentState } from '../consent/consent.types.js';
 import { consentStateOf, consentSubjectKey } from '../consent/consent.service.js';
-import { isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
+import { isSignedPublicIdInAnyFolder, memoryHubFolders } from '../upload/upload-folders.js';
 
 // ─────────────────────────────────────────
 //  WHICH PHOTOS — decided here and only here
@@ -25,7 +25,7 @@ export const isPhotoEligible = (
   photo: CandidatePhoto,
   ctx: { tenantId: string; eventId: string; states: Map<string, ConsentState> }
 ): boolean =>
-  isSignedPublicIdInFolder(photo.cloudinaryPublicId, memoryHubFolder(ctx.tenantId, ctx.eventId)) &&
+  isSignedPublicIdInAnyFolder(photo.cloudinaryPublicId, memoryHubFolders(ctx.tenantId, ctx.eventId)) &&
   consentStateOf(ctx.states, 'PHOTO_GUEST_PUBLIC_SHARING', photo.id).granted;
 
 export const isPhotoShareable = (

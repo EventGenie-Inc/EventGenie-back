@@ -6,8 +6,8 @@ import {
   eventService,
   assertEventFieldsValid,
   assertEventUpdateAllowed,
-  destroyReplacedCover,
 } from '../event/event.service.js';
+import { applyCoverChange, type CoverChange } from '../event/event-cover-image.util.js';
 import { normalizeHostName } from '../event/event.repository.js';
 import { assertHostNamePresentAfterEdit } from '../event/event-host-name.util.js';
 import { parseDeadline } from '../event/event-rsvp-deadline.util.js';
@@ -382,7 +382,7 @@ export const eventFullUpdateService = {
     // The event's own fields, then each part, in the wizard's order.
     if (eventFields) assertEventFieldsValid(eventFields);
     const days = planDays(event, daysInput);
-    if (eventFields) await assertEventUpdateAllowed(event, eventFields, days.resulting);
+    const coverChange: CoverChange | null = eventFields ? await assertEventUpdateAllowed(event, eventFields, days.resulting) : null;
 
     const tickets = planTickets(event, ticketsInput);
     // The ticket routes are switched off with `ticketing`; a change to
@@ -420,8 +420,14 @@ export const eventFullUpdateService = {
     };
 
     if (hasChanges(plan)) {
-      await eventFullUpdateRepository.apply(eventId, userId, plan);
-      if (plan.event) destroyReplacedCover(event, plan.event);
+      // The new cover attached and the replaced one requested for deletion
+      // in the same transaction as the save.
+      await eventFullUpdateRepository.apply(
+        eventId,
+        userId,
+        plan,
+        plan.event && coverChange ? (tx) => applyCoverChange(tx, eventId, coverChange) : undefined
+      );
     }
 
     // The same shape as GET /api/events/:id, so the wizard can re-baseline

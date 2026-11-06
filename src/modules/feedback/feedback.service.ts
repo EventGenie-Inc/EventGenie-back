@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { type ConsentKind, type EventStatus, type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService } from '../event/event.service.js';
@@ -9,11 +8,11 @@ import { feedbackRepository } from './feedback.repository.js';
 import { isPhotoEligible, selectedPhotoIdsOf } from './feedback-photos.util.js';
 import { FEEDBACK_ERROR_CODES, parseSaveFeedbackBody, scoreRequired } from './feedback-validation.util.js';
 import { type FeedbackLogoInput, type SaveFeedbackBody } from './feedback.types.js';
-import { feedbackLogoFolder, isCloudinaryDeliveryUrlFor, isSignedPublicIdInFolder } from '../upload/upload-folders.js';
+import { isCloudinaryDeliveryUrlFor } from '../upload/upload-folders.js';
 import { FEEDBACK_LOGO_ALLOWED_FORMATS, FEEDBACK_LOGO_MAX_BYTES } from '../upload/upload-constants.js';
 import { type UploadSignatureResponse } from '../upload/upload.types.js';
-import { destroyAsset, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
-import { signCloudinaryParams } from '../../shared/cloudinary/cloudinary-signature.util.js';
+import { requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
+import { storedFileService } from '../storage/stored-file.service.js';
 
 // ─────────────────────────────────────────
 //  ORGANISER FEEDBACK — /api/events/:eventId/feedback (the `feedback` flag)
@@ -51,17 +50,15 @@ const assertOrganiser = (requestingRole: PlatformRole): void => {
   }
 };
 
-// The logo must be one this server signed for this tenant's logo folder,
-// and its URL our delivery URL for exactly that id (STEERING "Client-
-// supplied Cloudinary assets"); both are checked before anything could
-// destroy it. Then its size, which only the upload response knows: too
-// large, it is destroyed, like an oversized cover. The logo already stored,
-// sent back unchanged, is not checked again.
-const assertLogoAcceptable = (tenantId: string, logo: FeedbackLogoInput, storedPublicId: string | null): void => {
-  if (logo.publicId === storedPublicId) return;
-  if (!isSignedPublicIdInFolder(logo.publicId, feedbackLogoFolder(tenantId))) {
-    throw new HttpError(422, "This logo wasn't uploaded for your account. Upload it again from the feedback form.", FEEDBACK_ERROR_CODES.LOGO_INVALID);
-  }
+// A NEW logo (not the one already stored, sent back unchanged): its URL
+// must be our delivery URL for exactly its public id, checked first, so a
+// mismatched pair is refused with nothing deleted; then it must be an
+// upload this server signed for this tenant's logo, for this event's
+// feedback (its StoredFile), and its size is Cloudinary's own: over
+// FEEDBACK_LOGO_MAX_BYTES it is refused and deleted. Returns the new
+// logo's StoredFile id, or null when the logo is the stored one.
+const acceptLogo = async (event: { id: string; tenantId: string }, logo: FeedbackLogoInput, storedPublicId: string | null): Promise<string | null> => {
+  if (logo.publicId === storedPublicId) return null;
   if (!isCloudinaryDeliveryUrlFor(logo.url, {
     cloudName: requireCloudinaryConfig().cloudName,
     resourceType: 'image',
@@ -70,19 +67,23 @@ const assertLogoAcceptable = (tenantId: string, logo: FeedbackLogoInput, storedP
   })) {
     throw new HttpError(422, "This logo's link must be the one our uploader returned for it. Upload it again.", FEEDBACK_ERROR_CODES.LOGO_INVALID);
   }
-  if (logo.bytes === undefined) {
-    throw new HttpError(400, 'logo.bytes is required for a new logo');
-  }
-  if (logo.bytes > FEEDBACK_LOGO_MAX_BYTES) {
-    void destroyAsset(logo.publicId).then((result) => {
-      if (!result.ok) console.error('[cloudinary cleanup] failed to delete oversized feedback logo:', result.reason);
-    });
-    throw new HttpError(
+  const accepted = await storedFileService.acceptUpload({
+    publicId: logo.publicId,
+    kind: 'FEEDBACK_LOGO',
+    resourceType: 'IMAGE',
+    tenantId: event.tenantId,
+    eventId: event.id,
+    // Not ours, or never uploaded: UPLOAD_NOT_FOUND like every upload.
+    // FEEDBACK_LOGO_INVALID stays for a logo that is invalid in itself (its
+    // link isn't its own).
+    notFoundMessage: "This logo wasn't uploaded for your account. Upload it again from the feedback form.",
+    tooLarge: (bytes) => new HttpError(
       422,
-      `This logo is too large (${(logo.bytes / (1024 * 1024)).toFixed(1)}MB). Logos must be ${FEEDBACK_LOGO_MAX_BYTES / (1024 * 1024)}MB or smaller.`,
+      `This logo is too large (${(bytes / (1024 * 1024)).toFixed(1)}MB). Logos must be ${FEEDBACK_LOGO_MAX_BYTES / (1024 * 1024)}MB or smaller.`,
       FEEDBACK_ERROR_CODES.LOGO_TOO_LARGE
-    );
-  }
+    ),
+  });
+  return accepted.file.id;
 };
 
 const toPermissionView = (state: ConsentState) => ({
@@ -154,10 +155,21 @@ export const feedbackService = {
     assertEventCompleted(event.status);
     const input = parseSaveFeedbackBody(body);
 
+    // A new logo is accepted (and measured, which asks Cloudinary) before
+    // the lock is taken.
+    const before = input.logo ? await feedbackRepository.findByEventId(event.id) : null;
+    const newLogoFileId = input.logo ? await acceptLogo(event, input.logo, before?.logoPublicId ?? null) : null;
+
     await feedbackRepository.withEventFeedbackLock(event.id, async (tx) => {
       const existing = await feedbackRepository.findByEventId(event.id, tx);
       if (!existing && input.score === undefined) throw scoreRequired();
-      if (input.logo) assertLogoAcceptable(event.tenantId, input.logo, existing?.logoPublicId ?? null);
+      // The logo kept after this save, and the one it replaces (requested
+      // for deletion with the save). Unchanged when no logo was sent.
+      if (newLogoFileId) await storedFileService.attach(tx, newLogoFileId, { eventId: event.id });
+      const keptLogoFileId = input.logo === undefined
+        ? existing?.logoFileId ?? null
+        : input.logo === null ? null : newLogoFileId ?? existing?.logoFileId ?? null;
+      if (input.logo !== undefined) await storedFileService.requestReplacedDeletion(tx, existing?.logoFileId, keptLogoFileId);
 
       const states = await consentService.statesForEvent(event.id, tx);
       const records: NewConsentRecord[] = [];
@@ -201,7 +213,7 @@ export const feedbackService = {
 
       const logoFields = input.logo === undefined
         ? {}
-        : { logoUrl: input.logo?.url ?? null, logoPublicId: input.logo?.publicId ?? null };
+        : { logoUrl: input.logo?.url ?? null, logoPublicId: input.logo?.publicId ?? null, logoFileId: keptLogoFileId };
 
       if (existing) {
         await feedbackRepository.update(existing.id, userId, {
@@ -219,6 +231,7 @@ export const feedbackService = {
           toImprove: input.toImprove ?? null,
           logoUrl: input.logo?.url ?? null,
           logoPublicId: input.logo?.publicId ?? null,
+          logoFileId: keptLogoFileId,
           userId,
         }, tx);
       }
@@ -232,33 +245,14 @@ export const feedbackService = {
   // A signed, direct-to-Cloudinary upload for the company's logo, into the
   // tenant's own folder with a server-chosen public_id (the signature is
   // the constraint, see cloudinary-signature.util.ts). Size can't be
-  // signed; it is checked on save from the reported bytes.
-  requestLogoSignature: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<UploadSignatureResponse> => {
+  // signed; it is checked on save, from Cloudinary's own figure.
+  requestLogoSignature: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<UploadSignatureResponse> => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     assertOrganiser(requestingRole);
     assertEventCompleted(event.status);
-
-    const { cloudName, apiKey, apiSecret } = requireCloudinaryConfig();
-    const timestamp = Math.floor(Date.now() / 1000);
     // event.tenantId: identical to the caller's, since getScoped refused any
-    // other tenant's event.
-    const folder = feedbackLogoFolder(event.tenantId);
-    const publicId = crypto.randomUUID();
-    const signature = signCloudinaryParams(
-      { allowed_formats: FEEDBACK_LOGO_ALLOWED_FORMATS, folder, public_id: publicId, timestamp },
-      apiSecret
-    );
-
-    return {
-      signature,
-      timestamp,
-      apiKey,
-      cloudName,
-      uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-      folder,
-      publicId,
-      allowedFormats: FEEDBACK_LOGO_ALLOWED_FORMATS,
-      maxFileSizeBytes: FEEDBACK_LOGO_MAX_BYTES,
-    };
+    // other tenant's event. Stored in the tenant's logo folder, its
+    // StoredFile naming this event's feedback.
+    return storedFileService.signUpload({ kind: 'FEEDBACK_LOGO', tenantId: event.tenantId, eventId: event.id, uploadedBy: { userId } });
   },
 };

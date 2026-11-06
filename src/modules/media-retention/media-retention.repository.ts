@@ -180,13 +180,23 @@ export const mediaRetentionRepository = {
       orderBy: { createdAt: 'asc' },
     }),
 
-  // Purged, and archived too, so every live-items query leaves it out.
+  // Purged, and archived too, so every live-items query leaves it out. Its
+  // StoredFile is marked DELETED with it: the purge deleted the file itself
+  // (an item outside its folder was never sent, but its row is closed too,
+  // so nothing else ever sends it).
   markItemsPurged: (itemIds: string[], now: Date, actor: string) =>
     itemIds.length === 0
       ? Promise.resolve({ count: 0 })
-      : prisma.memoryItem.updateMany({
-          where: { id: { in: itemIds }, purgedAt: null },
-          data: { purgedAt: now, isArchived: true, updatedBy: actor },
+      : prisma.$transaction(async (tx) => {
+          const result = await tx.memoryItem.updateMany({
+            where: { id: { in: itemIds }, purgedAt: null },
+            data: { purgedAt: now, isArchived: true, updatedBy: actor },
+          });
+          await tx.storedFile.updateMany({
+            where: { memoryItems: { some: { id: { in: itemIds } } }, status: { not: 'DELETED' } },
+            data: { status: 'DELETED', deletedAt: now, nextDeleteAttemptAt: null },
+          });
+          return result;
         }),
 
   // Ends an attempt and releases the lease: complete when nothing failed,

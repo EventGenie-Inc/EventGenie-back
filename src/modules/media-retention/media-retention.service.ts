@@ -15,7 +15,7 @@ import {
 } from '../event/event-media-retention.util.js';
 import { eventService } from '../event/event.service.js';
 import { resolveEventOrganisers } from '../event-assignment/event-organisers.util.js';
-import { isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
+import { isSignedPublicIdInAnyFolder, memoryHubFolders } from '../upload/upload-folders.js';
 import { CLOUDINARY_DELETE_BATCH_LIMIT, destroyAssets } from '../../shared/cloudinary/cloudinary.client.js';
 import { sendEmailBatch } from '../../shared/messaging/email.engine.js';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -169,18 +169,18 @@ export const mediaRetentionService = {
 
     try {
       const items = await mediaRetentionRepository.findItemsToPurge(purge.eventId, purge.startedAt);
-      const folder = memoryHubFolder(purge.event.tenantId, purge.eventId);
+      const folders = memoryHubFolders(purge.event.tenantId, purge.eventId);
 
       // Every stored id was checked on the way in; one that isn't in this
       // event's folder (an older row) is never sent to Cloudinary, since it
       // could name another event's asset. Its row is hidden all the same.
-      const outside = items.filter((i) => !isSignedPublicIdInFolder(i.cloudinaryPublicId, folder));
+      const outside = items.filter((i) => !isSignedPublicIdInAnyFolder(i.cloudinaryPublicId, folders));
       if (outside.length > 0) {
         console.warn(`[media retention] event ${purge.eventId}: ${outside.length} item(s) outside its folder hidden, not deleted`);
         purgedCount += (await mediaRetentionRepository.markItemsPurged(outside.map((i) => i.id), now, actor)).count;
       }
 
-      const inside = items.filter((i) => isSignedPublicIdInFolder(i.cloudinaryPublicId, folder));
+      const inside = items.filter((i) => isSignedPublicIdInAnyFolder(i.cloudinaryPublicId, folders));
       for (const [mediaType, resourceType] of [['IMAGE', 'image'], ['VIDEO', 'video']] as const) {
         const ofType = inside.filter((i) => i.mediaType === mediaType);
         for (const batch of chunk(ofType, CLOUDINARY_DELETE_BATCH_LIMIT)) {

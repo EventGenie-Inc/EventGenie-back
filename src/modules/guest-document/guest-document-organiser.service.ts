@@ -2,7 +2,7 @@ import { type PlatformRole } from '@prisma/client';
 import { guestDocumentRepository } from './guest-document.repository.js';
 import { type DocumentLinkView } from './guest-document.types.js';
 import { eventService } from '../event/event.service.js';
-import { guestDocumentFolder, isGuestDocumentPublicIdInFolder } from '../upload/upload-folders.js';
+import { guestDocumentFolders, isGuestDocumentPublicIdInAnyFolder } from '../upload/upload-folders.js';
 import { buildPrivateDownloadUrl } from '../../shared/cloudinary/cloudinary-private-asset.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 
@@ -38,7 +38,7 @@ export const guestDocumentOrganiserService = {
       doc.attachedAt === null ||
       doc.deletedAt !== null ||
       doc.deleteRequestedAt !== null ||
-      !isGuestDocumentPublicIdInFolder(doc.cloudinaryPublicId, guestDocumentFolder(event.tenantId, event.id))
+      !isGuestDocumentPublicIdInAnyFolder(doc.cloudinaryPublicId, guestDocumentFolders(event.tenantId, event.id))
     ) {
       throw new HttpError(404, NOT_FOUND_MESSAGE);
     }

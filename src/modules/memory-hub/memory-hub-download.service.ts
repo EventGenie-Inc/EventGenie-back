@@ -2,7 +2,7 @@ import { type MediaType, type PlatformRole } from '@prisma/client';
 import { memoryHubService } from './memory-hub.service.js';
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
+import { isSignedPublicIdInAnyFolder, memoryHubFolders } from '../upload/upload-folders.js';
 import { isMemoryHubVideoEnabled } from './memory-item-limits.util.js';
 import {
   CLOUDINARY_ARCHIVE_MAX_FILES,
@@ -143,11 +143,11 @@ export const memoryHubDownloadService = {
     // The hub's live items, filtered to approved ones in this event's own
     // folder (every stored id was checked on the way in; this keeps an older
     // row from ever putting another folder's asset in a zip we sign).
-    const folder = memoryHubFolder(event.tenantId, event.id);
+    const folders = memoryHubFolders(event.tenantId, event.id);
     const allowed: MediaType[] = isMemoryHubVideoEnabled() ? ['IMAGE', 'VIDEO'] : ['IMAGE'];
     const items: ArchiveItem[] = hub.memoryItems
       .filter((item) => item.status === 'APPROVED' && !item.isArchived && allowed.includes(item.mediaType))
-      .filter((item) => isSignedPublicIdInFolder(item.cloudinaryPublicId, folder))
+      .filter((item) => isSignedPublicIdInAnyFolder(item.cloudinaryPublicId, folders))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.cloudinaryPublicId.localeCompare(b.cloudinaryPublicId));
 
     if (items.length === 0) {

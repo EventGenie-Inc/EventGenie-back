@@ -1,14 +1,14 @@
-import crypto from 'crypto';
 import { type PlatformRole } from '@prisma/client';
+import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService } from '../event/event.service.js';
-import { signCloudinaryParams } from '../../shared/cloudinary/cloudinary-signature.util.js';
 import { requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
-import { INVITATION_DESIGN_ALLOWED_FORMATS, INVITATION_DESIGN_MAX_BYTES } from '../upload/upload-constants.js';
+import { INVITATION_DESIGN_MAX_BYTES } from '../upload/upload-constants.js';
 import { type UploadSignatureResponse } from '../upload/upload.types.js';
+import { storedFileService } from '../storage/stored-file.service.js';
 import { invitationDesignRepository, isActiveDesignUniqueViolation } from './invitation-design.repository.js';
 import { assertValidDesignInput } from './invitation-design-validation.util.js';
-import { invitationDesignFolder } from '../upload/upload-folders.js';
+import { type PutInvitationDesignDto } from './invitation-design.types.js';
 
 // ─────────────────────────────────────────
 //  INVITATION DESIGN SERVICE
@@ -20,6 +20,9 @@ import { invitationDesignFolder } from '../upload/upload-folders.js';
 //
 //  No tier gating in v1: every plan gets templates and uploads.
 // ─────────────────────────────────────────
+
+// The same words the validator uses for an image signed for another event.
+const DESIGN_NOT_OURS_MESSAGE = "This image wasn't uploaded for this event. Upload it again from this event's design page.";
 
 const assertEventEditable = (status: string): void => {
   if (status === 'CANCELLED') {
@@ -35,8 +38,11 @@ export const invitationDesignService = {
   },
 
   // Create or replace. One active row per event: an existing design is
-  // rewritten in place, whichever kind it was. A replaced upload stays in
-  // Cloudinary on purpose (no hard delete, see the batch report).
+  // rewritten in place, whichever kind it was. Only the current image is
+  // kept: a NEW upload is accepted through its StoredFile (signed for this
+  // event, measured by Cloudinary: over INVITATION_DESIGN_MAX_BYTES it is
+  // refused and deleted), and the image it replaces, or switches away
+  // from, is requested for deletion in the same transaction as the save.
   put: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, body: unknown) => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     assertEventEditable(event.status);
@@ -47,60 +53,68 @@ export const invitationDesignService = {
       ? requireCloudinaryConfig().cloudName
       : '';
     const existing = await invitationDesignRepository.findActiveByEventId(eventId);
-    const data = assertValidDesignInput(body, {
-      cloudName,
-      tenantId: event.tenantId,
-      eventId,
-      storedUploadPublicId: existing?.kind === 'UPLOAD' ? existing.cloudinaryPublicId : null,
-    });
+    const storedUploadPublicId = existing?.kind === 'UPLOAD' ? existing.cloudinaryPublicId : null;
+    const data = assertValidDesignInput(body, { cloudName, tenantId: event.tenantId, eventId, storedUploadPublicId });
 
-    if (existing) return invitationDesignRepository.update(existing.id, userId, data);
+    // The file this save keeps: a new upload's, the stored upload's when
+    // sent back unchanged, or none for a template.
+    const isNewUpload = data.kind === 'UPLOAD' && data.cloudinaryPublicId !== storedUploadPublicId;
+    let keptFileId: string | null = null;
+    if (isNewUpload) {
+      const accepted = await storedFileService.acceptUpload({
+        publicId: data.cloudinaryPublicId,
+        kind: 'INVITATION_DESIGN',
+        resourceType: 'IMAGE',
+        tenantId: event.tenantId,
+        eventId,
+        notFoundMessage: DESIGN_NOT_OURS_MESSAGE,
+        tooLarge: (bytes) => new HttpError(
+          422,
+          `This image is too large (${(bytes / (1024 * 1024)).toFixed(1)}MB). Invitation designs must be ` +
+          `${INVITATION_DESIGN_MAX_BYTES / (1024 * 1024)}MB or smaller, so try a JPG or a smaller size.`
+        ),
+      });
+      keptFileId = accepted.file.id;
+    } else if (data.kind === 'UPLOAD') {
+      keptFileId = existing?.storedFileId ?? null;
+    }
+
+    const save = (targetId: string | null, replacedFileId: string | null) =>
+      prisma.$transaction(async (tx) => {
+        if (isNewUpload && keptFileId) await storedFileService.attach(tx, keptFileId, { eventId });
+        const saved = targetId
+          ? await invitationDesignRepository.update(targetId, userId, data as PutInvitationDesignDto, keptFileId, tx)
+          : await invitationDesignRepository.create(eventId, userId, data as PutInvitationDesignDto, keptFileId, tx);
+        await storedFileService.requestReplacedDeletion(tx, replacedFileId, keptFileId);
+        return saved;
+      });
+
+    if (existing) return save(existing.id, existing.storedFileId);
 
     try {
-      return await invitationDesignRepository.create(eventId, userId, data);
+      return await save(null, null);
     } catch (err) {
       // Two first saves raced; the other request created the row between
       // our read and our write. Last write wins, same as two sequential
-      // PUTs would.
+      // PUTs would, and the winner's image is then the one replaced.
       if (!isActiveDesignUniqueViolation(err)) throw err;
       const winner = await invitationDesignRepository.findActiveByEventId(eventId);
       if (!winner) throw err;
-      return invitationDesignRepository.update(winner.id, userId, data);
+      return save(winner.id, winner.storedFileId);
     }
   },
 
   // Signed direct-to-Cloudinary upload for the organiser's own design,
-  // into this event's own folder with a server-chosen public_id. The
-  // signature is the constraint (see cloudinary-signature.util.ts): the
-  // client cannot change folder, public_id or formats without breaking it.
-  // Size cannot be signed, so it is checked on PUT from the reported bytes.
-  requestUploadSignature: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<UploadSignatureResponse> => {
+  // into this event's own folder with a server-chosen public_id, its
+  // StoredFile written first (storedFileService.signUpload). The signature
+  // is the constraint: the client cannot change folder, public_id or
+  // formats without breaking it.
+  requestUploadSignature: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<UploadSignatureResponse> => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     assertEventEditable(event.status);
-
-    const { cloudName, apiKey, apiSecret } = requireCloudinaryConfig();
-    const timestamp = Math.floor(Date.now() / 1000);
     // event.tenantId, never the caller's: correct for a SUPER_ADMIN (who
     // has none) and identical for everyone else, since getScoped already
     // refused any other tenant's event.
-    const folder = invitationDesignFolder(event.tenantId, eventId);
-    const publicId = crypto.randomUUID();
-
-    const signature = signCloudinaryParams(
-      { allowed_formats: INVITATION_DESIGN_ALLOWED_FORMATS, folder, public_id: publicId, timestamp },
-      apiSecret
-    );
-
-    return {
-      signature,
-      timestamp,
-      apiKey,
-      cloudName,
-      uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-      folder,
-      publicId,
-      allowedFormats: INVITATION_DESIGN_ALLOWED_FORMATS,
-      maxFileSizeBytes: INVITATION_DESIGN_MAX_BYTES,
-    };
+    return storedFileService.signUpload({ kind: 'INVITATION_DESIGN', tenantId: event.tenantId, eventId, uploadedBy: { userId } });
   },
 };

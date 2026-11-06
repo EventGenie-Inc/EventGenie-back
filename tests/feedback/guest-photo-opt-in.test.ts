@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import request from 'supertest';
 import app from '../../src/app.js';
 import { createTenant, createActor, prisma, type Actor } from '../helpers/team.js';
+import { signedUpload } from '../helpers/storage.js';
 import {
   addPhoto,
   cleanupTenants,
@@ -51,8 +52,10 @@ const setup = async () => {
   return { ev, guest, token: invite.token };
 };
 
-const upload = (ev: TestEvent, token: string, extra: Record<string, unknown> = {}, mediaType: 'IMAGE' | 'VIDEO' = 'IMAGE') => {
-  const publicId = `${ev.folder}/${randomUUID()}`;
+// A real signed upload (its StoredFile, and the file in the fake
+// Cloudinary), then the guest's save.
+const upload = async (ev: TestEvent, token: string, extra: Record<string, unknown> = {}, mediaType: 'IMAGE' | 'VIDEO' = 'IMAGE') => {
+  const { publicId } = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: ev.event.tenantId, eventId: ev.event.id, mediaType, uploadedBy: { inviteId: 'test-invite' } });
   return request(app)
     .post('/api/memory-hub/guest-items')
     .send({

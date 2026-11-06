@@ -1,20 +1,9 @@
-import crypto from 'crypto';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { signCloudinaryParams } from '../../shared/cloudinary/cloudinary-signature.util.js';
-import { requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
 import { eventService } from '../event/event.service.js';
-import {
-  EVENT_COVER_ALLOWED_FORMATS,
-  EVENT_COVER_MAX_BYTES,
-  MEMORY_ITEM_IMAGE_ALLOWED_FORMATS,
-  MEMORY_ITEM_IMAGE_MAX_BYTES,
-  MEMORY_ITEM_VIDEO_ALLOWED_FORMATS,
-  MEMORY_ITEM_VIDEO_MAX_BYTES,
-} from './upload-constants.js';
-import { coverFolder, memoryHubFolder } from './upload-folders.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable } from '../memory-hub/memory-hub-tier-enforcement.util.js';
 import { assertMemoryItemMediaTypeAvailable } from '../memory-hub/memory-item-limits.util.js';
+import { storedFileService, type UploadedBy } from '../storage/stored-file.service.js';
 import { type RequestUploadSignatureDto, type UploadSignatureResponse } from './upload.types.js';
 
 // ─────────────────────────────────────────
@@ -23,75 +12,42 @@ import { type RequestUploadSignatureDto, type UploadSignatureResponse } from './
 //  Issues short-lived, purpose-scoped signatures for direct browser ->
 //  Cloudinary uploads. Files never pass through this backend.
 //
-//  Signed parameters (the actual constraint — see cloudinary-signature
-//  util's docs on why signing = enforcement): folder, allowed_formats,
-//  public_id, timestamp. NOT signed: max file size — Cloudinary's raw
-//  signed-upload API has no signable byte-limit parameter (verified
-//  against current docs; only an upload PRESET can carry one, which
-//  would mean provisioning preset infrastructure for one field). Size is
-//  instead enforced after the fact, at save time — event/event-cover-image.util.ts
-//  for covers, memory-hub.service.ts for Memory Hub items.
+//  Every signature writes the file's StoredFile row first
+//  (storedFileService.signUpload): the folder and public_id are chosen
+//  here from the owner alone, and signed, so the browser can't change
+//  them. Cloudinary's raw signed-upload API can't carry a byte limit, so
+//  size is checked at save, against Cloudinary's own figure for the file
+//  (storedFileService.acceptUpload), never the browser's.
 // ─────────────────────────────────────────
 
-// One signing implementation, shared by the organiser path below (called
-// from requestSignature, after the usual Firebase+session auth and
-// tenant-scoped event lookup) AND the guest path (memory-hub.service.ts's
-// requestGuestUploadSignature, called after invite-token validation
-// instead) — "do not build a second upload path" means one signing
-// mechanism serving both auth stories, not that both stories collapse
-// into one code path; guests were never going to pass through
-// requireEventAdmin.
-export const signMemoryItemUpload = (tenantId: string, eventId: string, mediaType: 'IMAGE' | 'VIDEO'): UploadSignatureResponse => {
-  const { cloudName, apiKey, apiSecret } = requireCloudinaryConfig();
-  const timestamp = Math.floor(Date.now() / 1000);
-  // Scoped per EVENT, not just per tenant — unlike a cover (one per
-  // event, uploaded before the event even exists), Memory Hub items are
-  // many, always belong to an existing event, and should sit in their
-  // own per-event folder rather than pooling every tenant event's
-  // memories together in one tenant-wide bucket.
-  const folder = memoryHubFolder(tenantId, eventId);
-  const publicId = crypto.randomUUID();
-  const resourceType = mediaType === 'VIDEO' ? 'video' : 'image';
-  const allowedFormats = mediaType === 'VIDEO' ? MEMORY_ITEM_VIDEO_ALLOWED_FORMATS : MEMORY_ITEM_IMAGE_ALLOWED_FORMATS;
-  const maxFileSizeBytes = mediaType === 'VIDEO' ? MEMORY_ITEM_VIDEO_MAX_BYTES : MEMORY_ITEM_IMAGE_MAX_BYTES;
-
-  const signature = signCloudinaryParams(
-    { allowed_formats: allowedFormats, folder, public_id: publicId, timestamp },
-    apiSecret
-  );
-
-  return {
-    signature,
-    timestamp,
-    apiKey,
-    cloudName,
-    // Resource type changes the upload URL itself, exactly like it does
-    // the destroy URL in cloudinary.client.ts — video and image are
-    // different endpoints in Cloudinary's API, not a query parameter.
-    uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
-    folder,
-    publicId,
-    allowedFormats,
-    maxFileSizeBytes,
-  };
-};
+// One signing implementation for the organiser path (requestSignature
+// below) and the guest path (memory-hub.service.ts's
+// requestGuestUploadSignature, after invite-token validation instead).
+export const signMemoryItemUpload = (
+  tenantId: string,
+  eventId: string,
+  mediaType: 'IMAGE' | 'VIDEO',
+  uploadedBy: UploadedBy
+): Promise<UploadSignatureResponse> =>
+  storedFileService.signUpload({ kind: 'MEMORY_ITEM', tenantId, eventId, mediaType, uploadedBy });
 
 export const uploadService = {
   requestSignature: async (
     requestingRole: PlatformRole,
     requestingTenantId: string | null,
-    data: RequestUploadSignatureDto
+    data: RequestUploadSignatureDto,
+    userId: string
   ): Promise<UploadSignatureResponse> => {
     if (data.purpose === 'MEMORY_ITEM') {
-      return uploadService.requestOrganiserMemoryItemSignature(requestingRole, requestingTenantId, data);
+      return uploadService.requestOrganiserMemoryItemSignature(requestingRole, requestingTenantId, data, userId);
     }
     if (data.purpose !== 'EVENT_COVER') {
       throw new HttpError(400, `Unknown upload purpose '${data.purpose as string}'`);
     }
 
-    // Folder is scoped by TENANT, not by event — a cover is uploaded
-    // during event CREATION, before the event (and its id) exist, so the
-    // folder can't depend on eventId for the common case.
+    // An existing event's cover goes in that event's folder; a new event's
+    // (the wizard, before the event exists) in the tenant's cover folder,
+    // its StoredFile tied to the event when the event is created.
     let tenantId: string;
     if (requestingRole === 'SUPER_ADMIN') {
       // A Super Admin has no tenantId of their own (same situation as
@@ -116,35 +72,12 @@ export const uploadService = {
       }
     }
 
-    const { cloudName, apiKey, apiSecret } = requireCloudinaryConfig();
-    const timestamp = Math.floor(Date.now() / 1000);
-    const folder = coverFolder(tenantId);
-    // Generated server-side, not client-chosen — signed alongside folder
-    // so the client has no way to influence the destination path via a
-    // crafted public_id (e.g. one containing '../') without invalidating
-    // the signature.
-    const publicId = crypto.randomUUID();
-
-    const signature = signCloudinaryParams(
-      { allowed_formats: EVENT_COVER_ALLOWED_FORMATS, folder, public_id: publicId, timestamp },
-      apiSecret
-    );
-
-    return {
-      signature,
-      timestamp,
-      apiKey,
-      cloudName,
-      uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-      folder,
-      publicId,
-      allowedFormats: EVENT_COVER_ALLOWED_FORMATS,
-      // Advisory only — lets the frontend reject an oversized file before
-      // even attempting the upload. Not cryptographically enforced by
-      // Cloudinary (see module doc comment); the real enforcement is
-      // server-side at save time.
-      maxFileSizeBytes: EVENT_COVER_MAX_BYTES,
-    };
+    return storedFileService.signUpload({
+      kind: 'COVER',
+      tenantId,
+      eventId: data.eventId ?? null,
+      uploadedBy: { userId },
+    });
   },
 
   // ORGANISER path — authenticated (Firebase + session), EVENT_ADMIN+,
@@ -155,7 +88,8 @@ export const uploadService = {
   requestOrganiserMemoryItemSignature: async (
     requestingRole: PlatformRole,
     requestingTenantId: string | null,
-    data: RequestUploadSignatureDto
+    data: RequestUploadSignatureDto,
+    userId: string
   ): Promise<UploadSignatureResponse> => {
     if (!data.eventId) {
       throw new HttpError(400, 'eventId is required for a Memory Hub upload');
@@ -187,6 +121,6 @@ export const uploadService = {
     await assertMemoryHubAccessible(event);
     await assertMemoryHubQuotaAvailable(event);
 
-    return signMemoryItemUpload(tenantId, data.eventId, data.mediaType);
+    return signMemoryItemUpload(tenantId, data.eventId, data.mediaType, { userId });
   },
 };

@@ -10,7 +10,7 @@ import { assertSmsSendable } from '../../src/modules/subscription-tier-config/sm
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable } from '../../src/modules/memory-hub/memory-hub-tier-enforcement.util.js';
 import { memoryHubService } from '../../src/modules/memory-hub/memory-hub.service.js';
 import { memoryHubRepository } from '../../src/modules/memory-hub/memory-hub.repository.js';
-import { memoryHubFolder } from '../../src/modules/upload/upload-folders.js';
+import { signedUpload } from '../helpers/storage.js';
 import {
   assertVendorSpaceCreatable,
   assertVendorMarketplaceAccessible,
@@ -207,16 +207,16 @@ describe('payments off — every tier refusal is worded without plans, upgrades 
     // The persist-time check, with a real signed upload in this event's folder.
     await setConfig('SPARK', { memoryHubEnabled: true, maxMemoryHubBytesPerEvent: 1000 });
     const hub = await memoryHubRepository.findByEventId(realEventId);
-    const publicId = `${memoryHubFolder(tenantId, realEventId)}/${randomUUID()}`;
-    const mediaUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/v1/${publicId}.jpg`;
-    await expectLaunchWording(403, () =>
-      memoryHubService.createOrganiserItem(realEventId, hub!.id, userId, 'SUPER_ADMIN', null, {
+    // A fresh upload each call: an over-quota upload is requested for
+    // deletion, so it can't be offered twice.
+    await expectLaunchWording(403, async () => {
+      const { publicId, url: mediaUrl } = await signedUpload({ kind: 'MEMORY_ITEM', tenantId, eventId: realEventId, mediaType: 'IMAGE', uploadedBy: { userId }, bytes: 5000 });
+      return memoryHubService.createOrganiserItem(realEventId, hub!.id, userId, 'SUPER_ADMIN', null, {
         mediaUrl,
         cloudinaryPublicId: publicId,
         mediaType: 'IMAGE',
-        bytes: 5000,
-      })
-    );
+      });
+    });
   }, 60000);
 
   it('vendors: the marketplace (as a vendor, a searcher and for an event) and the vendor space limit', async () => {

@@ -66,7 +66,7 @@ afterEach(() => {
 });
 
 const organiserSignature = (mediaType: 'IMAGE' | 'VIDEO') =>
-  uploadService.requestSignature('TENANT_ADMIN', tenantId, { purpose: 'MEMORY_ITEM', eventId, mediaType });
+  uploadService.requestSignature('TENANT_ADMIN', tenantId, { purpose: 'MEMORY_ITEM', eventId, mediaType }, userId);
 
 describe('memoryHubVideo off', () => {
   it('a guest’s video upload signature is 422 with a code and no plan wording', async () => {

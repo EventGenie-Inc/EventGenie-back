@@ -1,4 +1,6 @@
 import { Prisma } from '@prisma/client';
+
+type Db = Prisma.TransactionClient | typeof prisma;
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type PutInvitationDesignDto } from './invitation-design.types.js';
 
@@ -38,15 +40,23 @@ export const invitationDesignRepository = {
   findActiveByEventId: (eventId: string) =>
     prisma.invitationDesign.findFirst({ where: { eventId, isArchived: false } }),
 
-  update: (id: string, userId: string, data: PutInvitationDesignDto) =>
-    prisma.invitationDesign.update({
+  // storedFileId: the UPLOAD's StoredFile, null for a TEMPLATE.
+  update: (id: string, userId: string, data: PutInvitationDesignDto, storedFileId: string | null, db: Db = prisma) =>
+    db.invitationDesign.update({
       where: { id },
-      data: { ...columnsFor(data), updatedBy: userId },
+      data: { ...columnsFor(data), storedFileId, updatedBy: userId },
     }),
 
-  create: (eventId: string, userId: string, data: PutInvitationDesignDto) =>
-    prisma.invitationDesign.create({
-      data: { eventId, ...columnsFor(data), isArchived: false, createdBy: userId, updatedBy: userId },
+  create: (eventId: string, userId: string, data: PutInvitationDesignDto, storedFileId: string | null, db: Db = prisma) =>
+    db.invitationDesign.create({
+      data: { eventId, ...columnsFor(data), storedFileId, isArchived: false, createdBy: userId, updatedBy: userId },
+    }),
+
+  // Deleting an event takes its uploaded design with it (event.service.ts).
+  archiveActiveUploadForEvent: (eventId: string, userId: string, db: Db = prisma) =>
+    db.invitationDesign.updateMany({
+      where: { eventId, isArchived: false, kind: 'UPLOAD' },
+      data: { isArchived: true, updatedBy: userId },
     }),
 };
 
