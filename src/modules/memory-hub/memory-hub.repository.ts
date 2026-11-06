@@ -223,6 +223,7 @@ export const memoryHubRepository = {
       cloudinaryPublicId: string;
       mediaType: 'IMAGE' | 'VIDEO';
       bytes: number;
+      storedFileId?: string;
       caption?: string;
       status: MemoryItemStatus;
       uploadedByUserId?: string;
@@ -237,6 +238,7 @@ export const memoryHubRepository = {
         cloudinaryPublicId: data.cloudinaryPublicId,
         mediaType: data.mediaType,
         bytes: data.bytes,
+        storedFileId: data.storedFileId ?? null,
         caption: data.caption ?? null,
         status: data.status,
         uploadedByUserId: data.uploadedByUserId ?? null,

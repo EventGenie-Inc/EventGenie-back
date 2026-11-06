@@ -15,12 +15,15 @@ Conventions every contributor and AI coding agent must follow.
 > | | Windows | Mac |
 > |---|---|---|
 > | Backend | `C:\Users\Levy\Desktop\EventGenie-back` | `~/EventGenie-back` |
-> | Frontend | `C:\Users\Levy\Desktop\eventgenie-front` | `~/eventgenie-front-1` |
+> | Frontend | `C:\Users\Levy\Desktop\evelope-front` | `~/eventgenie-front-1` |
 >
 > The frontend has this file's copy at its root (`STEERING.md`) and the
-> Angular app in its `eventgenie-front` subfolder. On the Mac,
-> `~/EventGenie-front` is a legacy prototype, not the frontend. Ignore any
-> older path in notes or memory, such as a OneDrive or `C:\dev\…` one.
+> Angular app in its `eventgenie-front` subfolder. **On Windows the
+> frontend is `C:\Users\Levy\Desktop\evelope-front`, and only that.** The
+> older clone at `C:\Users\Levy\Desktop\eventgenie-front` is to be deleted:
+> never read it, copy to it or work in it. On the Mac, `~/EventGenie-front`
+> is a legacy prototype, not the frontend. Ignore any older path in notes
+> or memory, such as a OneDrive or `C:\dev\…` one.
 
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
@@ -438,24 +441,29 @@ frontend submits once per tap, never on its own.
 
 ### Client-supplied Cloudinary assets
 
-**A client-supplied Cloudinary publicId is checked with
-`isSignedPublicIdInFolder` before it is stored or deleted.** Every upload
-is signed into a folder that names its owner, with a server-chosen
-`<uuid>` public_id (`src/modules/upload/upload-folders.ts` builds every
-folder, for signing and checking alike). The browser then reports the
-publicId back, and it is just a string: this server holds the API secret,
-so an unchecked publicId handed to `destroyAsset` deletes whatever asset
-it names, other events' and other tenants' included. PublicIds are
-readable in any Cloudinary URL, which every guest sees. Check against the
-folder for the exact owner (this event, this tenant) and 422 otherwise,
-**before** any path that could destroy it. The URL stored beside it gets
-the same treatment: `isCloudinaryDeliveryUrlFor` ties it to exactly the
-checked publicId, so a vetted id can't sit next to a URL pointing
-anywhere else. Found missing on Memory Hub guest and organiser uploads,
-event covers (create, update, wizard materialize) and Memory Hub
-`mediaUrl`; invitation designs and feedback logos were built with both
-checks. An id
-already stored on a record is not re-checked when re-sent unchanged.
+**A client-supplied Cloudinary publicId is accepted only through its
+StoredFile** (`storedFileService.acceptUpload`, see "Storage"): a row this
+server wrote when it signed the upload, of the right kind and resource type,
+for this exact tenant and event (a cover: for this event, or for none yet),
+still unsaved (SIGNED or UPLOADED; a cover held by this very wizard draft
+too). Anything else (another owner's upload, one signed for another event,
+one never uploaded) is **422 `UPLOAD_NOT_FOUND`** on every route (covers,
+Memory Hub for organisers and guests, designs, logos), with the route's own
+words (`uploadNotFound`), and **nothing is requested for deletion**: another
+owner's file is never this request's to delete. A route's own invalid code
+(a logo's `FEEDBACK_LOGO_INVALID`) is only for something else wrong with
+it, such as a link that isn't its own. PublicIds are readable in
+any Cloudinary URL, which every guest sees, and this server holds the API
+secret, so a folder match alone proves nothing. The URL stored beside it is
+still tied to exactly that publicId by `isCloudinaryDeliveryUrlFor`,
+checked first, so a mismatched pair is refused before anything else: Memory
+Hub items, designs, logos and covers (an event's `coverImageUrl`, checked
+whenever it or the cover's public id changes, on create, update, the full
+update and the wizard's materialize; 422). An id
+already stored on a record is not re-checked when re-sent unchanged. An id
+already stored is checked against its owner's folders before it is ever
+sent to Cloudinary (`isSignedPublicIdInAnyFolder`, this environment's
+folder or the legacy one) by the purge, the download and documents.
 
 ### Private storage: guests' documents
 
@@ -466,8 +474,9 @@ sends it to this server, which checks it (see "Document fields") and
 stores it itself (`uploadPrivateRawAsset`,
 `shared/cloudinary/cloudinary-private-asset.util.ts`) as a `raw` asset of
 delivery type **`private`**, in the event's own documents folder
-(`guestDocumentFolder`: `eventgenie/<tenantId>/documents/<eventId>`, beside
-the event's Memory Hub and invitation-design folders). No delivery URL
+(`guestDocumentFolder`: `<env>/t/<tenantId>/e/<eventId>/document`; before
+2026-11, `eventgenie/<tenantId>/documents/<eventId>`), its StoredFile
+written before the file is sent (see "Storage"). No delivery URL
 serves a private original, and none is ever stored or returned. The only
 way to read one is a **signed Cloudinary `download` link that expires
 after 5 minutes** (`buildPrivateDownloadUrl`), minted per view for an
@@ -475,9 +484,133 @@ organiser who can open the event, never stored, never emailed, never in
 the export. Deleting one names its type: `destroyAssets(ids, 'raw',
 'private')`. The public id is `<folder>/<uuid>/<safe name>.<ext>` (the safe
 name is what the download is called), checked with
-`isGuestDocumentPublicIdInFolder` before any delete or link. A new kind of
+`isGuestDocumentPublicIdInAnyFolder` (this environment's folder or the
+legacy one) before any delete or link. A new kind of
 sensitive upload follows the same path; it never gets a public URL "for
 now".
+
+### Storage
+
+Storage is a selling point, so **every file this app puts in Cloudinary
+has a record, and is deleted only through it** (`src/modules/storage/`).
+
+- **One record per file: `StoredFile`.** `publicId` (unique),
+  `resourceType` (IMAGE, VIDEO, RAW), `deliveryType` (UPLOAD, PRIVATE),
+  `kind` (COVER, MEMORY_ITEM, INVITATION_DESIGN, FEEDBACK_LOGO,
+  GUEST_DOCUMENT), `tenantId`, `eventId`, `draftId` (a wizard draft
+  holding a cover), the uploader (`uploadedByUserId` or
+  `uploadedByInviteId`), `bytes` and `format` (Cloudinary's, never the
+  browser's), `status`, timestamps, `deleteAttempts`,
+  `nextDeleteAttemptAt`, `lastDeleteError`, `legacy`. Status only moves
+  forward: **SIGNED → UPLOADED → ATTACHED → DELETE_REQUESTED → DELETED**.
+  The row is written **when the upload is signed**
+  (`storedFileService.signUpload`; a guest document: before it is sent),
+  so a file whose save never happens still has one. Owners point at it:
+  `Event.coverFileId`, `MemoryItem.storedFileId`,
+  `InvitationDesign.storedFileId`, `EventFeedback.logoFileId`,
+  `GuestDocument.storedFileId`. Attaching is a conditional write, so one
+  upload can't be saved twice (409 `UPLOAD_ALREADY_USED`, "This upload has
+  already been saved.": the other save happened). A new kind of
+  upload gets a kind here, signs through `signUpload` and saves through
+  `acceptUpload`; it never signs its own.
+- **Paths are fixed by the owner alone** (`upload-folders.ts`):
+  `<env>/t/<tenantId>/e/<eventId>/<kind>/<uuid>` for an event's files
+  (`cover`, `memory`, `design`, `document`) and
+  `<env>/t/<tenantId>/<kind>/<uuid>` for a tenant's (`feedback-logo`, and
+  `cover` for a cover uploaded before its event exists: the wizard, a new
+  event; its row is tied to the event when the event is created). Nothing
+  depends on any other file existing. `<env>` is **`STORAGE_ENV`**: `dev`,
+  `staging` or `prod`, required, checked at startup (`server.ts` refuses
+  to start without it) and again whenever anything is signed. Dev and
+  staging share one Cloudinary account; prod has its own. Files stored
+  before 2026-11 keep their legacy paths (`eventgenie/<tenantId>/...`) and
+  are never moved or renamed.
+- **Sizes are Cloudinary's, never the browser's.** The `bytes` a browser
+  sends with a cover, design, logo or Memory Hub item is accepted and
+  ignored. The size checked (and stored on a Memory Hub item, and counted
+  in the quota) comes from Cloudinary's signed upload notification when it
+  has arrived (`POST /api/storage/cloudinary/notifications`, verified by
+  `X-Cld-Signature` over the raw body, timestamp within 2 hours), else from
+  one `explicit` call at save (the Upload API: signed, not rate-limited,
+  unlike the Admin API's per-asset lookup). Over its kind's limit, or over
+  the quota: refused and requested for deletion. Cloudinary unreachable:
+  503 `UPLOAD_NOT_READY`, the file left for a retry. A signature never
+  used: 422 `UPLOAD_NOT_FOUND`, its row closed. The notification is signed
+  into every upload only when `STORAGE_NOTIFICATION_URL` is set, because
+  the browser must then post that field too: the signature response's
+  `params` holds every field to post, and the frontend must send exactly
+  those before the variable is set. Its value is the webhook route on the
+  environment's own API domain:
+  `https://dev.api.e-velope.co.za/api/storage/cloudinary/notifications`
+  (dev), `https://e-velope-staging.onrender.com/api/storage/cloudinary/notifications`
+  (staging), `https://prod.api.e-velope.co.za/api/storage/cloudinary/notifications`
+  (prod).
+- **Deleting is only ever a request**, recorded in the same transaction as
+  the change that made the file unwanted (`storedFileService.requestDeletion`).
+  **The storage worker does the deleting** (`storage-deletion.worker.ts`,
+  every minute, started by `server.ts` only): files marked
+  DELETE_REQUESTED, a batch of 100 at a time grouped by resource and
+  delivery type, each by its exact public id through the Upload API's
+  `destroy` with `invalidate` (the CDN copy goes too). Never by folder.
+  "Not found" is done. A failure is retried with backoff (1, 2, 4 ...
+  minutes, at most 6 hours apart) and never given up; Sentry hears on the
+  3rd failure in a row and every 10th after (ids only, never a public id,
+  which can carry a document's file name). Each batch is a lease taken
+  with `SKIP LOCKED`, so servers never take the same file. Two pipelines
+  delete their own files and close the rows: guest documents
+  (`guest-document.service.ts`) and an archived event's Memory Hub media
+  (`media-retention.service.ts`); the worker never claims a document's
+  file.
+- **Only the current file is kept.** Replacing or clearing a cover (the
+  event form, the full update), a design (or switching it to a template)
+  or a feedback logo requests the old file's deletion with the save. A
+  wizard draft holds the cover its payload names (ATTACHED, `draftId`);
+  a cover it stops naming is requested, discarding the draft (or its
+  expiry) releases its
+  cover, and materialising hands the cover to the event. The browser
+  releases an upload it won't save (another cover picked, an upload
+  cancelled) with `POST /api/storage/files/release` `{ publicId }`
+  (organiser) or `POST /api/storage/files/guest-release`
+  `{ token, publicId }` (guest): only the uploader's own SIGNED or UPLOADED
+  file, deleted at once; anything else is 404 `UPLOAD_NOT_FOUND`.
+- **Wizard drafts expire.** A draft untouched for 30 days
+  (`DRAFT_EXPIRY_DAYS`, `event-draft.service.ts`; every autosave touches
+  it) is deleted by the storage sweep, and the cover it holds is requested
+  for deletion in the same transaction. A draft saved again in the meantime
+  is kept (the delete is conditional on it still being untouched). Every
+  draft read or saved (`GET`/`PUT /api/event-drafts/current`) carries
+  `expiresAt`; the wizard shows it and keeps no copy of the 30 days.
+- **Uploads never saved are swept**: SIGNED or UPLOADED files still
+  unattached 24 hours after signing are requested for deletion by the
+  storage sweep. A guest document with its `GuestDocument` row is the
+  documents sweep's; one whose row was never written (its upload failed or
+  timed out, or the row's write did) is this one's.
+- **Deleting an event** requests its cover and its invitation designs (and
+  clears the event's cover fields and archives an uploaded design), and
+  every upload signed for it and never saved, in the archive's own
+  transaction. Its guests' documents go at once (their pipeline). Its
+  saved Memory Hub photos and videos wait 30 days, so they can still be
+  downloaded (see "Archived events: Memory Hub retention"). A feedback
+  logo is the company's and stays. Restoring the event never brings a
+  deleted file back. An upload signed before the event was deleted and
+  saved after is requested for deletion, organiser or guest.
+- **Existing files** got legacy rows from the migration
+  (`20261105090000_stored_files`) for every file a record referenced, so
+  they are deleted properly from now on. Nothing was deleted by it. Files no
+  record references are left alone.
+- **The weekly reconciliation** (`storage-reconciliation.service.ts`,
+  claimed once per ISO week) lists this environment's prefix in Cloudinary
+  (Admin API, read-only) against `StoredFile`: orphans (no row, or a row
+  that says DELETED), rows whose file is missing, and size differences
+  (legacy rows checked against the legacy prefix, never called orphans,
+  since dev and staging share it). A report only: **it never deletes**.
+  Super admins read it: `GET /api/admin/storage/reconciliations` (latest
+  20, totals), `GET /api/admin/storage/reconciliations/:id` (with details,
+  each list capped at 200, a document's file name never shown), `POST` to
+  run one now; the global 404 for everyone else.
+- **Behind `storageDeletion`** (on unless switched off): off, the worker
+  deletes nothing; requests keep being recorded and are deleted once it is
+  back on.
 
 ### Email
 
@@ -647,7 +780,8 @@ Seven documented exceptions:
   here.
 - `CheckIn` — a fact record: this person arrived on this event day, or they
   did not. Undoing a wrong tap is a delete of the row.
-- `EventDraft` — transient wizard state, deleted on materialisation.
+- `EventDraft` — transient wizard state, deleted on materialisation, on
+  discard, and after 30 days untouched (see "Storage").
 - `PaymentLedgerEntry` (Payments Foundation) — an append-only money ledger,
   never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
   deliberately no update/delete method anywhere in
@@ -675,18 +809,19 @@ has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
 `isArchived` on, and none should be added.
 
-**Files are the one thing deleted, and only two kinds.** An archived event's
-Memory Hub photos and videos are deleted from Cloudinary 30 days after it
-was archived (see "Archived events: Memory Hub retention"). Their
-`MemoryItem` rows stay, marked `purgedAt` and archived; the purge itself is
-recorded (`EventMediaPurge`, kept, written only while it runs). And guests'
-uploaded documents (see "Document fields"), deleted when replaced, when
-never attached within 24 hours, when their guest is removed, when their
-event is deleted, and by that same purge. Their `GuestDocument` rows stay,
-marked `deleteRequestedAt` then `deletedAt`; they have no `isArchived`.
-Restoring the guest or the event never brings a document back. No other
-file is deleted: covers, invitation designs and feedback logos stay, and a
-live event's media is never purged.
+**Files are the one thing deleted**, always through their `StoredFile`
+(see "Storage"), which is never deleted itself: it has no `isArchived`
+and is the file's history, marked DELETED once the file is gone. A file is
+deleted when it is replaced or released, never saved within 24 hours, or
+its event is deleted (its cover and designs at once, its guests' documents
+at once, its Memory Hub media 30 days later, see "Archived events: Memory
+Hub retention"), and a guest's documents when the guest is removed. The
+`MemoryItem` and `GuestDocument` rows stay (marked `purgedAt`, or
+`deleteRequestedAt` then `deletedAt`); the purge itself is recorded
+(`EventMediaPurge`). Restoring a guest or an event never brings a file
+back. A feedback logo stays while it is the current one, and a live
+event's saved media is never purged. `StorageReconciliation` is a report,
+written once per run.
 
 **Every archive needs a working restore.** And restore's own lookup must
 **not** filter archived records out:
@@ -1262,7 +1397,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
-  `feedback`, `archiveMediaPurge`, `documentFields`.
+  `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1372,6 +1507,11 @@ codebase: a feature is switched off by configuration, **never deleted**.
     is never switched off: guest removal, event deletion, the purge and
     the sweep still delete files. Events with no DOCUMENT question are
     exactly as before.
+  - `storageDeletion` off (see "Storage"): the storage worker deletes
+    nothing, and an organiser's or guest's release is recorded but not
+    deleted. Every deletion request is still written, to be carried out
+    once it is back on. The documents pipeline and the archived-media purge
+    have their own switches and are unaffected.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -2552,8 +2692,9 @@ tenant, an event with feedback already given, or with `feedback` off.
 **30 days after an event is archived, its Memory Hub photos and videos are
 deleted from Cloudinary** (`MEDIA_RETENTION_DAYS`,
 `event/event-media-retention.util.ts`; the sweep is
-`media-retention/media-retention.service.ts`). Everything else is kept: the
-event, its cover photo, its invitation design, and every `MemoryItem` row,
+`media-retention/media-retention.service.ts`). Its cover and uploaded
+invitation design are deleted at once, when it is archived (see "Storage").
+Everything else is kept: the event and every `MemoryItem` row,
 marked `purgedAt` and archived, so every live-items query (the gallery,
 guest-view, the download, the storage quota, the feedback photos) leaves it
 out with no check of its own. Until 2026-10 archiving changed nothing in
@@ -3048,6 +3189,15 @@ below the 3:1 a non-text accent needs. No other page uses these colours.
 ---
 
 ## 6. Testing
+
+**Cloudinary is never reached by a test.** `tests/setup.ts` puts every
+request to `api.cloudinary.com` through an in-memory fake
+(`tests/helpers/fake-cloudinary.ts`, reset before each test): it holds what
+a test `put()`s, answers explicit, destroy, the batch delete, listing and a
+private upload, can be made to fail, and records every call. A test
+"uploads" through `signedUpload` (`tests/helpers/storage.ts`): a real
+signature and StoredFile, then the file in the fake at the size Cloudinary
+would report. `STORAGE_ENV` is `dev` in tests whatever `.env` says.
 
 **Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
 only** — a separate Neon database, never the shared dev/prod one. The
@@ -3633,6 +3783,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   token is never given to anyone.
 - **Twilio SMS is blocked** pending compliance approval. Everything
   except real delivery is testable.
+- **Storage, Round B** (decided to wait for review, not forgotten):
+  guest documents and the archived-media purge still delete through their
+  own batches (Admin API, recorded and retried) rather than the storage
+  worker; covers uploaded before their event exists stay in the tenant's
+  cover folder rather than a reserved event id (decided);
+  the frontend still posts its own fields rather than `params`, so the
+  upload notification stays off; a deleted event's feedback logo is kept,
+  and its saved Memory Hub media waits the 30 days (both decided);
+  the separate document storage allowance and the 7-day rejected-photo
+  deletion (audit decisions) are not built.
 - A deferred technical debt register tracks tenant-isolation and
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —

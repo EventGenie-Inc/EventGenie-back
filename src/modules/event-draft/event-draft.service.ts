@@ -23,25 +23,90 @@ import {
 import { assertValidHostName, assertHostNamePresent } from '../event/event-host-name.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
-import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from '../event/event-cover-image.util.js';
-import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { acceptCover } from '../event/event-cover-image.util.js';
+import { storedFileService } from '../storage/stored-file.service.js';
+import { storedFileRepository } from '../storage/stored-file.repository.js';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from '../event/public-events-availability.util.js';
 import { assertValidOpensAt } from '../memory-hub/memory-hub-validation.util.js';
 
+// ─────────────────────────────────────────
+//  DRAFT EXPIRY — a draft untouched for DRAFT_EXPIRY_DAYS is deleted, and
+//  the cover it holds is requested for deletion with it (the storage sweep,
+//  storage-deletion.worker.ts). Touched means saved: every autosave moves
+//  updatedAt. Each draft read or saved carries its expiresAt, so the wizard
+//  can say when; it keeps no copy of the 30 days.
+// ─────────────────────────────────────────
+export const DRAFT_EXPIRY_DAYS = 30;
+const DRAFT_EXPIRY_MS = DRAFT_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+const EXPIRE_BATCH = 100;
+
+const withExpiry = <T extends { updatedAt: Date }>(draft: T): T & { expiresAt: Date } => ({
+  ...draft,
+  expiresAt: new Date(draft.updatedAt.getTime() + DRAFT_EXPIRY_MS),
+});
+
 export const eventDraftService = {
 
-  getCurrentDraft: (tenantId: string, userId: string) =>
-    eventDraftRepository.findByTenantAndUser(tenantId, userId),
+  getCurrentDraft: async (tenantId: string, userId: string) => {
+    const draft = await eventDraftRepository.findByTenantAndUser(tenantId, userId);
+    return draft ? withExpiry(draft) : null;
+  },
 
+  // One pass of draft expiry: every draft untouched for 30 days, deleted
+  // with its cover requested for deletion, one transaction each. Returns
+  // how many were deleted.
+  expireStale: async (now: Date = new Date()): Promise<number> => {
+    const cutoff = new Date(now.getTime() - DRAFT_EXPIRY_MS);
+    let expired = 0;
+    for (const { id } of await eventDraftRepository.findStale(cutoff, EXPIRE_BATCH)) {
+      const deleted = await prisma.$transaction(async (tx) => {
+        if (!(await eventDraftRepository.deleteIfStale(id, cutoff, tx))) return false;
+        await storedFileService.requestDeletion(tx, { draftId: id }, now);
+        return true;
+      });
+      if (deleted) expired++;
+    }
+    return expired;
+  },
+
+  // Autosave. The payload stays the frontend's own JSON, but the cover it
+  // names is HELD by the draft (its StoredFile ATTACHED, draftId set), so
+  // the unsaved-uploads sweep never takes a cover the wizard still shows.
+  // A cover the draft no longer names (replaced, or removed) is requested
+  // for deletion with the save: only the current one is kept. A cover id
+  // that isn't this user's own unsaved cover upload (an older draft's
+  // legacy id, say) is left as it is; materialising checks it properly.
   saveDraft: (tenantId: string, userId: string, data: UpsertEventDraftDto) =>
-    eventDraftRepository.upsert(tenantId, userId, data),
+    prisma.$transaction(async (tx) => {
+      const draft = await eventDraftRepository.upsert(tenantId, userId, data, tx);
+      const payload = (data.payload ?? {}) as Record<string, unknown>;
+      const coverPublicId = typeof payload.coverImagePublicId === 'string' ? payload.coverImagePublicId : null;
 
+      let heldFileId: string | null = null;
+      if (coverPublicId) {
+        const file = await storedFileRepository.findByPublicId(coverPublicId, tx);
+        const holdable = !!file && file.kind === 'COVER' && file.tenantId === tenantId && file.eventId === null;
+        if (holdable && file.status === 'ATTACHED' && file.draftId === draft.id) {
+          heldFileId = file.id;
+        } else if (holdable && (file.status === 'SIGNED' || file.status === 'UPLOADED') && file.uploadedByUserId === userId) {
+          await storedFileService.attach(tx, file.id, { eventId: null, draftId: draft.id });
+          heldFileId = file.id;
+        }
+      }
+      await storedFileService.requestDeletion(tx, { draftId: draft.id, ...(heldFileId ? { id: { not: heldFileId } } : {}) });
+      return withExpiry(draft);
+    }),
+
+  // Discarding releases the draft's cover with it.
   discardDraft: async (tenantId: string, userId: string) => {
     const draft = await eventDraftRepository.findByTenantAndUser(tenantId, userId);
     if (!draft) throw new HttpError(404, 'No draft found to discard');
-    return eventDraftRepository.delete(draft.id);
+    return prisma.$transaction(async (tx) => {
+      await storedFileService.requestDeletion(tx, { draftId: draft.id });
+      return eventDraftRepository.delete(draft.id, tx);
+    });
   },
 
   materialize: async (tenantId: string, userId: string) => {
@@ -90,23 +155,12 @@ export const eventDraftService = {
     const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseDeadline(p.rsvpDeadline as string) : undefined;
     assertValidRsvpDeadline(rsvpDeadline ?? null, days, { rejectPast: true });
 
-    // Same size-limit + cleanup-of-the-already-uploaded-file treatment as
-    // the direct POST path (event.service.ts) — see event-cover-image.util.ts
-    // for why this can only be checked here, after Cloudinary has already
-    // reported the file's size back to the frontend.
+    // The cover, as the direct POST path (event.service.ts): accepted
+    // through its StoredFile (this tenant's, signed for no event, unsaved
+    // or held by this draft) and measured by Cloudinary; too large, refused
+    // and requested for deletion. coverImageBytes in the payload is ignored.
     const coverImagePublicId = typeof p.coverImagePublicId === 'string' ? p.coverImagePublicId : undefined;
-    const coverImageBytes = typeof p.coverImageBytes === 'number' ? p.coverImageBytes : undefined;
-    // Ownership first: the size rejection below destroys the asset, and the
-    // id is stored on the new event (see assertCoverPublicIdOwned).
-    assertCoverPublicIdOwned(tenantId, coverImagePublicId);
-    if (isCoverImageTooLarge(coverImageBytes)) {
-      if (coverImagePublicId) {
-        void destroyAsset(coverImagePublicId).then((result) => {
-          if (!result.ok) console.error('[cloudinary cleanup] failed to delete oversized upload:', result.reason);
-        });
-      }
-      throw new HttpError(400, coverImageTooLargeMessage(coverImageBytes));
-    }
+    const coverFileId = coverImagePublicId ? await acceptCover(tenantId, null, coverImagePublicId, p.coverImageUrl, draft.id) : null;
 
     const tickets = (Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : []).map((ticket) => {
       const name = requireTicketName(ticket.name);
@@ -185,6 +239,7 @@ export const eventDraftService = {
           description: (p.description as string) ?? null,
           coverImageUrl: (p.coverImageUrl as string) ?? null,
           coverImagePublicId: coverImagePublicId ?? null,
+          coverFileId,
           status: 'DRAFT',
           visibility: (p.visibility as EventVisibility) ?? 'PRIVATE',
           ticketing: (p.ticketing as EventTicketing) ?? 'FREE',
@@ -308,6 +363,11 @@ export const eventDraftService = {
       if (assignCreator) {
         await eventAssignmentRepository.create(tx, tenantId, userId, event.id, userId);
       }
+
+      // The cover passes from the draft to the event; anything else the
+      // draft still held is requested for deletion with it.
+      if (coverFileId) await storedFileService.attach(tx, coverFileId, { eventId: event.id, draftId: null, fromDraftId: draft.id });
+      await storedFileService.requestDeletion(tx, { draftId: draft.id });
 
       return event;
     }, {

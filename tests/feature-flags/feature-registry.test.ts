@@ -76,6 +76,7 @@ describe('GET /api/config/features', () => {
       feedback: true,
       archiveMediaPurge: true,
       documentFields: true,
+      storageDeletion: true,
     });
   });
 

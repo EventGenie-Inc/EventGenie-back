@@ -33,11 +33,8 @@ export interface PutUploadDesignDto {
   width: number;
   height: number;
   altText?: string | null;
-  // Transient, never stored — Cloudinary's upload response reports the
-  // file's real size to the browser, which passes it through here, the
-  // same way coverImageBytes works for covers (event-cover-image.util.ts):
-  // Cloudinary's signed upload cannot carry a byte limit. Optional only
-  // when re-saving the stored upload's own publicId.
+  // What the browser says the upload weighed: accepted, never used. The
+  // size checked is Cloudinary's own (storedFileService.acceptUpload).
   bytes?: number;
 }
 

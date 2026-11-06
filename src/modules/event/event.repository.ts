@@ -203,7 +203,19 @@ export const eventRepository = {
   // assignCreator: the creator is a locked EVENT_ADMIN (eventService.create
   // decides), so they're assigned to the new event in the same transaction —
   // otherwise they'd create an event they can't open.
-  create: (tenantId: string, userId: string, data: CreateEventDto, assignCreator = false) =>
+  //
+  // coverFileId: the cover's StoredFile, already accepted
+  // (event-cover-image.util.ts). afterCreate runs inside the same
+  // transaction with the new event's id (the service attaches the cover
+  // there, so a cover another save used in the meantime refuses this one).
+  create: (
+    tenantId: string,
+    userId: string,
+    data: CreateEventDto,
+    assignCreator = false,
+    coverFileId: string | null = null,
+    afterCreate?: (tx: Tx, eventId: string) => Promise<void>
+  ) =>
     prisma.$transaction(async (tx) => {
       const event = await tx.event.create({
         data: {
@@ -214,6 +226,7 @@ export const eventRepository = {
           description: data.description ?? null,
           coverImageUrl: data.coverImageUrl ?? null,
           coverImagePublicId: data.coverImagePublicId ?? null,
+          coverFileId,
           status: 'DRAFT',
           visibility: data.visibility ?? 'PRIVATE',
           ticketing: data.ticketing ?? 'FREE',
@@ -244,6 +257,8 @@ export const eventRepository = {
         await eventAssignmentRepository.create(tx, tenantId, userId, event.id, userId);
       }
 
+      if (afterCreate) await afterCreate(tx, event.id);
+
       return withPlainCoordinates(event);
     }),
 
@@ -269,8 +284,8 @@ export const eventRepository = {
   // archivedAt starts the Memory Hub retention clock
   // (media-retention.service.ts). Only a live event is archived (the caller
   // looks it up live first), so archiving never moves an existing clock.
-  archive: (id: string, userId: string) =>
-    prisma.event
+  archive: (id: string, userId: string, db: Tx | typeof prisma = prisma) =>
+    db.event
       .update({
         where: { id },
         data: { isArchived: true, archivedAt: new Date(), updatedBy: userId },

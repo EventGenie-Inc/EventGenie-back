@@ -19,10 +19,12 @@ import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { assertEventAcceptsRsvp, assertEventNotArchived, assertRsvpDeadlineNotPassed } from '../rsvp/rsvp-guards.util.js';
 import { RSVP_ANSWER_ERROR_CODES, type RsvpAnswer } from '../rsvp/rsvp-answers.util.js';
 import { assertRegistrationOpen, resolveRegistrationState } from '../event-public/registration-rules.util.js';
-import { guestDocumentFolder, isGuestDocumentPublicIdInFolder } from '../upload/upload-folders.js';
+import { guestDocumentFolder, guestDocumentFolders, isGuestDocumentPublicIdInAnyFolder } from '../upload/upload-folders.js';
 import { GUEST_DOCUMENT_MAX_BYTES } from '../upload/upload-constants.js';
 import { uploadPrivateRawAsset } from '../../shared/cloudinary/cloudinary-private-asset.util.js';
 import { CLOUDINARY_DELETE_BATCH_LIMIT, destroyAssets } from '../../shared/cloudinary/cloudinary.client.js';
+import prisma from '../../shared/prisma/prisma.client.js';
+import { storedFileService } from '../storage/stored-file.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
@@ -125,8 +127,14 @@ const documentFieldFor = (fields: { id: string; fieldType: RsvpFieldType }[], rs
   return field;
 };
 
-// Checks the bytes, stores the file privately, records the row. A row that
-// can't be written takes its file with it.
+// Checks the bytes, stores the file privately, records the row. Its
+// StoredFile is written BEFORE the file is sent, so no file reaches
+// Cloudinary without a record. An upload Cloudinary didn't confirm (a
+// timeout can come after it stored the file) and a row that can't be
+// written both leave the file requested for deletion: the storage worker
+// deletes it ("not found" if it never arrived). If even that request
+// can't be written, the StoredFile stays SIGNED and the unsaved-uploads
+// sweep takes it after 24 hours.
 const storeUpload = async (
   event: { id: string; tenantId: string },
   rsvpFieldId: string,
@@ -139,28 +147,50 @@ const storeUpload = async (
   const contentType = DOCUMENT_CONTENT_TYPES[format];
   const publicId = `${guestDocumentFolder(event.tenantId, event.id)}/${randomUUID()}/${safeDownloadName(fileName, format)}`;
 
+  const record = await storedFileService.recordServerUpload({
+    publicId,
+    resourceType: 'RAW',
+    deliveryType: 'PRIVATE',
+    kind: 'GUEST_DOCUMENT',
+    tenantId: event.tenantId,
+    eventId: event.id,
+    uploadedByInviteId: owner.source === 'INVITE' ? owner.inviteId : null,
+  });
+  const giveUp = async (): Promise<void> => {
+    try {
+      await storedFileService.requestDeletion(prisma, { id: record.id });
+    } catch {
+      console.error(`[guest documents] couldn't request deletion of file ${record.id}; the unsaved-uploads sweep will`);
+    }
+  };
+
   const stored = await uploadPrivateRawAsset(publicId, file.buffer, contentType);
   if (!stored.ok) {
     // Cloudinary's reason can quote the public id, which carries the name:
     // only the event goes in the log.
     console.error(`[guest documents] upload for event ${event.id} failed`);
+    await giveUp();
     throw new HttpError(503, UPLOAD_FAILED_MESSAGE);
   }
 
   try {
-    return await guestDocumentRepository.create({
-      id: randomUUID(),
-      eventId: event.id,
-      rsvpFieldId,
-      inviteId: owner.source === 'INVITE' ? owner.inviteId : null,
-      source: owner.source,
-      cloudinaryPublicId: publicId,
-      fileName,
-      contentType,
-      sizeBytes: file.buffer.length,
+    return await prisma.$transaction(async (tx) => {
+      await storedFileService.recordMeasured(tx, record.id, stored.bytes, format);
+      return guestDocumentRepository.create({
+        id: randomUUID(),
+        eventId: event.id,
+        rsvpFieldId,
+        inviteId: owner.source === 'INVITE' ? owner.inviteId : null,
+        source: owner.source,
+        cloudinaryPublicId: publicId,
+        fileName,
+        contentType,
+        sizeBytes: file.buffer.length,
+        storedFileId: record.id,
+      }, tx);
     });
   } catch (err) {
-    await destroyAssets([publicId], 'raw', 'private');
+    await giveUp();
     throw err;
   }
 };
@@ -343,7 +373,7 @@ export const guestDocumentService = {
   // it could name another event's asset: its row is closed all the same.
   processPendingDeletions: async (where: Prisma.GuestDocumentWhereInput = {}, now: Date = new Date()): Promise<PendingDeletionOutcome> => {
     const pending = await guestDocumentRepository.findPendingDeletion(where);
-    const inside = pending.filter((d) => isGuestDocumentPublicIdInFolder(d.cloudinaryPublicId, guestDocumentFolder(d.event.tenantId, d.eventId)));
+    const inside = pending.filter((d) => isGuestDocumentPublicIdInAnyFolder(d.cloudinaryPublicId, guestDocumentFolders(d.event.tenantId, d.eventId)));
     const outside = pending.filter((d) => !inside.includes(d));
     if (outside.length > 0) {
       console.warn(`[guest documents] ${outside.length} document(s) outside their folder closed, not sent to Cloudinary`);

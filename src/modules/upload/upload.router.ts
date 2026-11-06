@@ -12,7 +12,7 @@ const router = Router();
 router.post('/signature', authenticate, requireEventAdmin, uploadSignatureLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const result = await uploadService.requestSignature(auth.user.role, auth.user.tenantId, req.body);
+    const result = await uploadService.requestSignature(auth.user.role, auth.user.tenantId, req.body, auth.user.id);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });

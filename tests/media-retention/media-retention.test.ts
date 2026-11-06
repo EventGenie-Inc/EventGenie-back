@@ -32,6 +32,8 @@ vi.mock('../../src/shared/cloudinary/cloudinary.client.js', async (importOrigina
 }));
 
 import app from '../../src/app.js';
+import { fakeCloudinary } from '../helpers/fake-cloudinary.js';
+import { signedUpload, storedFile } from '../helpers/storage.js';
 import { createActor, createTenant, headersFor, installFirebaseMock, prisma, type Actor } from '../helpers/team.js';
 import { clearSentEmails, sentEmails } from '../helpers/sent-emails.js';
 import {
@@ -48,7 +50,7 @@ import { INACTIVE_SHARE_LINK_MESSAGE, PHOTO_ALBUM_UNAVAILABLE_MESSAGE } from '..
 import { mediaRetentionService } from '../../src/modules/media-retention/media-retention.service.js';
 import { mediaRetentionRepository } from '../../src/modules/media-retention/media-retention.repository.js';
 import { subscriptionTierConfigRepository } from '../../src/modules/subscription-tier-config/subscription-tier-config.repository.js';
-import { coverFolder } from '../../src/modules/upload/upload-folders.js';
+import { legacyCoverFolder } from '../../src/modules/upload/upload-folders.js';
 import { mediaPurgeDueAt } from '../../src/modules/event/event-media-retention.util.js';
 import { EVENT_NO_LONGER_AVAILABLE_MESSAGE } from '../../src/modules/rsvp/rsvp.service.js';
 import { ROUTE_NOT_FOUND_BODY } from '../../src/shared/middleware/feature.middleware.js';
@@ -157,7 +159,7 @@ const remindersFor = (eventId: string) => sentEmails().filter((e) => e.text.incl
 describe('the purge: 30 days after archiving, not before', () => {
   it('archiving records archivedAt; at 29 days nothing is deleted; past 30 the media goes, the rows, event and cover stay', async () => {
     const ev = await newEvent(tenantId, organiser.id);
-    const cover = `${coverFolder(tenantId)}/${randomUUID()}`;
+    const cover = `${legacyCoverFolder(tenantId)}/${randomUUID()}`;
     await prisma.event.update({ where: { id: ev.event.id }, data: { coverImagePublicId: cover, coverImageUrl: `https://res.cloudinary.com/x/image/upload/${cover}.jpg` } });
     const photo = await addPhoto(ev);
     const pending = await addPhoto(ev, { status: 'PENDING' });
@@ -579,7 +581,10 @@ describe('an archived event is private to its guests at once', () => {
     const { ev, token } = await albumWithGuest();
     const before = await request(app).post('/api/memory-hub/guest-view').send({ token });
     expect(before.body.data.available).toBe(true);
-    expect((await request(app).post('/api/memory-hub/guest-upload-signature').send({ token, mediaType: 'IMAGE' })).status).toBe(200);
+    const signedBefore = await request(app).post('/api/memory-hub/guest-upload-signature').send({ token, mediaType: 'IMAGE' });
+    expect(signedBefore.status).toBe(200);
+    const publicId = `${signedBefore.body.data.folder}/${signedBefore.body.data.publicId}`;
+    fakeCloudinary.put(publicId, { bytes: 1024 });
 
     await archiveViaApi(ev);
 
@@ -591,16 +596,15 @@ describe('an archived event is private to its guests at once', () => {
     expect(signature.status).toBe(404);
     expect(signature.body).toEqual({ status: 'error', message: PHOTO_ALBUM_UNAVAILABLE_MESSAGE });
 
-    // An upload signed before the archive, landing after: refused, saved
-    // nowhere, and its file removed.
-    const publicId = `${ev.folder}/${randomUUID()}`;
+    // The upload signed before the archive, landing after: refused, saved
+    // nowhere, and its file requested for deletion.
     const save = await request(app)
       .post('/api/memory-hub/guest-items')
       .send({ token, mediaUrl: deliveryUrl(publicId), cloudinaryPublicId: publicId, mediaType: 'IMAGE', bytes: 1024 });
     expect(save.status).toBe(404);
     expect(save.body).toEqual({ status: 'error', message: PHOTO_ALBUM_UNAVAILABLE_MESSAGE });
     expect(await prisma.memoryItem.count({ where: { cloudinaryPublicId: publicId } })).toBe(0);
-    expect(mockDestroyAsset).toHaveBeenCalledWith(publicId, 'image');
+    expect((await storedFile(publicId)).status).toBe('DELETE_REQUESTED');
 
     // Nothing a guest sees says why.
     for (const res of [view, signature, save]) expect(JSON.stringify(res.body)).not.toMatch(/archiv|memory hub|plan/i);
@@ -614,11 +618,12 @@ describe('an archived event is private to its guests at once', () => {
     const { ev, token } = await albumWithGuest();
     const other = await newEvent(tenantId, organiser.id);
     await archiveViaApi(ev);
-    const foreign = `${other.folder}/${randomUUID()}`;
+    const { publicId: foreign } = await signedUpload({ kind: 'MEMORY_ITEM', tenantId, eventId: other.event.id, mediaType: 'IMAGE', uploadedBy: { userId: organiser.id } });
     const save = await request(app)
       .post('/api/memory-hub/guest-items')
       .send({ token, mediaUrl: deliveryUrl(foreign), cloudinaryPublicId: foreign, mediaType: 'IMAGE', bytes: 1024 });
     expect(save.status).toBe(404);
+    expect((await storedFile(foreign)).status).toBe('SIGNED');
     expect(mockDestroyAsset).not.toHaveBeenCalled();
   });
 });

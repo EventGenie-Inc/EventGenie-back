@@ -54,6 +54,8 @@ import systemHealthRouter from './modules/system-health/system-health.router.js'
 import feedbackRouter from './modules/feedback/feedback.router.js';
 import feedbackAdminRouter from './modules/feedback/feedback-admin.router.js';
 import mediaRetentionRouter from './modules/media-retention/media-retention.router.js';
+import storageRouter from './modules/storage/storage.router.js';
+import storageAdminRouter from './modules/storage/storage-admin.router.js';
 import guestDocumentRouter from './modules/guest-document/guest-document.router.js';
 
 // ─────────────────────────────────────────
@@ -285,6 +287,15 @@ app.use('/api/geocoding', geocodingRouter);
 app.use('/api/uploads', uploadRouter);
 
 // ─────────────────────────────────────────
+//  STORAGE (storage module; STEERING "Storage")
+//  /api/storage/files/release        — an organiser drops an unsaved upload
+//  /api/storage/files/guest-release  — a guest drops theirs (invite token)
+//  /api/storage/cloudinary/notifications — Cloudinary's signed upload
+//    notification (public; the signature is the authentication)
+// ─────────────────────────────────────────
+app.use('/api/storage', storageRouter);
+
+// ─────────────────────────────────────────
 //  PAYMENTS ROUTES
 //  /api/payments/subaccount         — tenant admin subaccount onboarding
 //  /api/payments/subaccount/banks   — bank list for the onboarding form
@@ -324,6 +335,13 @@ app.use('/api/admin/feedback', feedbackAdminRouter);
 //  Memory Hub media now (media-retention.service.ts)
 // ─────────────────────────────────────────
 app.use('/api/admin/events', mediaRetentionRouter);
+
+// ─────────────────────────────────────────
+//  STORAGE RECONCILIATION (super admin only; anyone else gets the global 404)
+//  /api/admin/storage/reconciliations — the weekly report of this
+//  environment's Cloudinary files against their records; never deletes
+// ─────────────────────────────────────────
+app.use('/api/admin/storage', storageAdminRouter);
 
 // ─────────────────────────────────────────
 //  404 HANDLER

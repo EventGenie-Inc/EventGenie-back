@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'crypto';
 import app from '../../src/app.js';
 import { mockVerifyIdToken } from '../setup.js';
 import { eventRepository } from '../../src/modules/event/event.repository.js';
-import { requireCloudinaryConfig } from '../../src/shared/cloudinary/cloudinary.client.js';
+import { signedUpload, storedFile } from '../helpers/storage.js';
 import {
   createTestTenant,
   deleteTestTenant,
@@ -62,17 +61,18 @@ const TEMPLATE_BODY = {
   },
 };
 
-const uploadBodyFor = (id: string, tenantId: string, overrides: Record<string, unknown> = {}) => {
-  const { cloudName } = requireCloudinaryConfig();
-  const publicId = `eventgenie/${tenantId}/invitation-designs/${id}/${randomUUID()}`;
+// A real signed upload for event `id` of `tenantId` (its StoredFile, and
+// the file in the fake Cloudinary at `bytes`, Cloudinary's own figure),
+// then the body that saves it.
+const uploadBodyFor = async (id: string, tenantId: string, overrides: Record<string, unknown> = {}, bytes = 2 * 1024 * 1024) => {
+  const up = await signedUpload({ kind: 'INVITATION_DESIGN', tenantId, eventId: id, uploadedBy: { userId: owner.id }, bytes, format: 'png' });
   return {
     kind: 'UPLOAD',
-    imageUrl: `https://res.cloudinary.com/${cloudName}/image/upload/v1700000000/${publicId}.png`,
-    cloudinaryPublicId: publicId,
+    imageUrl: up.url,
+    cloudinaryPublicId: up.publicId,
     width: 1080,
     height: 1350,
     altText: 'Our wedding invitation',
-    bytes: 2 * 1024 * 1024,
     ...overrides,
   };
 };
@@ -211,7 +211,7 @@ describe('invitation design — validation (422)', () => {
     ['another Cloudinary account', { imageUrl: 'https://res.cloudinary.com/someone-else/image/upload/v1/x.png' }],
     ['http, not https', {}], // imageUrl patched below
   ])('rejects a foreign image URL: %s', async (label, patch) => {
-    let body = uploadBodyFor(eventId, ownerTenantId, patch);
+    let body = await uploadBodyFor(eventId, ownerTenantId, patch);
     if (label === 'http, not https') body = { ...body, imageUrl: body.imageUrl.replace('https://', 'http://') };
     const res = await put(body);
     expect(res.status).toBe(422);
@@ -219,26 +219,28 @@ describe('invitation design — validation (422)', () => {
   });
 
   it("rejects an image URL that doesn't match the publicId", async () => {
-    const a = uploadBodyFor(eventId, ownerTenantId);
-    const b = uploadBodyFor(eventId, ownerTenantId);
+    const a = await uploadBodyFor(eventId, ownerTenantId);
+    const b = await uploadBodyFor(eventId, ownerTenantId);
     const res = await put({ ...a, imageUrl: b.imageUrl });
     expect(res.status).toBe(422);
   });
 
   it("rejects a publicId from another event's or another tenant's folder, even with a matching URL", async () => {
-    const otherEvent = uploadBodyFor(cancelledEventId, ownerTenantId);
+    const otherEvent = await uploadBodyFor(cancelledEventId, ownerTenantId);
     expect((await put(otherEvent)).status).toBe(422);
 
-    const otherTenant = uploadBodyFor(eventId, otherTenantId);
+    const otherTenant = await uploadBodyFor(eventId, otherTenantId);
     const res = await put(otherTenant);
     expect(res.status).toBe(422);
     expect(res.body.message).toMatch(/wasn't uploaded for this event/);
   });
 
-  it('rejects an upload over 10MB', async () => {
-    const res = await put(uploadBodyFor(eventId, ownerTenantId, { bytes: 10 * 1024 * 1024 + 1 }));
+  it('rejects an upload over 10MB by its real size, whatever the browser says, and requests its deletion', async () => {
+    const body = await uploadBodyFor(eventId, ownerTenantId, { bytes: 1000 }, 10 * 1024 * 1024 + 1);
+    const res = await put(body);
     expect(res.status).toBe(422);
     expect(res.body.message).toMatch(/too large/);
+    expect((await storedFile(body.cloudinaryPublicId)).status).toBe('DELETE_REQUESTED');
   });
 
   it('wrote nothing for any rejected request', async () => {
@@ -260,7 +262,7 @@ describe('invitation design — create, replace, switch kind', () => {
     expect(created.body.data.overrides).toEqual(TEMPLATE_BODY.overrides);
     const id = created.body.data.id as string;
 
-    const upload = uploadBodyFor(eventId, ownerTenantId);
+    const upload = await uploadBodyFor(eventId, ownerTenantId);
     const switched = await request(app).put(url(eventId)).set(h).send(upload);
     expect(switched.status).toBe(200);
     expect(switched.body.data.id).toBe(id);
@@ -287,8 +289,10 @@ describe('invitation design — create, replace, switch kind', () => {
   it('upload-signature signs into the per-event folder with a server-chosen publicId', async () => {
     const res = await request(app).post(`${url(eventId)}/upload-signature`).set(headersFor(owner)).send({ folder: 'elsewhere' });
     expect(res.status).toBe(200);
-    expect(res.body.data.folder).toBe(`eventgenie/${ownerTenantId}/invitation-designs/${eventId}`);
+    expect(res.body.data.folder).toBe(`dev/t/${ownerTenantId}/e/${eventId}/design`);
     expect(res.body.data.publicId).toMatch(/^[0-9a-f-]{36}$/);
+    const row = await storedFile(`${res.body.data.folder}/${res.body.data.publicId}`);
+    expect(row).toMatchObject({ kind: 'INVITATION_DESIGN', status: 'SIGNED', eventId, tenantId: ownerTenantId, uploadedByUserId: owner.id });
     expect(res.body.data.allowedFormats).toBe('jpg,png,webp');
     expect(res.body.data.maxFileSizeBytes).toBe(10 * 1024 * 1024);
   });
@@ -307,49 +311,47 @@ describe('invitation design — create, replace, switch kind', () => {
   });
 });
 
-describe('invitation design — re-saving the stored upload without bytes', () => {
+describe('invitation design — only the current image is kept', () => {
   const put = (body: unknown) => request(app).put(url(eventId)).set(headersFor(owner)).send(body as object);
 
-  it('same publicId as the stored UPLOAD: bytes may be omitted, so the alt text can change on its own', async () => {
-    const upload = uploadBodyFor(eventId, ownerTenantId);
+  it('re-saving the stored upload (no bytes) keeps it; a too-large replacement is refused and deleted, the stored one untouched', async () => {
+    const upload = await uploadBodyFor(eventId, ownerTenantId);
     const first = await put(upload);
     expect(first.status).toBe(200);
+    expect(await storedFile(upload.cloudinaryPublicId)).toMatchObject({ status: 'ATTACHED', bytes: 2 * 1024 * 1024 });
 
-    const { bytes: _omitted, ...withoutBytes } = upload;
-    const resaved = await put({ ...withoutBytes, altText: 'Sarah & Tom, 12 June' });
+    const resaved = await put({ ...upload, altText: 'Sarah & Tom, 12 June' });
     expect(resaved.status).toBe(200);
-    expect(resaved.body.data).toMatchObject({
-      id: first.body.data.id,
-      kind: 'UPLOAD',
-      cloudinaryPublicId: upload.cloudinaryPublicId,
-      imageUrl: upload.imageUrl,
-      altText: 'Sarah & Tom, 12 June',
-    });
+    expect(resaved.body.data).toMatchObject({ id: first.body.data.id, kind: 'UPLOAD', cloudinaryPublicId: upload.cloudinaryPublicId, altText: 'Sarah & Tom, 12 June' });
+    expect((await storedFile(upload.cloudinaryPublicId)).status).toBe('ATTACHED');
 
-    // Sent anyway, bytes is still checked.
-    const tooLarge = await put({ ...upload, bytes: 10 * 1024 * 1024 + 1 });
-    expect(tooLarge.status).toBe(422);
-  }, 30000);
-
-  it('a new publicId still requires bytes: 422, stored design unchanged', async () => {
-    const before = await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } });
-    expect(before.kind).toBe('UPLOAD');
-
-    const { bytes: _omitted, ...replacement } = uploadBodyFor(eventId, ownerTenantId);
-    const res = await put(replacement);
-    expect(res.status).toBe(422);
-    expect(res.body.message).toMatch(/file size is missing/);
-
+    // The browser says 1 byte; Cloudinary holds 11 MB.
+    const big = await uploadBodyFor(eventId, ownerTenantId, { bytes: 1 }, 11 * 1024 * 1024);
+    expect((await put(big)).status).toBe(422);
+    expect((await storedFile(big.cloudinaryPublicId)).status).toBe('DELETE_REQUESTED');
     const after = await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } });
-    expect(after.cloudinaryPublicId).toBe(before.cloudinaryPublicId);
-    expect(after.altText).toBe('Sarah & Tom, 12 June');
+    expect(after.cloudinaryPublicId).toBe(upload.cloudinaryPublicId);
+    expect((await storedFile(upload.cloudinaryPublicId)).status).toBe('ATTACHED');
   }, 30000);
 
-  it('a stored TEMPLATE has no publicId to match: an upload without bytes is a 422', async () => {
+  it('a replacement requests the old image deleted; switching to a template requests the last one deleted', async () => {
+    const before = await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } });
+    const replacement = await uploadBodyFor(eventId, ownerTenantId);
+    expect((await put(replacement)).status).toBe(200);
+    expect((await storedFile(before.cloudinaryPublicId as string)).status).toBe('DELETE_REQUESTED');
+    const replaced = await storedFile(replacement.cloudinaryPublicId);
+    expect(replaced.status).toBe('ATTACHED');
+    expect((await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } })).storedFileId).toBe(replaced.id);
+
     expect((await put(TEMPLATE_BODY)).status).toBe(200);
-    const { bytes: _omitted, ...upload } = uploadBodyFor(eventId, ownerTenantId);
-    const res = await put(upload);
+    expect((await storedFile(replacement.cloudinaryPublicId)).status).toBe('DELETE_REQUESTED');
+    expect((await prisma.invitationDesign.findFirstOrThrow({ where: { eventId, isArchived: false } })).storedFileId).toBeNull();
+  }, 30000);
+
+  it('an upload that was never made (signed, nothing in Cloudinary) is a 422', async () => {
+    const up = await signedUpload({ kind: 'INVITATION_DESIGN', tenantId: ownerTenantId, eventId, uploadedBy: { userId: owner.id }, uploaded: false, format: 'png' });
+    const res = await put({ kind: 'UPLOAD', imageUrl: up.url, cloudinaryPublicId: up.publicId, width: 10, height: 10 });
     expect(res.status).toBe(422);
-    expect(res.body.message).toMatch(/file size is missing/);
+    expect(res.body.message).toMatch(/wasn't uploaded for this event/);
   }, 30000);
 });

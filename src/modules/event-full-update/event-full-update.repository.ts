@@ -1,3 +1,4 @@
+import { type Prisma } from '@prisma/client';
 import { eventRepository } from '../event/event.repository.js';
 import { type UpdateEventDto } from '../event/event.types.js';
 import { eventDayRepository, type EventDayWrite, type EventDayPatch } from '../event-day/event-day.repository.js';
@@ -53,9 +54,18 @@ const placeholderLabel = (dayId: string): string => `⁣relabel:${dayId}`;
 
 export const eventFullUpdateRepository = {
 
-  apply: (eventId: string, userId: string, plan: FullUpdatePlan): Promise<void> =>
+  // afterEventUpdate: the service's own step inside this transaction,
+  // right after the event row is written (the cover's file changing hands,
+  // event-cover-image.util.ts's applyCoverChange).
+  apply: (
+    eventId: string,
+    userId: string,
+    plan: FullUpdatePlan,
+    afterEventUpdate?: (tx: Prisma.TransactionClient) => Promise<void>
+  ): Promise<void> =>
     eventRepository.withEventWriteLock(eventId, async (tx) => {
       if (plan.event) await eventRepository.update(eventId, userId, plan.event, tx);
+      if (afterEventUpdate) await afterEventUpdate(tx);
 
       // Days. Archived first: an archived day keeps its label, so a new day
       // can't take it (the index counts archived rows too), the same 409 as

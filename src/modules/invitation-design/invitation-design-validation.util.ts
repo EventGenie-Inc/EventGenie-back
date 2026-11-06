@@ -1,7 +1,7 @@
 import { HttpError } from '../../shared/errors/http-error.js';
 import { INVITATION_FONT_ALLOWLIST } from './invitation-design-fonts.js';
-import { INVITATION_DESIGN_MAX_BYTES } from '../upload/upload-constants.js';
-import { invitationDesignFolder, isCloudinaryDeliveryUrlFor, isSignedPublicIdInFolder } from '../upload/upload-folders.js';
+import { invitationDesignFolders, isCloudinaryDeliveryUrlFor, isSignedPublicIdInAnyFolder } from '../upload/upload-folders.js';
+import { uploadNotFound } from '../storage/stored-file.service.js';
 import {
   type InvitationElementOverride,
   type InvitationOverrides,
@@ -157,10 +157,14 @@ export const assertValidOverrides = (overrides: unknown): InvitationOverrides =>
 // must be our Cloudinary delivery URL for exactly that publicId, so the
 // two cannot disagree. See upload-folders.ts for both checks.
 const assertUploadLocation = (imageUrl: unknown, publicId: unknown, ctx: { cloudName: string; tenantId: string; eventId: string }): void => {
-  const folder = invitationDesignFolder(ctx.tenantId, ctx.eventId);
-
-  if (!isSignedPublicIdInFolder(publicId, folder)) {
-    throw invalid("This image wasn't uploaded for this event. Upload it again from this event's design page.");
+  // This environment's folder, or the legacy one for a design stored
+  // before 2026-11 and sent back unchanged. A new upload must also be one
+  // this server signed (invitation-design.service.ts, through its
+  // StoredFile).
+  if (!isSignedPublicIdInAnyFolder(publicId, invitationDesignFolders(ctx.tenantId, ctx.eventId))) {
+    // Signed for another event's or tenant's folder: not valid for this
+    // owner, so the same refusal as every upload in that case.
+    throw uploadNotFound("This image wasn't uploaded for this event. Upload it again from this event's design page.");
   }
 
   if (!isCloudinaryDeliveryUrlFor(imageUrl, {
@@ -180,7 +184,9 @@ const assertDimension = (value: unknown, name: string): number => {
 export const assertValidDesignInput = (
   body: unknown,
   // storedUploadPublicId: the event's current design's publicId when that
-  // design is an UPLOAD, else null.
+  // design is an UPLOAD, else null. No longer read here (sizes are
+  // measured by the service, which decides what is new); kept so the
+  // caller's contract doesn't change.
   ctx: { cloudName: string; tenantId: string; eventId: string; storedUploadPublicId: string | null }
 ): PutInvitationDesignDto => {
   if (!isPlainObject(body)) {
@@ -208,22 +214,9 @@ export const assertValidDesignInput = (
     const width = assertDimension(body['width'], 'width');
     const height = assertDimension(body['height'], 'height');
 
-    // bytes is only known right after an upload, and is never stored. Re-saving
-    // the stored upload (same publicId, e.g. only the alt text changed) may
-    // omit it: that image's size was checked when it was first saved. A new
-    // publicId always needs it. Sent anyway, it is checked as usual.
-    const bytes = body['bytes'];
-    const isStoredUpload = ctx.storedUploadPublicId != null && body['cloudinaryPublicId'] === ctx.storedUploadPublicId;
-    if (bytes === undefined && isStoredUpload) {
-      // nothing to check
-    } else if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
-      throw invalid("The image's file size is missing. Upload it again from this event's design page.");
-    } else if (bytes > INVITATION_DESIGN_MAX_BYTES) {
-      throw invalid(
-        `This image is too large (${(bytes / (1024 * 1024)).toFixed(1)}MB). Invitation designs must be ` +
-        `${INVITATION_DESIGN_MAX_BYTES / (1024 * 1024)}MB or smaller, so try a JPG or a smaller size.`
-      );
-    }
+    // `bytes` (what the browser says the upload weighed) is accepted for an
+    // older frontend and ignored: the size that counts is Cloudinary's own,
+    // checked when a new image is saved (invitation-design.service.ts).
 
     let altText: string | null = null;
     const rawAlt = body['altText'];
@@ -243,7 +236,6 @@ export const assertValidDesignInput = (
       width,
       height,
       altText,
-      ...(bytes !== undefined && { bytes }),
     };
   }
 

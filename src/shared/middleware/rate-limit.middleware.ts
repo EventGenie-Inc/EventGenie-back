@@ -231,6 +231,26 @@ export const uploadSignatureLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITER — RELEASING AN UNSAVED UPLOAD (POST /api/storage/files/release)
+//
+//  Its own budget, not the signature limiter's: a release grants nothing
+//  (it only deletes the caller's own unsaved upload), and counting it there
+//  would halve the covers an organiser can try. Keyed by user id. 60 in 5
+//  minutes covers any real picking and removing.
+// ─────────────────────────────────────────
+export const storageReleaseLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — MEMORY HUB PUBLIC GALLERY
 //
 //  Fully unauthenticated, and the token is meant to be shared widely

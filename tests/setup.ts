@@ -1,5 +1,6 @@
 import { vi, beforeEach } from 'vitest';
 import dotenv from 'dotenv';
+import { fakeCloudinary, installFakeCloudinary } from './helpers/fake-cloudinary.js';
 
 // ─────────────────────────────────────────
 //  NODE_ENV=test — set here, not just in the npm script, so it is true
@@ -35,6 +36,18 @@ process.env.PRISMA_TEST_ADAPTER = 'pg';
 //  vi.stubEnv('FEATURES_DISABLED', …); vi.unstubAllEnvs() comes back here.
 // ─────────────────────────────────────────
 process.env.FEATURES_DISABLED = '';
+
+// ─────────────────────────────────────────
+//  STORAGE — every new file's path starts with STORAGE_ENV, which the
+//  server refuses to start without. Tests use dev's, whatever .env says,
+//  and Cloudinary itself is the in-memory fake (tests/helpers/
+//  fake-cloudinary.ts): no test ever reaches a real account. Reset before
+//  every test. STORAGE_NOTIFICATION_URL is left unset, as on a laptop:
+//  sizes are measured with explicit at save unless a test stubs it.
+// ─────────────────────────────────────────
+process.env.STORAGE_ENV = 'dev';
+process.env.STORAGE_NOTIFICATION_URL = '';
+installFakeCloudinary();
 
 // ─────────────────────────────────────────
 //  A STALLED DATABASE QUERY FAILS, IT DOESN'T WAIT.
@@ -127,6 +140,7 @@ vi.mock('resend', () => ({
 }));
 
 beforeEach(() => {
+  fakeCloudinary.reset();
   mockVerifyIdToken.mockReset();
   mockGetUserByEmail.mockReset();
   mockGeneratePasswordResetLink.mockReset();

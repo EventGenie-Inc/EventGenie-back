@@ -1,4 +1,5 @@
 import { type PlatformRole, type MediaType } from '@prisma/client';
+import prisma from '../../shared/prisma/prisma.client.js';
 import { memoryHubRepository } from './memory-hub.repository.js';
 import {
   type CreateMemoryHubDto,
@@ -13,8 +14,9 @@ import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertValidOpensAt } from './memory-hub-validation.util.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
-import { destroyAsset, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
-import { isCloudinaryDeliveryUrlFor, isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
+import { requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
+import { isCloudinaryDeliveryUrlFor } from '../upload/upload-folders.js';
+import { storedFileService } from '../storage/stored-file.service.js';
 import { signMemoryItemUpload } from '../upload/upload.service.js';
 import {
   assertMemoryHubAccessible,
@@ -26,7 +28,6 @@ import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.
 import {
   assertMemoryItemMediaTypeAvailable,
   isMemoryHubVideoEnabled,
-  isMemoryItemTooLarge,
   memoryItemAllowedFormats,
   memoryItemTooLargeMessage,
 } from './memory-item-limits.util.js';
@@ -69,13 +70,6 @@ const assertSharingIsForAPhoto = (mediaType: MediaType): void => {
   }
 };
 
-// Checked at PERSIST time (after Cloudinary has already reported the
-// real byte count) — the pre-signature checks in
-// memory-hub-tier-enforcement.util.ts can only catch "already full
-// before this upload started"; the exact size of THIS file is
-// unknowable until now. An oversized or over-quota upload is destroyed
-// from Cloudinary immediately rather than left as an orphan nobody
-// ever references — same reasoning as event-cover-image.util.ts.
 // The formats each upload was signed for (upload-constants.ts), plus
 // "jpeg": Cloudinary files a .jpeg upload as jpg, but accepting the long
 // spelling costs nothing.
@@ -84,37 +78,31 @@ const MEMORY_ITEM_URL_EXTENSIONS: Record<MediaType, readonly string[]> = {
   VIDEO: MEMORY_ITEM_VIDEO_ALLOWED_FORMATS.split(','),
 };
 
-const assertItemAcceptableOrDestroy = async (
+// Checked at PERSIST time, against what Cloudinary actually holds: the
+// pre-signature checks (memory-hub-tier-enforcement.util.ts) can only
+// catch "already full before this upload started". In this order:
+//  1. mediaUrl is our delivery URL for exactly this public id, so a vetted
+//     id can never sit beside a URL pointing anywhere else (422, nothing
+//     deleted: a mismatched pair isn't this request's file to delete);
+//  2. the public id is an upload this server signed for THIS event's
+//     Memory Hub, of this media type, not yet saved (its StoredFile; 422
+//     otherwise, nothing deleted). Any guest can read a public id off a
+//     Cloudinary URL, so the folder alone proves nothing;
+//  3. its size is Cloudinary's own figure, never the bytes the browser
+//     sends: over the media type's limit, refused (400) and requested for
+//     deletion;
+//  4. that size within the event's storage quota: over it, refused (403)
+//     and requested for deletion.
+// Returns the file and its real size, for the item.
+const acceptMemoryUpload = async (
   event: EntitlementDerivableEvent & { id: string },
   mediaType: MediaType,
-  bytes: number,
   cloudinaryPublicId: string,
   mediaUrl: string,
   audience: 'organiser' | 'guest' = 'organiser'
-): Promise<void> => {
-  // The publicId is client-supplied, and both rejection branches below
-  // DESTROY it with our API secret; an accepted one is stored and shown.
-  // It must be one this server signed for THIS event's Memory Hub folder
-  // (upload-folders.ts), or it is a 422 and nothing is destroyed. Before
-  // this check, any guest holding an invite token could have the server
-  // delete any asset whose publicId they could read off a Cloudinary URL,
-  // other events' and other tenants' included.
-  if (!isSignedPublicIdInFolder(cloudinaryPublicId, memoryHubFolder(event.tenantId, event.id))) {
-    throw new HttpError(
-      422,
-      audience === 'guest'
-        ? "This photo or video wasn't uploaded for this event. Please try uploading it again."
-        : "This file wasn't uploaded for this event's Memory Hub. Upload it again from this event."
-    );
-  }
-
+): Promise<{ fileId: string; bytes: number }> => {
   const resourceType = mediaType === 'VIDEO' ? 'video' : 'image';
 
-  // mediaUrl is what every gallery viewer actually loads. It must be our
-  // delivery URL for exactly the publicId just checked; otherwise a vetted
-  // publicId could sit beside a URL pointing anywhere, off Cloudinary
-  // included. Also before either destroy below: a mismatched pair is a 422
-  // with nothing destroyed, like a foreign publicId.
   if (!isCloudinaryDeliveryUrlFor(mediaUrl, {
     cloudName: requireCloudinaryConfig().cloudName,
     resourceType,
@@ -129,20 +117,23 @@ const assertItemAcceptableOrDestroy = async (
     );
   }
 
-  if (isMemoryItemTooLarge(mediaType, bytes)) {
-    void destroyAsset(cloudinaryPublicId, resourceType).then((result) => {
-      if (!result.ok) console.error('[cloudinary cleanup] failed to delete oversized memory item:', result.reason);
-    });
-    throw new HttpError(400, memoryItemTooLargeMessage(mediaType, bytes));
-  }
+  const { file, bytes } = await storedFileService.acceptUpload({
+    publicId: cloudinaryPublicId,
+    kind: 'MEMORY_ITEM',
+    resourceType: mediaType === 'VIDEO' ? 'VIDEO' : 'IMAGE',
+    tenantId: event.tenantId,
+    eventId: event.id,
+    notFoundMessage: audience === 'guest'
+      ? "This photo or video wasn't uploaded for this event. Please try uploading it again."
+      : "This file wasn't uploaded for this event's Memory Hub. Upload it again from this event.",
+    tooLarge: (measured) => new HttpError(400, memoryItemTooLargeMessage(mediaType, measured)),
+  });
 
   const maxBytes = await getMemoryHubQuotaBytes(event);
   if (maxBytes != null) {
     const usedBytes = await memoryHubRepository.sumBytesForEvent(event.id);
     if (usedBytes + bytes > maxBytes) {
-      void destroyAsset(cloudinaryPublicId, resourceType).then((result) => {
-        if (!result.ok) console.error('[cloudinary cleanup] failed to delete over-quota memory item:', result.reason);
-      });
+      await storedFileService.requestDeletion(prisma, { id: file.id });
       // Guest-safe wording (Contract C) — no plan/tier name, no
       // "upgrade". Organiser wording is unchanged.
       throw new HttpError(
@@ -156,6 +147,21 @@ const assertItemAcceptableOrDestroy = async (
       );
     }
   }
+  return { fileId: file.id, bytes };
+};
+
+// An upload signed for an event that has since been deleted (archived):
+// requested for deletion if it is this event's own unsaved Memory Hub
+// upload, so it never lingers as a file nobody saves. Anything else is
+// never touched.
+const releaseUploadToArchivedEvent = async (eventId: string, cloudinaryPublicId: unknown): Promise<void> => {
+  if (typeof cloudinaryPublicId !== 'string' || !cloudinaryPublicId) return;
+  await storedFileService.requestDeletion(prisma, {
+    publicId: cloudinaryPublicId,
+    kind: 'MEMORY_ITEM',
+    eventId,
+    status: { in: ['SIGNED', 'UPLOADED'] },
+  });
 };
 
 // Guest-view projection (invite token holders) — no uploader identity
@@ -468,22 +474,32 @@ export const memoryHubService = {
     if (data.mediaType !== 'IMAGE' && data.mediaType !== 'VIDEO') {
       throw new HttpError(400, "mediaType ('IMAGE' or 'VIDEO') is required");
     }
-    if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || data.bytes <= 0) {
-      throw new HttpError(400, 'bytes is required and must be a positive number');
-    }
+    // `bytes` from the browser is accepted and ignored: the size that
+    // counts is Cloudinary's own (acceptMemoryUpload).
 
+    // An upload signed before its event was deleted, saved after: the
+    // event lookup below 404s, as for any write to an archived event, and
+    // the upload is requested for deletion first (as the guest path does).
+    const anyEvent = await eventService.getById(eventId, requestingRole, tenantId, true);
+    if (anyEvent.isArchived) {
+      await releaseUploadToArchivedEvent(anyEvent.id, data.cloudinaryPublicId);
+    }
     const { event } = await memoryHubService.hubInScope(eventId, hubId, requestingRole, tenantId);
 
-    await assertItemAcceptableOrDestroy(event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl);
+    const { fileId, bytes } = await acceptMemoryUpload(event, data.mediaType, data.cloudinaryPublicId, data.mediaUrl);
 
-    return memoryHubRepository.createItem(hubId, userId, {
-      mediaUrl: data.mediaUrl,
-      cloudinaryPublicId: data.cloudinaryPublicId,
-      mediaType: data.mediaType,
-      bytes: data.bytes,
-      ...(data.caption !== undefined && { caption: data.caption }),
-      status: 'APPROVED',
-      uploadedByUserId: userId,
+    return memoryHubRepository.withTransaction(async (tx) => {
+      await storedFileService.attach(tx, fileId, { eventId: event.id });
+      return memoryHubRepository.createItem(hubId, userId, {
+        mediaUrl: data.mediaUrl,
+        cloudinaryPublicId: data.cloudinaryPublicId,
+        mediaType: data.mediaType,
+        bytes,
+        storedFileId: fileId,
+        ...(data.caption !== undefined && { caption: data.caption }),
+        status: 'APPROVED',
+        uploadedByUserId: userId,
+      }, tx);
     });
   },
 
@@ -578,7 +594,7 @@ export const memoryHubService = {
     await assertMemoryHubAccessible(invite.event, 'guest');
     await assertMemoryHubQuotaAvailable(invite.event, 'guest');
 
-    return signMemoryItemUpload(invite.event.tenantId, invite.eventId, mediaType);
+    return signMemoryItemUpload(invite.event.tenantId, invite.eventId, mediaType, { inviteId: invite.id });
   },
 
   // ── GUEST availability + view (Contract B) — authenticated by invite
@@ -692,9 +708,8 @@ export const memoryHubService = {
     if (data.mediaType !== 'IMAGE' && data.mediaType !== 'VIDEO') {
       throw new HttpError(400, "mediaType ('IMAGE' or 'VIDEO') is required");
     }
-    if (typeof data.bytes !== 'number' || !Number.isFinite(data.bytes) || data.bytes <= 0) {
-      throw new HttpError(400, 'bytes is required and must be a positive number');
-    }
+    // `bytes` from the browser is accepted and ignored: the size that
+    // counts is Cloudinary's own (acceptMemoryUpload).
     if (data.allowPublicSharing !== undefined && typeof data.allowPublicSharing !== 'boolean') {
       throw new HttpError(400, 'allowPublicSharing must be true or false');
     }
@@ -709,15 +724,10 @@ export const memoryHubService = {
 
     if (invite.event.isArchived) {
       // An upload signed before the event was archived can still land here.
-      // Its file is in this event's folder only if we signed it; then it is
-      // removed rather than left as a file no record names (the purge
-      // deletes only recorded items). Anything else is never touched.
-      if (isSignedPublicIdInFolder(data.cloudinaryPublicId, memoryHubFolder(invite.event.tenantId, invite.eventId))) {
-        const resourceType = data.mediaType === 'VIDEO' ? 'video' : 'image';
-        void destroyAsset(data.cloudinaryPublicId, resourceType).then((result) => {
-          if (!result.ok) console.error('[cloudinary cleanup] failed to delete an upload to an archived event:', result.reason);
-        });
-      }
+      // If it is this event's own unsaved upload it is requested for
+      // deletion rather than left as a file nobody saves. Anything else is
+      // never touched.
+      await releaseUploadToArchivedEvent(invite.eventId, data.cloudinaryPublicId);
       assertEventNotArchivedForGuest(invite.event);
     }
     if (resolveEffectiveStatus(invite.event) === 'CANCELLED') {
@@ -736,14 +746,16 @@ export const memoryHubService = {
     // opt-in leaves the file for the guest to save again without it.
     if (allowPublicSharing) assertSharingIsForAPhoto(data.mediaType);
 
-    await assertItemAcceptableOrDestroy(invite.event, data.mediaType, data.bytes, data.cloudinaryPublicId, data.mediaUrl, 'guest');
+    const { fileId, bytes } = await acceptMemoryUpload(invite.event, data.mediaType, data.cloudinaryPublicId, data.mediaUrl, 'guest');
 
     const item = await memoryHubRepository.withTransaction(async (tx) => {
+      await storedFileService.attach(tx, fileId, { eventId: invite.eventId });
       const created = await memoryHubRepository.createItem(hub.id, GUEST_ACTOR, {
         mediaUrl: data.mediaUrl,
         cloudinaryPublicId: data.cloudinaryPublicId,
         mediaType: data.mediaType,
-        bytes: data.bytes,
+        bytes,
+        storedFileId: fileId,
         ...(data.caption !== undefined && { caption: data.caption }),
         status: 'PENDING',
         uploadedByGuestId: invite.guestId,

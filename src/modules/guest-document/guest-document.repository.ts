@@ -18,6 +18,7 @@ export interface CreateGuestDocumentInput {
   fileName: string;
   contentType: string;
   sizeBytes: number;
+  storedFileId: string;
 }
 
 export const guestDocumentRepository = {
@@ -49,7 +50,7 @@ export const guestDocumentRepository = {
       },
     }),
 
-  create: (data: CreateGuestDocumentInput) => prisma.guestDocument.create({ data }),
+  create: (data: CreateGuestDocumentInput, db: Db = prisma) => db.guestDocument.create({ data }),
 
   // ── Answers ───────────────────────────────
 
@@ -59,13 +60,19 @@ export const guestDocumentRepository = {
   // Attaches documents not yet attached, still live, to an invite. A
   // conditional write: the orphan sweep requests deletion only of what is
   // still unattached, so of the two exactly one wins. Returns the count.
-  attach: async (ids: string[], inviteId: string, now: Date, db: Db): Promise<number> =>
-    ids.length === 0
-      ? 0
-      : (await db.guestDocument.updateMany({
-          where: { id: { in: ids }, attachedAt: null, ...LIVE },
-          data: { attachedAt: now, inviteId },
-        })).count,
+  // Their StoredFiles are marked ATTACHED with them.
+  attach: async (ids: string[], inviteId: string, now: Date, db: Db): Promise<number> => {
+    if (ids.length === 0) return 0;
+    const { count } = await db.guestDocument.updateMany({
+      where: { id: { in: ids }, attachedAt: null, ...LIVE },
+      data: { attachedAt: now, inviteId },
+    });
+    await db.storedFile.updateMany({
+      where: { guestDocument: { is: { id: { in: ids }, attachedAt: now } }, status: { in: ['SIGNED', 'UPLOADED'] } },
+      data: { status: 'ATTACHED', attachedAt: now },
+    });
+    return count;
+  },
 
   // ── Reading ───────────────────────────────
 
@@ -102,8 +109,15 @@ export const guestDocumentRepository = {
 
   // Marks every live document matching `where` for deletion. The file is
   // deleted afterwards (the service), and the sweep retries any not done.
-  requestDeletion: async (where: Prisma.GuestDocumentWhereInput, now: Date, db: Db = prisma): Promise<number> =>
-    (await db.guestDocument.updateMany({ where: { ...where, ...LIVE }, data: { deleteRequestedAt: now } })).count,
+  // Their StoredFiles show the request too (the storage worker leaves a
+  // document's file alone: this pipeline deletes it).
+  requestDeletion: async (where: Prisma.GuestDocumentWhereInput, now: Date, db: Db = prisma): Promise<number> => {
+    await db.storedFile.updateMany({
+      where: { guestDocument: { is: { ...where, ...LIVE } }, status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] } },
+      data: { status: 'DELETE_REQUESTED', deleteRequestedAt: now, nextDeleteAttemptAt: null },
+    });
+    return (await db.guestDocument.updateMany({ where: { ...where, ...LIVE }, data: { deleteRequestedAt: now } })).count;
+  },
 
   // Requested and not yet deleted, with the tenant for the folder check.
   findPendingDeletion: (where: Prisma.GuestDocumentWhereInput = {}) =>
@@ -113,10 +127,17 @@ export const guestDocumentRepository = {
       orderBy: { deleteRequestedAt: 'asc' },
     }),
 
+  // Their StoredFiles are closed with them.
   markDeleted: (ids: string[], now: Date) =>
     ids.length === 0
       ? Promise.resolve({ count: 0 })
-      : prisma.guestDocument.updateMany({ where: { id: { in: ids }, deletedAt: null }, data: { deletedAt: now, lastDeleteError: null } }),
+      : prisma.$transaction(async (tx) => {
+          await tx.storedFile.updateMany({
+            where: { guestDocument: { is: { id: { in: ids } } }, status: { not: 'DELETED' } },
+            data: { status: 'DELETED', deletedAt: now, nextDeleteAttemptAt: null },
+          });
+          return tx.guestDocument.updateMany({ where: { id: { in: ids }, deletedAt: null }, data: { deletedAt: now, lastDeleteError: null } });
+        }),
 
   recordDeleteFailure: (ids: string[], reason: string) =>
     ids.length === 0

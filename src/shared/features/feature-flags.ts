@@ -51,6 +51,12 @@ export const FEATURE_NAMES = [
   // DOCUMENT_FIELDS_UNAVAILABLE, guests are never shown one, and the
   // organiser's view link is 404. Documents already received are kept.
   'documentFields',
+  // The storage worker (storage/storage-deletion.worker.ts): files requested
+  // for deletion (replaced, released, unsaved, a deleted event's) are
+  // deleted from Cloudinary. Off: nothing is deleted by it, and requests
+  // keep being recorded, to be deleted once it is back on. An emergency
+  // stop; the documents pipeline and the archived-media purge have their own.
+  'storageDeletion',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];
