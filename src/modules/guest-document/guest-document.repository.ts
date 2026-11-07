@@ -1,5 +1,6 @@
 import { type GuestDocumentSource, type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
+import { INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
 
 // Prisma queries only; the rules are guest-document.service.ts's.
 
@@ -27,9 +28,11 @@ export const guestDocumentRepository = {
 
   // What an upload through an invitation needs: the invite, its guest's
   // state, and its event's state and questions.
+  // Removed, awaiting approval or declined: the same as an unknown token
+  // (registration-approval-gate.util.ts).
   findInviteForUpload: (token: string) =>
     prisma.invite.findUnique({
-      where: { token },
+      where: { token, ...INVITE_TOKEN_USABLE },
       select: {
         id: true,
         isArchived: true,

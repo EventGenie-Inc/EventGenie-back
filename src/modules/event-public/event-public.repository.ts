@@ -37,6 +37,10 @@ export interface CreateRegistrantInput {
   plusOneNames: string[];
   // Answers to the event's questions, already checked (rsvp-answers.util.ts).
   answers: RsvpAnswer[];
+  // The event has auto-approve off: the registrant and their plus-ones are
+  // saved awaiting the organiser's approval (registration-approval-gate.util.ts),
+  // otherwise exactly as before, so they hold their seats.
+  pendingApproval: boolean;
 }
 
 const db = (tx?: Tx) => tx ?? prisma;
@@ -98,8 +102,8 @@ export const eventPublicRepository = {
   // on both sides (a row the lowercase_emails migration skipped still
   // matches its other casing). `email` must already be normalised.
   findGuestByEmail: async (eventId: string, email: string, tx?: Tx) => {
-    const rows = await db(tx).$queryRaw<{ id: string; selfRegisteredAt: Date | null }[]>`
-      SELECT "id", "selfRegisteredAt" FROM "Guest"
+    const rows = await db(tx).$queryRaw<{ id: string; selfRegisteredAt: Date | null; pendingApproval: boolean }[]>`
+      SELECT "id", "selfRegisteredAt", "pendingApproval" FROM "Guest"
       WHERE "eventId" = ${eventId} AND "isArchived" = false
         AND lower(regexp_replace("email", '^\\s+|\\s+$', '', 'g')) = ${email}
       ORDER BY "createdAt" ASC
@@ -130,6 +134,7 @@ export const eventPublicRepository = {
         phoneNumber: data.phoneNumber,
         plusOnesAllowed: data.plusOnesAllowed,
         selfRegisteredAt: now,
+        pendingApproval: data.pendingApproval,
         isArchived: false,
       },
     });
@@ -145,6 +150,7 @@ export const eventPublicRepository = {
           phoneNumber: null,
           hostGuestId: guestId,
           plusOnesAllowed: 0,
+          pendingApproval: data.pendingApproval,
           isArchived: false,
         })),
       });

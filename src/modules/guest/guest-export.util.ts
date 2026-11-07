@@ -26,6 +26,11 @@ export const DOCUMENT_RECEIVED_LABEL = 'Received';
 // with "; " (an option can hold a comma), blank for none chosen.
 export const MULTI_SELECT_SEPARATOR = '; ';
 
+// A registration awaiting the organiser's approval (the registrant and
+// their plus-ones): its invite reads ACCEPTED, but the organiser hasn't
+// accepted them, so the status column says so instead.
+export const PENDING_APPROVAL_STATUS_LABEL = 'Pending approval';
+
 const multiSelectCell = (answer: string): string => {
   const choices = answerValue('MULTI_SELECT', answer);
   return Array.isArray(choices) ? choices.join(MULTI_SELECT_SEPARATOR) : choices;
@@ -45,6 +50,7 @@ export interface ExportGuest {
   email: string | null;
   phoneNumber: string | null;
   hostGuestId: string | null;
+  pendingApproval: boolean;
   hostGuest: { firstName: string | null; surname: string | null } | null;
   invites: ExportInvite[];
 }
@@ -133,7 +139,7 @@ export const buildGuestExportWorkbook = async (
       // the organiser right back in the dark this export exists to fix.
       contact: [guest.email, guest.phoneNumber].filter(Boolean).join(' / '),
       invitedDays: invitedDayLabels.join(', '),
-      inviteStatus: invite?.status ?? '',
+      inviteStatus: guest.pendingApproval ? PENDING_APPROVAL_STATUS_LABEL : (invite?.status ?? ''),
       plusOneOf: guest.hostGuest ? displayName(guest.hostGuest) : '',
     };
     for (const day of eventDays) {

@@ -17,7 +17,8 @@ const assertInviteVisible = async (inviteId: string, requestingRole: PlatformRol
   await eventService.getScoped(invite.eventId, requestingRole, tenantId);
 };
 
-const withChoices = <T extends { value: string; rsvpField: { fieldType: RsvpFieldType } }>(response: T) => ({
+// Also used by registration-approval.service.ts's pending list.
+export const withChoices = <T extends { value: string; rsvpField: { fieldType: RsvpFieldType } }>(response: T) => ({
   ...response,
   value: answerValue(response.rsvpField.fieldType, response.value),
 });

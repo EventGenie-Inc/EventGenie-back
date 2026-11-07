@@ -1,5 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type Prisma } from '@prisma/client';
+import { GUEST_NOT_AWAITING_APPROVAL } from '../registration-approval/registration-approval-gate.util.js';
 
 // One shape for every read here, so a roster row always looks the same
 // whether it came from the whole list or from a single guest. Attendance is
@@ -26,11 +27,12 @@ const rosterInviteSelect = (eventDayId: string) => ({
 export type RosterInvite = Prisma.InviteGetPayload<{ select: ReturnType<typeof rosterInviteSelect> }>;
 
 // "Invited to this day" means the invite has an InviteEventDay row for it.
-// Live means neither the invite nor its guest is archived.
+// Live means neither the invite nor its guest is archived. A registration
+// awaiting approval isn't on the door list (registration-approval-gate.util.ts).
 const liveInvitedToDay = (eventId: string, eventDayId: string): Prisma.InviteWhereInput => ({
   eventId,
   isArchived: false,
-  guest: { isArchived: false },
+  guest: { isArchived: false, ...GUEST_NOT_AWAITING_APPROVAL },
   inviteEventDay: { some: { eventDayId } },
 });
 
@@ -60,7 +62,7 @@ export const checkInRepository = {
   // match", never a lookup that reaches across.
   findGuestIdByToken: (eventId: string, token: string) =>
     prisma.invite.findFirst({
-      where: { eventId, token, isArchived: false, guest: { isArchived: false } },
+      where: { eventId, token, isArchived: false, guest: { isArchived: false, ...GUEST_NOT_AWAITING_APPROVAL } },
       select: { guestId: true },
     }),
 
@@ -68,7 +70,7 @@ export const checkInRepository = {
   // that day" (422) once findGuestInvites has come back empty.
   findGuestOnEvent: (eventId: string, guestId: string) =>
     prisma.guest.findFirst({
-      where: { id: guestId, eventId, isArchived: false },
+      where: { id: guestId, eventId, isArchived: false, ...GUEST_NOT_AWAITING_APPROVAL },
       select: { firstName: true, surname: true },
     }),
 

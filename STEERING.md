@@ -930,6 +930,23 @@ This exact bug has shipped **three times** — `user.reactivate`,
 Also: if archiving hides a record from the only list an admin could use
 to restore it, the feature is broken even though every method works.
 
+**A removed guest's token opens nothing.** Archiving (removing) a guest
+ends their access: every query that resolves an invite token requires a
+live guest (`registration-approval-gate.util.ts`'s `INVITE_TOKEN_USABLE`,
+shared with registrations awaiting approval), so the invitation, its online
+link, submit, the program, the photo album, documents, ticket routes,
+storage guest-release and check-in's QR scan all answer exactly as for an
+unknown token. Restoring them opens it again. Until 2026-11 a removed
+guest's link still opened their whole invitation.
+
+**Restoring a guest** (`POST /api/guests/:id/reactivate`) is held to what
+adding one is, under the event's row lock (the one registration takes):
+the plan's guest limit (a plus-one excepted), the hard ceiling, and the
+event's **registration cap**. The cap is counted after the write exactly
+as registration counts it (`countSeats`); a restore that adds registered
+seats past the cap is refused, 422 `GUEST_RESTORE_OVER_REGISTRATION_CAP`,
+and nothing of it is restored.
+
 An event restored after its Memory Hub media was purged comes back without
 it (or its cover and uploaded design), and a purged item can't be restored
 (409): its file is gone.
@@ -1396,7 +1413,8 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 
 Enforcement points differ: `maxGuestsPerEvent` is checked whenever a live
 guest is **added** (organiser add, import, and restoring an archived guest,
-a plus-one excepted since the limit doesn't count them), under the event's
+a plus-one excepted since the limit doesn't count them; a restore is also
+held to the registration cap, see "Soft delete"), under the event's
 row lock so two at once can't both take the last place;
 `maxSmsPerMonth` at **send time**, all-or-nothing. A plan's limit is
 never the last word: the hard limits under "Safety limits" (Domain rules)
@@ -2006,8 +2024,9 @@ their own invitation.
   email domains (stored lowercase without "@"; an email must be at exactly
   one of them, so `company.co.za` does not admit `mail.company.co.za`;
   empty = anyone), a cap, a closing date, the plus-ones each registrant may
-  bring, and which days are open (`EventDay.openForRegistration`, on by
-  default; at least one). The **cap** counts self-registered guests who
+  bring, which days are open (`EventDay.openForRegistration`, on by
+  default; at least one), and `autoApprove` (on by default; see "Approving
+  registrations" below). The **cap** counts self-registered guests who
   haven't declined plus their plus-ones, and can't be set above the plan's
   guest limit (422); registration also stops at that limit itself. The
   **closing date** defaults to the RSVP deadline and can't be after it
@@ -2106,6 +2125,86 @@ their own invitation.
   public page, so the refusal reveals nothing. Only a change is checked:
   an address the guest already had before the domains were set never
   blocks their reply.
+- **Approving registrations** (`Event.registrationAutoApprove`, the
+  settings' `autoApprove`, on by default and for every event made before
+  2026-11; `src/modules/registration-approval/`). **On:** everything above,
+  unchanged. **Off**, for organisers who screen registrations first (a proof
+  of payment, say):
+  - **A registration is saved awaiting approval**, written exactly as an
+    approved one (the guest, the accepted invite, the days, plus-ones,
+    answers, documents) with `Guest.pendingApproval` set on the registrant
+    and each plus-one, so **it holds its seats**: the cap, the plan's limit
+    and the ceiling count it, and the event can't be overbooked while the
+    organiser decides. **Nothing is emailed.** The answer is 201 `{ outcome:
+    'PENDING_APPROVAL', emailSent: false, message: "You'll get an email once
+    the organiser approves your registration." }` for every registration
+    while the setting is off, new or repeat, whoever is on the list: the
+    outcome follows the event's setting, never the person. A repeat by
+    someone still pending sends nothing; by someone already approved it
+    re-sends their link, as before.
+  - **Never approved reaches nothing** (`registration-approval-gate.util.ts`).
+    Every query that resolves an invite token excludes a guest who is
+    pending or declined (`findByToken`, RSVP submit, document upload,
+    check-in's QR lookup), so their token is exactly an unknown one, the
+    same 404 and words, on every guest route: the invitation and its online
+    link, submit, the program, guest-view and the photo album's uploads,
+    ticket quote and payment, storage guest-release. (A removed guest's
+    token is shut the same way, see "Soft delete".) Announcements leave them
+    out (`findAudienceGuests`), as do invitation sends, reminders and
+    check-in (the door list, by guest and by QR). **The cancellation email
+    does reach them**, the standard one without the organiser's note (the
+    note is free text meant for invited guests, and could carry details they
+    were never approved to see; `findAudienceGuests`' `includePending`).
+  - **Pending is not accepted.** The organiser's guest list shows them with
+    `pendingApproval`. The event detail's `acceptedGuestCount` leaves them
+    out and counts them apart: `pendingApprovalCount` (registrants, as the
+    settings count them) and `pendingApprovalGuestCount` (their seats,
+    plus-ones included, the unit of `acceptedGuestCount`). The guest export's
+    "Invite Status" says "Pending approval" for the registrant and their
+    plus-ones.
+  - **The organiser** (`/api/events/:eventId/registrations`, `publicEvents`,
+    event admins under tenant scoping and the assignment lock): `GET
+    /pending` lists them, oldest first: `{ registrations: [{ guestId,
+    inviteId, firstName, surname, email, phoneNumber, registeredAt,
+    plusOnes: [{ guestId, firstName, surname }], attendingDays: [{ id,
+    label, date }], answers }] }`, with `answers` exactly as `GET
+    /api/invites/:inviteId/rsvp-responses` gives them (each with its
+    `document`). `POST /:guestId/approve` sends the invitation email
+    auto-approve would have sent ("You're registered", their days, their
+    link), exactly once: the write is conditional on still being pending, so
+    of two racing decisions one wins. `POST /:guestId/decline` sends a short
+    "wasn't accepted" email carrying nothing about the event but its name
+    (no dates, venue, link or button), and archives the registrant, their
+    plus-ones and their invites, which frees the seats; their documents
+    follow the archived-guest rule (kept, and deleted when the event
+    finishes unless restored first). Both answer 200 `{ guestId, decision:
+    'APPROVED' | 'DECLINED', emailSent }`. A failed send never undoes the
+    decision: an approved registrant whose email failed gets their link by
+    registering again. The settings view carries `pendingApprovalCount`.
+  - **Refusals**, each with its code: `REGISTRATION_NOT_FOUND` (404: not a
+    registrant of this event, a plus-one, unknown),
+    `REGISTRATION_ALREADY_APPROVED` (409; also a registrant who came in
+    while auto-approve was on), `REGISTRATION_ALREADY_DECLINED` (409),
+    `REGISTRATION_GUEST_REMOVED` (409: pending, but an organiser archived the
+    guest; restore them first), `REGISTRATION_DECISION_EVENT_CANCELLED` (409,
+    approve and decline), `REGISTRATION_DECISION_EVENT_FINISHED` (409,
+    approve only). An `autoApprove` that isn't a boolean: 422
+    `REGISTRATION_SETTINGS_AUTO_APPROVE_INVALID`.
+  - **Undecided stays undecided.** Switching `autoApprove` on approves
+    nobody: those pending stay pending until decided, and registering again
+    still sends them nothing (they get the answer a new registration gets).
+    **When the event finishes** they stay pending: approving is refused (an
+    invitation to an event that has happened), declining still works, so
+    nobody waits forever for an answer; their documents go with the finished
+    event's rules. **When the event is cancelled** neither decision is
+    allowed; they get the cancellation email without its note.
+  - **Restoring a declined registrant** (`POST /api/guests/:id/reactivate`)
+    makes them pending again, not approved, together with the plus-ones
+    that decline archived (stamped with the same `registrationDeclinedAt`;
+    their invites too), never a plus-one removed some other way. The
+    organiser then approves (which sends the invitation) or declines once
+    more. Like any restore it is held to the registration cap (see "Soft
+    delete").
 
 ### Document fields
 
@@ -2272,7 +2371,8 @@ with its own refusal, never a 500 (`isGuestEmailUniqueViolation`,
 `guest-validation.util.ts`): organiser create, update, import and restore
 409 `GUEST_EMAIL_TAKEN`, RSVP 422 `CONTACT_EMAIL_UNAVAILABLE`, and
 self-registration the ordinary "couldn't send" answer (identical either
-way; registering again re-sends the link). Archiving a guest frees their
+way; registering again re-sends the link; with auto-approve off, the
+ordinary pending answer). Archiving a guest frees their
 address; restoring them while a live guest has it is 409.
 
 Names are nullable — a guest imported by phone supplies their name when
@@ -2593,7 +2693,9 @@ tenant-scoped and under the assignment lock (`eventService.getScoped`).
 - **Who is invited.** Live (never archived) guests with a live invite who
   are **not plus-ones** (covered by their host; their token is never given
   out), whose invitation reached them (`deliveredAt`) or who registered
-  themselves. A guest still waiting on their invitation, or on a draft,
+  themselves, never a registration awaiting approval (see "Approving
+  registrations"; the cancellation email alone reaches them, without its
+  note). A guest still waiting on their invitation, or on a draft,
   hasn't heard of the event, so no announcement reaches them.
 - **Audiences** (`announcement-audience.util.ts`, the one place):
   `EVERYONE` (hasn't declined), `ATTENDING`, `NOT_REPLIED`,
@@ -2975,7 +3077,9 @@ who has been checked in.
 The day list shows **everyone invited to that day**, RSVP status per row, so
 walk-ins and non-responders can be found, checked in and undone; "expected"
 in the counts is only those who said **yes** to that day. Plus-ones are
-listed and checked in like anyone else (they have an `Invite`). Check-in and
+listed and checked in like anyone else (they have an `Invite`). A
+registration awaiting approval isn't listed or found, by guest or by QR
+(see "Approving registrations"). Check-in and
 undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
@@ -3472,15 +3576,18 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   reminder's button opens the event's Memories tab, which the current
   frontend may not show for an archived event. Remove this entry once
   built.
-- **Archived events' documents need their frontend half** (backend
-  `fix/archive-documents`): the confirmation before archiving an event
-  saying its guests' documents (`documentStorage.documentCount`), cover and
-  invitation design are kept 30 days and then deleted with its photos (not
-  at once), and an archived event's view showing its cover; an archived
-  event's read-only view listing them (`GET /api/events/:eventId/documents`)
-  with the download link and `documentStorage.deletesAt`; and a page at
-  `/events/<id>/manage` (the documents-only reminder's button) that shows
-  them for an archived event. Remove this entry once built.
+- **Approving registrations needs its frontend half** (backend
+  `feature/auto-approve`): the `autoApprove` switch in the registration
+  settings; the registration page saying "You'll get an email once the
+  organiser approves your registration." for `outcome: 'PENDING_APPROVAL'`
+  (its `emailSent` is always false there, and is not the "couldn't send"
+  case); a pending list with each registrant's answers and documents, and
+  approve and decline, each code placed (see "Approving registrations"); the
+  guest list marking `pendingApproval`; the event detail showing
+  `pendingApprovalCount` beside the accepted count; and restoring a guest
+  answering `GUEST_RESTORE_OVER_REGISTRATION_CAP` (see "Soft delete"). Until
+  then nothing changes for anyone: every event keeps auto-approve on. Remove
+  this entry once built.
 - **The pilot polish needs its frontend half** (backend
   `feature/pilot-polish`): a Terms screen answering `TERMS_NOT_ACCEPTED`,
   event forms requiring a host name, and the sign-up form no longer

@@ -13,11 +13,13 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { parseDeadline, deadlineEnd } from '../event/event-rsvp-deadline.util.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { registrationSettingsRepository, type RegistrationSettingsWrite } from './registration-settings.repository.js';
+import { registrationApprovalRepository } from '../registration-approval/registration-approval.repository.js';
 import { type UpdateRegistrationSettingsDto, type RegistrationSettingsView } from './registration-settings.types.js';
 
 // The organiser's side of public self-registration: who may register
 // (email domains), how many (a cap), until when (a closing date), how many
-// plus-ones each registrant may bring, and which days are open.
+// plus-ones each registrant may bring, which days are open, and whether
+// each registration awaits their approval (autoApprove off).
 //
 // Every read and write gates on eventService.getScopedWithPass first:
 // tenant scoping and the assignment lock (a locked EVENT_ADMIN gets a 404
@@ -39,18 +41,25 @@ export const REGISTRATION_SETTINGS_ERROR_CODES = {
   PLUS_ONES_INVALID: 'REGISTRATION_SETTINGS_PLUS_ONES_INVALID',
   OPEN_DAY_UNKNOWN: 'REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN',
   NO_OPEN_DAYS: 'REGISTRATION_SETTINGS_NO_OPEN_DAYS',
+  AUTO_APPROVE_INVALID: 'REGISTRATION_SETTINGS_AUTO_APPROVE_INVALID',
 } as const;
 
 const CODES = REGISTRATION_SETTINGS_ERROR_CODES;
 
 const toView = async (event: ScopedEvent): Promise<RegistrationSettingsView> => {
-  const [seats, { limit }] = await Promise.all([eventPublicRepository.countSeats(event.id), resolveGuestLimit(event)]);
+  const [seats, { limit }, pendingApprovalCount] = await Promise.all([
+    eventPublicRepository.countSeats(event.id),
+    resolveGuestLimit(event),
+    registrationApprovalRepository.countPending(event.id),
+  ]);
   const days = [...event.eventDays].sort((a, b) => a.date.getTime() - b.date.getTime());
   return {
     allowedEmailDomains: event.registrationEmailDomains,
     cap: event.registrationCap,
     closesAt: event.registrationClosesAt,
     plusOnesAllowed: event.registrationPlusOnesAllowed,
+    autoApprove: event.registrationAutoApprove,
+    pendingApprovalCount,
     days: days.map((d) => ({ id: d.id, label: d.label, date: d.date, openForRegistration: d.openForRegistration })),
     registeredCount: seats.registeredSeats,
     planGuestLimit: limit,
@@ -169,6 +178,16 @@ export const registrationSettingsService = {
         );
       }
       write.registrationPlusOnesAllowed = data.plusOnesAllowed;
+    }
+
+    // Switching it on approves nobody: registrations already awaiting
+    // approval stay pending until the organiser decides each one
+    // (registration-approval.service.ts). Off affects new registrations only.
+    if (data.autoApprove !== undefined) {
+      if (typeof data.autoApprove !== 'boolean') {
+        throw new HttpError(422, 'Choose whether registrations are approved automatically.', CODES.AUTO_APPROVE_INVALID);
+      }
+      write.registrationAutoApprove = data.autoApprove;
     }
 
     let openDayIds: string[] | null = null;

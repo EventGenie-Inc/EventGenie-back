@@ -252,6 +252,42 @@ export const buildRegistrationResendEmail = (input: InviteEmailInput): BuiltEmai
   );
 
 // ─────────────────────────────────────────
+//  REGISTRATION NOT ACCEPTED
+//
+//  Sent once, when an organiser declines a registration that was awaiting
+//  their approval (registration-approval.service.ts). The registrant was
+//  never approved, so it carries nothing about the event beyond its name
+//  (which the registration page already showed): no dates, no venue or
+//  online link, no design, no button. Reply-To is the organiser, as on
+//  every guest email.
+// ─────────────────────────────────────────
+export const buildRegistrationDeclinedEmailSubject = (eventName: string): string =>
+  `Your registration for ${sanitizeHeaderText(eventName)}`;
+
+export const buildRegistrationDeclinedEmail = (input: Omit<GuestMessageInput, 'selfRegistered'>): BuiltEmail =>
+  guestMessageEmail(
+    { ...input, selfRegistered: true },
+    buildRegistrationDeclinedEmailSubject(input.eventName),
+    `Your registration for ${input.eventName} wasn't accepted`,
+    [
+      { kind: 'eyebrow', text: 'Your registration' },
+      { kind: 'title', text: input.eventName },
+      ...hostLine(input),
+      {
+        kind: 'paragraph',
+        text: `Your registration for ${input.eventName} wasn’t accepted, so you won’t receive an e-velope for it.`,
+      },
+      {
+        kind: 'paragraph',
+        text: input.organiserEmail
+          ? 'If you have a question, reply to this email.'
+          : 'If you have a question, contact the organiser.',
+        muted: true,
+      },
+    ]
+  );
+
+// ─────────────────────────────────────────
 //  ANNOUNCEMENTS AND THE CANCELLATION EMAIL
 //
 //  Guest emails like an invitation: the same From ("<host> via e-velope")
