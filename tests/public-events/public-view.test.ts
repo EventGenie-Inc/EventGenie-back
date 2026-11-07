@@ -33,17 +33,18 @@ describe('GET /api/public-events/:shareToken', () => {
     expect(Object.keys(res.body)).toEqual(['status', 'data']);
 
     const data = res.body.data;
-    expect(Object.keys(data).sort()).toEqual(['coverImageUrl', 'days', 'description', 'hostName', 'name', 'registration', 'rsvpFields']);
+    // maxDocumentBytes: the size one document may be (Round B storage rules).
+    expect(Object.keys(data).sort()).toEqual(['coverImageUrl', 'days', 'description', 'hostName', 'maxDocumentBytes', 'name', 'registration', 'rsvpFields']);
     expect(Object.keys(data.registration).sort()).toEqual(
       ['allowedEmailDomains', 'closesAt', 'code', 'isOpen', 'message', 'plusOnesAllowed', 'reason'].sort()
     );
     for (const day of data.days) {
       expect(Object.keys(day).sort()).toEqual(
-        ['address', 'date', 'endTime', 'id', 'label', 'location', 'openForRegistration', 'startTime'].sort()
+        ['address', 'date', 'endTime', 'id', 'label', 'location', 'locationType', 'openForRegistration', 'startTime'].sort()
       );
     }
     expect(data.rsvpFields).toHaveLength(1);
-    expect(Object.keys(data.rsvpFields[0]).sort()).toEqual(['fieldType', 'id', 'isRequired', 'label', 'options']);
+    expect(Object.keys(data.rsvpFields[0]).sort()).toEqual(['description', 'fieldType', 'id', 'isRequired', 'label', 'options']);
     expect(data).toMatchObject({
       hostName: 'Acme HR',
       description: 'Drinks and dinner',

@@ -6,8 +6,8 @@ import {
   eventService,
   assertEventFieldsValid,
   assertEventUpdateAllowed,
-  destroyReplacedCover,
 } from '../event/event.service.js';
+import { applyCoverChange, type CoverChange } from '../event/event-cover-image.util.js';
 import { normalizeHostName } from '../event/event.repository.js';
 import { assertHostNamePresentAfterEdit } from '../event/event-host-name.util.js';
 import { parseDeadline } from '../event/event-rsvp-deadline.util.js';
@@ -21,7 +21,7 @@ import {
 } from '../event-day/event-day-validation.util.js';
 import { resolveNewTicket, resolveTicketChanges } from '../ticket/ticket-validation.util.js';
 import { TICKETING_UNAVAILABLE_MESSAGE } from '../ticket/ticketing-availability.util.js';
-import { resolveNewField, resolveFieldChanges } from '../rsvp-field/rsvp-field-validation.util.js';
+import { assertFieldTypeChangeAllowed, resolveNewField, resolveFieldChanges } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
   requireItemStartTime,
@@ -180,7 +180,9 @@ const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
       patch.venue.location !== stored.location ||
       patch.venue.address !== stored.address ||
       patch.venue.latitude !== plainNumber(stored.latitude) ||
-      patch.venue.longitude !== plainNumber(stored.longitude);
+      patch.venue.longitude !== plainNumber(stored.longitude) ||
+      patch.venue.locationType !== (stored.locationType ?? 'VENUE') ||
+      patch.venue.onlineUrl !== stored.onlineUrl;
     if (changed) updates.push({ id: stored.id, patch, relabel: label !== stored.label });
     resulting.push({ ref: { kind: 'saved', id: stored.id }, id: stored.id, label, date, endTime, dateChanged: !isSameUtcDate(date, stored.date) });
   }
@@ -246,6 +248,7 @@ const planRsvpFields = (event: LoadedEvent, input: FullUpdateRsvpField[] | undef
       (data.fieldType !== undefined && data.fieldType !== stored.fieldType) ||
       (data.isRequired !== undefined && data.isRequired !== stored.isRequired) ||
       (data.options !== undefined && (data.options ?? null) !== stored.options) ||
+      (data.description !== undefined && (data.description ?? null) !== stored.description) ||
       order !== stored.order;
     if (changed) plan.updates.push({ id: stored.id, data });
   });
@@ -379,7 +382,7 @@ export const eventFullUpdateService = {
     // The event's own fields, then each part, in the wizard's order.
     if (eventFields) assertEventFieldsValid(eventFields);
     const days = planDays(event, daysInput);
-    if (eventFields) await assertEventUpdateAllowed(event, eventFields, days.resulting);
+    const coverChange: CoverChange | null = eventFields ? await assertEventUpdateAllowed(event, eventFields, days.resulting) : null;
 
     const tickets = planTickets(event, ticketsInput);
     // The ticket routes are switched off with `ticketing`; a change to
@@ -393,6 +396,11 @@ export const eventFullUpdateService = {
     // Adding a question is the tier-gated capability, as on POST
     // .../rsvp-fields; editing or archiving one is not.
     if (rsvpFields.creates.length > 0) await assertEventUpdatable(event, { hasCustomRsvpFields: true });
+    // A question with answers keeps being, or not being, a file upload.
+    for (const { id, data } of rsvpFields.updates) {
+      const stored = event.rsvpFields.find((f) => f.id === id);
+      if (stored) await assertFieldTypeChangeAllowed(stored, data.fieldType);
+    }
 
     const program = planProgram(event, programInput, days.resulting);
     const memoryHub = planMemoryHub(event, hubInput);
@@ -412,8 +420,14 @@ export const eventFullUpdateService = {
     };
 
     if (hasChanges(plan)) {
-      await eventFullUpdateRepository.apply(eventId, userId, plan);
-      if (plan.event) destroyReplacedCover(event, plan.event);
+      // The new cover attached and the replaced one requested for deletion
+      // in the same transaction as the save.
+      await eventFullUpdateRepository.apply(
+        eventId,
+        userId,
+        plan,
+        plan.event && coverChange ? (tx) => applyCoverChange(tx, eventId, coverChange) : undefined
+      );
     }
 
     // The same shape as GET /api/events/:id, so the wizard can re-baseline

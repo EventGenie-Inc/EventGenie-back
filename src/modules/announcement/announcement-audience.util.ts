@@ -35,6 +35,9 @@ export const ANNOUNCEMENT_AUDIENCES: readonly AnnouncementAudience[] = ['EVERYON
 
 export interface AudienceCandidate {
   guestId: string;
+  // A registration awaiting the organiser's approval: only ever a candidate
+  // for the cancellation email (findAudienceGuests' includePending).
+  awaitingApproval: boolean;
   firstName: string | null;
   surname: string | null;
   email: string | null;
@@ -53,6 +56,7 @@ export interface AudienceCandidate {
 // What announcementRepository.findAudienceGuests returns, per guest.
 export interface AudienceGuestRow {
   id: string;
+  pendingApproval: boolean;
   firstName: string | null;
   surname: string | null;
   email: string | null;
@@ -76,6 +80,7 @@ export const toAudienceCandidates = (guests: AudienceGuestRow[]): AudienceCandid
     if (!invite) return [];
     return [{
       guestId: guest.id,
+      awaitingApproval: guest.pendingApproval,
       firstName: guest.firstName,
       surname: guest.surname,
       email: guest.email,
@@ -132,6 +137,7 @@ export interface ReachableGuest {
   email: string;
   inviteToken: string;
   selfRegistered: boolean;
+  awaitingApproval: boolean;
 }
 
 export interface UnreachableGuest {
@@ -168,6 +174,7 @@ export const selectAudience = (
         email,
         inviteToken: candidate.invite.token,
         selfRegistered: !!candidate.selfRegisteredAt,
+        awaitingApproval: candidate.awaitingApproval,
       });
     } else {
       unreachable.push({ guestId: candidate.guestId, name, phoneNumber: candidate.phoneNumber });

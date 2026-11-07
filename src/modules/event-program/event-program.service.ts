@@ -146,7 +146,7 @@ export const eventProgramService = {
 
       // The day's own venue — a guest reading the day's schedule needs to
       // know where it happens, and days of one event can differ.
-      return { eventDayId: day.id, label: day.label, date: day.date, ...toDayVenueView(day), items };
+      return { eventDayId: day.id, label: day.label, date: day.date, ...toDayVenueView(day, { withOnlineUrl: true }), items };
     });
 
     const totalItems = days.reduce((sum, day) => sum + day.items.length, 0);

@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { randomUUID } from 'crypto';
 import { memoryHubService } from '../../src/modules/memory-hub/memory-hub.service.js';
-import { memoryHubFolder } from '../../src/modules/upload/upload-folders.js';
+import { signedUpload, storedFile } from '../helpers/storage.js';
 import { requireCloudinaryConfig } from '../../src/shared/cloudinary/cloudinary.client.js';
 import { memoryHubRepository } from '../../src/modules/memory-hub/memory-hub.repository.js';
 import {
@@ -142,23 +141,24 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
         () => deleteTierConfig('CELEBRATE')
       );
 
-      // A single upload (1000 bytes) already exceeds the 100-byte quota
-      // on its own — no pre-existing usage needed.
-      const publicId = `${memoryHubFolder(tenant.id, event.id)}/${randomUUID()}`;
+      // A single upload (1000 bytes, Cloudinary's own figure) already
+      // exceeds the 100-byte quota on its own — no pre-existing usage
+      // needed. A real signed upload for this event: anything else is
+      // refused (422) before the quota is checked.
+      const { publicId } = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: tenant.id, eventId: event.id, mediaType: 'IMAGE', uploadedBy: { inviteId: invite.id }, bytes: 1000 });
       const err = await memoryHubService
         .createGuestItem({
           token: invite.token,
-          // In this event's own signed folder, with the matching delivery
-          // URL, as a real upload's would be: anything else is now refused
-          // (422) before the quota is checked.
           mediaUrl: `https://res.cloudinary.com/${requireCloudinaryConfig().cloudName}/image/upload/v1/${publicId}.jpg`,
           cloudinaryPublicId: publicId,
           mediaType: 'IMAGE',
-          bytes: 1000,
+          // What the browser claims is ignored: 1 byte would fit.
+          bytes: 1,
         })
         .catch((e) => e);
 
       expect(err).toMatchObject({ statusCode: 403 });
+      expect((await storedFile(publicId)).status).toBe('DELETE_REQUESTED');
       expect(err.message).toBe("This event's photo album is full, so new photos can't be added right now.");
       expect(err.message).not.toMatch(FORBIDDEN_IN_GUEST_MESSAGE);
       expect(err.message).not.toMatch(/\d+\s*MB/i);

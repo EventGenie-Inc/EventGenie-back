@@ -1,4 +1,5 @@
-import { type InvitationDesignKind } from '@prisma/client';
+import { type EventDayLocationType, type InvitationDesignKind } from '@prisma/client';
+import { ONLINE_VENUE_LABEL } from '../event-day/event-day-venue.util.js';
 import { normalizeSmsPunctuation } from '../../shared/messaging/sms-segments.util.js';
 import { renderEmail, type EmailBlock } from '../../shared/messaging/email-layout.js';
 import { formatFromHeader, sanitizeDisplayName, sanitizeHeaderText } from '../../shared/messaging/email-address.util.js';
@@ -41,7 +42,19 @@ export interface InviteDayLine {
   endTime?: Date | null;
   location: string | null;
   address: string | null;
+  // An online day (event-day-venue.util.ts): "Online" and its link instead
+  // of a venue and address. Left out (an older caller) reads as a venue.
+  locationType?: EventDayLocationType | null;
+  onlineUrl?: string | null;
 }
+
+// Where a day happens, as email lines: its venue and address, or "Online"
+// and its link. Every email that carries day lines goes to someone invited
+// or registered, so the link may be shown.
+const whereLines = (day: InviteDayLine): (string | null | undefined)[] =>
+  day.locationType === 'ONLINE'
+    ? [ONLINE_VENUE_LABEL, day.onlineUrl?.trim()]
+    : [day.location?.trim(), day.address?.trim()];
 
 const whenText = (day: InviteDayLine): string => {
   const start = day.startTime ? formatGuestTime(day.startTime) : null;
@@ -56,7 +69,7 @@ const dayGroups = (days: InviteDayLine[], fallbackDateLabel: string | null) => {
   }
   return days.map((day) => ({
     heading: days.length > 1 ? day.label.trim() : null,
-    lines: [whenText(day), day.location?.trim(), day.address?.trim()].filter((l): l is string => !!l),
+    lines: [whenText(day), ...whereLines(day)].filter((l): l is string => !!l),
   }));
 };
 
@@ -132,7 +145,7 @@ export const buildInviteFromHeader = (input: SenderSource): string =>
 const preheaderFor = (input: InviteEmailInput): string => {
   const first = input.days[0];
   const parts = first
-    ? [input.eventName, formatGuestDate(first.date), first.location?.trim()]
+    ? [input.eventName, formatGuestDate(first.date), first.locationType === 'ONLINE' ? ONLINE_VENUE_LABEL : first.location?.trim()]
     : [input.eventName, input.fallbackDateLabel];
   return parts.filter((p): p is string => !!p).join(' · ');
 };
@@ -236,6 +249,42 @@ export const buildRegistrationResendEmail = (input: InviteEmailInput): BuiltEmai
       },
     ],
     registrantReason(input)
+  );
+
+// ─────────────────────────────────────────
+//  REGISTRATION NOT ACCEPTED
+//
+//  Sent once, when an organiser declines a registration that was awaiting
+//  their approval (registration-approval.service.ts). The registrant was
+//  never approved, so it carries nothing about the event beyond its name
+//  (which the registration page already showed): no dates, no venue or
+//  online link, no design, no button. Reply-To is the organiser, as on
+//  every guest email.
+// ─────────────────────────────────────────
+export const buildRegistrationDeclinedEmailSubject = (eventName: string): string =>
+  `Your registration for ${sanitizeHeaderText(eventName)}`;
+
+export const buildRegistrationDeclinedEmail = (input: Omit<GuestMessageInput, 'selfRegistered'>): BuiltEmail =>
+  guestMessageEmail(
+    { ...input, selfRegistered: true },
+    buildRegistrationDeclinedEmailSubject(input.eventName),
+    `Your registration for ${input.eventName} wasn't accepted`,
+    [
+      { kind: 'eyebrow', text: 'Your registration' },
+      { kind: 'title', text: input.eventName },
+      ...hostLine(input),
+      {
+        kind: 'paragraph',
+        text: `Your registration for ${input.eventName} wasn’t accepted, so you won’t receive an e-velope for it.`,
+      },
+      {
+        kind: 'paragraph',
+        text: input.organiserEmail
+          ? 'If you have a question, reply to this email.'
+          : 'If you have a question, contact the organiser.',
+        muted: true,
+      },
+    ]
   );
 
 // ─────────────────────────────────────────

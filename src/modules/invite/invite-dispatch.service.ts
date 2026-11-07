@@ -14,6 +14,7 @@ import {
   buildReminderEmail,
   buildReminderSmsBody,
   buildRegistrationEmail,
+  buildRegistrationDeclinedEmail,
   buildRegistrationResendEmail,
   type BuiltEmail,
   type InviteDayLine,
@@ -319,6 +320,9 @@ export interface GuestMessageRecipient {
   email: string;
   inviteToken: string;
   selfRegistered: boolean;
+  // A registration awaiting approval (only ever in the cancellation
+  // email's audience): the builder leaves the organiser's note out.
+  awaitingApproval?: boolean;
 }
 
 export interface GuestMessageOutcome {
@@ -394,6 +398,26 @@ export const inviteDispatchService = {
       return { ok: false };
     }
     if (!invite.deliveredAt) await inviteRepository.markDelivered(invite.id);
+    return { ok: true };
+  },
+
+  // A declined registration's one email (registration-approval.service.ts):
+  // nothing about the event but its name. Returns whether it was sent; a
+  // failure never undoes the decision.
+  sendRegistrationDeclinedEmail: async (
+    event: Parameters<typeof buildDispatchContext>[0],
+    guestId: string,
+    to: string
+  ): Promise<{ ok: boolean }> => {
+    const organiserEmail = await resolveReplyTo(event);
+    const result = await sendEmail({
+      to,
+      ...buildRegistrationDeclinedEmail({ eventName: event.name, hostName: event.hostName, organiserEmail }),
+    });
+    if (!result.ok) {
+      console.error(`[registration] declined email for guest ${guestId} failed: ${result.reason ?? 'unknown reason'}`);
+      return { ok: false };
+    }
     return { ok: true };
   },
 

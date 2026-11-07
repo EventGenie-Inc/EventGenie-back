@@ -1,7 +1,10 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { hashToken } from '../../modules/auth/device-token.util.js';
 import { normalizeEmail } from '../utils/email.util.js';
-import { MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN } from '../../modules/upload/upload-constants.js';
+import {
+  GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN,
+  MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN,
+} from '../../modules/upload/upload-constants.js';
 
 // ─────────────────────────────────────────
 //  RATE LIMITERS — AUTH ENDPOINTS
@@ -224,6 +227,26 @@ export const uploadSignatureLimiter = rateLimit({
   message: {
     status: 'error',
     message: 'Too many upload requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — RELEASING AN UNSAVED UPLOAD (POST /api/storage/files/release)
+//
+//  Its own budget, not the signature limiter's: a release grants nothing
+//  (it only deletes the caller's own unsaved upload), and counting it there
+//  would halve the covers an organiser can try. Keyed by user id. 60 in 5
+//  minutes covers any real picking and removing.
+// ─────────────────────────────────────────
+export const storageReleaseLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
   },
 });
 
@@ -641,6 +664,77 @@ export const publicRegistrationEventLimiter = rateLimit({
   message: {
     status: 'error',
     message: 'Registration for this event is receiving a high volume of requests right now. Please try again in a moment.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITERS — GUEST DOCUMENT UPLOADS
+//
+//  POST /api/rsvp/documents: the memoryHubGuestUpload pair. Per invite,
+//  keyed by the SHA-256 of the invite token (never the raw token),
+//  GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN, every request counted;
+//  behind it per IP, 100 FAILED requests / 5 minutes, for a script minting
+//  a made-up token per request. The token is in the multipart body, so the
+//  per-invite limiter runs after the file is read (at most 5 MB, held in
+//  memory); the IP backstop runs before it.
+//
+//  POST /api/public-events/:shareToken/documents: nobody has a credential
+//  before registering, so these are registration's own two, with their own
+//  budgets: per IP (500 / 15 minutes, every request counted: a whole office
+//  registering from one network, about one file each) and per event (300 /
+//  5 minutes, a pace guard against a script spread across many IPs).
+// ─────────────────────────────────────────
+export const DOCUMENT_UPLOADS_PER_IP_PER_15_MIN = 500;
+export const DOCUMENT_UPLOADS_PER_EVENT_PER_5_MIN = 300;
+
+export const documentUploadInviteKey = (rawToken: string): string => `document-invite:${hashToken(rawToken)}`;
+
+export const documentUploadInviteLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => documentUploadInviteKey(String(req.body?.token ?? 'unknown')),
+  message: {
+    status: 'error',
+    message: 'Too many uploads. Please wait a few minutes and try again.',
+  },
+});
+
+export const documentUploadIpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests from this network. Please wait a few minutes and try again.',
+  },
+});
+
+export const registrationDocumentIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: DOCUMENT_UPLOADS_PER_IP_PER_15_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many uploads. Please wait a few minutes and try again.',
+  },
+});
+
+export const registrationDocumentEventLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: DOCUMENT_UPLOADS_PER_EVENT_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `document-event:${req.params['shareToken'] ?? 'unknown'}`,
+  message: {
+    status: 'error',
+    message: 'Uploads for this event are receiving a high volume of requests right now. Please try again in a moment.',
   },
 });
 

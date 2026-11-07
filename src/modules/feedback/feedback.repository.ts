@@ -67,6 +67,7 @@ export const feedbackRepository = {
       toImprove: string | null;
       logoUrl: string | null;
       logoPublicId: string | null;
+      logoFileId: string | null;
       userId: string;
     },
     tx: Tx
@@ -80,6 +81,7 @@ export const feedbackRepository = {
         toImprove: data.toImprove,
         logoUrl: data.logoUrl,
         logoPublicId: data.logoPublicId,
+        logoFileId: data.logoFileId,
         submittedBy: data.userId,
         updatedBy: data.userId,
       },
@@ -94,6 +96,7 @@ export const feedbackRepository = {
       toImprove?: string | null;
       logoUrl?: string | null;
       logoPublicId?: string | null;
+      logoFileId?: string | null;
     },
     tx: Tx
   ) =>
@@ -105,6 +108,7 @@ export const feedbackRepository = {
         ...(data.toImprove !== undefined && { toImprove: data.toImprove }),
         ...(data.logoUrl !== undefined && { logoUrl: data.logoUrl }),
         ...(data.logoPublicId !== undefined && { logoPublicId: data.logoPublicId }),
+        ...(data.logoFileId !== undefined && { logoFileId: data.logoFileId }),
         updatedBy: userId,
       },
     }),

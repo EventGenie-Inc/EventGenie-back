@@ -1,33 +1,28 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { randomUUID } from 'crypto';
 
 // ─────────────────────────────────────────
-//  CLIENT-SUPPLIED CLOUDINARY publicIds — ownership before destroy/store
+//  CLIENT-SUPPLIED CLOUDINARY publicIds — accepted only through their record
 //
 //  Memory Hub items (guest and organiser), event covers (create, update)
-//  and the wizard's materialize path all took a publicId from the request
-//  and, on an oversized/over-quota upload, DESTROYED it with our API
-//  secret, with no check that it was ever uploaded for that event. A guest
-//  could read another event's publicId off any Cloudinary URL and have the
-//  server delete it. Each path must now 422 a publicId outside the folder
-//  this server signed for that exact event/tenant, and destroy NOTHING.
-//
-//  destroyAsset is mocked (the one Cloudinary boundary these paths use),
-//  both to observe calls and so this suite never deletes anything real.
+//  and the wizard's materialize path all take a publicId from the request.
+//  Any guest can read another event's publicId off a Cloudinary URL. A
+//  publicId is now accepted only if its StoredFile says this server signed
+//  it, for this tenant, this event (or, for a cover, no event yet) and this
+//  kind, and it is still unsaved; anything else is a 422 and NOTHING is
+//  requested for deletion (another owner's file is never this request's to
+//  delete). Too large or over quota is measured by Cloudinary (the fake,
+//  tests/helpers/fake-cloudinary.ts), never taken from the request.
 // ─────────────────────────────────────────
-
-const { mockDestroyAsset } = vi.hoisted(() => ({ mockDestroyAsset: vi.fn() }));
-vi.mock('../../src/shared/cloudinary/cloudinary.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/shared/cloudinary/cloudinary.client.js')>()),
-  destroyAsset: mockDestroyAsset,
-}));
 
 const { memoryHubService } = await import('../../src/modules/memory-hub/memory-hub.service.js');
 const { memoryHubRepository } = await import('../../src/modules/memory-hub/memory-hub.repository.js');
 const { eventService } = await import('../../src/modules/event/event.service.js');
 const { eventDraftService } = await import('../../src/modules/event-draft/event-draft.service.js');
 const { eventDraftRepository } = await import('../../src/modules/event-draft/event-draft.repository.js');
-const { coverFolder, memoryHubFolder } = await import('../../src/modules/upload/upload-folders.js');
+const { memoryHubFolder, tenantCoverFolder } = await import('../../src/modules/upload/upload-folders.js');
+const { fakeCloudinary } = await import('../helpers/fake-cloudinary.js');
+const { signedUpload, storedFile } = await import('../helpers/storage.js');
 const {
   createTestTenant,
   deleteTestTenant,
@@ -40,19 +35,14 @@ const {
   prisma,
 } = await import('../helpers/fixtures.js');
 
-const OVERSIZED = 500 * 1024 * 1024; // over every image limit, so the destroy branch is reached
+const OVERSIZED = 500 * 1024 * 1024; // over every limit
 
 const { requireCloudinaryConfig } = await import('../../src/shared/cloudinary/cloudinary.client.js');
 const { cloudName } = requireCloudinaryConfig();
-// Cloudinary's secure_url shape for an asset in our account.
 const deliveryUrl = (resourceType: 'image' | 'video', publicId: string, ext: string): string =>
   `https://res.cloudinary.com/${cloudName}/${resourceType}/upload/v1700000000/${publicId}.${ext}`;
 
 const cleanup: (() => Promise<void>)[] = [];
-beforeEach(() => {
-  mockDestroyAsset.mockReset();
-  mockDestroyAsset.mockResolvedValue({ ok: true });
-});
 afterEach(async () => {
   while (cleanup.length) {
     const fn = cleanup.shift();
@@ -86,63 +76,71 @@ const setup = async () => {
 };
 
 const countItems = (eventId: string) => prisma.memoryItem.count({ where: { memoryHub: { eventId } } });
+const requestedDeletions = (publicIds: string[]) =>
+  prisma.storedFile.count({ where: { publicId: { in: publicIds }, status: { in: ['DELETE_REQUESTED', 'DELETED'] } } });
 
-describe('Memory Hub guest upload — publicId must be in this event\'s signed folder', () => {
-  it("another event's and another tenant's publicId: 422, nothing destroyed, nothing stored", async () => {
+describe("Memory Hub guest upload — publicId must be this event's own unsaved upload", () => {
+  it("another event's and another tenant's real uploads, and ids never signed: 422, nothing requested for deletion, nothing stored", async () => {
     const s = await setup();
+    const sibling = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantA.id, eventId: s.siblingEvent.id, mediaType: 'IMAGE', uploadedBy: { userId: s.userA.id }, bytes: OVERSIZED });
+    const foreign = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantB.id, eventId: s.foreignEvent.id, mediaType: 'IMAGE', uploadedBy: { userId: s.userB.id }, bytes: OVERSIZED });
+    const foreignCover = await signedUpload({ kind: 'COVER', tenantId: s.tenantB.id, eventId: null, uploadedBy: { userId: s.userB.id }, bytes: OVERSIZED });
     const attempts = [
-      `${memoryHubFolder(s.tenantA.id, s.siblingEvent.id)}/${randomUUID()}`, // same tenant, other event
-      `${memoryHubFolder(s.tenantB.id, s.foreignEvent.id)}/${randomUUID()}`, // other tenant
-      `${coverFolder(s.tenantB.id)}/${randomUUID()}`,                        // other tenant's cover
-      `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/../../covers/${randomUUID()}`, // traversal
-      `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}`,                     // folder, no id
-      'sample',                                                                // bare id
+      sibling.publicId,                                                       // same tenant, other event
+      foreign.publicId,                                                       // other tenant
+      foreignCover.publicId,                                                  // other tenant's cover
+      `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/../../cover/${randomUUID()}`, // traversal
+      `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`,      // the right folder, never signed
+      'sample',                                                               // bare id
     ];
 
     for (const cloudinaryPublicId of attempts) {
       const err = await memoryHubService
-        .createGuestItem({ token: s.invite.token, mediaUrl: 'https://example.test/x.jpg', cloudinaryPublicId, mediaType: 'IMAGE', bytes: OVERSIZED })
+        .createGuestItem({ token: s.invite.token, mediaUrl: deliveryUrl('image', cloudinaryPublicId, 'jpg'), cloudinaryPublicId, mediaType: 'IMAGE', bytes: 10 })
         .catch((e) => e);
       expect(err, cloudinaryPublicId).toMatchObject({ statusCode: 422 });
       expect(err.message).not.toMatch(/Memory Hub|plan|upgrade/i);
     }
 
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(await requestedDeletions([sibling.publicId, foreign.publicId, foreignCover.publicId])).toBe(0);
+    expect(fakeCloudinary.callsTo('destroy')).toHaveLength(0);
     expect(await countItems(s.ownEvent.id)).toBe(0);
   }, 60000);
 
-  it('control: an id in its own folder still reaches the size check and IS cleaned up', async () => {
+  it("control: this event's own upload reaches the size check by its REAL size and is requested for deletion", async () => {
     const s = await setup();
-    const own = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
+    const own = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantA.id, eventId: s.ownEvent.id, mediaType: 'IMAGE', uploadedBy: { inviteId: s.invite.id }, bytes: OVERSIZED });
     const err = await memoryHubService
-      .createGuestItem({ token: s.invite.token, mediaUrl: deliveryUrl('image', own, 'jpg'), cloudinaryPublicId: own, mediaType: 'IMAGE', bytes: OVERSIZED })
+      // The browser says 1 KB; Cloudinary holds 500 MB.
+      .createGuestItem({ token: s.invite.token, mediaUrl: own.url, cloudinaryPublicId: own.publicId, mediaType: 'IMAGE', bytes: 1024 })
       .catch((e) => e);
     expect(err).toMatchObject({ statusCode: 400 });
-    expect(mockDestroyAsset).toHaveBeenCalledWith(own, 'image');
+    expect(await storedFile(own.publicId)).toMatchObject({ status: 'DELETE_REQUESTED', bytes: OVERSIZED });
+    expect(await countItems(s.ownEvent.id)).toBe(0);
   }, 60000);
 });
 
 describe('Memory Hub — mediaUrl must be our delivery URL for exactly the checked publicId', () => {
-  it('off-Cloudinary, another account, another publicId, wrong resource type or format: 422, nothing destroyed or stored', async () => {
+  it('off-Cloudinary, another account, another publicId, wrong resource type or format: 422, nothing requested or stored', async () => {
     const s = await setup();
-    const own = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
-    const otherOwn = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
-    const good = deliveryUrl('image', own, 'jpg');
+    const own = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantA.id, eventId: s.ownEvent.id, mediaType: 'IMAGE', uploadedBy: { inviteId: s.invite.id }, bytes: OVERSIZED });
+    const otherOwn = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantA.id, eventId: s.ownEvent.id, mediaType: 'IMAGE', uploadedBy: { inviteId: s.invite.id } });
+    const good = own.url;
     const bad = [
       'https://evil.example.com/x.jpg',                                     // off Cloudinary
       good.replace(`/${cloudName}/`, '/someone-else/'),                     // another Cloudinary account
       good.replace('https://', 'http://'),                                  // not https
-      deliveryUrl('image', otherOwn, 'jpg'),                                // a different (also vetted) publicId
-      deliveryUrl('video', own, 'mp4'),                                     // video URL for an IMAGE item
-      deliveryUrl('image', own, 'svg'),                                     // a format never signed
+      otherOwn.url,                                                         // a different (also vetted) publicId
+      deliveryUrl('video', own.publicId, 'mp4'),                            // video URL for an IMAGE item
+      deliveryUrl('image', own.publicId, 'svg'),                            // a format never signed
       good.replace('/upload/', '/upload/c_fill,w_10/'),                     // transformation segment
       `${good}?x=1`,                                                        // trailing junk
     ];
 
     for (const mediaUrl of bad) {
-      // Oversized, so an accepted pair would reach the destroy branch.
+      // Oversized, so an accepted pair would be requested for deletion.
       const err = await memoryHubService
-        .createGuestItem({ token: s.invite.token, mediaUrl, cloudinaryPublicId: own, mediaType: 'IMAGE', bytes: OVERSIZED })
+        .createGuestItem({ token: s.invite.token, mediaUrl, cloudinaryPublicId: own.publicId, mediaType: 'IMAGE' })
         .catch((e) => e);
       expect(err, mediaUrl).toMatchObject({ statusCode: 422 });
       expect(err.message).not.toMatch(/Memory Hub|plan|upgrade/i);
@@ -151,84 +149,92 @@ describe('Memory Hub — mediaUrl must be our delivery URL for exactly the check
     const hub = await memoryHubRepository.findByEventId(s.ownEvent.id);
     const organiserErr = await memoryHubService
       .createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
-        mediaUrl: 'https://evil.example.com/x.jpg', cloudinaryPublicId: own, mediaType: 'IMAGE', bytes: 1000,
+        mediaUrl: 'https://evil.example.com/x.jpg', cloudinaryPublicId: own.publicId, mediaType: 'IMAGE',
       })
       .catch((e) => e);
     expect(organiserErr).toMatchObject({ statusCode: 422 });
 
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(await requestedDeletions([own.publicId])).toBe(0);
     expect(await countItems(s.ownEvent.id)).toBe(0);
   }, 60000);
 
-  it('control: the matching delivery URL is accepted and stored, for an image and a video', async () => {
+  it('control: the matching delivery URL is accepted and stored, for an image and a video, with their real sizes', async () => {
     const s = await setup();
     const hub = await memoryHubRepository.findByEventId(s.ownEvent.id);
-    const image = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
-    const video = `${memoryHubFolder(s.tenantA.id, s.ownEvent.id)}/${randomUUID()}`;
+    const image = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantA.id, eventId: s.ownEvent.id, mediaType: 'IMAGE', uploadedBy: { userId: s.userA.id }, bytes: 4321 });
+    const video = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantA.id, eventId: s.ownEvent.id, mediaType: 'VIDEO', uploadedBy: { userId: s.userA.id }, bytes: 8765 });
 
     const savedImage = await memoryHubService.createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
-      mediaUrl: deliveryUrl('image', image, 'jpg'), cloudinaryPublicId: image, mediaType: 'IMAGE', bytes: 1000,
+      mediaUrl: image.url, cloudinaryPublicId: image.publicId, mediaType: 'IMAGE', bytes: 1,
     });
     const savedVideo = await memoryHubService.createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
-      mediaUrl: deliveryUrl('video', video, 'mp4'), cloudinaryPublicId: video, mediaType: 'VIDEO', bytes: 1000,
+      mediaUrl: video.url, cloudinaryPublicId: video.publicId, mediaType: 'VIDEO',
     });
-    expect(savedImage.mediaUrl).toBe(deliveryUrl('image', image, 'jpg'));
-    expect(savedVideo.mediaUrl).toBe(deliveryUrl('video', video, 'mp4'));
+    expect(savedImage).toMatchObject({ mediaUrl: image.url, bytes: 4321, storedFileId: image.fileId });
+    expect(savedVideo).toMatchObject({ mediaUrl: video.url, bytes: 8765, storedFileId: video.fileId });
+    expect((await storedFile(image.publicId)).status).toBe('ATTACHED');
+    expect(await countItems(s.ownEvent.id)).toBe(2);
+
+    // The same upload saved again: refused, it is already used.
+    const again = await memoryHubService
+      .createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, { mediaUrl: image.url, cloudinaryPublicId: image.publicId, mediaType: 'IMAGE' })
+      .catch((e) => e);
+    expect(again).toMatchObject({ statusCode: 422 });
     expect(await countItems(s.ownEvent.id)).toBe(2);
   }, 60000);
 });
 
 describe('Memory Hub organiser upload — same check', () => {
-  it("another tenant's publicId: 422, nothing destroyed", async () => {
+  it("another tenant's upload: 422, nothing requested for deletion", async () => {
     const s = await setup();
     const hub = await memoryHubRepository.findByEventId(s.ownEvent.id);
+    const foreign = await signedUpload({ kind: 'MEMORY_ITEM', tenantId: s.tenantB.id, eventId: s.foreignEvent.id, mediaType: 'IMAGE', uploadedBy: { userId: s.userB.id }, bytes: OVERSIZED });
     const err = await memoryHubService
       .createOrganiserItem(s.ownEvent.id, hub!.id, s.userA.id, s.userA.role, s.tenantA.id, {
-        mediaUrl: 'https://example.test/x.jpg',
-        cloudinaryPublicId: `${memoryHubFolder(s.tenantB.id, s.foreignEvent.id)}/${randomUUID()}`,
+        mediaUrl: deliveryUrl('image', foreign.publicId, 'jpg'),
+        cloudinaryPublicId: foreign.publicId,
         mediaType: 'IMAGE',
-        bytes: OVERSIZED,
       })
       .catch((e) => e);
     expect(err).toMatchObject({ statusCode: 422 });
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(await requestedDeletions([foreign.publicId])).toBe(0);
     expect(await countItems(s.ownEvent.id)).toBe(0);
   }, 60000);
 });
 
-describe('Event cover — publicId must be in the tenant\'s signed cover folder', () => {
-  it("create with another tenant's cover id: 422, nothing destroyed, no event created", async () => {
+describe("Event cover — publicId must be this tenant's own unsaved cover upload", () => {
+  it("create with another tenant's cover: 422, nothing requested, no event created", async () => {
     const s = await setup();
+    const foreign = await signedUpload({ kind: 'COVER', tenantId: s.tenantB.id, eventId: null, uploadedBy: { userId: s.userB.id }, bytes: OVERSIZED });
     const before = await prisma.event.count({ where: { tenantId: s.tenantA.id } });
     const err = await eventService
       .create(s.tenantA.id, s.userA.id, {
         name: 'Cover attack',
         hostName: 'Test Host',
         coverImageUrl: 'https://example.test/c.jpg',
-        coverImagePublicId: `${coverFolder(s.tenantB.id)}/${randomUUID()}`,
-        coverImageBytes: OVERSIZED,
+        coverImagePublicId: foreign.publicId,
+        coverImageBytes: 1,
       })
       .catch((e) => e);
     expect(err).toMatchObject({ statusCode: 422 });
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(await requestedDeletions([foreign.publicId])).toBe(0);
     expect(await prisma.event.count({ where: { tenantId: s.tenantA.id } })).toBe(before);
   }, 60000);
 
-  it("update with another tenant's cover id: 422, nothing destroyed, stored cover unchanged", async () => {
+  it("update with another tenant's cover, or another event's: 422, nothing requested, stored cover unchanged", async () => {
     const s = await setup();
-    const ownCover = `${coverFolder(s.tenantA.id)}/${randomUUID()}`;
+    const ownCover = `${tenantCoverFolder(s.tenantA.id)}/${randomUUID()}`;
     await prisma.event.update({ where: { id: s.ownEvent.id }, data: { coverImagePublicId: ownCover } });
+    const foreign = await signedUpload({ kind: 'COVER', tenantId: s.tenantB.id, eventId: null, uploadedBy: { userId: s.userB.id }, bytes: OVERSIZED });
+    const sibling = await signedUpload({ kind: 'COVER', tenantId: s.tenantA.id, eventId: s.siblingEvent.id, uploadedBy: { userId: s.userA.id }, bytes: OVERSIZED });
 
-    for (const bytes of [OVERSIZED, 1000]) {
+    for (const publicId of [foreign.publicId, sibling.publicId, `${tenantCoverFolder(s.tenantA.id)}/${randomUUID()}`]) {
       const err = await eventService
-        .update(s.ownEvent.id, s.userA.id, s.userA.role, s.tenantA.id, {
-          coverImagePublicId: `${coverFolder(s.tenantB.id)}/${randomUUID()}`,
-          coverImageBytes: bytes,
-        })
+        .update(s.ownEvent.id, s.userA.id, s.userA.role, s.tenantA.id, { coverImagePublicId: publicId, coverImageBytes: 1 })
         .catch((e) => e);
-      expect(err).toMatchObject({ statusCode: 422 });
+      expect(err, publicId).toMatchObject({ statusCode: 422 });
     }
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(await requestedDeletions([foreign.publicId, sibling.publicId])).toBe(0);
     const after = await prisma.event.findUniqueOrThrow({ where: { id: s.ownEvent.id } });
     expect(after.coverImagePublicId).toBe(ownCover);
   }, 60000);
@@ -240,27 +246,28 @@ describe('Event cover — publicId must be in the tenant\'s signed cover folder'
       name: 'Renamed', hostName: 'Test Host', coverImagePublicId: 'legacy-cover-id',
     });
     expect(updated.name).toBe('Renamed');
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(fakeCloudinary.callsTo('explicit')).toHaveLength(0);
   }, 60000);
 
-  it("wizard materialize with another tenant's cover id: 422, nothing destroyed", async () => {
+  it("wizard materialize with another tenant's cover: 422, nothing requested", async () => {
     const s = await setup();
+    const foreign = await signedUpload({ kind: 'COVER', tenantId: s.tenantB.id, eventId: null, uploadedBy: { userId: s.userB.id }, bytes: OVERSIZED });
     await eventDraftRepository.upsert(s.tenantA.id, s.userA.id, {
       currentStep: 4,
       payload: {
         name: 'Draft attack',
         hostName: 'Test Host',
         // A complete day (venue included), so the 422 below can only come
-        // from the cover ownership check, not a missing required field.
+        // from the cover check, not a missing required field.
         days: [{ label: 'Day 1', date: '2030-01-01T00:00:00', location: 'Somewhere', address: '1 Test Road' }],
         coverImageUrl: 'https://example.test/c.jpg',
-        coverImagePublicId: `${coverFolder(s.tenantB.id)}/${randomUUID()}`,
-        coverImageBytes: OVERSIZED,
+        coverImagePublicId: foreign.publicId,
+        coverImageBytes: 1,
       },
     });
     const err = await eventDraftService.materialize(s.tenantA.id, s.userA.id).catch((e) => e);
     expect(err).toMatchObject({ statusCode: 422 });
     expect(err.message).not.toMatch(/venue/);
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect(await requestedDeletions([foreign.publicId])).toBe(0);
   }, 60000);
 });

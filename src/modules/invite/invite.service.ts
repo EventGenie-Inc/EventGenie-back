@@ -77,6 +77,6 @@ export const inviteService = {
     // Must look up including archived — the whole point of reactivate is
     // to find an invite that is currently archived and un-archive it.
     await inviteInScope(eventId, id, requestingRole, tenantId, true);
-    return inviteRepository.reactivate(id, userId);
+    return inviteRepository.reactivate(id, userId, eventId);
   },
 };

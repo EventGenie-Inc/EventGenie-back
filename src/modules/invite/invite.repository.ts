@@ -2,6 +2,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
 import crypto from 'crypto';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { GUEST_NOT_AWAITING_APPROVAL, INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
 
 export const inviteRepository = {
 
@@ -39,7 +40,7 @@ export const inviteRepository = {
         eventId,
         guestId: { in: guestIds },
         isArchived: false,
-        guest: { isArchived: false, hostGuestId: null },
+        guest: { isArchived: false, hostGuestId: null, ...GUEST_NOT_AWAITING_APPROVAL },
       },
       // Invited days with their venues — the email names this guest's
       // own days and where each is (invite-dispatch.service.ts).
@@ -71,7 +72,7 @@ export const inviteRepository = {
       where: {
         eventId,
         isArchived: false,
-        guest: { isArchived: false, hostGuestId: null },
+        guest: { isArchived: false, hostGuestId: null, ...GUEST_NOT_AWAITING_APPROVAL },
         ...(guestIds ? { guestId: { in: guestIds } } : {}),
       },
       include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
@@ -126,9 +127,13 @@ export const inviteRepository = {
   // included so rsvp.service.ts's validate() can hand an edit form
   // everything it needs to prefill a guest's previous answer — validate()
   // is the only caller, and this is its sole query.
+  //
+  // A removed guest, or a registration awaiting approval or declined, is no
+  // invite at all here: the same null as an unknown token, so every guest
+  // route answers it identically (registration-approval-gate.util.ts).
   findByToken: (token: string) =>
     prisma.invite.findUnique({
-      where: { token },
+      where: { token, ...INVITE_TOKEN_USABLE },
       include: {
         guest: { include: { plusOnes: { where: { isArchived: false } } } },
         // Guest-facing: an ARCHIVED event day is no longer part of the
@@ -221,9 +226,15 @@ export const inviteRepository = {
       data: { isArchived: true, updatedBy: userId },
     }),
 
-  reactivate: (id: string, userId: string) =>
-    prisma.invite.update({
-      where: { id },
-      data: { isArchived: false, updatedBy: userId },
+  // Under the event's row lock, which the finish-time deletion of archived
+  // invites' documents takes too (storage-retention.service.ts): a restore
+  // lands wholly before that claim (its documents kept) or after it.
+  reactivate: (id: string, userId: string, eventId: string) =>
+    prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Event" WHERE "id" = ${eventId} FOR UPDATE`;
+      return tx.invite.update({
+        where: { id },
+        data: { isArchived: false, updatedBy: userId },
+      });
     }),
 };

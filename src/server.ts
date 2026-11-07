@@ -7,6 +7,10 @@ import { flushErrorMonitoring } from './shared/monitoring/sentry.config.js';
 import { reportError } from './shared/monitoring/error-reporting.js';
 import { startFeedbackRequestSweeps } from './modules/feedback/feedback-request.service.js';
 import { startMediaRetentionSweeps } from './modules/media-retention/media-retention.service.js';
+import { startGuestDocumentSweeps } from './modules/guest-document/guest-document.service.js';
+import { startStorageSweeps } from './modules/storage/storage-deletion.worker.js';
+import { startStorageRetentionSweeps } from './modules/storage-retention/storage-retention.service.js';
+import { assertStorageEnvValid } from './modules/upload/upload-folders.js';
 
 // ─────────────────────────────────────────
 //  PORT
@@ -15,15 +19,21 @@ const PORT = process.env.PORT ?? 5000;
 
 // ─────────────────────────────────────────
 //  STARTUP
+//  0. Refuse to start without a valid STORAGE_ENV (dev, staging or
+//     prod): every new file's path starts with it (upload-folders.ts)
 //  1. Verify database connection
 //  2. Start Express server
 //  3. Start the feedback-request sweep (feedback-request.service.ts) and
-//     the archived-media retention sweep (media-retention.service.ts) —
+//     the archived-media retention sweep (media-retention.service.ts) and
+//     the guest documents sweep (guest-document.service.ts) and the
+//     storage sweep (storage-deletion.worker.ts) —
 //     here, not in app.ts, so nothing that imports the app (the tests)
 //     starts a timer
 // ─────────────────────────────────────────
 const start = async (): Promise<void> => {
   try {
+    assertStorageEnvValid();
+
     // Verify Prisma can reach the database
     // before accepting any traffic.
     await prisma.$connect();
@@ -37,6 +47,9 @@ const start = async (): Promise<void> => {
 
     startFeedbackRequestSweeps();
     startMediaRetentionSweeps();
+    startGuestDocumentSweeps();
+    startStorageSweeps();
+    startStorageRetentionSweeps();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

@@ -1,3 +1,5 @@
+import { dayHasVenue } from '../event-day/event-day-venue.util.js';
+import { resolveEventDocumentStorage } from '../storage-retention/document-storage.util.js';
 import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
@@ -10,8 +12,9 @@ import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.
 import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { assertValidHostName, assertHostNamePresent, assertHostNamePresentAfterEdit } from './event-host-name.util.js';
-import { isCoverImageTooLarge, coverImageTooLargeMessage, assertCoverPublicIdOwned } from './event-cover-image.util.js';
-import { destroyAsset } from '../../shared/cloudinary/cloudinary.client.js';
+import { acceptCover, applyCoverChange, planCoverChange, type CoverChange } from './event-cover-image.util.js';
+import prisma from '../../shared/prisma/prisma.client.js';
+import { storedFileService } from '../storage/stored-file.service.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
@@ -23,25 +26,6 @@ import { eventAssignmentLock, eventIdsFilter } from '../event-assignment/event-a
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 import { isRecordNotFound } from '../../shared/utils/prisma-error.util.js';
 import { feedbackRepository } from '../feedback/feedback.repository.js';
-
-// Shared by create() and update() — rejects an oversized cover upload
-// AND cleans up the now-orphaned asset that's already sitting in
-// Cloudinary (it finished uploading before this backend ever learned
-// its size — see event-cover-image.util.ts for why the check can only
-// happen here, after the fact). Best-effort: a failed delete just means
-// a harmless orphan, not a reason to also fail this request differently
-// than the size rejection already does.
-const assertCoverImageWithinSizeLimit = (data: { coverImageBytes?: number; coverImagePublicId?: string | null }): void => {
-  if (!isCoverImageTooLarge(data.coverImageBytes)) return;
-
-  if (data.coverImagePublicId) {
-    void destroyAsset(data.coverImagePublicId).then((result) => {
-      if (!result.ok) console.error('[cloudinary cleanup] failed to delete oversized upload:', result.reason);
-    });
-  }
-
-  throw new HttpError(400, coverImageTooLargeMessage(data.coverImageBytes));
-};
 
 // WHO may look up an event, decided once for getById and the lean lookups
 // below: SUPER_ADMIN is unscoped (that is the role's purpose); everyone else
@@ -123,19 +107,27 @@ export const assertEventFieldsValid = (data: UpdateEventDto): void => {
 // as they will be once this save lands: its stored days for a plain event
 // PUT, the edited list for the full update (the RSVP deadline can't be
 // after the last of THOSE).
+//
+// Returns what the save does to the event's cover file (null: nothing),
+// for the caller to apply inside its write (applyCoverChange).
 export const assertEventUpdateAllowed = async (
-  event: EntitlementDerivableEvent & { tenantId: string; coverImagePublicId: string | null; ticketing: EventTicketing; visibility: EventVisibility },
+  event: EntitlementDerivableEvent & {
+    id: string;
+    tenantId: string;
+    coverImageUrl: string | null;
+    coverImagePublicId: string | null;
+    coverFileId: string | null;
+    ticketing: EventTicketing;
+    visibility: EventVisibility;
+  },
   data: UpdateEventDto,
   days: EventDayLike[]
-): Promise<void> => {
-  // Cover ownership is checked against the EVENT's tenant (right for a
-  // SUPER_ADMIN too), so it needs the event first; and it must run before
-  // the size check, which destroys the asset on rejection. The id already
-  // stored on this event is not re-checked (see assertCoverPublicIdOwned).
-  if (data.coverImagePublicId !== event.coverImagePublicId) {
-    assertCoverPublicIdOwned(event.tenantId, data.coverImagePublicId);
-  }
-  assertCoverImageWithinSizeLimit(data);
+): Promise<CoverChange | null> => {
+  // A new cover is accepted against the EVENT's tenant (right for a
+  // SUPER_ADMIN too), through its StoredFile, and measured by Cloudinary:
+  // too large, it is refused and requested for deletion. The id already
+  // stored on this event is not re-checked (event-cover-image.util.ts).
+  const coverChange = await planCoverChange(event, data);
 
   if (data.rsvpDeadline !== undefined) {
     // rejectPast: false — an organiser deliberately closing RSVPs early
@@ -160,25 +152,7 @@ export const assertEventUpdateAllowed = async (
   if (ticketing === 'PAID') {
     await assertEventReadyToSellTickets(event);
   }
-};
-
-// Cover REPLACED (including cleared to null) — delete the now-orphaned
-// old asset, once the save has landed. Fire-and-forget: never let a
-// Cloudinary hiccup fail an otherwise-successful event update; a failed
-// delete is just a harmless orphan (Batch B Task 3), not a broken event.
-// Does NOT run on archive — archiving is reversible, and deleting the
-// cover here would break restore (see the batch report).
-export const destroyReplacedCover = (event: { coverImagePublicId: string | null }, data: UpdateEventDto): void => {
-  if (
-    data.coverImagePublicId !== undefined &&
-    event.coverImagePublicId &&
-    event.coverImagePublicId !== data.coverImagePublicId
-  ) {
-    const oldPublicId = event.coverImagePublicId;
-    void destroyAsset(oldPublicId).then((result) => {
-      if (!result.ok) console.error('[cloudinary cleanup] failed to delete replaced cover:', result.reason);
-    });
-  }
+  return coverChange;
 };
 
 export const isCreatorLocked = async (userId: string): Promise<boolean> =>
@@ -278,14 +252,26 @@ export const eventService = {
   //
   // An archived event is readable here (includeArchived), so an organiser can
   // open it from their Archived list and see its retention dates.
+  //
+  // documentStorage (while documentFields is on): the guests' documents'
+  // own storage, used against the plan's allowance, nearLimit over 80%, and
+  // deletesAt for the retention countdown (document-storage.util.ts).
   getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null, { includeArchived = false }: { includeArchived?: boolean } = {}) => {
     const event = await eventService.getById(id, requestingRole, tenantId, includeArchived);
     const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
+    const pendingApproval = await eventRepository.countPendingApprovalForEvent(id);
     const guestLimitInfo = await resolveGuestLimit(event);
     const currentGuestCount = await guestRepository.countForEvent(id);
+    const documentStorage = isFeatureEnabled('documentFields') ? await resolveEventDocumentStorage(event) : undefined;
     return {
       ...event,
+      ...(documentStorage && { documentStorage }),
       acceptedGuestCount,
+      // Registrations awaiting approval, never in acceptedGuestCount:
+      // the registrants (as the registration settings count them) and
+      // their seats, plus-ones included.
+      pendingApprovalCount: pendingApproval.registrations,
+      pendingApprovalGuestCount: pendingApproval.guests,
       guestLimit: {
         limit: guestLimitInfo.limit, // null = unlimited; the object itself is always present
         currentCount: currentGuestCount,
@@ -301,9 +287,10 @@ export const eventService = {
     assertEventName(data.name);
     assertValidCapacity(data.capacity);
     assertValidHostName(data.hostName);
-    // Ownership first: the size check below destroys the asset on rejection.
-    assertCoverPublicIdOwned(tenantId, data.coverImagePublicId);
-    assertCoverImageWithinSizeLimit(data);
+    // A cover from our uploader: accepted through its StoredFile (this
+    // tenant's, signed for no event or this new one) and measured by
+    // Cloudinary; too large, refused and requested for deletion.
+    const coverFileId = data.coverImagePublicId ? await acceptCover(tenantId, null, data.coverImagePublicId, data.coverImageUrl) : null;
     // No event days exist yet on this path (direct POST never creates
     // them — see event-day.router.ts), so there's nothing to compare the
     // deadline against beyond "not in the past".
@@ -321,7 +308,14 @@ export const eventService = {
     }
     // Last, so every other refusal (and its code) comes first.
     assertHostNamePresent(data.hostName);
-    return eventRepository.create(tenantId, userId, data, await isCreatorLocked(userId));
+    return eventRepository.create(
+      tenantId,
+      userId,
+      data,
+      await isCreatorLocked(userId),
+      coverFileId,
+      coverFileId ? (tx, eventId) => storedFileService.attach(tx, coverFileId, { eventId }) : undefined
+    );
   },
 
   update: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, data: UpdateEventDto) => {
@@ -331,12 +325,16 @@ export const eventService = {
     // be bound by that tenant's plan, and a SUPER_ADMIN has no tenantId of
     // their own to fall back on.
     const event = await eventService.getById(id, requestingRole, tenantId);
-    await assertEventUpdateAllowed(event, data, event.eventDays);
+    const coverChange = await assertEventUpdateAllowed(event, data, event.eventDays);
     // Last, as in the full update: an older event with no host name gets
     // one on its next edit.
     assertHostNamePresentAfterEdit(event.hostName, data.hostName);
-    await eventRepository.update(id, userId, data);
-    destroyReplacedCover(event, data);
+    // The save, the new cover attached and the replaced one requested for
+    // deletion, together.
+    await prisma.$transaction(async (tx) => {
+      await eventRepository.update(id, userId, data, tx);
+      if (coverChange) await applyCoverChange(tx, id, coverChange);
+    });
 
     // Re-fetched through getById (not the bare update() result) so this
     // response goes through the same withEffectiveStatus presenter as
@@ -345,9 +343,29 @@ export const eventService = {
     return eventService.getById(id, requestingRole, tenantId);
   },
 
+  // Deleting an event archives it, and its files go (STEERING "Storage"):
+  //  - every upload signed for it and never saved is requested for
+  //    deletion, in the same transaction;
+  //  - everything saved stays for 30 days: its cover, its uploaded
+  //    invitation design, its Memory Hub photos and videos and its guests'
+  //    documents, then goes with the archived-media purge
+  //    (media-retention.service.ts), after its reminder. Restoring before
+  //    then brings the event back with all of them. (Until 2026-11 the
+  //    cover, design and documents were deleted at once.)
+  // A feedback logo is the company's (kept in the tenant's folder, and
+  // shown with any permission it gave), so it stays.
   archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     await eventService.getById(id, requestingRole, tenantId);
-    return eventRepository.archive(id, userId);
+    const archived = await prisma.$transaction(async (tx) => {
+      const row = await eventRepository.archive(id, userId, tx);
+      await storedFileService.requestDeletion(tx, {
+        eventId: id,
+        kind: { in: ['COVER', 'INVITATION_DESIGN', 'MEMORY_ITEM', 'FEEDBACK_LOGO'] },
+        status: { in: ['SIGNED', 'UPLOADED'] },
+      });
+      return row;
+    });
+    return archived;
   },
 
   // ─────────────────────────────────────────
@@ -445,7 +463,8 @@ export const eventService = {
     // but a day that came through the venue migration from an event that
     // had none still exists without one — and guests must not be invited
     // to a day with nowhere to go.
-    const daysWithoutVenue = event.eventDays.filter((d) => !d.location?.trim() || !d.address?.trim());
+    // An online day needs no venue (dayHasVenue).
+    const daysWithoutVenue = event.eventDays.filter((d) => !dayHasVenue(d));
     if (daysWithoutVenue.length) {
       missing.push(`a venue for ${daysWithoutVenue.map((d) => `'${d.label}'`).join(', ')}`);
     }

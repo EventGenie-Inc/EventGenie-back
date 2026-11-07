@@ -6,10 +6,13 @@ import { ticketPurchaseService, type ReservedPurchase } from '../ticket-purchase
 import { type SubmitRsvpDto, type QuoteTicketDto } from './rsvp.types.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
-import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape } from './rsvp-answers.util.js';
+import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape, answerableFields, withAnswerValues } from './rsvp-answers.util.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { resolveDocumentLimits } from '../guest-document/guest-document-allowance.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
@@ -39,67 +42,17 @@ import {
 // about other guests; a guest's token only entitles them to know about
 // their own invite.
 
-// Guest-facing wording for the same three blocked statuses invites use
-// (COMPLETED/CANCELLED read fine to a guest as-is); DRAFT gets its own
-// text since "publish it before sending invitations" is organiser
-// language a guest should never see. In practice a guest can only ever
-// hold a token for an event that WAS published (invites can't be sent
-// to a draft event — Task 3), so this branch is defensive, not reachable.
-export const RSVP_BLOCK_MESSAGES: Partial<Record<EventStatus, string>> = {
-  DRAFT: 'This event is not yet open for RSVPs.',
-  COMPLETED: 'This event has already taken place.',
-  CANCELLED: 'This event has been cancelled.',
-};
+import {
+  RSVP_BLOCK_MESSAGES,
+  EVENT_NO_LONGER_AVAILABLE_MESSAGE,
+  assertEventNotArchived,
+  assertEventAcceptsRsvp,
+  isRsvpDeadlinePassed,
+  assertRsvpDeadlineNotPassed,
+} from './rsvp-guards.util.js';
 
-// An archived event, to its guests: one neutral line, never "archived",
-// and nothing about the event (validate shows nothing of it; submit and
-// the ticket quote change nothing). 410 like an expired link: the
-// invitation existed and is gone. Restoring the event opens it again.
-export const EVENT_NO_LONGER_AVAILABLE_MESSAGE = 'This event is no longer available.';
-
-const assertEventNotArchived = (event: { isArchived: boolean }): void => {
-  if (event.isArchived) throw new HttpError(410, EVENT_NO_LONGER_AVAILABLE_MESSAGE);
-};
-
-// 403 — the guest is correctly identified (their token is valid), but
-// the event's current state means RSVPs aren't accepted right now. Not
-// a 409: nothing about THIS submission conflicts with anything; the
-// door is simply closed regardless of what they submit.
-const assertEventAcceptsRsvp = (effectiveStatus: EventStatus): void => {
-  if (effectiveStatus === 'PUBLISHED') return;
-  throw new HttpError(403, RSVP_BLOCK_MESSAGES[effectiveStatus] ?? 'This event is not currently accepting RSVPs.');
-};
-
-// rsvpDeadline is independent of Event.status (Batch A Task 1) — an event
-// can be perfectly PUBLISHED and still have RSVP submission closed. Only
-// guest self-service is affected; organiser guest management in
-// guest.service.ts never checks this. A date-only deadline closes at the
-// end of its day (event-rsvp-deadline.util.ts).
-const isRsvpDeadlinePassed = (rsvpDeadline: Date | null): boolean => hasDeadlinePassed(rsvpDeadline);
-
-// 410 Gone, not 403 — the ability to RSVP genuinely existed and is now
-// permanently gone as of a known point in time; that's precisely what
-// Gone means, and it's a more specific signal to a frontend than the
-// generic "not accepting RSVPs" 403 above. Same reasoning is applied
-// below to an expired invite token.
-//
-// This is now the ONLY gate distinguishing "still open" from "closed" —
-// a guest may resubmit (edit) their response as many times as they like
-// up to this point, and an event with no deadline stays editable until
-// assertEventAcceptsRsvp's own status check closes it at COMPLETED.
-// `isEdit` only changes the wording: a guest editing an existing answer
-// is told their existing response stands, not urged to "still RSVP".
-const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null, isEdit: boolean): void => {
-  if (isRsvpDeadlinePassed(rsvpDeadline)) {
-    const deadlineText = formatGuestDate(rsvpDeadline as Date);
-    throw new HttpError(
-      410,
-      isEdit
-        ? `Responses for this event closed on ${deadlineText}, and your response stands. Contact the organiser if you need to change it.`
-        : `Responses for this event closed on ${deadlineText}. Contact the organiser if you still need to RSVP.`
-    );
-  }
-};
+// Still exported from here: tests and other modules import them by this path.
+export { RSVP_BLOCK_MESSAGES, EVENT_NO_LONGER_AVAILABLE_MESSAGE };
 
 // Guest RSVP submissions are the first writes in this codebase performed by
 // a non-platform actor. Invite.updatedBy is a plain String (not an FK to
@@ -293,6 +246,20 @@ export const rsvpService = {
       .sort((a, b) => a.date.getTime() - b.date.getTime());
     const firstDayVenue = invitedDays[0] ? toDayVenueView(invitedDays[0]) : { location: null, address: null, latitude: null, longitude: null };
 
+    // The questions the guest is shown (DOCUMENT ones only while
+    // documentFields is on), and their previous answers to prefill: none
+    // to a hidden question, and none naming a file deleted since
+    // (guest-document.service.ts's liveAnswersOnly), so the form asks for
+    // the file again instead of re-sending a dead reference.
+    const shownFields = answerableFields(invite.event.rsvpFields);
+    const hiddenFieldIds = new Set(invite.event.rsvpFields.filter((f) => !shownFields.includes(f)).map((f) => f.id));
+    const previousAnswers = await guestDocumentService.liveAnswersOnly(
+      invite.rsvpResponses.filter((r) => !hiddenFieldIds.has(r.rsvpFieldId)),
+      invite.event.rsvpFields
+    );
+    const documents = await guestDocumentService.liveDocumentsForInvite(invite.id);
+    const maxDocumentBytes = isFeatureEnabled('documentFields') ? (await resolveDocumentLimits(invite.event)).maxBytesPerDocument : null;
+
     return {
       // Deliberate, hand-picked projection — a guest sees an invitation,
       // not a database row. Mirrors event-public.service.ts's
@@ -325,7 +292,7 @@ export const rsvpService = {
             date: day.date,
             startTime: day.startTime,
             endTime: day.endTime,
-            ...toDayVenueView(day),
+            ...toDayVenueView(day, { withOnlineUrl: true }),
           },
         })),
         event: {
@@ -358,9 +325,10 @@ export const rsvpService = {
           // sent regardless since it costs nothing and keeps this
           // projection simple.
           ticketsRefundable: invite.event.ticketsRefundable,
-          rsvpFields: invite.event.rsvpFields.map((f) => ({
+          rsvpFields: shownFields.map((f) => ({
             id: f.id,
             label: f.label,
+            description: f.description,
             fieldType: f.fieldType,
             isRequired: f.isRequired,
             options: f.options,
@@ -395,7 +363,17 @@ export const rsvpService = {
       attendingDayIds: invite.attendances
         .map((a) => a.eventDayId)
         .filter((id) => invite.inviteEventDay.some((d) => d.eventDayId === id)),
-      rsvpResponses: invite.rsvpResponses.map((r) => ({ rsvpFieldId: r.rsvpFieldId, value: r.value })),
+      // A MULTI_SELECT answer as its list of choices, as the form sends it.
+      rsvpResponses: withAnswerValues(previousAnswers, invite.event.rsvpFields).map((r) => ({ rsvpFieldId: r.rsvpFieldId, value: r.value })),
+      // The guest's own files already sent with their reply, one per
+      // DOCUMENT question answered: what the form shows beside the upload
+      // ("proof.pdf, 210 KB"). Their own names only; empty while
+      // documentFields is off.
+      documents,
+      // The most one uploaded document may be, in bytes (the event's plan;
+      // guests have no plan settings), for the form to refuse a larger file
+      // before sending it. Null while documentFields is off.
+      maxDocumentBytes,
       plusOneNames: invite.guest.plusOnes.map((p) => p.firstName),
       ticketPurchase: ticketPurchase
         ? {
@@ -421,6 +399,7 @@ export const rsvpService = {
       throw new HttpError(422, "Tickets aren't available for this event. Please refresh the page and reply again.");
     }
 
+    const documentFieldsOn = isFeatureEnabled('documentFields');
     const result = await prisma.$transaction(async (tx) => {
       // Every lookup a later step could need is folded into this ONE
       // query — existing plus-ones (with their invite ids, for archiving)
@@ -430,8 +409,10 @@ export const rsvpService = {
       // measured in testing at ~300-500ms; a handful of "just one more
       // lookup" calls is exactly what re-introduces the timeout this
       // whole file exists to avoid, even after every WRITE is batched.
+      // Removed, awaiting approval or declined: the same as an unknown token
+      // (registration-approval-gate.util.ts).
       const invite = await tx.invite.findUnique({
-        where: { token: data.token },
+        where: { token: data.token, ...INVITE_TOKEN_USABLE },
         include: {
           guest: {
             include: {
@@ -646,7 +627,12 @@ export const rsvpService = {
       // plus-one is exactly the kind of cost this rewrite exists to cut.
       if (isEdit) {
         await tx.attendance.deleteMany({ where: { inviteId: invite.id } });
-        await tx.rsvpResponse.deleteMany({ where: { inviteId: invite.id } });
+        // While documentFields is off the guest never sees a DOCUMENT
+        // question, so their answer to one (a file already sent) is kept
+        // through the edit rather than cleared, and its file with it.
+        await tx.rsvpResponse.deleteMany({
+          where: { inviteId: invite.id, ...(!documentFieldsOn && { rsvpField: { fieldType: { not: 'DOCUMENT' } } }) },
+        });
 
         if (invite.guest.plusOnes.length > 0) {
           const oldPlusOneInviteIds = invite.guest.plusOnes.flatMap((p) => p.invites.map((i) => i.id));
@@ -808,7 +794,25 @@ export const rsvpService = {
         // sections above.
         const responseRows = answerRows(invite.id, submittedResponses);
         await tx.rsvpResponse.createMany({ data: responseRows });
-        rsvpResponses.push(...responseRows);
+        // Returned as validate() returns them: a MULTI_SELECT answer as
+        // its list of choices.
+        rsvpResponses.push(...withAnswerValues(responseRows, invite.event.rsvpFields));
+      }
+
+      // A DOCUMENT answer names one of this guest's own uploads for that
+      // question (guest-document.service.ts's checkReferences); it is
+      // attached, and any file they had sent that this answer no longer
+      // names (replaced or removed) is marked for deletion, deleted once
+      // this commits. Nothing at all while documentFields is off: their
+      // answer and file were kept above.
+      let documentsReplaced = 0;
+      if (documentFieldsOn) {
+        const { referenced, toAttach } = await guestDocumentService.checkReferences(
+          tx, invite.eventId, invite.event.rsvpFields, submittedResponses, { inviteId: invite.id }
+        );
+        const now = new Date();
+        await guestDocumentService.attach(tx, toAttach, invite.id, now);
+        documentsReplaced = await guestDocumentService.requestReplacedDeletion(tx, invite.id, referenced, now);
       }
 
       // Paid-event decision: once a purchase exists for this invite, its
@@ -908,7 +912,7 @@ export const rsvpService = {
         },
       });
 
-      return { invite: updatedInvite, attendances, rsvpResponses, ticketPurchase, refundNotice, freshReservation, guestEmailForReservation };
+      return { invite: updatedInvite, attendances, rsvpResponses, ticketPurchase, refundNotice, freshReservation, guestEmailForReservation, documentsReplaced };
     }, {
       // Every write in this transaction is already batched to a FIXED
       // number of round trips regardless of day/field/plus-one count —
@@ -942,7 +946,11 @@ export const rsvpService = {
       maxWait: 10000,
     });
 
-    const { freshReservation, guestEmailForReservation, ...rest } = result;
+    const { freshReservation, guestEmailForReservation, documentsReplaced, ...rest } = result;
+
+    // Files this reply replaced or removed, deleted now the reply is saved;
+    // a failure is the documents sweep's to retry, never the guest's.
+    if (documentsReplaced > 0) await guestDocumentService.deleteRequestedNow({ inviteId: rest.invite.id });
 
     // Explicit guest-facing shape — never the raw Invite/TicketPurchase
     // rows the transaction above worked with. `rest.invite` is

@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type EventDayLocationType } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventDayRepository, type EventDayWrite, type EventDayPatch } from './event-day.repository.js';
 import { resolveDayVenueForCreate, resolveDayVenueForUpdate, type DayVenueInput } from './event-day-venue.util.js';
@@ -142,6 +142,8 @@ export interface StoredDay {
   address: string | null;
   latitude: Prisma.Decimal | number | null;
   longitude: Prisma.Decimal | number | null;
+  locationType: EventDayLocationType | null;
+  onlineUrl: string | null;
 }
 
 // Every rule for a change to a saved day, judged on the day it leaves

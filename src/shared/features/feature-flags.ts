@@ -45,6 +45,27 @@ export const FEATURE_NAMES = [
   // super admin's purge. Off: nothing is reminded or deleted; archiving
   // still records archivedAt, so switching it on later counts from there.
   'archiveMediaPurge',
+  // DOCUMENT questions: a guest uploads a file (a proof of payment, say) with
+  // their RSVP or registration (guest-document module). Off: no DOCUMENT
+  // question can be added, the upload routes refuse with
+  // DOCUMENT_FIELDS_UNAVAILABLE, guests are never shown one, and the
+  // organiser's view link is 404. Documents already received are kept.
+  'documentFields',
+  // The storage worker (storage/storage-deletion.worker.ts): files requested
+  // for deletion (replaced, released, unsaved, a deleted event's) are
+  // deleted from Cloudinary. Off: nothing is deleted by it, and requests
+  // keep being recorded, to be deleted once it is back on. An emergency
+  // stop; the documents pipeline and the archived-media purge have their own.
+  'storageDeletion',
+  // The storage retention rules (storage-retention.service.ts): rejected or
+  // removed Memory Hub items deleted 7 days later; guests' documents deleted
+  // when their event finishes (archived guests', invites' and questions'),
+  // 90 days after it finishes (the rest), and 30 days after it is cancelled
+  // (all), with the organisers' emails before the last two. Off: none of
+  // these deletes anything or emails anyone, and no countdown (deletesAt)
+  // is reported. The clocks keep running (rejectedAt, removedAt,
+  // cancelledAt are recorded), so switching it on catches up.
+  'storageRetention',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

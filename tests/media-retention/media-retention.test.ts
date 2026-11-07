@@ -17,21 +17,23 @@ import { type SubscriptionTier } from '@prisma/client';
 //  start their 30 days at the migration. Restoring respects the plan's
 //  event limit. The events list and views carry the dates.
 //
-//  destroyAssets, the one Cloudinary call a purge makes, is mocked: to see
-//  what would be deleted, and so the suite never deletes anything real.
-//  Each sweep runs over the whole test database, so every assertion looks
-//  only at this suite's own events' folders.
+//  A purge claims its items (purged, files requested) and the storage
+//  worker deletes the files, one by one (Round B: one deletion path).
+//  destroyAsset, the worker's one Cloudinary call, is mocked: to see what
+//  would be deleted, and so the suite never deletes anything real. Each
+//  sweep and worker run covers the whole test database, so every assertion
+//  looks only at this suite's own events' folders.
 // ─────────────────────────────────────────
 
-const { mockDestroyAssets, mockDestroyAsset } = vi.hoisted(() => ({ mockDestroyAssets: vi.fn(), mockDestroyAsset: vi.fn() }));
+const { mockDestroyAsset } = vi.hoisted(() => ({ mockDestroyAsset: vi.fn() }));
 vi.mock('../../src/shared/cloudinary/cloudinary.client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/shared/cloudinary/cloudinary.client.js')>()),
-  destroyAssets: mockDestroyAssets,
-  // The single delete: an upload landing on an archived event is removed.
   destroyAsset: mockDestroyAsset,
 }));
 
 import app from '../../src/app.js';
+import { fakeCloudinary } from '../helpers/fake-cloudinary.js';
+import { signedUpload, storedFile } from '../helpers/storage.js';
 import { createActor, createTenant, headersFor, installFirebaseMock, prisma, type Actor } from '../helpers/team.js';
 import { clearSentEmails, sentEmails } from '../helpers/sent-emails.js';
 import {
@@ -48,7 +50,7 @@ import { INACTIVE_SHARE_LINK_MESSAGE, PHOTO_ALBUM_UNAVAILABLE_MESSAGE } from '..
 import { mediaRetentionService } from '../../src/modules/media-retention/media-retention.service.js';
 import { mediaRetentionRepository } from '../../src/modules/media-retention/media-retention.repository.js';
 import { subscriptionTierConfigRepository } from '../../src/modules/subscription-tier-config/subscription-tier-config.repository.js';
-import { coverFolder } from '../../src/modules/upload/upload-folders.js';
+import { legacyCoverFolder } from '../../src/modules/upload/upload-folders.js';
 import { mediaPurgeDueAt } from '../../src/modules/event/event-media-retention.util.js';
 import { EVENT_NO_LONGER_AVAILABLE_MESSAGE } from '../../src/modules/rsvp/rsvp.service.js';
 import { ROUTE_NOT_FOUND_BODY } from '../../src/shared/middleware/feature.middleware.js';
@@ -95,8 +97,6 @@ beforeEach(() => {
     const config = await realFindByTier(tier);
     return config ? { ...config, maxEvents: eventLimit } : config;
   });
-  mockDestroyAssets.mockReset();
-  mockDestroyAssets.mockImplementation(async (publicIds: string[]) => ({ ok: true, deleted: publicIds, failed: [] }));
   mockDestroyAsset.mockReset();
   mockDestroyAsset.mockResolvedValue({ ok: true });
 });
@@ -112,13 +112,19 @@ afterAll(async () => {
   await restoreElevate();
 }, 120000);
 
-// What a sweep asked Cloudinary to delete from this event's folder, and as
-// which resource type.
+// What the worker asked Cloudinary to delete from this event's folder, and
+// as which resource type (each a single delete).
 const destroyedIn = (ev: TestEvent, resourceType?: 'image' | 'video'): string[] =>
-  mockDestroyAssets.mock.calls
+  mockDestroyAsset.mock.calls
     .filter((call) => !resourceType || call[1] === resourceType)
-    .flatMap((call) => call[0] as string[])
+    .map((call) => call[0] as string)
     .filter((id) => id.startsWith(`${ev.folder}/`));
+
+// The worker retries a failed file after a backoff (a minute, then two...):
+// a sweep "later" is one past it.
+const later = (minutes = 2) => new Date(Date.now() + minutes * 60_000);
+
+const fileOf = (publicId: string) => prisma.storedFile.findUniqueOrThrow({ where: { publicId } });
 
 const archiveViaApi = async (ev: TestEvent) => {
   const res = await request(app).delete(`/api/events/${ev.event.id}`).set(headersFor(organiser));
@@ -155,9 +161,9 @@ const memoriesLink = (eventId: string) => `${BASE}/events/${eventId}/manage/memo
 const remindersFor = (eventId: string) => sentEmails().filter((e) => e.text.includes(memoriesLink(eventId)));
 
 describe('the purge: 30 days after archiving, not before', () => {
-  it('archiving records archivedAt; at 29 days nothing is deleted; past 30 the media goes, the rows, event and cover stay', async () => {
+  it('archiving records archivedAt; at 29 days nothing is deleted; past 30 the media goes; the rows, the event and a cover with no StoredFile (never sent) stay', async () => {
     const ev = await newEvent(tenantId, organiser.id);
-    const cover = `${coverFolder(tenantId)}/${randomUUID()}`;
+    const cover = `${legacyCoverFolder(tenantId)}/${randomUUID()}`;
     await prisma.event.update({ where: { id: ev.event.id }, data: { coverImagePublicId: cover, coverImageUrl: `https://res.cloudinary.com/x/image/upload/${cover}.jpg` } });
     const photo = await addPhoto(ev);
     const pending = await addPhoto(ev, { status: 'PENDING' });
@@ -184,7 +190,10 @@ describe('the purge: 30 days after archiving, not before', () => {
     // nothing else (the cover is not in the Memory Hub folder, and was never sent).
     expect(destroyedIn(ev, 'image').sort()).toEqual([photo, pending, rejected].map((i) => i.cloudinaryPublicId).sort());
     expect(destroyedIn(ev, 'video')).toEqual([video.cloudinaryPublicId]);
-    expect(mockDestroyAssets.mock.calls.flatMap((c) => c[0] as string[])).not.toContain(cover);
+    expect(mockDestroyAsset.mock.calls.map((c) => c[0] as string)).not.toContain(cover);
+    // Through the worker: each file's StoredFile closed, the CDN copy invalidated.
+    for (const item of [photo, video]) expect((await fileOf(item.cloudinaryPublicId)).status).toBe('DELETED');
+    expect(mockDestroyAsset.mock.calls.find((c) => c[0] === photo.cloudinaryPublicId)![2]).toEqual({ type: 'upload', invalidate: true });
 
     const after = await items(ev);
     expect(after).toHaveLength(4);
@@ -298,9 +307,9 @@ describe('two sweeps racing', () => {
 
     // Cloudinary slow enough that both attempts are past the lease check
     // before either finishes.
-    mockDestroyAssets.mockImplementation(async (publicIds: string[]) => {
+    mockDestroyAsset.mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ok: true, deleted: publicIds, failed: [] };
+      return { ok: true };
     });
     const outcomes = await Promise.all([mediaRetentionService.runPurge(purgeId), mediaRetentionService.runPurge(purgeId)]);
 
@@ -316,25 +325,29 @@ describe('a failed Cloudinary deletion', () => {
     const [good1, bad, good2] = [await addPhoto(ev), await addPhoto(ev), await addPhoto(ev)];
     await dueForPurge(ev);
 
-    mockDestroyAssets.mockImplementation(async (publicIds: string[]) => ({
-      ok: true,
-      deleted: publicIds.filter((id) => id !== bad!.cloudinaryPublicId),
-      failed: publicIds.includes(bad!.cloudinaryPublicId) ? [{ publicId: bad!.cloudinaryPublicId, reason: 'rate limited' }] : [],
-    }));
+    mockDestroyAsset.mockImplementation(async (publicId: string) =>
+      publicId === bad!.cloudinaryPublicId ? { ok: false, reason: 'rate limited' } : { ok: true });
     await mediaRetentionService.sweep();
 
+    // Every item claimed (purged, hidden, can't be restored); the one file
+    // Cloudinary refused stays requested, with its failure, for a retry.
     let purge = await prisma.eventMediaPurge.findFirstOrThrow({ where: { eventId: ev.event.id } });
-    expect(purge).toMatchObject({ completedAt: null, leaseUntil: null, purgedCount: 2, failedCount: 1, lastError: 'rate limited' });
-    expect((await prisma.memoryItem.findUniqueOrThrow({ where: { id: bad!.id } })).purgedAt).toBeNull();
-    expect((await prisma.memoryItem.findUniqueOrThrow({ where: { id: good1!.id } })).purgedAt).not.toBeNull();
+    expect(purge).toMatchObject({ completedAt: null, leaseUntil: null, purgedCount: 3, failedCount: 1, lastError: 'rate limited' });
+    expect((await prisma.memoryItem.findUniqueOrThrow({ where: { id: bad!.id } })).purgedAt).not.toBeNull();
+    expect(await fileOf(bad!.cloudinaryPublicId)).toMatchObject({ status: 'DELETE_REQUESTED', deleteAttempts: 1, lastDeleteError: 'rate limited' });
+    expect((await fileOf(good1!.cloudinaryPublicId)).status).toBe('DELETED');
 
-    mockDestroyAssets.mockClear();
-    mockDestroyAssets.mockImplementation(async (publicIds: string[]) => ({ ok: true, deleted: publicIds, failed: [] }));
+    // Not before its backoff: nothing is sent again at once.
+    mockDestroyAsset.mockClear();
+    mockDestroyAsset.mockResolvedValue({ ok: true });
     await mediaRetentionService.sweep();
+    expect(destroyedIn(ev)).toEqual([]);
+
+    await mediaRetentionService.sweep(later());
 
     expect(destroyedIn(ev)).toEqual([bad!.cloudinaryPublicId]);
     purge = await prisma.eventMediaPurge.findFirstOrThrow({ where: { eventId: ev.event.id } });
-    expect(purge).toMatchObject({ purgedCount: 3, failedCount: 0, lastError: null, attemptCount: 2 });
+    expect(purge).toMatchObject({ purgedCount: 3, failedCount: 0, lastError: null, attemptCount: 3 });
     expect(purge.completedAt).not.toBeNull();
     expect((await items(ev)).every((i) => i.purgedAt !== null)).toBe(true);
     expect(good2).toBeDefined();
@@ -346,13 +359,13 @@ describe('a failed Cloudinary deletion', () => {
     await addPhoto(ev);
     await dueForPurge(ev);
 
-    mockDestroyAssets.mockImplementation(async () => ({ ok: false, reason: 'HTTP 500' }));
+    mockDestroyAsset.mockResolvedValue({ ok: false, reason: 'HTTP 500' });
     await mediaRetentionService.sweep();
     let purge = await prisma.eventMediaPurge.findFirstOrThrow({ where: { eventId: ev.event.id } });
-    expect(purge).toMatchObject({ completedAt: null, purgedCount: 0, failedCount: 2, lastError: 'HTTP 500' });
+    expect(purge).toMatchObject({ completedAt: null, purgedCount: 2, failedCount: 2, lastError: 'HTTP 500' });
 
-    mockDestroyAssets.mockImplementation(async (publicIds: string[]) => ({ ok: true, deleted: publicIds, failed: [] }));
-    await mediaRetentionService.sweep();
+    mockDestroyAsset.mockResolvedValue({ ok: true });
+    await mediaRetentionService.sweep(later());
     purge = await prisma.eventMediaPurge.findFirstOrThrow({ where: { eventId: ev.event.id } });
     expect(purge).toMatchObject({ purgedCount: 2, failedCount: 0 });
     expect(purge.completedAt).not.toBeNull();
@@ -579,7 +592,10 @@ describe('an archived event is private to its guests at once', () => {
     const { ev, token } = await albumWithGuest();
     const before = await request(app).post('/api/memory-hub/guest-view').send({ token });
     expect(before.body.data.available).toBe(true);
-    expect((await request(app).post('/api/memory-hub/guest-upload-signature').send({ token, mediaType: 'IMAGE' })).status).toBe(200);
+    const signedBefore = await request(app).post('/api/memory-hub/guest-upload-signature').send({ token, mediaType: 'IMAGE' });
+    expect(signedBefore.status).toBe(200);
+    const publicId = `${signedBefore.body.data.folder}/${signedBefore.body.data.publicId}`;
+    fakeCloudinary.put(publicId, { bytes: 1024 });
 
     await archiveViaApi(ev);
 
@@ -591,16 +607,15 @@ describe('an archived event is private to its guests at once', () => {
     expect(signature.status).toBe(404);
     expect(signature.body).toEqual({ status: 'error', message: PHOTO_ALBUM_UNAVAILABLE_MESSAGE });
 
-    // An upload signed before the archive, landing after: refused, saved
-    // nowhere, and its file removed.
-    const publicId = `${ev.folder}/${randomUUID()}`;
+    // The upload signed before the archive, landing after: refused, saved
+    // nowhere, and its file requested for deletion.
     const save = await request(app)
       .post('/api/memory-hub/guest-items')
       .send({ token, mediaUrl: deliveryUrl(publicId), cloudinaryPublicId: publicId, mediaType: 'IMAGE', bytes: 1024 });
     expect(save.status).toBe(404);
     expect(save.body).toEqual({ status: 'error', message: PHOTO_ALBUM_UNAVAILABLE_MESSAGE });
     expect(await prisma.memoryItem.count({ where: { cloudinaryPublicId: publicId } })).toBe(0);
-    expect(mockDestroyAsset).toHaveBeenCalledWith(publicId, 'image');
+    expect((await storedFile(publicId)).status).toBe('DELETE_REQUESTED');
 
     // Nothing a guest sees says why.
     for (const res of [view, signature, save]) expect(JSON.stringify(res.body)).not.toMatch(/archiv|memory hub|plan/i);
@@ -614,11 +629,12 @@ describe('an archived event is private to its guests at once', () => {
     const { ev, token } = await albumWithGuest();
     const other = await newEvent(tenantId, organiser.id);
     await archiveViaApi(ev);
-    const foreign = `${other.folder}/${randomUUID()}`;
+    const { publicId: foreign } = await signedUpload({ kind: 'MEMORY_ITEM', tenantId, eventId: other.event.id, mediaType: 'IMAGE', uploadedBy: { userId: organiser.id } });
     const save = await request(app)
       .post('/api/memory-hub/guest-items')
       .send({ token, mediaUrl: deliveryUrl(foreign), cloudinaryPublicId: foreign, mediaType: 'IMAGE', bytes: 1024 });
     expect(save.status).toBe(404);
+    expect((await storedFile(foreign)).status).toBe('SIGNED');
     expect(mockDestroyAsset).not.toHaveBeenCalled();
   });
 });
@@ -636,17 +652,17 @@ describe('the archiveMediaPurge flag', () => {
     await archivedDaysAgo(failing, 31);
 
     // A purge already begun, with a failure left to retry.
-    mockDestroyAssets.mockImplementation(async () => ({ ok: false, reason: 'HTTP 500' }));
+    mockDestroyAsset.mockResolvedValue({ ok: false, reason: 'HTTP 500' });
     await mediaRetentionService.purgeNowAsSuperAdmin(failing.event.id, superAdmin.id, 'SUPER_ADMIN').catch(() => undefined);
     expect((await prisma.eventMediaPurge.findFirstOrThrow({ where: { eventId: failing.event.id } })).completedAt).toBeNull();
-    mockDestroyAssets.mockClear();
-    mockDestroyAssets.mockImplementation(async (publicIds: string[]) => ({ ok: true, deleted: publicIds, failed: [] }));
+    mockDestroyAsset.mockClear();
+    mockDestroyAsset.mockResolvedValue({ ok: true });
 
     vi.stubEnv('FEATURES_DISABLED', 'archiveMediaPurge');
 
-    const result = await mediaRetentionService.sweep();
+    const result = await mediaRetentionService.sweep(later());
     expect(result).toEqual({ reminders: [], purges: [] });
-    expect(mockDestroyAssets).not.toHaveBeenCalled();
+    for (const ev of [reminded, due, failing]) expect(destroyedIn(ev)).toEqual([]);
     expect(remindersFor(reminded.event.id)).toEqual([]);
     expect(await prisma.eventMediaPurge.count({ where: { eventId: due.event.id } })).toBe(0);
     expect(await prisma.mediaPurgeReminderClaim.count({ where: { eventId: reminded.event.id } })).toBe(0);
@@ -673,7 +689,7 @@ describe('the archiveMediaPurge flag', () => {
     // reminded, not purged (see the next test); a purge begun before the
     // switch is retried.
     vi.stubEnv('FEATURES_DISABLED', '');
-    await mediaRetentionService.sweep();
+    await mediaRetentionService.sweep(later());
     expect(remindersFor(reminded.event.id)).toHaveLength(1);
     expect(remindersFor(due.event.id)).toHaveLength(1);
     expect(destroyedIn(due)).toEqual([]);

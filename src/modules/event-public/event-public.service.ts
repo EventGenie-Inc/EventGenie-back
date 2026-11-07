@@ -17,8 +17,12 @@ import {
   assertAnswersValid,
   assertAnswersKnown,
   isValidRsvpResponseShape,
+  answerableFields,
   type RsvpAnswer,
 } from '../rsvp/rsvp-answers.util.js';
+import { toDayVenueView } from '../event-day/event-day-venue.util.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { resolveDocumentLimits } from '../guest-document/guest-document-allowance.util.js';
 import {
   REGISTRATION_ERROR_CODES,
   resolveRegistrationState,
@@ -76,26 +80,34 @@ const rulesFor = (event: ShareTokenEvent): RegistrationRulesEvent => ({
 // shows (PublicEventView). Built as an explicit allowlist, never a spread
 // of the Prisma row, so a column added to Event or EventDay later can't
 // start leaking by itself (STEERING "Guest-facing responses").
-const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicEventView => ({
+const toPublicView = (event: ShareTokenEvent, state: RegistrationState, maxDocumentBytes: number | null): PublicEventView => ({
   name: event.name,
   hostName: event.hostName,
   description: event.description,
   coverImageUrl: event.coverImageUrl,
   // Live days, earliest first (eventRepository.findByShareToken).
-  days: event.eventDays.map((d) => ({
-    id: d.id,
-    label: d.label,
-    date: d.date,
-    startTime: d.startTime,
-    endTime: d.endTime,
-    location: d.location,
-    address: d.address,
-    openForRegistration: d.openForRegistration,
-  })),
+  // An online day reads "Online" with no address. Its link is never here:
+  // only people invited or registered see it (event-day-venue.util.ts).
+  days: event.eventDays.map((d) => {
+    const venue = toDayVenueView(d);
+    return {
+      id: d.id,
+      label: d.label,
+      date: d.date,
+      startTime: d.startTime,
+      endTime: d.endTime,
+      locationType: venue.locationType,
+      location: venue.location,
+      address: venue.address,
+      openForRegistration: d.openForRegistration,
+    };
+  }),
   // Live questions in order (findByShareToken), the RSVP form's projection.
-  rsvpFields: event.rsvpFields.map((f) => ({
+  // DOCUMENT questions only while documentFields is on (answerableFields).
+  rsvpFields: answerableFields(event.rsvpFields).map((f) => ({
     id: f.id,
     label: f.label,
+    description: f.description,
     fieldType: f.fieldType,
     isRequired: f.isRequired,
     options: f.options,
@@ -109,6 +121,7 @@ const toPublicView = (event: ShareTokenEvent, state: RegistrationState): PublicE
     plusOnesAllowed: event.registrationPlusOnesAllowed,
     allowedEmailDomains: event.registrationEmailDomains,
   },
+  maxDocumentBytes,
 });
 
 // ─────────────────────────────────────────
@@ -234,20 +247,30 @@ const REGISTERED_MESSAGE = 'Check your email for your e-velope.';
 const SEND_FAILED_MESSAGE =
   "We couldn't send your email just now. Register again with the same email address in a few minutes and we'll send it.";
 
-const registrationAnswer = (emailSent: boolean): RegistrationResult => ({
-  outcome: 'REGISTERED',
-  emailSent,
-  message: emailSent ? REGISTERED_MESSAGE : SEND_FAILED_MESSAGE,
-});
+export const PENDING_APPROVAL_MESSAGE = "You'll get an email once the organiser approves your registration.";
+
+// With auto-approve off (Event.registrationAutoApprove) every registration,
+// new or repeat, gets the one pending answer whatever was or wasn't sent:
+// the outcome follows the event's setting, never the person.
+const registrationAnswer = (event: { registrationAutoApprove: boolean }, emailSent: boolean): RegistrationResult =>
+  event.registrationAutoApprove
+    ? { outcome: 'REGISTERED', emailSent, message: emailSent ? REGISTERED_MESSAGE : SEND_FAILED_MESSAGE }
+    : { outcome: 'PENDING_APPROVAL', emailSent: false, message: PENDING_APPROVAL_MESSAGE };
 
 // Someone already on this event's guest list registering with the same
 // email: no second guest. Their own link is emailed to that address again
 // (only its owner can read it). Returns whether it was sent.
 const resendExistingInvitation = async (
   event: ShareTokenEvent,
-  guest: { id: string; selfRegisteredAt: Date | null },
+  guest: { id: string; selfRegisteredAt: Date | null; pendingApproval: boolean },
   email: string
 ): Promise<boolean> => {
+  // Still awaiting the organiser's approval (even if auto-approve has since
+  // been switched on): they have no link yet, and registering again must
+  // not be a way round the approval. Nothing is sent; the answer is still
+  // the one a new registration would get.
+  if (guest.pendingApproval) return true;
+
   const invite = await eventPublicRepository.findLatestInviteForGuest(guest.id);
   // Every invite of theirs was archived by the organiser: that's the
   // organiser's decision to undo, not this page's. Nothing is sent, and
@@ -275,7 +298,8 @@ export const eventPublicService = {
   viewByShareToken: async (shareToken: string): Promise<PublicEventView> => {
     const event = await findPublicEvent(shareToken);
     const [seats, { limit }] = await Promise.all([eventPublicRepository.countSeats(event.id), resolveGuestLimit(event)]);
-    return toPublicView(event, resolveRegistrationState(rulesFor(event), seats, limit));
+    const maxDocumentBytes = isFeatureEnabled('documentFields') ? (await resolveDocumentLimits(event)).maxBytesPerDocument : null;
+    return toPublicView(event, resolveRegistrationState(rulesFor(event), seats, limit), maxDocumentBytes);
   },
 
   // Creates the guest and their accepted invite (their days, their
@@ -325,6 +349,14 @@ export const eventPublicService = {
     // codes; a registrant is attending, so required ones must be answered).
     assertAnswersValid(event.rsvpFields, input.answers, true);
     assertAnswersKnown(event.rsvpFields, input.answers, UNKNOWN_QUESTION_MESSAGE);
+    // A DOCUMENT answer names an unclaimed upload made on this page for that
+    // question (guest-document.service.ts). Checked before the lock and the
+    // same way whether or not the email is already a guest; attached only
+    // when a registrant is created (a repeat registration stores no second
+    // answers, so its upload is left for the sweep).
+    const documents = isFeatureEnabled('documentFields')
+      ? await guestDocumentService.checkReferences(undefined, event.id, event.rsvpFields, input.answers, { inviteId: null })
+      : { referenced: [], toAttach: [] };
 
     const { limit } = await resolveGuestLimit(event);
 
@@ -363,9 +395,15 @@ export const eventPublicService = {
           attendingDayIds,
           plusOneNames: input.plusOneNames,
           answers: input.answers,
+          // Auto-approve off: saved (holding its seats) but awaiting the
+          // organiser, and nothing is emailed (registration-approval.service.ts).
+          pendingApproval: !event.registrationAutoApprove,
         },
         new Date()
       );
+      // In the same transaction: a file the sweep (or a racing
+      // registration) took first refuses this registration whole.
+      await guestDocumentService.attach(tx, documents.toAttach, registrant.invite.id, new Date());
       return { registrant } as const;
     }).catch((err: unknown) => {
       // The unique index on a live guest's email: an organiser (who takes no
@@ -376,22 +414,28 @@ export const eventPublicService = {
 
     // That address is on the list now, so this gets an answer that's the
     // same either way, the "couldn't send" one; registering again re-sends
-    // their link.
-    if (!outcome) return registrationAnswer(false);
+    // their link. (With auto-approve off, the pending answer.)
+    if (!outcome) return registrationAnswer(event, false);
 
     // Already a guest: they're sent their own link whatever the answer
-    // (a closing date or a full cap still re-sends it), and get the answer
-    // a new registration would. Nothing about them changes.
+    // (a closing date or a full cap still re-sends it), unless they are
+    // still awaiting approval, and get the answer a new registration
+    // would. Nothing about them changes.
     if ('existing' in outcome) {
       const sent = await resendExistingInvitation(event, outcome.existing, input.email);
       if (outcome.refusal) throw outcome.refusal;
-      return registrationAnswer(sent);
+      return registrationAnswer(event, sent);
     }
+
+    // Awaiting approval: nothing about the event is sent until the
+    // organiser approves (registration-approval.service.ts sends this same
+    // email then).
+    if (!event.registrationAutoApprove) return registrationAnswer(event, false);
 
     // After the commit: a failed send leaves a real registration, and
     // registering again with the same email re-sends it.
     const days = event.eventDays.filter((d) => attendingDayIds.includes(d.id));
     const { ok } = await inviteDispatchService.sendRegistrationEmail(event, outcome.registrant.invite, input.email, days, 'REGISTRATION');
-    return registrationAnswer(ok);
+    return registrationAnswer(event, ok);
   },
 };

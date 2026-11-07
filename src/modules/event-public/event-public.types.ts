@@ -1,4 +1,4 @@
-import { type RsvpFieldType } from '@prisma/client';
+import { type EventDayLocationType, type RsvpFieldType } from '@prisma/client';
 
 // Public self-registration — everything arrives from an unauthenticated
 // POST body, so every field is checked at runtime (event-public.service.ts's
@@ -67,6 +67,7 @@ export interface PublicEventView {
     date: Date;
     startTime: Date | null;
     endTime: Date | null;
+    locationType: EventDayLocationType;
     location: string | null;
     address: string | null;
     openForRegistration: boolean;
@@ -76,6 +77,7 @@ export interface PublicEventView {
   rsvpFields: {
     id: string;
     label: string;
+    description: string | null;
     fieldType: RsvpFieldType;
     isRequired: boolean;
     options: string | null;
@@ -85,12 +87,19 @@ export interface PublicEventView {
     plusOnesAllowed: number;
     allowedEmailDomains: string[];
   };
+  // The most one uploaded document may be, in bytes (the event's plan,
+  // guest-document-allowance.util.ts), for the upload to refuse a larger
+  // file before sending it. Null while documentFields is off.
+  maxDocumentBytes: number | null;
 }
 
-// One outcome: a repeat registration answers exactly as a new one does
-// (event-public.service.ts's registrationAnswer), so nothing in the
-// response says whether the email was already a guest.
-export type RegistrationOutcome = 'REGISTERED';
+// One outcome per event setting, never per person: a repeat registration
+// answers exactly as a new one would (event-public.service.ts), so nothing
+// in the response says whether the email was already a guest.
+//   REGISTERED        auto-approve on: the invitation is emailed now.
+//   PENDING_APPROVAL  auto-approve off: nothing is emailed until the
+//                     organiser approves; emailSent is always false.
+export type RegistrationOutcome = 'REGISTERED' | 'PENDING_APPROVAL';
 
 // POST /api/public-events/:shareToken/register. Never the invite token:
 // the link goes only to the email address, so a registration (or a

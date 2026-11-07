@@ -15,12 +15,15 @@ Conventions every contributor and AI coding agent must follow.
 > | | Windows | Mac |
 > |---|---|---|
 > | Backend | `C:\Users\Levy\Desktop\EventGenie-back` | `~/EventGenie-back` |
-> | Frontend | `C:\Users\Levy\Desktop\eventgenie-front` | `~/eventgenie-front-1` |
+> | Frontend | `C:\Users\Levy\Desktop\evelope-front` | `~/eventgenie-front-1` |
 >
 > The frontend has this file's copy at its root (`STEERING.md`) and the
-> Angular app in its `eventgenie-front` subfolder. On the Mac,
-> `~/EventGenie-front` is a legacy prototype, not the frontend. Ignore any
-> older path in notes or memory, such as a OneDrive or `C:\dev\…` one.
+> Angular app in its `eventgenie-front` subfolder. **On Windows the
+> frontend is `C:\Users\Levy\Desktop\evelope-front`, and only that.** The
+> older clone at `C:\Users\Levy\Desktop\eventgenie-front` is to be deleted:
+> never read it, copy to it or work in it. On the Mac, `~/EventGenie-front`
+> is a legacy prototype, not the frontend. Ignore any older path in notes
+> or memory, such as a OneDrive or `C:\dev\…` one.
 
 **Read this before writing any code.** Task prompts assume it and will
 not repeat what is here. Where a prompt contradicts this file, the
@@ -193,6 +196,7 @@ before the pilot merge:
 | `/feedback` (body `selectedPhotoIds`) | safe (the event's own eligible photos only) |
 | `/pass/purchases/:purchaseId/reconcile` and the SMS bundle's | safe (looked up by id and event) |
 | `/full` (every row id) | safe (matched against the event's own live rows, else that part's 404) |
+| `/documents/:documentId/link` | safe (`getScoped` on the URL's event, then the document's own `eventId`; vendors the global 404) |
 
 `/api/guests/:id` has no event in its URL and goes through
 `resolveEventScope` (see "The assignment lock").
@@ -417,6 +421,17 @@ or for a request with no email its IP through `ipKeyGenerator`. A shared
 fallback bucket (it used to be one `'unknown'` key for every email-less
 request) lets one caller refuse everyone else.
 
+**Document uploads** (see "Document fields") follow the same two shapes.
+`POST /api/rsvp/documents`: per invite, 20 / 5 minutes
+(`documentUploadInviteLimiter`, `GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN`,
+the SHA-256 of the token; it runs after the file is read, since the token
+is in the multipart body), behind an IP backstop of 100 failed / 5 minutes
+(`documentUploadIpLimiter`, before the file is read). `POST
+/api/public-events/:shareToken/documents`: registration's numbers with their
+own budgets, 500 / 15 minutes per IP (`registrationDocumentIpLimiter`) and
+300 / 5 minutes per event (`registrationDocumentEventLimiter`), both before
+the file is read.
+
 **RSVP submit is limited per invite** (`rsvpSubmitInviteLimiter`, 20 an
 hour, every request counted, keyed by the SHA-256 of the invite token).
 It bounds how fast one invite can test addresses through the email-change
@@ -426,24 +441,246 @@ frontend submits once per tap, never on its own.
 
 ### Client-supplied Cloudinary assets
 
-**A client-supplied Cloudinary publicId is checked with
-`isSignedPublicIdInFolder` before it is stored or deleted.** Every upload
-is signed into a folder that names its owner, with a server-chosen
-`<uuid>` public_id (`src/modules/upload/upload-folders.ts` builds every
-folder, for signing and checking alike). The browser then reports the
-publicId back, and it is just a string: this server holds the API secret,
-so an unchecked publicId handed to `destroyAsset` deletes whatever asset
-it names, other events' and other tenants' included. PublicIds are
-readable in any Cloudinary URL, which every guest sees. Check against the
-folder for the exact owner (this event, this tenant) and 422 otherwise,
-**before** any path that could destroy it. The URL stored beside it gets
-the same treatment: `isCloudinaryDeliveryUrlFor` ties it to exactly the
-checked publicId, so a vetted id can't sit next to a URL pointing
-anywhere else. Found missing on Memory Hub guest and organiser uploads,
-event covers (create, update, wizard materialize) and Memory Hub
-`mediaUrl`; invitation designs and feedback logos were built with both
-checks. An id
-already stored on a record is not re-checked when re-sent unchanged.
+**A client-supplied Cloudinary publicId is accepted only through its
+StoredFile** (`storedFileService.acceptUpload`, see "Storage"): a row this
+server wrote when it signed the upload, of the right kind and resource type,
+for this exact tenant and event (a cover: for this event, or for none yet),
+still unsaved (SIGNED or UPLOADED; a cover held by this very wizard draft
+too). Anything else (another owner's upload, one signed for another event,
+one never uploaded) is **422 `UPLOAD_NOT_FOUND`** on every route (covers,
+Memory Hub for organisers and guests, designs, logos), with the route's own
+words (`uploadNotFound`), and **nothing is requested for deletion**: another
+owner's file is never this request's to delete. A route's own invalid code
+(a logo's `FEEDBACK_LOGO_INVALID`) is only for something else wrong with
+it, such as a link that isn't its own. PublicIds are readable in
+any Cloudinary URL, which every guest sees, and this server holds the API
+secret, so a folder match alone proves nothing. The URL stored beside it is
+still tied to exactly that publicId by `isCloudinaryDeliveryUrlFor`,
+checked first, so a mismatched pair is refused before anything else: Memory
+Hub items, designs, logos and covers (an event's `coverImageUrl`, checked
+whenever it or the cover's public id changes, on create, update, the full
+update and the wizard's materialize; 422). An id
+already stored on a record is not re-checked when re-sent unchanged. An id
+already stored is checked against its owner's folders before it is ever
+sent to Cloudinary (`isSignedPublicIdInAnyFolder`, this environment's
+folder or the legacy one) by the purge, the download and documents.
+
+### Private storage: guests' documents
+
+**A file a guest uploads for a DOCUMENT question is never publicly
+reachable.** A proof of payment can hold bank details, so unlike every other
+upload it never goes browser-to-Cloudinary with a signature: the browser
+sends it to this server, which checks it (see "Document fields") and
+stores it itself (`uploadPrivateRawAsset`,
+`shared/cloudinary/cloudinary-private-asset.util.ts`) as a `raw` asset of
+delivery type **`private`**, in the event's own documents folder
+(`guestDocumentFolder`: `<env>/t/<tenantId>/e/<eventId>/document`; before
+2026-11, `eventgenie/<tenantId>/documents/<eventId>`), its StoredFile
+written before the file is sent (see "Storage"). No delivery URL
+serves a private original, and none is ever stored or returned. The only
+way to read one is a **signed Cloudinary `download` link that expires
+after 5 minutes** (`buildPrivateDownloadUrl`), minted per view for an
+organiser who can open the event, never stored, never emailed, never in
+the export. Deleting one names its type: `destroyAssets(ids, 'raw',
+'private')`. The public id is `<folder>/<uuid>/<safe name>.<ext>` (the safe
+name is what the download is called), checked with
+`isGuestDocumentPublicIdInAnyFolder` (this environment's folder or the
+legacy one) before any delete or link. A new kind of
+sensitive upload follows the same path; it never gets a public URL "for
+now".
+
+### Storage
+
+Storage is a selling point, so **every file this app puts in Cloudinary
+has a record, and is deleted only through it** (`src/modules/storage/`).
+
+- **One record per file: `StoredFile`.** `publicId` (unique),
+  `resourceType` (IMAGE, VIDEO, RAW), `deliveryType` (UPLOAD, PRIVATE),
+  `kind` (COVER, MEMORY_ITEM, INVITATION_DESIGN, FEEDBACK_LOGO,
+  GUEST_DOCUMENT), `tenantId`, `eventId`, `draftId` (a wizard draft
+  holding a cover), the uploader (`uploadedByUserId` or
+  `uploadedByInviteId`), `bytes` and `format` (Cloudinary's, never the
+  browser's), `status`, timestamps, `deleteAttempts`,
+  `nextDeleteAttemptAt`, `lastDeleteError`, `legacy`. Status only moves
+  forward: **SIGNED → UPLOADED → ATTACHED → DELETE_REQUESTED → DELETED**.
+  The row is written **when the upload is signed**
+  (`storedFileService.signUpload`; a guest document: before it is sent),
+  so a file whose save never happens still has one. Owners point at it:
+  `Event.coverFileId`, `MemoryItem.storedFileId`,
+  `InvitationDesign.storedFileId`, `EventFeedback.logoFileId`,
+  `GuestDocument.storedFileId`. Attaching is a conditional write, so one
+  upload can't be saved twice (409 `UPLOAD_ALREADY_USED`, "This upload has
+  already been saved.": the other save happened). A new kind of
+  upload gets a kind here, signs through `signUpload` and saves through
+  `acceptUpload`; it never signs its own.
+- **Paths are fixed by the owner alone** (`upload-folders.ts`):
+  `<env>/t/<tenantId>/e/<eventId>/<kind>/<uuid>` for an event's files
+  (`cover`, `memory`, `design`, `document`) and
+  `<env>/t/<tenantId>/<kind>/<uuid>` for a tenant's (`feedback-logo`, and
+  `cover` for a cover uploaded before its event exists: the wizard, a new
+  event; its row is tied to the event when the event is created). Nothing
+  depends on any other file existing. `<env>` is **`STORAGE_ENV`**: `dev`,
+  `staging` or `prod`, required, checked at startup (`server.ts` refuses
+  to start without it) and again whenever anything is signed. Dev and
+  staging share one Cloudinary account; prod has its own. Files stored
+  before 2026-11 keep their legacy paths (`eventgenie/<tenantId>/...`) and
+  are never moved or renamed.
+- **Sizes are Cloudinary's, never the browser's.** The `bytes` a browser
+  sends with a cover, design, logo or Memory Hub item is accepted and
+  ignored. The size checked (and stored on a Memory Hub item, and counted
+  in the quota) comes from Cloudinary's signed upload notification when it
+  has arrived (`POST /api/storage/cloudinary/notifications`, verified by
+  `X-Cld-Signature` over the raw body, timestamp within 2 hours), else from
+  one `explicit` call at save (the Upload API: signed, not rate-limited,
+  unlike the Admin API's per-asset lookup). Over its kind's limit, or over
+  the quota: refused and requested for deletion. Cloudinary unreachable:
+  503 `UPLOAD_NOT_READY`, the file left for a retry. A signature never
+  used: 422 `UPLOAD_NOT_FOUND`, its row closed. The notification is signed
+  into every upload only when `STORAGE_NOTIFICATION_URL` is set, because
+  the browser must then post that field too: the signature response's
+  `params` holds every field to post, and the frontend must send exactly
+  those before the variable is set. Its value is the webhook route on the
+  environment's own API domain:
+  `https://dev.api.e-velope.co.za/api/storage/cloudinary/notifications`
+  (dev), `https://e-velope-staging.onrender.com/api/storage/cloudinary/notifications`
+  (staging), `https://prod.api.e-velope.co.za/api/storage/cloudinary/notifications`
+  (prod).
+- **Deleting is only ever a request**, recorded in the same transaction as
+  the change that made the file unwanted (`storedFileService.requestDeletion`).
+  **The storage worker does the deleting** (`storage-deletion.worker.ts`,
+  every minute, started by `server.ts` only): files marked
+  DELETE_REQUESTED, a batch of 100 at a time grouped by resource and
+  delivery type, each by its exact public id through the Upload API's
+  `destroy` with `invalidate` (the CDN copy goes too). Never by folder.
+  "Not found" is done. A failure is retried with backoff (1, 2, 4 ...
+  minutes, at most 6 hours apart) and never given up; Sentry hears on the
+  3rd failure in a row and every 10th after (ids only, never a public id,
+  which can carry a document's file name). Each batch is a lease taken
+  with `SKIP LOCKED`, so servers never take the same file. **It is the one
+  deletion path** (since Round B, 2026-11): guests' documents (the worker
+  marks the `GuestDocument` deleted with its file), an archived event's
+  Memory Hub media and every retention rule below request deletion and the
+  worker deletes. Where someone is waiting on it (a replaced document, an
+  event deleted, a purge, a release) the caller also asks for it at once
+  (`storageDeletionWorker.deleteNow`, claimed in batches of 100, never
+  throwing); what isn't done then, the worker does. A file whose owner has
+  no `StoredFile` (an unmatched legacy item) gets a legacy row first
+  (`storedFileService.ensureRecorded` / `requestItemFiles`).
+- **Only the current file is kept.** Replacing or clearing a cover (the
+  event form, the full update), a design (or switching it to a template)
+  or a feedback logo requests the old file's deletion with the save. A
+  wizard draft holds the cover its payload names (ATTACHED, `draftId`);
+  a cover it stops naming is requested, discarding the draft (or its
+  expiry) releases its
+  cover, and materialising hands the cover to the event. The browser
+  releases an upload it won't save (another cover picked, an upload
+  cancelled) with `POST /api/storage/files/release` `{ publicId }`
+  (organiser) or `POST /api/storage/files/guest-release`
+  `{ token, publicId }` (guest): only the uploader's own SIGNED or UPLOADED
+  file, deleted at once; anything else is 404 `UPLOAD_NOT_FOUND`.
+- **Wizard drafts expire.** A draft untouched for 30 days
+  (`DRAFT_EXPIRY_DAYS`, `event-draft.service.ts`; every autosave touches
+  it) is deleted by the storage sweep, and the cover it holds is requested
+  for deletion in the same transaction. A draft saved again in the meantime
+  is kept (the delete is conditional on it still being untouched). Every
+  draft read or saved (`GET`/`PUT /api/event-drafts/current`) carries
+  `expiresAt`; the wizard shows it and keeps no copy of the 30 days.
+- **Uploads never saved are swept**: SIGNED or UPLOADED files still
+  unattached 24 hours after signing are requested for deletion by the
+  storage sweep. A guest document with its `GuestDocument` row is the
+  documents sweep's; one whose row was never written (its upload failed or
+  timed out, or the row's write did) is this one's.
+- **Deleting an event** requests every upload signed for it and never
+  saved, in the archive's own transaction. Everything saved waits 30 days
+  and goes with the archived-media purge, after its reminder: its cover and
+  uploaded invitation design (the purge then clears the event's cover
+  fields and archives the design), its Memory Hub photos and videos and its
+  guests' documents (see "Archived events: Memory Hub retention"; until
+  2026-11 the cover, design and documents were deleted at once). Restoring
+  before the purge brings the event back with all of them. A cover or
+  design replaced while the event is live is still deleted at once (above). A feedback
+  logo is the company's and stays. Restoring the event never brings a
+  deleted file back. An upload signed before the event was deleted and
+  saved after is requested for deletion, organiser or guest.
+- **Existing files** got legacy rows from the migration
+  (`20261105090000_stored_files`) for every file a record referenced, so
+  they are deleted properly from now on. Nothing was deleted by it. Files no
+  record references are left alone.
+- **The weekly reconciliation** (`storage-reconciliation.service.ts`,
+  claimed once per ISO week) lists this environment's prefix in Cloudinary
+  (Admin API, read-only) against `StoredFile`: orphans (no row, or a row
+  that says DELETED), rows whose file is missing, and size differences
+  (legacy rows checked against the legacy prefix, never called orphans,
+  since dev and staging share it). A report only: **it never deletes**.
+  Super admins read it: `GET /api/admin/storage/reconciliations` (latest
+  20, totals), `GET /api/admin/storage/reconciliations/:id` (with details,
+  each list capped at 200, a document's file name never shown), `POST` to
+  run one now; the global 404 for everyone else.
+- **Behind `storageDeletion`** (on unless switched off): off, the worker
+  deletes nothing (documents and the archived-media purge included: a purge
+  then stays incomplete, "Waiting for the storage worker"); requests keep
+  being recorded and are deleted once it is back on.
+- **Retention rules** (`src/modules/storage-retention/`; the sweep every
+  15 minutes, started by `server.ts` only, five minutes after startup).
+  Each only requests deletion, in the transaction of its own claim; the
+  worker deletes:
+  - **Rejected and removed Memory Hub items: 7 days later**
+    (`MEMORY_ITEM_DELETION_DAYS`, `memory-hub/memory-item-retention.util.ts`).
+    Rejecting records `MemoryItem.rejectedAt` (rejecting again keeps the
+    first time), removing (`DELETE .../items/:id`, an archive) records
+    `removedAt`; approving clears `rejectedAt`, restoring clears
+    `removedAt`. Both set: whichever came first. The claim marks the item
+    purged (and archived) in one `UPDATE … RETURNING` whose WHERE re-checks
+    the rule, and requests its file in the same transaction; approve and
+    restore are conditional on `purgedAt` being null, so of a race exactly
+    one wins. After the claim, approving or restoring is **409
+    `MEMORY_ITEM_DELETED`**. Every item the organiser sees (the list, the
+    detail, approve, reject, remove, restore) carries **`deletesAt`** (null
+    when kept, and while `storageRetention` is off); the removed items still
+    restorable are listed by `GET .../items?removed=true`. Items already
+    rejected or removed got the migration's time (`20261106090000_storage_rules`).
+  - **Guests' documents of an archived guest, invite or DOCUMENT question:
+    when the event finishes** (the end of its last live day,
+    `eventFinishesAt`, the rule `resolveEffectiveStatus` uses). Archiving
+    any of them deletes nothing, and restoring before the finish brings the
+    documents back. The claim (`EventDocumentPurge`, reason
+    `ARCHIVED_AT_FINISH`, once per event) is taken under the event's row
+    lock, re-checks that the event has finished, and requests only the
+    documents whose owner is archived at that moment; guest and invite
+    restores take the same lock, so a restore during the sweep keeps them.
+    Archived after the finish: they go with the 90-day rule.
+  - **A cancelled event's documents: 30 days after cancelling**
+    (`Event.cancelledAt`, set by cancel; events already cancelled got the
+    migration's time), every one, archived guests' included.
+  - **A finished event's documents: 90 days after the finish**, every one
+    left. Whichever deletion comes first (this, the finish rule, the
+    cancel rule, an archived event's purge) wins: each requests only what
+    is still kept.
+  - **An archived event's documents: with its Memory Hub media**, 30 days
+    after archiving, after the purge's reminder (see "Archived events:
+    Memory Hub retention"). The purge requests them only with
+    `storageRetention` on and past the floor below; a purge that ran
+    without them leaves them, and this sweep requests them once it may
+    (`findPurgesWithDocumentsLeft`: documents uploaded before a begun
+    purge, still kept; reported as `archivedEventDocuments`).
+  - **The organisers are emailed 7 days before** the 30- and 90-day
+    deletions (see "Email"), claimed once per event and rule
+    (`DocumentPurgeReminderClaim`) before it is sent, only while documents
+    are kept. **The deletion never runs until a week after its reminder**
+    (`documentPurgeDueAt`): a late reminder moves the date, as the
+    archived-media purge's does.
+  - **Behind `storageRetention`** (on unless switched off): off, none of
+    these deletes anything or emails anyone, and no countdown is reported.
+    The clocks keep being recorded.
+  - **Never a deletion without a full countdown.** The sweep records when
+    it last ran with the flag on (`StorageRetentionState`,
+    `retention-state.util.ts`). Finding that run more than 6 hours old
+    (`RETENTION_RESUME_GAP_MS`: the flag was off, the server down, or it is
+    the first run after deploy), it records a **resume**, and no rule
+    deletes anything until 7 days after it: every deletion is due at the
+    later of its own date and the resume + 7 days, and every `deletesAt`
+    and reminder date says so (with the last run stale and the sweep not yet
+    run, a read reports now + 7 days). Reminders still go during the week.
 
 ### Email
 
@@ -478,7 +715,8 @@ announcement, cancellation),
 `user-invite-email.util.ts` (team invitation),
 `feedback-request-email.util.ts` (the feedback request) and
 `media-purge-reminder-email.util.ts` (an archived event's photos about to
-be deleted).
+be deleted) and `document-purge-reminder-email.util.ts` (a cancelled or
+finished event's guest documents about to be deleted).
 
 **Escaping lives in the layout.** Every text and every URL in a block goes
 through `escapeHtml` (`shared/utils/html.util.ts`) on its way into the
@@ -523,7 +761,8 @@ replies reach a person; there is none if that user is archived. Subjects:
 waiting". **Never "RSVP" in a subject.** Body: the seal, the eyebrow, the
 event name in serif, "From <host>" when there is one, an UPLOAD design's
 image, each invited day (date and UTC time via `guest-date.util.ts`,
-venue, address; labelled when there are several), and one button, "Open
+venue, address, or for an online day "Online" and its link; labelled when
+there are several), and one button, "Open
 your e-velope". The preheader is the event name, plus the date and venue of
 the guest's first invited day. A reminder adds the reply deadline when
 there is one. **The registration email** (public self-registration, see
@@ -571,9 +810,30 @@ retention") reads like the feedback request: the same From, no seal,
 subject "Photos from <event> will be deleted on <date>" (the event name
 header-safe, the date UTC through `formatGuestDate`), a line that the event
 is archived and its Memory Hub photos and videos will be permanently deleted
-on that date, a line to download them first (the event, its cover and its
-invitation design are kept), and one button "Download your photos" to
-`<FRONTEND_BASE_URL>/events/<id>/manage/memories`.
+on that date, a line to download them first, then, when the event still
+has them, "Its cover image and invitation design will be deleted with
+them." (or just one of the two), then "The event itself is kept.", the same
+in every variant below, and one button "Download your photos" to
+`<FRONTEND_BASE_URL>/events/<id>/manage/memories`. With guests' documents
+kept (and `storageRetention` on) it names them too: "Photos and documents
+from <event> ...", "its Memory Hub photos and videos, and the documents its
+guests uploaded,", button "Download your photos and documents" (same
+link); documents only: "Documents from <event> ...", "the documents its
+guests uploaded", "The event itself is kept.", button "Download your
+documents" to `<FRONTEND_BASE_URL>/events/<id>/manage`. Never a count or a
+file name.
+
+**The documents reminder** (see "Storage", retention rules) is the same
+kind of email: From `"e-velope" <RESEND_EVENT_EMAIL>`, no seal, subject
+"Guest documents for <event> will be deleted on <date>"; a line that the
+event was cancelled (or has finished), so the documents its guests uploaded
+with their replies will be permanently deleted on that date; how to keep a
+copy (open the guest list, each guest's details, View on their document);
+for a cancelled event, to contact `admin@e-velope.co.za` before then if it
+was cancelled by mistake, and for a finished one that deleted documents
+can't be recovered; one button "Open the guest list" to
+`<FRONTEND_BASE_URL>/events/<id>/manage/guests`. Placeholder wording: the
+owner rewrites it; the facts each line carries are the contract.
 
 **Auth emails** use the same layout, calm and functional: no seal, no
 wordplay. From `"e-velope" <RESEND_FROM_EMAIL>`. "Your e-velope sign-in
@@ -612,7 +872,8 @@ Seven documented exceptions:
   here.
 - `CheckIn` — a fact record: this person arrived on this event day, or they
   did not. Undoing a wrong tap is a delete of the row.
-- `EventDraft` — transient wizard state, deleted on materialisation.
+- `EventDraft` — transient wizard state, deleted on materialisation, on
+  discard, and after 30 days untouched (see "Storage").
 - `PaymentLedgerEntry` (Payments Foundation) — an append-only money ledger,
   never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
   deliberately no update/delete method anywhere in
@@ -640,13 +901,20 @@ has earned, whether a subscription is current, etc. are all summed from
 entries at read time — there is no balance column to instead mark
 `isArchived` on, and none should be added.
 
-**Files are the one thing deleted, and only one kind.** An archived event's
-Memory Hub photos and videos are deleted from Cloudinary 30 days after it
-was archived (see "Archived events: Memory Hub retention"). Their
-`MemoryItem` rows stay, marked `purgedAt` and archived; the purge itself is
-recorded (`EventMediaPurge`, kept, written only while it runs). No other
-file is deleted for retention: covers, invitation designs and feedback
-logos stay, and a live event's media is never purged.
+**Files are the one thing deleted**, always through their `StoredFile`
+(see "Storage"), which is never deleted itself: it has no `isArchived`
+and is the file's history, marked DELETED once the file is gone. A file is
+deleted when it is replaced or released, never saved within 24 hours, or
+its event is deleted (its cover, design, Memory Hub media and guests'
+documents 30 days later, see "Archived events: Memory Hub retention"), and
+guests' documents by the retention rules (see "Storage").
+The
+`MemoryItem` and `GuestDocument` rows stay (marked `purgedAt`, or
+`deleteRequestedAt` then `deletedAt`); the purge itself is recorded
+(`EventMediaPurge`). Restoring a guest or an event never brings a file
+back. A feedback logo stays while it is the current one, and a live
+event's saved media is never purged. `StorageReconciliation` is a report,
+written once per run.
 
 **Every archive needs a working restore.** And restore's own lookup must
 **not** filter archived records out:
@@ -662,8 +930,26 @@ This exact bug has shipped **three times** — `user.reactivate`,
 Also: if archiving hides a record from the only list an admin could use
 to restore it, the feature is broken even though every method works.
 
+**A removed guest's token opens nothing.** Archiving (removing) a guest
+ends their access: every query that resolves an invite token requires a
+live guest (`registration-approval-gate.util.ts`'s `INVITE_TOKEN_USABLE`,
+shared with registrations awaiting approval), so the invitation, its online
+link, submit, the program, the photo album, documents, ticket routes,
+storage guest-release and check-in's QR scan all answer exactly as for an
+unknown token. Restoring them opens it again. Until 2026-11 a removed
+guest's link still opened their whole invitation.
+
+**Restoring a guest** (`POST /api/guests/:id/reactivate`) is held to what
+adding one is, under the event's row lock (the one registration takes):
+the plan's guest limit (a plus-one excepted), the hard ceiling, and the
+event's **registration cap**. The cap is counted after the write exactly
+as registration counts it (`countSeats`); a restore that adds registered
+seats past the cap is refused, 422 `GUEST_RESTORE_OVER_REGISTRATION_CAP`,
+and nothing of it is restored.
+
 An event restored after its Memory Hub media was purged comes back without
-it, and a purged item can't be restored (409): its file is gone.
+it (or its cover and uploaded design), and a purged item can't be restored
+(409): its file is gone.
 
 ### Errors
 
@@ -793,7 +1079,49 @@ unticked."; a blank answer is no answer),
 submission; checked first, it was a 500 from the unique
 `(inviteId, rsvpFieldId)` index) and `RSVP_ANSWER_UNKNOWN_FIELD` (400, a
 question this event doesn't have, archived ones included). Until 2026-10
-all of these were uncoded at RSVP.
+all of these were uncoded at RSVP. MULTI_SELECT questions (see
+"Multi-select fields") add `RSVP_ANSWER_UNKNOWN_OPTION` (422, a choice that
+isn't one of the question's options: "Choose only from the options for
+'Dietary needs'.") and `RSVP_ANSWER_NONE_CHOSEN` (422, a required one with
+nothing chosen by someone attending, checked after `RSVP_ANSWER_REQUIRED`
+and before `DOCUMENT_REQUIRED`: "Please choose at least one option for
+'Dietary needs'. The organiser needs this to plan for you."); a choice
+given twice, text for a MULTI_SELECT question or a list for any other is
+`RSVP_ANSWER_INVALID`, and a list holding anything but text the uncoded
+400 of any malformed body.
+
+Document fields (see "Document fields"), at RSVP submit, registration and
+the two upload routes: `DOCUMENT_REQUIRED` (422, a required DOCUMENT
+question with no file from someone attending, checked after
+`RSVP_ANSWER_REQUIRED`: "Please upload 'Proof of payment'. The organiser
+needs it to confirm your place."), `DOCUMENT_TYPE_NOT_ALLOWED` (422, the
+upload isn't a PDF, JPG, PNG or XLSX by its content (a CSV included), or
+its name says another type: "This file type can't be uploaded. Use a PDF,
+JPG, PNG or XLSX file."), `DOCUMENT_TOO_LARGE` (413, over the plan's size per
+document, "This file is larger than <n> MB. Choose a smaller file.", or the
+route's 20 MB ceiling, "This file is too large. Choose a smaller file."),
+`DOCUMENT_STORAGE_FULL` (403, the upload would take the event's documents
+over the plan's document storage, checked under the event's row lock: "This
+event can't take any more files right now. Please contact the organiser.",
+safe to show a guest),
+`DOCUMENT_REFERENCE_INVALID` (422, an answer naming a document that isn't
+this guest's or this registration's upload for that question on this event,
+or one since deleted: one message, "The file for '<label>' couldn't be
+found. Please upload it again.", whatever the cause, so it never says
+whether another guest's document exists) and `DOCUMENT_FIELDS_UNAVAILABLE`
+(422, `documentFields` off: an upload, or a DOCUMENT question added or a
+question changed to one). An upload for a question that isn't one of the
+event's DOCUMENT questions is 400 `RSVP_ANSWER_UNKNOWN_FIELD`; no file, or a
+malformed multipart body (two files), an uncoded 400; Cloudinary failing an
+uncoded 503. A question's description over 500 characters is 422
+`RSVP_FIELD_DESCRIPTION_TOO_LONG` (every path that saves a question).
+Changing a question's type to or from DOCUMENT or MULTI_SELECT once it
+has answers (a blank answer, or none chosen, is none) is 409
+`RSVP_FIELD_TYPE_LOCKED` ("'<label>' already has answers, so it can't be
+changed to or from a file upload. Add a new field instead.", or "... to or
+from multi-select. ..." when no DOCUMENT is involved), on
+`PUT .../rsvp-fields/:id` and the full update, with nothing saved; any
+other type change is allowed as before.
 
 An answer is stored exactly as sent and returned as stored (the guest page's
 `rsvpResponses`, the organiser's guest details, the export); the backend
@@ -910,8 +1238,10 @@ Memory Hub retention"), `POST /api/admin/events/:eventId/media-purge`: 409
 `EVENT_NOT_ARCHIVED` (a live event's media is never purged) and 409
 `MEDIA_PURGE_ALREADY_STARTED` (this archiving's purge has begun or
 finished; the message says which), and 422 `ARCHIVE_MEDIA_PURGE_OFF` while
-`archiveMediaPurge` is off, checked first. Restoring a purged Memory Hub
-item is an uncoded 409. A guest upload (signature or save) to an archived
+`archiveMediaPurge` is off, checked first. Approving or restoring a
+Memory Hub item whose deletion has been claimed (7 days after it was
+rejected or removed, or by the archived-media purge) is 409
+`MEMORY_ITEM_DELETED` (was an uncoded 409 for a purged one). A guest upload (signature or save) to an archived
 event's album is an uncoded 404, "This photo album isn't available.", the
 same words whatever the cause behind it, never "archived". The guest's
 invitation for an archived event (RSVP validate, submit, ticket quote) is an
@@ -928,6 +1258,30 @@ day's UTC date is 422 `PROGRAM_ITEM_DATE_NOT_ON_DAY` ("'<title>' is set to
 another day."; item create and update, materialize and the full update).
 The full event update (`PUT /api/events/:eventId/full`) has no codes of its
 own: every refusal is its part's own endpoint's, code included.
+
+Online days (see "Venue"): `EVENT_DAY_ONLINE_URL_INVALID` (422, an online
+day's link that isn't a full https address: "The link for '<day>' must be
+a full https:// address, like https://example.com/tournament.") and
+`EVENT_DAY_LOCATION_TYPE_INVALID` (422, a `locationType` other than
+`VENUE` or `ONLINE`), on day create and update, the full update and the
+wizard's materialize. A venue day without its venue name or address stays
+the uncoded 422 it was.
+
+A choice question's options (DROPDOWN, "Multiple choice" in the interface,
+and MULTI_SELECT), once they are a valid list, all 422 and checked in this
+order (`assertChoiceOptions`): `RSVP_FIELD_OPTION_BLANK` ("Each option for
+'<label>' needs text. Remove the blank one."), `RSVP_FIELD_OPTION_DUPLICATE`
+(the same option twice, compared trimmed and ignoring case: "'<label>' has
+the option '<option>' more than once.") and `RSVP_FIELD_OPTIONS_TOO_FEW`
+(fewer than two, none sent included: "'<label>' needs at least 2
+options."). Checked when the question is created (POST `.../rsvp-fields`,
+the full update, the wizard's materialize) or changed so that its type
+becomes a choice one or its options differ from what is stored (PUT
+`.../rsvp-fields/:id`, the full update). Stored options are never
+rewritten: a question saved before the rule (one option, a blank, a
+duplicate) keeps them, and still saves when re-sent as it is or edited
+elsewhere (its label, required flag, order). Other types' options are not
+checked.
 
 Values that used to reach Prisma unchecked as a 500 (all 422):
 `RSVP_FIELD_OPTIONS_INVALID` ("The choices for '<label>' must be a list of
@@ -1018,7 +1372,10 @@ strings, any header outside a short allowlist (`Authorization` and
 team-invite tokens (in a URL path too: `/rsvp/validate/:token` is masked),
 oobCodes, OTP codes, passwords, and **any email address or phone number
 anywhere** (message, URL, exception text, breadcrumb, extra, tags), all
-masked. A JSON parse error's message is withheld whole, since it quotes the
+masked. **A file's name** (a guest's document, which can carry their name)
+is a contact detail too: a `fileName`/`originalname`/public id key goes
+whole, and the name at the end of a document's public id in any text is
+masked; no log line names a file either (ids and counts only). A JSON parse error's message is withheld whole, since it quotes the
 body (a malformed request body is now a 400 and never reported; the rule
 stays for any other parse error). The user is `id`, `role` and `tenantId`, never email, name or phone.
 A new kind of credential is a new scrubber rule and a new value in
@@ -1056,7 +1413,8 @@ them; a `SUPER_ADMIN` can change them and enforcement must follow.
 
 Enforcement points differ: `maxGuestsPerEvent` is checked whenever a live
 guest is **added** (organiser add, import, and restoring an archived guest,
-a plus-one excepted since the limit doesn't count them), under the event's
+a plus-one excepted since the limit doesn't count them; a restore is also
+held to the registration cap, see "Soft delete"), under the event's
 row lock so two at once can't both take the last place;
 `maxSmsPerMonth` at **send time**, all-or-nothing. A plan's limit is
 never the last word: the hard limits under "Safety limits" (Domain rules)
@@ -1077,7 +1435,10 @@ setting, never a tier name in an `if`.
 **The frontend decides from settings, never from the plan's name.**
 `GET /api/tenants/me` carries `planSettings`: the limits (`maxEvents`,
 `maxGuestsPerEvent`, `maxSmsPerMonth`, `maxVendorSpaces`,
-`maxMemoryHubBytesPerEvent`, `null` = unlimited) and the on/off settings
+`maxMemoryHubBytesPerEvent`, `maxDocumentBytesPerEvent`, `null` =
+unlimited, and `maxDocumentBytesPerFile`, always a number: the plan's, else
+the 20 MB ceiling; the two document settings only while `documentFields`
+is on) and the on/off settings
 (`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
 `vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
 `customRsvpFieldsEnabled`, `vendorPriorityPlacement`) of the tenant's
@@ -1097,7 +1458,17 @@ leaves every existing row unlimited — it fails **open**. Follow the `ADD
 COLUMN` with an `UPDATE "SubscriptionTierConfig" SET … WHERE "tier" = …` for
 each tier, and update `TIER_CONFIGS` in `prisma/seed.ts` to match. The seed
 cannot cover for you: it never touches a database it isn't pointed at, and it
-does not overwrite existing tier configs. `maxMemoryHubBytesPerEvent` (bytes) is a `BIGINT`, so a limit can be above
+does not overwrite existing tier configs. **Guests' documents have their own
+allowance** (`guest-document/guest-document-allowance.util.ts`), never
+counted in the Memory Hub's: `maxDocumentBytesPerEvent` (a `BIGINT`, every
+kept document of the event) and `maxDocumentBytesPerFile` (one document,
+1 byte to `GUEST_DOCUMENT_CEILING_BYTES`, 20 MB, the upload route's fixed
+safety ceiling: anything else is 422 at the tier admin). Both 500 MB and
+5 MB on every tier (`20261106090000_storage_rules`, seed to match), read
+from the event's entitlement like every event-scoped limit. Guests have no
+plan settings, so `/rsvp/validate` and the public event view carry
+`maxDocumentBytes` (null while `documentFields` is off).
+`maxMemoryHubBytesPerEvent` (bytes) is a `BIGINT`, so a limit can be above
 2 GB (`20261017090000_memory_hub_bytes_bigint`); Prisma reads it as a JS
 `bigint`, and `subscription-tier-config.repository.ts` hands every row on
 with it as a plain number (a `bigint` can't be written to JSON). Read tier
@@ -1159,7 +1530,8 @@ codebase: a feature is switched off by configuration, **never deleted**.
   stable name. Today: `vendors`, `ticketing`, `sms`, `wallet`,
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
-  `feedback`, `archiveMediaPurge`.
+  `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`,
+  `storageRetention`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1255,6 +1627,29 @@ codebase: a feature is switched off by configuration, **never deleted**.
     archived event is still private to its guests: the flag is about
     deleting, not hiding. Switched back on, nothing is deleted at once: an
     overdue event is reminded first and purged a week later.
+  - `documentFields` off (see "Document fields"): no DOCUMENT question can
+    be added, nor a question changed to one (422
+    `DOCUMENT_FIELDS_UNAVAILABLE`, on the rsvp-field endpoints, the full
+    update and the wizard's materialize; a saved one re-sent unchanged
+    still saves); both upload routes refuse with the same 422 (checked
+    first, so the code is the answer however the request is shaped, rather
+    than a `requireFeature` 404); guests are never shown a DOCUMENT
+    question (`/rsvp/validate`, the public view), so it is never required
+    and an answer to one is `RSVP_ANSWER_UNKNOWN_FIELD`; the organiser's
+    view link is the global 404. **Documents already received are kept**:
+    an RSVP edit keeps the guest's DOCUMENT answer and its file. Deleting
+    is never switched off by it: event deletion, the purge, the sweep and
+    the retention rules still delete files. Events with no DOCUMENT question are
+    exactly as before.
+  - `storageDeletion` off (see "Storage"): the storage worker deletes
+    nothing, and an organiser's or guest's release is recorded but not
+    deleted. Every deletion request is still written, to be carried out
+    once it is back on. Documents and the archived-media purge go through
+    the worker too, so they wait as well.
+  - `storageRetention` off (see "Storage", retention rules): no rejected
+    or removed item, no document is deleted by a retention rule, no
+    reminder is sent, and `deletesAt` (items, and the event's
+    `documentStorage`) is null. The clocks are still recorded.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1482,8 +1877,8 @@ application works.
 **Every account must have accepted the current Terms of Service before
 using e-velope.** The current version is `TERMS_VERSION`
 (`src/modules/terms/terms.service.ts`, a date string: `"2026-11-01"` at
-launch, now `"2026-10-30"`, the Terms of Service and Privacy Policy as
-updated after legal review). Until a user has accepted that exact version, **every
+launch, `"2026-10-30"` after legal review, now `"2026-11-09"`, the
+Privacy Policy's update for publication). Until a user has accepted that exact version, **every
 authenticated route answers 403 `TERMS_NOT_ACCEPTED`**, super admins
 included. The check lives in `authenticate` itself
 (`auth.middleware.ts`, read in the same query as the user), so a new
@@ -1629,8 +2024,9 @@ their own invitation.
   email domains (stored lowercase without "@"; an email must be at exactly
   one of them, so `company.co.za` does not admit `mail.company.co.za`;
   empty = anyone), a cap, a closing date, the plus-ones each registrant may
-  bring, and which days are open (`EventDay.openForRegistration`, on by
-  default; at least one). The **cap** counts self-registered guests who
+  bring, which days are open (`EventDay.openForRegistration`, on by
+  default; at least one), and `autoApprove` (on by default; see "Approving
+  registrations" below). The **cap** counts self-registered guests who
   haven't declined plus their plus-ones, and can't be set above the plan's
   guest limit (422); registration also stops at that limit itself. The
   **closing date** defaults to the RSVP deadline and can't be after it
@@ -1640,10 +2036,12 @@ their own invitation.
   (see "Dates").
 - **The view** (`GET /api/public-events/:shareToken`) is exactly what the
   registration page shows, as an explicit allowlist: name, host,
-  description, cover, the live days with their venue and whether each is
-  open, the event's questions (`rsvpFields`: `id`, `label`, `fieldType`,
-  `isRequired`, `options`, live ones in order, exactly as the RSVP form
-  receives them), and `registration` (`isOpen`, `reason`
+  description, cover, the live days with their venue (`locationType`,
+  `location`, `address`; an online day reads "Online", and its link is
+  never here) and whether each is open, the event's questions (`rsvpFields`: `id`, `label`, `description`,
+  `fieldType`, `isRequired`, `options`, live ones in order, exactly as the
+  RSVP form receives them; DOCUMENT ones only while `documentFields` is
+  on), and `registration` (`isOpen`, `reason`
   CANCELLED/CLOSED/FULL, `code`, its guest-facing `message`, `closesAt`,
   `plusOnesAllowed`, `allowedEmailDomains`). Day and question ids are the
   only ids in it (the form sends them back as `dayIds` and
@@ -1727,6 +2125,226 @@ their own invitation.
   public page, so the refusal reveals nothing. Only a change is checked:
   an address the guest already had before the domains were set never
   blocks their reply.
+- **Approving registrations** (`Event.registrationAutoApprove`, the
+  settings' `autoApprove`, on by default and for every event made before
+  2026-11; `src/modules/registration-approval/`). **On:** everything above,
+  unchanged. **Off**, for organisers who screen registrations first (a proof
+  of payment, say):
+  - **A registration is saved awaiting approval**, written exactly as an
+    approved one (the guest, the accepted invite, the days, plus-ones,
+    answers, documents) with `Guest.pendingApproval` set on the registrant
+    and each plus-one, so **it holds its seats**: the cap, the plan's limit
+    and the ceiling count it, and the event can't be overbooked while the
+    organiser decides. **Nothing is emailed.** The answer is 201 `{ outcome:
+    'PENDING_APPROVAL', emailSent: false, message: "You'll get an email once
+    the organiser approves your registration." }` for every registration
+    while the setting is off, new or repeat, whoever is on the list: the
+    outcome follows the event's setting, never the person. A repeat by
+    someone still pending sends nothing; by someone already approved it
+    re-sends their link, as before.
+  - **Never approved reaches nothing** (`registration-approval-gate.util.ts`).
+    Every query that resolves an invite token excludes a guest who is
+    pending or declined (`findByToken`, RSVP submit, document upload,
+    check-in's QR lookup), so their token is exactly an unknown one, the
+    same 404 and words, on every guest route: the invitation and its online
+    link, submit, the program, guest-view and the photo album's uploads,
+    ticket quote and payment, storage guest-release. (A removed guest's
+    token is shut the same way, see "Soft delete".) Announcements leave them
+    out (`findAudienceGuests`), as do invitation sends, reminders and
+    check-in (the door list, by guest and by QR). **The cancellation email
+    does reach them**, the standard one without the organiser's note (the
+    note is free text meant for invited guests, and could carry details they
+    were never approved to see; `findAudienceGuests`' `includePending`).
+  - **Pending is not accepted.** The organiser's guest list shows them with
+    `pendingApproval`. The event detail's `acceptedGuestCount` leaves them
+    out and counts them apart: `pendingApprovalCount` (registrants, as the
+    settings count them) and `pendingApprovalGuestCount` (their seats,
+    plus-ones included, the unit of `acceptedGuestCount`). The guest export's
+    "Invite Status" says "Pending approval" for the registrant and their
+    plus-ones.
+  - **The organiser** (`/api/events/:eventId/registrations`, `publicEvents`,
+    event admins under tenant scoping and the assignment lock): `GET
+    /pending` lists them, oldest first: `{ registrations: [{ guestId,
+    inviteId, firstName, surname, email, phoneNumber, registeredAt,
+    plusOnes: [{ guestId, firstName, surname }], attendingDays: [{ id,
+    label, date }], answers }] }`, with `answers` exactly as `GET
+    /api/invites/:inviteId/rsvp-responses` gives them (each with its
+    `document`). `POST /:guestId/approve` sends the invitation email
+    auto-approve would have sent ("You're registered", their days, their
+    link), exactly once: the write is conditional on still being pending, so
+    of two racing decisions one wins. `POST /:guestId/decline` sends a short
+    "wasn't accepted" email carrying nothing about the event but its name
+    (no dates, venue, link or button), and archives the registrant, their
+    plus-ones and their invites, which frees the seats; their documents
+    follow the archived-guest rule (kept, and deleted when the event
+    finishes unless restored first). Both answer 200 `{ guestId, decision:
+    'APPROVED' | 'DECLINED', emailSent }`. A failed send never undoes the
+    decision: an approved registrant whose email failed gets their link by
+    registering again. The settings view carries `pendingApprovalCount`.
+  - **Refusals**, each with its code: `REGISTRATION_NOT_FOUND` (404: not a
+    registrant of this event, a plus-one, unknown),
+    `REGISTRATION_ALREADY_APPROVED` (409; also a registrant who came in
+    while auto-approve was on), `REGISTRATION_ALREADY_DECLINED` (409),
+    `REGISTRATION_GUEST_REMOVED` (409: pending, but an organiser archived the
+    guest; restore them first), `REGISTRATION_DECISION_EVENT_CANCELLED` (409,
+    approve and decline), `REGISTRATION_DECISION_EVENT_FINISHED` (409,
+    approve only). An `autoApprove` that isn't a boolean: 422
+    `REGISTRATION_SETTINGS_AUTO_APPROVE_INVALID`.
+  - **Undecided stays undecided.** Switching `autoApprove` on approves
+    nobody: those pending stay pending until decided, and registering again
+    still sends them nothing (they get the answer a new registration gets).
+    **When the event finishes** they stay pending: approving is refused (an
+    invitation to an event that has happened), declining still works, so
+    nobody waits forever for an answer; their documents go with the finished
+    event's rules. **When the event is cancelled** neither decision is
+    allowed; they get the cancellation email without its note.
+  - **Restoring a declined registrant** (`POST /api/guests/:id/reactivate`)
+    makes them pending again, not approved, together with the plus-ones
+    that decline archived (stamped with the same `registrationDeclinedAt`;
+    their invites too), never a plus-one removed some other way. The
+    organiser then approves (which sends the invitation) or declines once
+    more. Like any restore it is held to the registration cap (see "Soft
+    delete").
+
+### Document fields
+
+Behind `documentFields`. An additional field of type **DOCUMENT** asks the
+guest for a file with their RSVP or registration (a club running a
+tournament wants a proof of payment). It is a question like any other
+(`RsvpField`: `label`, the optional `description` every question now has,
+`isRequired`), saved through the same paths (the rsvp-field endpoints, the
+full update, the wizard's materialize). The answer is a document id: one
+file per DOCUMENT question per guest (`src/modules/guest-document/`). Once
+a question has answers it can't be changed to or from DOCUMENT (409
+`RSVP_FIELD_TYPE_LOCKED`, `assertFieldTypeChangeAllowed`): the organiser
+adds a new question instead.
+
+- **Uploading goes through this server**, never browser-to-Cloudinary,
+  so the file can be checked, then stored privately (see "Private
+  storage"). Two routes, both public, multipart with the file in `file`:
+  `POST /api/rsvp/documents` (`token`, `rsvpFieldId`; the invitation's own
+  gates in RSVP submit's order: a link that isn't valid or whose guest was
+  removed 404, archived 410, expired 410, not accepting replies 403, the
+  deadline 410) and `POST /api/public-events/:shareToken/documents`
+  (`rsvpFieldId`; only while registration is open, refused with
+  registration's own code; not refused for being full). Each answers 201
+  with the document: `{ id, rsvpFieldId, fileName, contentType,
+  sizeBytes, uploadedAt }`.
+- **The content decides the type**, never the name or the stated type
+  (`guest-document-content.util.ts`): PDF (`%PDF-`), PNG and JPG by their
+  signatures, XLSX as a zip whose content types name the plain workbook
+  part and nothing that runs code (no VBA project, macro sheets, ActiveX,
+  embedded objects, template or add-in; only the index and
+  `[Content_Types].xml` are read, counted as they inflate). The name's
+  extension must then be that type's own. Anything else, a renamed
+  executable, a PNG called .pdf, an .xlsm under any name, a CSV or any
+  other text file (a CSV opened in a spreadsheet can run formulas on the
+  organiser's machine), is 422 `DOCUMENT_TYPE_NOT_ALLOWED`. At most the
+  **plan's size per document** (5 MB at launch; checked by the service):
+  one byte more is 413 `DOCUMENT_TOO_LARGE` naming the limit. Multer reads
+  at most `GUEST_DOCUMENT_CEILING_BYTES` (20 MB), a fixed safety ceiling
+  above any plan's, refusing more before the rest is read. Never written
+  to disk. An upload that would take the event's kept documents over the
+  plan's **document storage** is 403 `DOCUMENT_STORAGE_FULL`, checked once
+  before the file is sent and again under the event's row lock with the
+  row's own write (a file refused there is requested for deletion).
+- **The id is the answer.** RSVP submit and registration send it as the
+  DOCUMENT question's `rsvpResponses` value; it must be a live upload for
+  that question on this event, and the guest's own (their invite's, at
+  RSVP) or an unclaimed registration upload (at registration), else 422
+  `DOCUMENT_REFERENCE_INVALID`. It is then attached, in the answer's
+  transaction. A required DOCUMENT question without one is 422
+  `DOCUMENT_REQUIRED` (attending only). The id is a random UUID: a
+  registration upload has no other credential.
+- **Replacing deletes the old file.** A second upload for the same
+  question deletes the guest's earlier unsubmitted one; an RSVP naming a
+  different file (or none) deletes the one sent before, once it commits.
+- **Never attached within 24 hours: deleted** by the documents sweep
+  (`guest-document.service.ts`, every 15 minutes, started by `server.ts`
+  only). A repeat registration stores no second answers, so its upload is
+  left to it. Every deletion goes through the storage worker, which
+  retries a refusal.
+- **Kept with its event and its guest.** Deleting (archiving) an event
+  (`DELETE /api/events/:id`) deletes nothing (since 2026-11; before, its
+  files went at once): they stay for 30 days, downloadable by its
+  organisers, and go with the archived-media purge, after its reminder,
+  counted in its `purgedCount`/`failedCount`; restoring the event before
+  then keeps them (see "Archived events: Memory Hub retention").
+  Removing a guest, their invite or the question deletes nothing (since
+  Round B): restoring brings the files back, and those still archived when
+  the event finishes are deleted then; the rest go 30 days after a cancel
+  or 90 days after the finish (see "Storage", retention rules). `GET
+  /api/guests/:id` carries `documentCount` (their kept documents) for the
+  warning shown when archiving. A deletion never fails the request that
+  caused it; it is retried.
+- **The organiser** reads them in the guest details: `GET
+  /api/invites/:inviteId/rsvp-responses` gives every answer a `document`,
+  for a DOCUMENT answer whose file is kept `{ id, fileName, contentType,
+  sizeBytes, uploadedAt }`, else `null` (a DOCUMENT question with no
+  answer, or `document: null`, means nothing was received). Every kept,
+  answered document of an event: `GET /api/events/:eventId/documents`,
+  `{ documents: [{ id, fileName, contentType, sizeBytes, uploadedAt,
+  question: { id, label }, guest: { id, firstName, surname, isArchived } |
+  null }] }`, oldest first, removed guests' included (`isArchived`: the
+  guest or their invite). To open one:
+  `GET /api/events/:eventId/documents/:documentId/link` (event admins
+  under tenant scoping and the assignment lock; `{ url, expiresAt,
+  fileName, contentType, sizeBytes }`, the link downloading the file for 5
+  minutes). Both are read-only and open an archived event too (its guest
+  list doesn't, so the list is how its documents are reached in their 30
+  days). Another tenant, a locked member, another event's document, an
+  unsubmitted or deleted one: 404; a vendor, or anyone while the flag is
+  off: the global 404. The guest export says "Received" or blank, never a
+  link or an id.
+- **The guest** gets their own files back on `/rsvp/validate` as
+  `documents` (the same shape as the upload's answer), and a DOCUMENT
+  answer whose file has been deleted is left out of `rsvpResponses`, so the
+  form asks for it again.
+- **Storage.** Documents have their own allowance (see "Tier
+  enforcement"), never the Memory Hub's: they don't count in its
+  `usedBytes` or quota. The organiser's event detail (`GET
+  /api/events/:id`, while `documentFields` is on) carries
+  `documentStorage: { usedBytes, limitBytes, nearLimit, documentCount,
+  deletesAt }`: every kept document, the plan's allowance (null =
+  unlimited), `nearLimit` once usage passes 80%, `documentCount` (the kept
+  answered documents: what the confirmation before archiving the event
+  counts), and when the kept documents are deleted: the earliest rule that
+  applies (archived: the media purge's date, `mediaPurgeAt`; cancelled;
+  finished), held to the retention floor; null when none applies, none are
+  kept, or `storageRetention` is off. The archived event's detail carries
+  it too.
+
+### Multi-select fields
+
+Two choice types. **DROPDOWN** is the single-answer question; the
+interface calls it "Multiple choice", the stored type keeps its name.
+**MULTI_SELECT** lets the guest pick one or more of the options. Not
+behind a flag.
+
+- **Options** are stored as a DROPDOWN's: `RsvpField.options`, a
+  JSON-encoded list of text (`'["Vegan","Nuts, peanuts and tree nuts"]'`),
+  held to `RSVP_FIELD_OPTIONS_INVALID` on every path that saves a question.
+  A comma inside an option is safe. The options were never stored as
+  comma-separated text. Both choice types need at least two options, none
+  blank and none twice (trimmed, ignoring case), when the question is
+  created or its type or options change; see "Errors" for the codes.
+- **The answer is a list.** At RSVP submit and registration,
+  `rsvpResponses: [{ rsvpFieldId, value: ["Vegan", "Halaal"] }]`; every
+  other type's `value` stays text. Each choice must be one of the options
+  (compared trimmed), none twice; `[]` is no answer. Required means at
+  least one chosen when attending. Codes: see "Errors" (answers).
+- **Stored** in `RsvpResponse.value` as the JSON-encoded list of the
+  trimmed choices in the order given, or `''` for none (no answer, as a
+  blank one is).
+- **Read back as a list** (`answerValue`): the guest page's
+  `rsvpResponses` (`/rsvp/validate`, so the form prefills with what it
+  sends), the submit response's `rsvpResponses`, and the organiser's guest
+  details (`GET /api/invites/:inviteId/rsvp-responses` and `/:id`, `value`
+  a list for a MULTI_SELECT answer, text for every other). The export joins
+  the choices with "; " in one cell.
+- **Type changes:** once a question has answers it can't be changed to or
+  from MULTI_SELECT (409 `RSVP_FIELD_TYPE_LOCKED`, as DOCUMENT): the stored
+  lists and single answers don't fit each other.
 
 ### Guest contact
 
@@ -1753,7 +2371,8 @@ with its own refusal, never a 500 (`isGuestEmailUniqueViolation`,
 `guest-validation.util.ts`): organiser create, update, import and restore
 409 `GUEST_EMAIL_TAKEN`, RSVP 422 `CONTACT_EMAIL_UNAVAILABLE`, and
 self-registration the ordinary "couldn't send" answer (identical either
-way; registering again re-sends the link). Archiving a guest frees their
+way; registering again re-sends the link; with auto-approve off, the
+ordinary pending answer). Archiving a guest frees their
 address; restoring them while a live guest has it is 409.
 
 Names are nullable — a guest imported by phone supplies their name when
@@ -1838,7 +2457,8 @@ rows.
 has its own `location` (venue name), `address`, `latitude`, `longitude`.
 The columns are nullable only so the migration that introduced them could
 backfill old events; the API requires a non-blank location and address on
-every day create and update (422), judged on the day an update leaves
+every venue day's create and update (422; an Online day has neither, see
+below), judged on the day an update leaves
 behind (`event-day-venue.util.ts`, shared with the wizard's materialize).
 Coordinates come from the frontend's HERE address lookup, both-or-neither,
 and are cleared when the address changes without new ones — this backend
@@ -1854,6 +2474,43 @@ still sending one is ignored, not refused). The Event's own `location`,
 `event.location`/`address` and coordinates remain as compatibility keys,
 filled from the first day's venue. The public event view no longer has
 them: no client ever read it, and it shows each day's venue.
+
+**A day can be Online instead** (`EventDay.locationType`: `VENUE`, the
+default, or `ONLINE`; `onlineUrl`), for an event that happens on the
+internet, an online chess tournament, say. Not behind any flag: it is a
+plain option for every event. One place decides it, `event-day-venue.util.ts`,
+on every path that saves a day (day create and update, the full update,
+the wizard's materialize):
+
+- **Online: no venue.** No venue name, address or coordinates (stored
+  null whatever is sent), so no map and no address search. An optional
+  link, **https only**: a full `https://` URL with a host, no user name or
+  password, at most 2,000 characters, else 422
+  `EVENT_DAY_ONLINE_URL_INVALID`. Blank or null is no link. A type other
+  than `VENUE` or `ONLINE` is 422 `EVENT_DAY_LOCATION_TYPE_INVALID`.
+- **Left out, nothing changes:** a new day is a `VENUE`, a saved day keeps
+  its type, an online day keeps its link unless one is sent. Switching
+  back to a venue needs a venue name and address like any venue, and drops
+  the link. Publishing accepts an online day with no venue
+  (`dayHasVenue`).
+- **Existing events are unchanged.** The migration
+  (`20261102100000_event_day_online`) adds the columns with `VENUE` as the
+  default, so every saved day is the physical venue it was; a null type is
+  read as `VENUE` too.
+- **Everyone sees "Online"** (`ONLINE_VENUE_LABEL`) where a venue would be,
+  with no address and no coordinates: `toDayVenueView` makes it so for the
+  guest's invitation and Program tab, the public registration page, the
+  check-in roster, and the `/rsvp/validate` compatibility keys.
+- **The link only reaches people invited or registered:** the guest's
+  own invitation (`/rsvp/validate`'s days, `toDayVenueView(day, {
+  withOnlineUrl: true })`, which is also the RSVP confirmation's data),
+  the Program tab, and the invitation, reminder and registration emails
+  ("Online" and the link in place of the venue and address). **Never the
+  public registration page** (`GET /api/public-events/:shareToken`), which
+  shows `locationType` and "Online" only. Organisers get it on their own
+  event views and the check-in roster. The cancellation email lists dates
+  only, as before. Vendor proximity refuses an online first day with its
+  own message (there is nowhere to be near).
 
 ### Event program
 
@@ -1943,10 +2600,10 @@ The body, every key optional (a key left out leaves that part alone):
   event?:      { name?, description?, hostName?, coverImageUrl?, coverImagePublicId?,
                  coverImageBytes?, visibility?, ticketing?, rsvpDeadline?, capacity?,
                  ticketsRefundable? },                      // PUT /api/events/:id's body
-  days?:       [{ id?, label?, date?, startTime?, endTime?, location?, address?,
-                  latitude?, longitude? }],                 // PUT .../days/:id's body
+  days?:       [{ id?, label?, date?, startTime?, endTime?, locationType?, location?, address?,
+                  latitude?, longitude?, onlineUrl? }],     // PUT .../days/:id's body
   tickets?:    [{ id?, name?, description?, price?, currency?, totalQuantity?, isAvailable? }],
-  rsvpFields?: [{ id?, label?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings
+  rsvpFields?: [{ id?, label?, description?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings (DROPDOWN and MULTI_SELECT)
   program?:    { title?, isPublished?,
                  items?: [{ id?, title?, description?, startTime?, durationMins?, dayIndex? }] },
   memoryHub?:  { opensAt?: string | null }
@@ -2000,10 +2657,11 @@ The body, every key optional (a key left out leaves that part alone):
 ### Reminders
 
 Manual only — the organiser presses a button. Nothing here runs on a
-timer by deliberate choice, with two exceptions, the feedback request sweep
-(see "Feedback and sharing permissions") and the archived-media retention
-sweep (see "Archived events: Memory Hub retention"), both built to be
-correct whether or not their timer fires. They go through the same dispatch path as
+timer by deliberate choice, with three exceptions, the feedback request
+sweep (see "Feedback and sharing permissions"), the archived-media
+retention sweep (see "Archived events: Memory Hub retention") and the
+documents sweep (see "Document fields"), all built to be correct whether
+or not their timer fires. They go through the same dispatch path as
 invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
@@ -2035,7 +2693,9 @@ tenant-scoped and under the assignment lock (`eventService.getScoped`).
 - **Who is invited.** Live (never archived) guests with a live invite who
   are **not plus-ones** (covered by their host; their token is never given
   out), whose invitation reached them (`deliveredAt`) or who registered
-  themselves. A guest still waiting on their invitation, or on a draft,
+  themselves, never a registration awaiting approval (see "Approving
+  registrations"; the cancellation email alone reaches them, without its
+  note). A guest still waiting on their invitation, or on a draft,
   hasn't heard of the event, so no announcement reaches them.
 - **Audiences** (`announcement-audience.util.ts`, the one place):
   `EVERYONE` (hasn't declined), `ATTENDING`, `NOT_REPLIED`,
@@ -2284,8 +2944,25 @@ tenant, an event with feedback already given, or with `feedback` off.
 **30 days after an event is archived, its Memory Hub photos and videos are
 deleted from Cloudinary** (`MEDIA_RETENTION_DAYS`,
 `event/event-media-retention.util.ts`; the sweep is
-`media-retention/media-retention.service.ts`). Everything else is kept: the
-event, its cover photo, its invitation design, and every `MemoryItem` row,
+`media-retention/media-retention.service.ts`). **Its cover and uploaded
+invitation design go with them** (since 2026-11; before, they were deleted
+at once when it was archived): archiving keeps them, so a restore before
+the purge brings the event back as it was; the purge requests the cover's
+and design's StoredFiles made before it began, clears the event's cover
+fields and archives the uploaded design, so a restore after it brings the
+event back without them. Not counted in `purgedCount`, but the purge isn't
+complete until they are deleted; a cover or design alone needs no
+reminder (the event is purged at 30 days).
+**Its guests' documents follow the photos** (since 2026-11; before, they
+were deleted at once): kept for the 30 days, downloadable read-only by its
+organisers (`GET /api/events/:eventId/documents` and the document link,
+see "Document fields"), kept if it is restored before the purge, and
+deleted by the purge, after its reminder, which names them. The other
+document rules still apply (see "Storage", retention rules); whichever
+comes first wins. With `storageRetention` off (or within its resume's 7
+days) the purge leaves them, and the storage retention sweep requests them
+once it may.
+Everything else is kept: the event and every `MemoryItem` row,
 marked `purgedAt` and archived, so every live-items query (the gallery,
 guest-view, the download, the storage quota, the feedback photos) leaves it
 out with no check of its own. Until 2026-10 archiving changed nothing in
@@ -2302,22 +2979,27 @@ Cloudinary and the media was kept forever.
   however many servers, and a restore lands either before it (cancelled) or
   after (the event comes back without its media). Working on it takes a
   lease (a conditional write, 10 minutes), so one sweep at a time. Every
-  item of the hub that existed when the purge began is deleted, whatever
-  its status, by exact public id in Cloudinary Admin API batches of 100
-  (`destroyAssets`, `cloudinary.client.ts`, with the CDN cache
-  invalidated), each id checked against the event's own Memory Hub folder
-  first (`isSignedPublicIdInFolder`): one outside it is hidden, never sent.
-  Each item is marked as its batch succeeds; one Cloudinary refuses stays
-  unpurged, the purge records `failedCount` and `lastError`, Sentry hears of
-  it, and the next sweep tries again. "Not found" counts as deleted, so a
-  rerun is always safe. A purge that has begun always finishes, a restore
-  included, and never touches an item uploaded after it began.
+  item of the hub that existed when the purge began, whatever its status,
+  is claimed in batches of 100: marked purged (and archived) with its file
+  requested, in one transaction, each id first checked against the event's
+  own Memory Hub folder (`isSignedPublicIdInFolder`; one outside it is
+  hidden and its record closed, never sent). The storage worker deletes the
+  files (one by one, with `invalidate`), at once and then on its schedule,
+  retrying a refusal with backoff. The purge is complete when every one of
+  its files is deleted; until then each sweep records what is left
+  (`failedCount`, `lastError`: the worker's reason) and asks again for any
+  due. `purgedCount` counts items (and documents) claimed. A purge that has
+  begun always finishes, a restore included, and never touches an item
+  uploaded after it began. A purged item can't be restored (409
+  `MEMORY_ITEM_DELETED`).
 - **The reminder.** 7 days before (`MEDIA_PURGE_REMINDER_DAYS_BEFORE`), the
   event's organisers (`resolveEventOrganisers`, as the feedback request)
   get one email (see "Email"), claimed once per event and archiving
   (`MediaPurgeReminderClaim`) before it is sent. Not for a restored event,
   one whose purge has already begun, or one with nothing to download (no
-  live approved item). **A purge never runs until its reminder went at least
+  live approved item and, while `storageRetention` is on, no kept answered
+  document). It says what goes: photos, documents, or both (see "Email").
+  **A purge never runs until its reminder went at least
   7 days earlier** (`mediaPurgeDueAt(archivedAt, remindedAt)`, the later of
   archivedAt + 30 days and remindedAt + 7 days): a late reminder (the sweep
   down, or `archiveMediaPurge` off past the 30 days) goes on the next sweep,
@@ -2333,7 +3015,9 @@ Cloudinary and the media was kept forever.
   /api/events?archived=true` lists the caller's archived events (scope and
   assignment lock as ever); `GET /api/events/:id`, the Memory Hub's detail,
   its items and its download open an archived event, so its organisers can
-  keep the photos. Every other route, and every write, is still the 404.
+  keep the photos, and the document list and link (see "Document fields")
+  so they can keep the guests' documents. Every other route, and every
+  write, is still the 404.
   Restoring stays a super admin action (`POST /api/events/:id/reactivate`),
   held to the plan's active-event limit (403 `EVENT_LIMIT_REACHED`; an event
   that has held an Event Pass doesn't count, as at creation).
@@ -2393,7 +3077,9 @@ who has been checked in.
 The day list shows **everyone invited to that day**, RSVP status per row, so
 walk-ins and non-responders can be found, checked in and undone; "expected"
 in the counts is only those who said **yes** to that day. Plus-ones are
-listed and checked in like anyone else (they have an `Invite`). Check-in and
+listed and checked in like anyone else (they have an `Invite`). A
+registration awaiting approval isn't listed or found, by guest or by QR
+(see "Approving registrations"). Check-in and
 undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
@@ -2546,6 +3232,10 @@ exception that says so plainly: an archived event's Memory Hub photos and
 videos really are deleted after 30 days, so their reminder, the countdown
 and their refusals say "deleted" (see "Archived events: Memory Hub
 retention"). "Archive" there would promise a restore that can't happen.
+The same goes for guests' uploaded documents (see "Document fields"):
+copy about deleting an event that has them says they are deleted 30 days
+later (with its photos), and copy about removing a guest says when theirs
+are deleted.
 
 ---
 
@@ -2778,6 +3468,15 @@ below the 3:1 a non-text accent needs. No other page uses these colours.
 
 ## 6. Testing
 
+**Cloudinary is never reached by a test.** `tests/setup.ts` puts every
+request to `api.cloudinary.com` through an in-memory fake
+(`tests/helpers/fake-cloudinary.ts`, reset before each test): it holds what
+a test `put()`s, answers explicit, destroy, the batch delete, listing and a
+private upload, can be made to fail, and records every call. A test
+"uploads" through `signedUpload` (`tests/helpers/storage.ts`): a real
+signature and StoredFile, then the file in the fake at the size Cloudinary
+would report. `STORAGE_ENV` is `dev` in tests whatever `.env` says.
+
 **Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
 only** — a separate Neon database, never the shared dev/prod one. The
 isolation guard (`resolve-database-url.util.ts`) refuses to run
@@ -2877,6 +3576,18 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   reminder's button opens the event's Memories tab, which the current
   frontend may not show for an archived event. Remove this entry once
   built.
+- **Approving registrations needs its frontend half** (backend
+  `feature/auto-approve`): the `autoApprove` switch in the registration
+  settings; the registration page saying "You'll get an email once the
+  organiser approves your registration." for `outcome: 'PENDING_APPROVAL'`
+  (its `emailSent` is always false there, and is not the "couldn't send"
+  case); a pending list with each registrant's answers and documents, and
+  approve and decline, each code placed (see "Approving registrations"); the
+  guest list marking `pendingApproval`; the event detail showing
+  `pendingApprovalCount` beside the accepted count; and restoring a guest
+  answering `GUEST_RESTORE_OVER_REGISTRATION_CAP` (see "Soft delete"). Until
+  then nothing changes for anyone: every event keeps auto-approve on. Remove
+  this entry once built.
 - **The pilot polish needs its frontend half** (backend
   `feature/pilot-polish`): a Terms screen answering `TERMS_NOT_ACCEPTED`,
   event forms requiring a host name, and the sign-up form no longer
@@ -2884,6 +3595,23 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   with or before this backend**: without it, every signed-in user, super
   admins included, gets 403 on every page. Remove this entry once both
   are live.
+- **Document fields need their frontend half** (backend
+  `feature/document-fields`): the DOCUMENT type with its description in the
+  wizard's additional fields, the upload on the RSVP and registration forms
+  (sending the returned `id` as the answer, showing `documents`), the
+  organiser's guest details showing what was received with a "View" that
+  asks for the link, and the codes placed on the right field. Remove this
+  entry once built.
+- **Online days need their frontend half** (backend
+  `feature/document-fields`): a venue-or-online choice on each day in the
+  wizard and day editor (online: no address search, no map, an optional
+  https link, the two codes placed on it), and "Online" with the link on
+  the invitation page and RSVP confirmation, "Online" alone on the public
+  page and in the event lists. Remove this entry once built.
+- **Calendar files are not built.** Neither repo makes an .ics file today,
+  so nothing gives a calendar entry "Online" and the link. When one is
+  built, an online day's location is "Online" plus its link, for invited
+  or registered people only.
 - **Automated test coverage is thin.** The backend has a Vitest suite
   (`npm test`, `tests/`) on real Postgres in a separate
   `DATABASE_URL_TEST` database (never the shared dev/prod one — see
@@ -3202,8 +3930,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     2,000 rows: `tests/perf/import-timing.test.ts`, opt-in
     (`MEASURE_IMPORT_TIMING=1`).
   - **Archived-event media retention**
-    (`tests/media-retention/media-retention.test.ts`, Cloudinary's
-    `destroyAssets` mocked): archiving records `archivedAt`; at 29 days
+    (`tests/media-retention/media-retention.test.ts`, the worker's
+    `destroyAsset` mocked since Round B): archiving records `archivedAt`; at 29 days
     nothing is deleted, past 30 every item's file goes (any status, each by
     its resource type), the rows are kept purged and archived, and the event
     and its cover stay; a restore before the purge cancels it, one after
@@ -3237,6 +3965,99 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     change refused with nothing written, the Program tab unavailable, and
     restoring opening it again. Each guarantee was shown to fail with its
     fix reverted (2026-10-26).
+  - **Document fields** (`tests/guest-document/guest-documents.test.ts`,
+    Cloudinary's private upload mocked, deletes through the worker to the
+    fake Cloudinary since Round B, the signed link built for real): a PDF stored privately in the event's documents folder
+    and every allowed type (PDF, JPG, PNG, XLSX) accepted by content; a
+    renamed executable, a PNG called .pdf, a macro workbook as .xlsx or
+    .xlsm, and a CSV (as .csv, with or without a BOM, or as .xlsx) refused
+    with nothing stored; a question's type changed to or from DOCUMENT
+    refused with 409 `RSVP_FIELD_TYPE_LOCKED` once it has answers, on both
+    edit paths, and allowed while it has none (a blank answer is none);
+    exactly 5 MB taken, one byte more 413; a required question
+    without a file `DOCUMENT_REQUIRED` (a decline fine); another guest's,
+    another event's, a deleted and an unknown document
+    `DOCUMENT_REFERENCE_INVALID`; a replaced file deleted, at upload and at
+    RSVP; registration's upload attached to the new registrant, a missing
+    one and an invitation's refused; the guest details' `document` and the
+    export's "Received"; the link private, 5 minutes, its expiry signed;
+    another tenant, a locked member, a vendor, another event and an
+    unsubmitted upload 404; storage counted (its own, since Round B);
+    files kept on guest removal (Round B), deletion on event deletion and
+    by the purge, a refused deletion retried by the storage worker; the 24-hour orphan sweep; file names out of logs and Sentry; the
+    flag off (uploads and new questions refused, the question hidden, what
+    was received kept, the link 404, an event without documents unchanged).
+    Each guarantee was shown to fail with its fix reverted (2026-11-02).
+  - **Online days** (`tests/event-day/online-days.test.ts`): an online day
+    saved without an address (a venue, address and coordinates sent are
+    dropped; the link optional); a non-https, javascript:, bare, credentialed,
+    host-less or spaced link and a non-string refused with
+    `EVENT_DAY_ONLINE_URL_INVALID`, an unknown type with
+    `EVENT_DAY_LOCATION_TYPE_INVALID`, nothing saved; switching back to a
+    venue needing one and dropping the link; the full update turning a day
+    online and publishing accepting it; an invited guest seeing "Online"
+    and the link on their invitation (and the compatibility keys) and the
+    Program tab; the public page showing "Online" with the link nowhere in
+    the response, and registering emailing it; invitation and reminder
+    emails with "Online" and the link; a day saved before Online existed
+    (its type null) reading and editing as the venue it was, and a new day
+    without a type held to the venue rules. Each guarantee was shown to fail
+    with its fix reverted (2026-11-02).
+  - **Multi-select fields** (`tests/public-events/multi-select-answers.test.ts`):
+    a MULTI_SELECT question saved by POST `.../rsvp-fields` and the full
+    update, its options held to `RSVP_FIELD_OPTIONS_INVALID`; answers at
+    RSVP and registration stored as a JSON list of trimmed choices,
+    returned as a list by submit, `/rsvp/validate` and the guest details
+    (both reads), exported joined with "; " (an option holding a comma
+    intact), an edit replacing the list and `[]` storing no answer; a
+    choice outside the options (part of a comma-holding one, or blank)
+    `RSVP_ANSWER_UNKNOWN_OPTION`, a choice twice, text for the question or
+    a list for a TEXT one `RSVP_ANSWER_INVALID`, a non-text choice the 400,
+    nothing chosen on a required one `RSVP_ANSWER_NONE_CHOSEN` (a decline
+    fine), nothing created on any refusal; the type locked to and from
+    MULTI_SELECT once answered on both edit paths, free while none chosen.
+    Each guarantee was shown to fail with its fix reverted (2026-11-04).
+  - **Choice options** (`tests/validation/choice-options.test.ts`), for
+    DROPDOWN and MULTI_SELECT alike: a blank or empty option
+    `RSVP_FIELD_OPTION_BLANK`, a duplicate (trimmed, ignoring case)
+    `RSVP_FIELD_OPTION_DUPLICATE`, one option or none
+    `RSVP_FIELD_OPTIONS_TOO_FEW`, each with its message naming the question,
+    on create, on changing a saved question's options, on making a text
+    question a choice one, on the full update's new and changed questions
+    and on the wizard's materialize, nothing written and no event created;
+    two or more distinct options saved as sent on every path; a question
+    saved before the rule (one option, a blank, a case duplicate, none) kept
+    as it is and still saved when re-sent or edited elsewhere; other types
+    not checked. Each guarantee was shown to fail with its fix reverted
+    (2026-11-04).
+  - **Storage rules, Round B** (`tests/storage-retention/storage-retention.test.ts`,
+    the fake Cloudinary): a rejected photo deleted 7 days after, not 6,
+    through the worker with `invalidate`; approving on day 6 keeping it
+    and clearing `deletesAt`; a removed photo deleted at 7 days, one
+    restored on day 6 kept, the removed list; approve and restore after the
+    claim 409 `MEMORY_ITEM_DELETED`; approvals racing a sweep never both
+    approved and deleted; the backfills deleting nothing; documents out of
+    the Memory Hub's `usedBytes`; an upload over the allowance 403
+    `DOCUMENT_STORAGE_FULL` in guest-safe words with nothing sent; two
+    uploads racing for the last space (one stored, the other's file
+    requested); the plan's size per document and the 20 MB ceiling;
+    `maxDocumentBytes` for guests (null with `documentFields` off); the
+    organiser's `documentStorage` and its 80% warning; the tier admin's
+    validation and `/me`; the migration's per-tier figures; a guest
+    archived and restored before the finish keeping their documents, an
+    archived guest, invite and question losing them at the finish (not
+    before, once) while live guests keep theirs; `documentCount`; a
+    restore between the sweep's read and its claim keeping them; cancel
+    recording `cancelledAt`; a cancelled event's documents surviving 29
+    days and going on day 30 after the reminder, archived guests' included;
+    the reminder's content; a finished event's surviving 89 days and going
+    at 90 after its reminder; whichever deletion first; `storageRetention`
+    off deleting, emailing and counting down nothing, and switched back on
+    after a gap deleting nothing for 7 more days (the resume, its
+    `deletesAt` and reminder dates), a regular sweep never resuming.
+    Guest documents and the archived-media purge suites now observe the
+    worker's single deletes. Each guarantee was shown to fail with its fix
+    reverted (2026-11-06).
 
   Everything else has no backend test: event CRUD and lifecycle, guests
   and import, invite sending and reminders, check-in, tickets and
@@ -3280,6 +4101,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   token is never given to anyone.
 - **Twilio SMS is blocked** pending compliance approval. Everything
   except real delivery is testable.
+- **Storage, still open after Round B**: covers uploaded before their
+  event exists stay in the tenant's cover folder rather than a reserved
+  event id (decided); the frontend still posts its own fields rather than
+  `params`, so the upload notification stays off; a deleted event's
+  feedback logo is kept, and its saved Memory Hub media waits the 30 days
+  (both decided). The document allowance is 500 MB / 5 MB on every tier
+  until the owner sets per-tier figures.
+- **Storage rules need their frontend half** (backend
+  `feature/storage-rules`): the countdown (`deletesAt`) on rejected and
+  removed Memory Hub items and a removed list (`?removed=true`) to
+  restore from, `MEMORY_ITEM_DELETED` placed; the warning with
+  `documentCount` before archiving a guest; the event's
+  `documentStorage` (used, allowance, the 80% warning, `deletesAt`); the
+  upload refusing a file over `maxDocumentBytes` before sending it and
+  showing `DOCUMENT_STORAGE_FULL`; the two plan settings on the super
+  admin's tier screen. Remove this entry once built.
 - A deferred technical debt register tracks tenant-isolation and
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —

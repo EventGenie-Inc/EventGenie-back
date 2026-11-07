@@ -39,7 +39,7 @@ router.put('/', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/logo-signature', uploadSignatureLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const result = await feedbackService.requestLogoSignature(req.params['eventId'] as string, auth.user.role, auth.user.tenantId);
+    const result = await feedbackService.requestLogoSignature(req.params['eventId'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });

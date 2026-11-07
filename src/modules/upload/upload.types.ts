@@ -19,4 +19,9 @@ export interface UploadSignatureResponse {
   publicId: string;
   allowedFormats: string;
   maxFileSizeBytes: number;
+  // Every field to POST to uploadUrl with the file, exactly as given
+  // (api_key, timestamp, signature, folder, public_id, allowed_formats, and
+  // notification_url when the environment has one). The fields above are
+  // the same values, kept for the current frontend.
+  params: Record<string, string>;
 }

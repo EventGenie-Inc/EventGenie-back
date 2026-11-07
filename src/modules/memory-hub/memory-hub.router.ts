@@ -105,11 +105,14 @@ router.post('/:id/reactivate', async (req: Request, res: Response, next: NextFun
 // ── Memory Items ──────────────────────────
 
 // GET /api/events/:eventId/memory-hub/:hubId/items?status=PENDING
+// ?removed=true: the removed items still restorable instead, each with
+// deletesAt (when its file goes).
 router.get('/:hubId/items', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const status = parseStatusFilter(req.query['status']);
-    const items = await memoryHubService.getAllItems(req.params['eventId'] as string, req.params['hubId'] as string, auth.user.role, auth.user.tenantId, status);
+    const removed = req.query['removed'] === 'true';
+    const items = await memoryHubService.getAllItems(req.params['eventId'] as string, req.params['hubId'] as string, auth.user.role, auth.user.tenantId, status, { removed });
     res.status(200).json({ status: 'ok', data: items });
   } catch (err) { next(err); }
 });
@@ -160,8 +163,9 @@ router.post('/:hubId/items/:id/approve', async (req: Request, res: Response, nex
 });
 
 // POST /api/events/:eventId/memory-hub/:hubId/items/:id/reject
-// Hides the item and frees its quota — does NOT delete the Cloudinary
-// asset (see memory-hub.service.ts's curateItem comment).
+// Hides the item and frees its quota; its file is deleted 7 days later
+// unless approved again (deletesAt). Approving after that deletion was
+// claimed: 409 MEMORY_ITEM_DELETED (see memory-hub.service.ts's curateItem).
 router.post('/:hubId/items/:id/reject', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
@@ -174,8 +178,9 @@ router.post('/:hubId/items/:id/reject', async (req: Request, res: Response, next
 router.delete('/:hubId/items/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    await memoryHubService.archiveItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
-    res.status(200).json({ status: 'ok', message: 'Memory item archived' });
+    const item = await memoryHubService.archiveItem(req.params['eventId'] as string, req.params['hubId'] as string, req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId);
+    // data: the removed item, with deletesAt (restorable until then).
+    res.status(200).json({ status: 'ok', message: 'Memory item archived', data: item });
   } catch (err) { next(err); }
 });
 

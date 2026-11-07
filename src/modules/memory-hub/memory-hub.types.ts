@@ -10,14 +10,15 @@ export interface UpdateMemoryHubDto {
   opensAt?: string | null;
 }
 
-// Organiser upload — authenticated, tenant-scoped. mediaUrl/cloudinaryPublicId/
-// bytes come from the browser's own Cloudinary upload response, exactly
-// like Event's coverImageUrl/coverImagePublicId/coverImageBytes.
+// Organiser upload — authenticated, tenant-scoped. mediaUrl and
+// cloudinaryPublicId come from the browser's own Cloudinary upload
+// response. bytes, the size the browser reports, is accepted and never
+// used: the item's size is Cloudinary's own (memory-hub.service.ts).
 export interface CreateMemoryItemDto {
   mediaUrl: string;
   cloudinaryPublicId: string;
   mediaType: 'IMAGE' | 'VIDEO';
-  bytes: number;
+  bytes?: number;
   caption?: string;
 }
 

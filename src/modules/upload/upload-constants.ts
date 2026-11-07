@@ -74,3 +74,28 @@ export const MEMORY_HUB_GUEST_UPLOAD_REQUESTS_PER_5_MIN = 60;
 export const FEEDBACK_LOGO_MAX_BYTES = 2 * 1024 * 1024;
 
 export const FEEDBACK_LOGO_ALLOWED_FORMATS = 'jpg,png,webp';
+
+// ─────────────────────────────────────────
+//  GUEST DOCUMENTS (a file a guest uploads for a DOCUMENT question)
+//
+//  5MB (the plan's figure): a proof of payment is a one-page PDF or a phone screenshot, well
+//  under 1MB; a bank statement export a little more. The same ceiling as
+//  a cover and a guest import. The uploads come through this server (to
+//  check what the file really is), so the cap also bounds the memory one
+//  upload holds.
+//
+//  Per invite: 20 uploads in 5 minutes. A guest uploads one file per
+//  DOCUMENT question and replaces one now and then; 20 leaves room for a
+//  few questions and retries, and bounds a script holding one token.
+//  Registration has no credential before it succeeds, so its uploads are
+//  limited like registering itself: per IP and per event, the same numbers
+//  (rate-limit.middleware.ts).
+// ─────────────────────────────────────────
+//
+//  The size one document may be is the plan's (maxDocumentBytesPerFile,
+//  5 MB on every tier at launch), checked by the service
+//  (guest-document-allowance.util.ts). GUEST_DOCUMENT_CEILING_BYTES is the
+//  fixed safety ceiling above it: what the upload route (multer) reads at
+//  most, and the most a super admin may set a plan's limit to.
+export const GUEST_DOCUMENT_CEILING_BYTES = 20 * 1024 * 1024;
+export const GUEST_DOCUMENT_UPLOADS_PER_INVITE_PER_5_MIN = 20;

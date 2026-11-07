@@ -15,13 +15,17 @@ import {
 } from '../event/event-media-retention.util.js';
 import { eventService } from '../event/event.service.js';
 import { resolveEventOrganisers } from '../event-assignment/event-organisers.util.js';
-import { isSignedPublicIdInFolder, memoryHubFolder } from '../upload/upload-folders.js';
-import { CLOUDINARY_DELETE_BATCH_LIMIT, destroyAssets } from '../../shared/cloudinary/cloudinary.client.js';
+import { isSignedPublicIdInAnyFolder, memoryHubFolders } from '../upload/upload-folders.js';
+import { memoryHubRepository } from '../memory-hub/memory-hub.repository.js';
+import { storedFileService } from '../storage/stored-file.service.js';
+import { DELETE_BATCH_SIZE, storageDeletionWorker } from '../storage/storage-deletion.worker.js';
 import { sendEmailBatch } from '../../shared/messaging/email.engine.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { currentRetentionFloor } from '../storage-retention/retention-state.util.js';
 
 // ─────────────────────────────────────────
 //  ARCHIVED EVENTS: MEMORY HUB MEDIA DELETED AFTER 30 DAYS
@@ -30,9 +34,9 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //  Cloudinary forever. Now, MEDIA_RETENTION_DAYS after it was archived
 //  (Event.archivedAt), they are deleted from Cloudinary and their
 //  MemoryItem rows marked purged (purgedAt, and archived), never deleted.
-//  The event, its cover photo and its invitation design are kept: only
-//  items' own public ids are ever deleted, each checked against the event's
-//  Memory Hub folder first. MEDIA_PURGE_REMINDER_DAYS_BEFORE that, its
+//  The event itself is kept. Items' public ids are each checked against the
+//  event's Memory Hub folder first; its cover and invitation design go too,
+//  by their own StoredFiles (below). MEDIA_PURGE_REMINDER_DAYS_BEFORE that, its
 //  organisers are emailed once, with a button to download them.
 //
 //  A periodic in-process sweep (startMediaRetentionSweeps, started by
@@ -45,15 +49,17 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //    one insert succeeds. A restore before the claim cancels the purge (the
 //    event is no longer archived); after it, the event is restored without
 //    its media.
-//  - ONE SWEEP AT A TIME, AND RETRIED. Working on a purge takes its lease (a
-//    conditional write, so one sweep wins). Items are deleted in Cloudinary
-//    batches of CLOUDINARY_DELETE_BATCH_LIMIT and each is marked purged as
-//    its batch succeeds; whatever failed stays unpurged, the failure is
-//    recorded on the purge (failedCount, lastError) and reported, and the
-//    next sweep tries again. Deleting an already deleted asset counts as
-//    done, so a rerun is always safe. A purge that has begun always
+//  - ONE SWEEP AT A TIME, THROUGH THE STORAGE WORKER. Working on a purge
+//    takes its lease (a conditional write, so one sweep wins). Its items are
+//    claimed in batches of DELETE_BATCH_SIZE: each batch marked purged (and
+//    archived) with its files requested for deletion, in one transaction;
+//    the storage worker deletes them (one by one, with invalidate), at once
+//    (deleteNow) and then on its own schedule, retrying a failure with
+//    backoff. The purge is complete when every one of its files is deleted;
+//    until then each sweep records what is left (failedCount, lastError)
+//    and asks again for any that are due. A purge that has begun always
 //    finishes, a restore included, and only for the items that existed
-//    when it began.
+//    when it began; a purged item can never be restored.
 //  - THE REMINDER is claimed once per event and archiving
 //    (MediaPurgeReminderClaim) before it is sent, like the feedback
 //    request. Not for a restored event, one whose purge has begun (a super
@@ -63,6 +69,23 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //    (mediaPurgeDueAt), so a late reminder moves the purge to a week after
 //    it, the date the email gives. Only an event with nothing to download
 //    is purged without one, at 30 days.
+//  - GUESTS' DOCUMENTS (since 2026-11) follow the same rule: archiving the
+//    event keeps them, downloadable by its organisers, for the 30 days;
+//    restoring before the purge keeps them; the purge deletes them with the
+//    photos, and its reminder says so. But documents are storageRetention's
+//    too: with it off the reminder doesn't mention them and the purge leaves
+//    them (an event with only documents is then purged without a reminder,
+//    deleting nothing), and within 7 days of its resume the purge leaves them
+//    as well (retention-state.util.ts). The storage retention sweep requests
+//    any a purge left once it may (storage-retention.service.ts). Whichever of
+//    the document rules comes first wins.
+//  - THE COVER AND INVITATION DESIGN (since 2026-11) go with them too:
+//    archiving keeps them, so a restore before the purge brings the event
+//    back as it was; the purge requests the files made before it began and
+//    clears the event's cover and archives its uploaded design, so a
+//    restore after it brings the event back without them. A cover or
+//    design replaced while the event is live is deleted at once, as ever.
+//    They are not counted in purgedCount, and alone need no reminder.
 //  - NOTHING IS IMMEDIATE AT DEPLOY. Events archived before archivedAt
 //    existed were given the migration's time, so their 30 days start then.
 //
@@ -94,6 +117,17 @@ const RETENTION_ACTOR = 'media-retention';
 export const EVENT_NOT_ARCHIVED = 'EVENT_NOT_ARCHIVED';
 export const MEDIA_PURGE_ALREADY_STARTED = 'MEDIA_PURGE_ALREADY_STARTED';
 export const ARCHIVE_MEDIA_PURGE_OFF = 'ARCHIVE_MEDIA_PURGE_OFF';
+
+// Shown on a purge whose files are waiting for the worker without having
+// failed (storageDeletion off, or a lease held elsewhere).
+const WAITING_FOR_WORKER = 'Waiting for the storage worker';
+
+// Whether a purge at `now` may delete guests' documents: storageRetention
+// on, and past the 7 days after its last resume.
+const documentsDeletable = async (now: Date): Promise<boolean> => {
+  const floor = await currentRetentionFloor(now);
+  return floor !== null && now >= floor;
+};
 
 const chunk = <T>(items: T[], size: number): T[][] => {
   const chunks: T[][] = [];
@@ -129,12 +163,16 @@ export const mediaRetentionService = {
 
     if (now < mediaPurgeReminderDueAt(event.archivedAt)) return null;
     if (await mediaRetentionRepository.purgeExists(event.id, event.archivedAt)) return null;
-    if ((await mediaRetentionRepository.countDownloadableItems(event.id)) === 0) return null;
+    const itemCount = await mediaRetentionRepository.countDownloadableItems(event.id);
+    // Documents are mentioned only when the purge will delete them.
+    const documentCount = isFeatureEnabled('storageRetention') ? await mediaRetentionRepository.countKeptDocuments(event.id) : 0;
+    if (itemCount === 0 && documentCount === 0) return null;
 
     // 30 days after archiving, or a week from now when this reminder is
     // late: the purge waits for the date the email gives.
     const purgeAt = mediaPurgeDueAt(event.archivedAt, now);
     const recipients = await resolveEventOrganisers(event);
+    const kept = await mediaRetentionRepository.findKeptCoverAndDesign(event.id);
     if (!(await mediaRetentionRepository.claimReminder(event.id, event.archivedAt, recipients.length, now))) return null;
 
     if (recipients.length === 0) {
@@ -143,7 +181,16 @@ export const mediaRetentionService = {
     }
 
     const results = await sendEmailBatch(
-      recipients.map((r) => buildMediaPurgeReminderEmail({ to: r.email, eventId: event.id, eventName: event.name, purgeAt }))
+      recipients.map((r) => buildMediaPurgeReminderEmail({
+        to: r.email,
+        eventId: event.id,
+        eventName: event.name,
+        purgeAt,
+        includesPhotos: itemCount > 0,
+        includesDocuments: documentCount > 0,
+        hasCover: kept.cover,
+        hasDesign: kept.design,
+      }))
     );
     const failedCount = results.filter((r) => !r.ok).length;
     if (failedCount > 0) {
@@ -154,51 +201,67 @@ export const mediaRetentionService = {
   },
 
   // One attempt at a purge, or null when it is finished or another sweep
-  // holds it. Deletes what is left of it in Cloudinary batches, marking
-  // each item purged as its batch succeeds.
+  // holds it. Claims what is left of it a batch at a time (items marked
+  // purged, their files requested, one transaction per batch), requests any
+  // document still kept, then asks the storage worker to delete every file
+  // of the purge still there and due. Complete once none is left.
+  //
+  // purgedCount: items (and documents) claimed by this attempt. failedCount:
+  // files of the purge still not deleted after it, retried by the worker
+  // and checked again by the next sweep.
   runPurge: async (purgeId: string, now: Date = new Date()): Promise<MediaPurgeOutcome | null> => {
     if (!(await mediaRetentionRepository.takeLease(purgeId, now, new Date(now.getTime() + MEDIA_PURGE_LEASE_MS)))) return null;
 
     const purge = await mediaRetentionRepository.findPurge(purgeId);
     const actor = purge.requestedBy ?? RETENTION_ACTOR;
+    const owner = { tenantId: purge.event.tenantId, eventId: purge.eventId };
     let purgedCount = 0;
-    let lastError: string | null = null;
-    const failedIds = new Set<string>();
+    let left: { id: string; lastDeleteError: string | null }[];
 
     try {
       const items = await mediaRetentionRepository.findItemsToPurge(purge.eventId, purge.startedAt);
-      const folder = memoryHubFolder(purge.event.tenantId, purge.eventId);
+      const folders = memoryHubFolders(purge.event.tenantId, purge.eventId);
 
       // Every stored id was checked on the way in; one that isn't in this
       // event's folder (an older row) is never sent to Cloudinary, since it
       // could name another event's asset. Its row is hidden all the same.
-      const outside = items.filter((i) => !isSignedPublicIdInFolder(i.cloudinaryPublicId, folder));
+      const outside = items.filter((i) => !isSignedPublicIdInAnyFolder(i.cloudinaryPublicId, folders));
       if (outside.length > 0) {
         console.warn(`[media retention] event ${purge.eventId}: ${outside.length} item(s) outside its folder hidden, not deleted`);
         purgedCount += (await mediaRetentionRepository.markItemsPurged(outside.map((i) => i.id), now, actor)).count;
       }
 
-      const inside = items.filter((i) => isSignedPublicIdInFolder(i.cloudinaryPublicId, folder));
-      for (const [mediaType, resourceType] of [['IMAGE', 'image'], ['VIDEO', 'video']] as const) {
-        const ofType = inside.filter((i) => i.mediaType === mediaType);
-        for (const batch of chunk(ofType, CLOUDINARY_DELETE_BATCH_LIMIT)) {
-          const result = await destroyAssets(batch.map((i) => i.cloudinaryPublicId), resourceType);
-          if (!result.ok) {
-            batch.forEach((i) => failedIds.add(i.id));
-            lastError = result.reason;
-            continue;
-          }
-          const deleted = new Set(result.deleted);
-          const done = batch.filter((i) => deleted.has(i.cloudinaryPublicId));
-          batch.filter((i) => !deleted.has(i.cloudinaryPublicId)).forEach((i) => failedIds.add(i.id));
-          if (result.failed.length > 0) lastError = result.failed[0]!.reason;
-          purgedCount += (await mediaRetentionRepository.markItemsPurged(done.map((i) => i.id), now, actor)).count;
-        }
+      const inside = items.filter((i) => isSignedPublicIdInAnyFolder(i.cloudinaryPublicId, folders));
+      for (const batch of chunk(inside, DELETE_BATCH_SIZE)) {
+        purgedCount += await mediaRetentionRepository.withTransaction(async (tx) => {
+          const claimed = await memoryHubRepository.claimItemsForDeletion(tx, { id: { in: batch.map((i) => i.id) } }, now, actor);
+          await storedFileService.requestItemFiles(tx, claimed, owner, now);
+          return claimed.length;
+        });
       }
+
+      // Its guests' documents too (guest-document.service.ts), counted
+      // with the items: kept since the archiving, deleted now unless
+      // storageRetention forbids it (off, or within a resume's 7 days). Any
+      // left are requested by the storage retention sweep once it may.
+      if (await documentsDeletable(now)) {
+        purgedCount += await mediaRetentionRepository.withTransaction((tx) =>
+          guestDocumentService.requestPurgeForEvent(tx, purge.eventId, purge.startedAt, now)
+        );
+      }
+
+      // Its cover and uploaded invitation design, kept since the archiving.
+      await mediaRetentionRepository.withTransaction((tx) =>
+        mediaRetentionRepository.requestCoverAndDesignFiles(tx, purge.eventId, purge.startedAt, now, actor)
+      );
+
+      const outstanding = await mediaRetentionRepository.findOutstandingFiles(purge.eventId, purge.startedAt);
+      await storageDeletionWorker.deleteNow(outstanding.map((f) => f.id), now);
+      left = outstanding.length ? await mediaRetentionRepository.findOutstandingFiles(purge.eventId, purge.startedAt) : [];
     } catch (err) {
       // A database failure mid-run: release the lease so the next sweep
-      // retries now, not when the lease runs out. What was deleted is
-      // deleted again harmlessly ("not found" counts as done).
+      // retries now, not when the lease runs out. Whatever was claimed is
+      // requested, and the worker deletes it either way.
       await mediaRetentionRepository.finishAttempt(purgeId, {
         purgedCount,
         failedCount: purge.failedCount,
@@ -208,17 +271,16 @@ export const mediaRetentionService = {
       throw err;
     }
 
-    const completed = failedIds.size === 0;
-    await mediaRetentionRepository.finishAttempt(purgeId, {
-      purgedCount,
-      failedCount: failedIds.size,
-      lastError: completed ? null : lastError,
-      completedAt: completed ? now : null,
-    });
+    const failedCount = left.length;
+    const completed = failedCount === 0;
+    const lastError = completed ? null : left.find((f) => f.lastDeleteError)?.lastDeleteError ?? WAITING_FOR_WORKER;
+    await mediaRetentionRepository.finishAttempt(purgeId, { purgedCount, failedCount, lastError, completedAt: completed ? now : null });
     if (!completed) {
-      reportError(new Error(`[media retention] ${failedIds.size} item(s) of event ${purge.eventId} could not be deleted from Cloudinary, retried next sweep: ${lastError}`));
+      // Counts only. The worker reports a file that keeps failing to Sentry
+      // itself (the 3rd failure in a row, and every 10th after).
+      console.warn(`[media retention] ${failedCount} file(s) of event ${purge.eventId} not deleted yet, checked again next sweep`);
     }
-    return { purgeId, eventId: purge.eventId, reason: purge.reason, purgedCount, failedCount: failedIds.size, completed };
+    return { purgeId, eventId: purge.eventId, reason: purge.reason, purgedCount, failedCount, completed };
   },
 
   // One pass: reminders due, purges due claimed, then every unfinished
@@ -233,7 +295,11 @@ export const mediaRetentionService = {
     // A purge also waits a full week after its reminder.
     const remindedBy = new Date(now.getTime() - MEDIA_PURGE_REMINDER_DAYS_BEFORE * DAY_MS);
 
-    for (const eventId of await mediaRetentionRepository.findReminderCandidates(remindFrom)) {
+    // Documents count as something to remind about (and so hold the purge
+    // for its reminder) only while storageRetention lets them be deleted.
+    const withDocuments = isFeatureEnabled('storageRetention');
+
+    for (const eventId of await mediaRetentionRepository.findReminderCandidates(remindFrom, withDocuments)) {
       try {
         const outcome = await mediaRetentionService.remindFor(eventId, now);
         if (outcome) result.reminders.push(outcome);
@@ -244,7 +310,7 @@ export const mediaRetentionService = {
       }
     }
 
-    for (const eventId of await mediaRetentionRepository.findDuePurgeEventIds(purgeFrom, remindedBy)) {
+    for (const eventId of await mediaRetentionRepository.findDuePurgeEventIds(purgeFrom, remindedBy, withDocuments)) {
       try {
         await mediaRetentionRepository.claimPurge(eventId, { reason: 'RETENTION', requestedBy: null, dueBy: purgeFrom, now });
       } catch (err) {

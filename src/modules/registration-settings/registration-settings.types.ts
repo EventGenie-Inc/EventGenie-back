@@ -13,6 +13,10 @@ export interface UpdateRegistrationSettingsDto {
   plusOnesAllowed?: unknown;
   // The live days open to registration — the whole list; at least one.
   openDayIds?: unknown;
+  // true: registering emails the invitation at once (the default). false:
+  // each registration awaits the organiser's approval. Switching it on
+  // leaves registrations already awaiting approval as they are.
+  autoApprove?: unknown;
 }
 
 export interface RegistrationSettingsView {
@@ -20,6 +24,12 @@ export interface RegistrationSettingsView {
   cap: number | null;
   closesAt: Date | null;
   plusOnesAllowed: number;
+  // See UpdateRegistrationSettingsDto.autoApprove.
+  autoApprove: boolean;
+  // Registrations awaiting approval now (registrants, not their plus-ones),
+  // listed at GET /api/events/:eventId/registrations/pending. They are
+  // counted in registeredCount: they hold their seats.
+  pendingApprovalCount: number;
   days: { id: string; label: string; date: Date; openForRegistration: boolean }[];
   // Seats the cap is counting now: registrants who haven't declined, plus
   // their plus-ones.

@@ -2,19 +2,15 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } 
 import { randomUUID } from 'crypto';
 import request from 'supertest';
 
-// destroyAsset is the one Cloudinary call these paths make (an oversized
-// logo); mocked to observe it and so nothing real is ever deleted.
-const { mockDestroyAsset } = vi.hoisted(() => ({ mockDestroyAsset: vi.fn() }));
-vi.mock('../../src/shared/cloudinary/cloudinary.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/shared/cloudinary/cloudinary.client.js')>()),
-  destroyAsset: mockDestroyAsset,
-}));
+// Cloudinary is the suite's in-memory fake (tests/helpers/fake-cloudinary.ts):
+// a logo's size is what it says the file weighs, and nothing real is touched.
 
 import app from '../../src/app.js';
 import { assign, createActor, createTenant, headersFor, installFirebaseMock, prisma, type Actor } from '../helpers/team.js';
 import { feedbackLogoFolder } from '../../src/modules/upload/upload-folders.js';
 import { FEEDBACK_LOGO_MAX_BYTES } from '../../src/modules/upload/upload-constants.js';
 import { addPhoto, cleanupTenants, deliveryUrl, newEvent, newGuest, setGuestSharing } from './helpers.js';
+import { signedUpload, storedFile } from '../helpers/storage.js';
 
 // ─────────────────────────────────────────
 //  ORGANISER FEEDBACK — /api/events/:eventId/feedback
@@ -45,8 +41,6 @@ beforeAll(async () => {
 
 beforeEach(() => {
   installFirebaseMock();
-  mockDestroyAsset.mockReset();
-  mockDestroyAsset.mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
@@ -285,54 +279,76 @@ describe('who may', () => {
 });
 
 describe('the logo', () => {
-  const ownLogo = () => {
-    const publicId = `${feedbackLogoFolder(tenantId)}/${randomUUID()}`;
-    return { url: deliveryUrl(publicId, 'png'), publicId, bytes: 50_000 };
+  // A real signed upload: its StoredFile, and the file in the fake
+  // Cloudinary at `bytes` (Cloudinary's own figure).
+  const ownLogo = async (eventId: string, bytes = 50_000) => {
+    const up = await signedUpload({ kind: 'FEEDBACK_LOGO', tenantId, eventId, uploadedBy: { userId: organiser.id }, bytes, format: 'png' });
+    return { url: deliveryUrl(up.publicId, 'png'), publicId: up.publicId };
   };
 
-  it("is signed into the tenant's own logo folder", async () => {
+  it("is signed into the tenant's own logo folder, its StoredFile written first", async () => {
     const { event } = await newEvent(tenantId, organiser.id);
     const res = await request(app).post(`/api/events/${event.id}/feedback/logo-signature`).set(headersFor(organiser));
     expect(res.status).toBe(200);
     expect(res.body.data.folder).toBe(feedbackLogoFolder(tenantId));
+    expect(res.body.data.folder).toBe(`dev/t/${tenantId}/feedback-logo`);
     expect(res.body.data.allowedFormats).toBe('jpg,png,webp');
+    const row = await storedFile(`${res.body.data.folder}/${res.body.data.publicId}`);
+    expect(row).toMatchObject({ kind: 'FEEDBACK_LOGO', status: 'SIGNED', tenantId, eventId: event.id, uploadedByUserId: organiser.id });
+    expect(res.body.data.params).toMatchObject({ folder: res.body.data.folder, public_id: res.body.data.publicId, signature: res.body.data.signature });
   });
 
-  it("another tenant's or another folder's id, or a URL for a different id, is 422 and nothing is destroyed", async () => {
+  it("another tenant's upload or an unsigned id is 422 UPLOAD_NOT_FOUND; a URL for a different id is FEEDBACK_LOGO_INVALID; nothing is deleted", async () => {
     const { event } = await newEvent(tenantId, organiser.id);
-    const foreign = `${feedbackLogoFolder(otherTenantAdmin.tenantId as string)}/${randomUUID()}`;
-    const memoryHubId = `eventgenie/${tenantId}/memory-hub/${event.id}/${randomUUID()}`;
-    const own = ownLogo();
-    for (const logo of [
-      { url: deliveryUrl(foreign, 'png'), publicId: foreign, bytes: 1000 },
-      { url: deliveryUrl(memoryHubId, 'png'), publicId: memoryHubId, bytes: 1000 },
-      { ...own, url: deliveryUrl(`${feedbackLogoFolder(tenantId)}/${randomUUID()}`, 'png') },
-    ]) {
+    const { event: otherEvent } = await newEvent(otherTenantAdmin.tenantId as string, otherTenantAdmin.id);
+    const foreign = await signedUpload({ kind: 'FEEDBACK_LOGO', tenantId: otherTenantAdmin.tenantId as string, eventId: otherEvent.id, uploadedBy: { userId: otherTenantAdmin.id }, format: 'png' });
+    const unsigned = `${feedbackLogoFolder(tenantId)}/${randomUUID()}`;
+    const own = await ownLogo(event.id);
+    for (const [logo, code] of [
+      [{ url: deliveryUrl(foreign.publicId, 'png'), publicId: foreign.publicId }, 'UPLOAD_NOT_FOUND'],
+      [{ url: deliveryUrl(unsigned, 'png'), publicId: unsigned }, 'UPLOAD_NOT_FOUND'],
+      [{ ...own, url: deliveryUrl(`${feedbackLogoFolder(tenantId)}/${randomUUID()}`, 'png') }, 'FEEDBACK_LOGO_INVALID'],
+    ] as const) {
       const res = await put(event.id, { score: 9, logo });
       expect(res.status).toBe(422);
-      expect(res.body.code).toBe('FEEDBACK_LOGO_INVALID');
+      expect(res.body.code).toBe(code);
     }
-    expect(mockDestroyAsset).not.toHaveBeenCalled();
+    expect((await put(event.id, { score: 9, logo: { url: deliveryUrl(unsigned, 'png'), publicId: unsigned } })).body.message).toBe("This logo wasn't uploaded for your account. Upload it again from the feedback form.");
+    expect((await storedFile(foreign.publicId)).status).toBe('SIGNED');
+    expect((await storedFile(own.publicId)).status).toBe('SIGNED');
     expect(await prisma.eventFeedback.count({ where: { eventId: event.id } })).toBe(0);
   });
 
-  it('too large is 422 and the upload is destroyed; a good one is saved; null removes it', async () => {
+  it("a size the browser lies about is measured: too large is 422 and requested for deletion, whatever 'bytes' says", async () => {
     const { event } = await newEvent(tenantId, organiser.id);
-    const big = { ...ownLogo(), bytes: FEEDBACK_LOGO_MAX_BYTES + 1 };
-    const tooLarge = await put(event.id, { score: 9, logo: big });
+    const big = await ownLogo(event.id, FEEDBACK_LOGO_MAX_BYTES + 1);
+    const tooLarge = await put(event.id, { score: 9, logo: { ...big, bytes: 1000 } });
     expect(tooLarge.status).toBe(422);
     expect(tooLarge.body.code).toBe('FEEDBACK_LOGO_TOO_LARGE');
-    expect(mockDestroyAsset).toHaveBeenCalledWith(big.publicId);
+    expect(await storedFile(big.publicId)).toMatchObject({ status: 'DELETE_REQUESTED', bytes: FEEDBACK_LOGO_MAX_BYTES + 1 });
+    expect(await prisma.eventFeedback.count({ where: { eventId: event.id } })).toBe(0);
+  });
 
-    const good = ownLogo();
-    const saved = await put(event.id, { score: 9, logo: good });
+  it('a good one is saved and attached; a replacement requests the old one deleted; null removes the last', async () => {
+    const { event } = await newEvent(tenantId, organiser.id);
+    const first = await ownLogo(event.id);
+    const saved = await put(event.id, { score: 9, logo: first });
     expect(saved.status).toBe(200);
-    expect(saved.body.data.feedback.logoUrl).toBe(good.url);
+    expect(saved.body.data.feedback.logoUrl).toBe(first.url);
+    expect(await storedFile(first.publicId)).toMatchObject({ status: 'ATTACHED', bytes: 50_000 });
 
-    // Re-sent unchanged (without bytes): accepted as it is.
-    expect((await put(event.id, { logo: { url: good.url, publicId: good.publicId } })).status).toBe(200);
+    // Re-sent unchanged: accepted as it is, nothing replaced.
+    expect((await put(event.id, { logo: { url: first.url, publicId: first.publicId } })).status).toBe(200);
+    expect((await storedFile(first.publicId)).status).toBe('ATTACHED');
+
+    const second = await ownLogo(event.id);
+    expect((await put(event.id, { logo: second })).status).toBe(200);
+    expect((await storedFile(first.publicId)).status).toBe('DELETE_REQUESTED');
+    expect((await storedFile(second.publicId)).status).toBe('ATTACHED');
+    expect((await prisma.eventFeedback.findUniqueOrThrow({ where: { eventId: event.id } })).logoFileId).toBe((await storedFile(second.publicId)).id);
 
     const removed = await put(event.id, { logo: null });
     expect(removed.body.data.feedback.logoUrl).toBeNull();
+    expect((await storedFile(second.publicId)).status).toBe('DELETE_REQUESTED');
   });
 });

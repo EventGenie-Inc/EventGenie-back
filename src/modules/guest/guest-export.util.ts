@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { answerValue } from '../rsvp/rsvp-answers.util.js';
 
 interface TemplateEvent {
   id: string;
@@ -13,7 +14,27 @@ interface ExportEventDay {
 interface ExportRsvpField {
   id: string;
   label: string;
+  fieldType: string;
 }
+
+// A DOCUMENT answer is a document id: the cell says "Received" while the
+// file is kept, else blank. Never a link (it would outlive its 5 minutes
+// and carry the file's name into a spreadsheet passed around), never the id.
+export const DOCUMENT_RECEIVED_LABEL = 'Received';
+
+// A MULTI_SELECT answer is a stored list of choices: the cell joins them
+// with "; " (an option can hold a comma), blank for none chosen.
+export const MULTI_SELECT_SEPARATOR = '; ';
+
+// A registration awaiting the organiser's approval (the registrant and
+// their plus-ones): its invite reads ACCEPTED, but the organiser hasn't
+// accepted them, so the status column says so instead.
+export const PENDING_APPROVAL_STATUS_LABEL = 'Pending approval';
+
+const multiSelectCell = (answer: string): string => {
+  const choices = answerValue('MULTI_SELECT', answer);
+  return Array.isArray(choices) ? choices.join(MULTI_SELECT_SEPARATOR) : choices;
+};
 
 interface ExportInvite {
   status: string;
@@ -29,6 +50,7 @@ export interface ExportGuest {
   email: string | null;
   phoneNumber: string | null;
   hostGuestId: string | null;
+  pendingApproval: boolean;
   hostGuest: { firstName: string | null; surname: string | null } | null;
   invites: ExportInvite[];
 }
@@ -68,7 +90,8 @@ export const buildGuestExportWorkbook = async (
   event: TemplateEvent,
   eventDays: ExportEventDay[],
   rsvpFields: ExportRsvpField[],
-  guests: ExportGuest[]
+  guests: ExportGuest[],
+  receivedDocumentIds: ReadonlySet<string> = new Set()
 ): Promise<{ buffer: Buffer; filename: string }> => {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Guests');
@@ -116,14 +139,19 @@ export const buildGuestExportWorkbook = async (
       // the organiser right back in the dark this export exists to fix.
       contact: [guest.email, guest.phoneNumber].filter(Boolean).join(' / '),
       invitedDays: invitedDayLabels.join(', '),
-      inviteStatus: invite?.status ?? '',
+      inviteStatus: guest.pendingApproval ? PENDING_APPROVAL_STATUS_LABEL : (invite?.status ?? ''),
       plusOneOf: guest.hostGuest ? displayName(guest.hostGuest) : '',
     };
     for (const day of eventDays) {
       row[`day_${day.id}`] = attendedDayIds.has(day.id) ? 'Yes' : '';
     }
     for (const field of rsvpFields) {
-      row[`field_${field.id}`] = responseByField.get(field.id) ?? '';
+      const answer = responseByField.get(field.id) ?? '';
+      row[`field_${field.id}`] = field.fieldType === 'DOCUMENT'
+        ? (receivedDocumentIds.has(answer) ? DOCUMENT_RECEIVED_LABEL : '')
+        : field.fieldType === 'MULTI_SELECT'
+          ? multiSelectCell(answer)
+          : answer;
     }
 
     sheet.addRow(row);

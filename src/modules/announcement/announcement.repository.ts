@@ -1,5 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type AnnouncementAudience, type AnnouncementKind, type Prisma } from '@prisma/client';
+import { GUEST_NOT_AWAITING_APPROVAL } from '../registration-approval/registration-approval-gate.util.js';
 
 type Tx = Prisma.TransactionClient;
 const db = (tx?: Tx) => tx ?? prisma;
@@ -21,12 +22,21 @@ export interface CreateAnnouncementInput {
 export const announcementRepository = {
   // Every live, primary guest of the event with their live invites (newest
   // first) and each invite's live days. One query; announcement-audience
-  // .util.ts decides who is in an audience.
-  findAudienceGuests: (eventId: string) =>
+  // .util.ts decides who is in an audience. A registration awaiting
+  // approval is never a candidate for an announcement; only the
+  // cancellation email asks for them too (includePending), and leaves its
+  // note out of theirs (registration-approval-gate.util.ts).
+  findAudienceGuests: (eventId: string, { includePending = false }: { includePending?: boolean } = {}) =>
     prisma.guest.findMany({
-      where: { eventId, isArchived: false, hostGuestId: null },
+      where: {
+        eventId,
+        isArchived: false,
+        hostGuestId: null,
+        ...(includePending ? { registrationDeclinedAt: null } : GUEST_NOT_AWAITING_APPROVAL),
+      },
       select: {
         id: true,
+        pendingApproval: true,
         firstName: true,
         surname: true,
         email: true,

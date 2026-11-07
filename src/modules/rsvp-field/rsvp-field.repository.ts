@@ -27,6 +27,7 @@ export const rsvpFieldRepository = {
         fieldType: data.fieldType,
         isRequired: data.isRequired ?? false,
         options: data.options ?? null,
+        description: data.description ?? null,
         order: data.order,
         isArchived: false,
         createdBy: userId,
@@ -42,10 +43,16 @@ export const rsvpFieldRepository = {
         ...(data.fieldType !== undefined && { fieldType: data.fieldType }),
         ...(data.isRequired !== undefined && { isRequired: data.isRequired }),
         ...(data.options !== undefined && { options: data.options ?? null }),
+        ...(data.description !== undefined && { description: data.description ?? null }),
         ...(data.order !== undefined && { order: data.order }),
         updatedBy: userId,
       },
     }),
+
+  // Answers guests have given this question, blank ones left out (a blank
+  // optional answer is stored, but answers nothing).
+  countAnswers: (id: string) =>
+    prisma.rsvpResponse.count({ where: { rsvpFieldId: id, NOT: { value: '' } } }),
 
   archive: (id: string, userId: string, db: Db = prisma) =>
     db.rsvpField.update({

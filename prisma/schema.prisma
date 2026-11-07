@@ -81,9 +81,30 @@ enum RsvpFieldType {
   NUMBER
   EMAIL
   PHONE
+  // One of the question's options ("Multiple choice" in the interface).
   DROPDOWN
   CHECKBOX
   DATE
+  // A file the guest uploads (a proof of payment, say): the answer is a
+  // GuestDocument's id. Behind the documentFields flag.
+  DOCUMENT
+  // One or more of the question's options (stored like DROPDOWN's); the
+  // answer is a JSON-encoded list of the chosen options, in
+  // RsvpResponse.value.
+  MULTI_SELECT
+}
+
+// Where an event day happens: a real venue, or online. See EventDay.
+enum EventDayLocationType {
+  VENUE
+  ONLINE
+}
+
+// How a GuestDocument was uploaded: with an invitation's token, or on a
+// public event's registration page before the registrant has one.
+enum GuestDocumentSource {
+  INVITE
+  REGISTRATION
 }
 
 enum InviteStatus {
@@ -369,6 +390,7 @@ model Tenant {
   eventAssignments        EventAssignment[]
   teamInvites             TeamInvite[]
   eventFeedback           EventFeedback[]
+  storedFiles             StoredFile[]
 }
 
 // ─────────────────────────────────────────
@@ -518,6 +540,9 @@ model Event {
   // to delete the old asset on replace and for any future
   // transform/thumbnail generation (see Batch B report).
   coverImagePublicId          String?
+  // The cover's StoredFile (storage module), when it is one of ours. An
+  // externally hosted cover has none.
+  coverFileId                 String?
   status                      EventStatus     @default(DRAFT)
   visibility                  EventVisibility @default(PRIVATE)
   ticketing                   EventTicketing  @default(FREE)
@@ -561,6 +586,12 @@ model Event {
   registrationClosesAt        DateTime?
   // Copied onto each registrant's Guest.plusOnesAllowed at registration.
   registrationPlusOnesAllowed Int             @default(0)
+  // On (the default, and every event made before 2026-11): registering
+  // emails the registrant their invitation at once. Off: a registration is
+  // saved awaiting the organiser's approval (Guest.pendingApproval) and
+  // nothing about the event reaches the registrant until it is approved
+  // (registration-approval.service.ts).
+  registrationAutoApprove     Boolean         @default(true)
   // Organiser-chosen, informational only — Ticketing & Payments batch.
   // With split-at-source, a ticket's money lands directly in the
   // organiser's bank account (possibly weeks before a refund request
@@ -576,44 +607,56 @@ model Event {
   // Events archived before the column existed were given the migration's
   // own time (20261026090000_archive_media_retention), never an older one.
   archivedAt                  DateTime?
+  // When it was cancelled; null otherwise. Starts the cancelled event's
+  // document clock (storage-retention.service.ts): its guests' documents
+  // are deleted 30 days later. Events cancelled before the column existed
+  // were given the migration's own time (20261106090000_storage_rules).
+  cancelledAt                 DateTime?
   createdAt                   DateTime        @default(now())
   updatedAt                   DateTime        @updatedAt
   createdBy                   String
   updatedBy                   String
 
-  tenant                  Tenant                   @relation(fields: [tenantId], references: [id])
-  createdByUser           User                     @relation(fields: [createdByUserId], references: [id])
-  eventDays               EventDay[]
-  invites                 Invite[]
-  guests                  Guest[]
-  memoryHub               MemoryHub?
-  rsvpFields              RsvpField[]
-  program                 EventProgram?
-  tickets                 Ticket[]
-  paymentLedgerEntries    PaymentLedgerEntry[]
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id])
+  createdByUser            User                      @relation(fields: [createdByUserId], references: [id])
+  eventDays                EventDay[]
+  invites                  Invite[]
+  guests                   Guest[]
+  memoryHub                MemoryHub?
+  rsvpFields               RsvpField[]
+  program                  EventProgram?
+  tickets                  Ticket[]
+  paymentLedgerEntries     PaymentLedgerEntry[]
   // Event Pass batch — see EventPass's own comment for why this is a
   // singular, one-row-per-event relation rather than a list.
-  eventPass               EventPass?
-  eventPassPurchases      EventPassPurchase[]
-  eventSmsBundlePurchases EventSmsBundlePurchase[]
-  smsSendLogs             SmsSendLog[]
-  inviteReminderLogs      InviteReminderLog[]
-  announcements           Announcement[]
-  emailClaims             EventEmailClaim[]
+  eventPass                EventPass?
+  eventPassPurchases       EventPassPurchase[]
+  eventSmsBundlePurchases  EventSmsBundlePurchase[]
+  smsSendLogs              SmsSendLog[]
+  inviteReminderLogs       InviteReminderLog[]
+  announcements            Announcement[]
+  emailClaims              EventEmailClaim[]
   // Feedback and sharing permissions — see EventFeedback and ConsentRecord.
-  feedback                EventFeedback?
-  consentRecords          ConsentRecord[]
-  feedbackRequestClaim    FeedbackRequestClaim?
+  feedback                 EventFeedback?
+  consentRecords           ConsentRecord[]
+  feedbackRequestClaim     FeedbackRequestClaim?
   // A list only because Prisma cannot express "unique among non-archived":
   // at most ONE non-archived row per event, enforced by the partial unique
   // index in the invitation_design migration. Read it through
   // invitationDesignRepository.findActiveByEventId, never as a list.
-  invitationDesigns       InvitationDesign[]
+  invitationDesigns        InvitationDesign[]
   // Team Members batch — which EVENT_ADMINs this event is assigned to.
-  assignments             EventAssignment[]
+  assignments              EventAssignment[]
   // Archived-event retention — see EventMediaPurge.
-  mediaPurges             EventMediaPurge[]
+  mediaPurges              EventMediaPurge[]
   mediaPurgeReminderClaims MediaPurgeReminderClaim[]
+  // Guests' documents deleted by the retention rules (STEERING "Storage").
+  documentPurges           EventDocumentPurge[]
+  documentPurgeReminders   DocumentPurgeReminderClaim[]
+  // Files guests uploaded for DOCUMENT questions — see GuestDocument.
+  guestDocuments           GuestDocument[]
+  coverFile                StoredFile?               @relation("EventCoverFile", fields: [coverFileId], references: [id], onDelete: SetNull)
+  storedFiles              StoredFile[]              @relation("StoredFileEvent")
 }
 
 // ─────────────────────────────────────────
@@ -628,10 +671,10 @@ model Event {
 // ─────────────────────────────────────────
 
 model EventDay {
-  id                  String    @id @default(cuid())
+  id                  String                @id @default(cuid())
   eventId             String
   label               String
-  date                DateTime  @db.Date
+  date                DateTime              @db.Date
   startTime           DateTime?
   endTime             DateTime?
   // The venue — per day, not per event: a wedding's ceremony and its
@@ -643,15 +686,23 @@ model EventDay {
   // event-level ones did.
   location            String?
   address             String?
-  latitude            Decimal?  @db.Decimal(10, 7)
-  longitude           Decimal?  @db.Decimal(10, 7)
+  latitude            Decimal?              @db.Decimal(10, 7)
+  longitude           Decimal?              @db.Decimal(10, 7)
+  // VENUE (a real place: location and address required, as above) or
+  // ONLINE (no venue, address or coordinates; an optional https link in
+  // onlineUrl, shown only to people invited or registered). Every day
+  // saved before it existed is a VENUE (the column's default; nullable
+  // only so its migration is additive, and null reads as VENUE). See
+  // event-day-venue.util.ts.
+  locationType        EventDayLocationType? @default(VENUE)
+  onlineUrl           String?
   // Public self-registration: a registrant can choose (and is invited to)
   // only the days marked open. On by default, so a single-day event and
   // every day added later need nothing set.
-  openForRegistration Boolean   @default(true)
-  isArchived          Boolean   @default(false)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  openForRegistration Boolean               @default(true)
+  isArchived          Boolean               @default(false)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
   createdBy           String
   updatedBy           String
 
@@ -701,6 +752,17 @@ model Guest {
   // organiser added, and for plus-ones. A marker only: reminders, check-in
   // and the guest list treat a self-registered guest like any other.
   selfRegisteredAt DateTime?
+  // A registration awaiting the organiser's approval (an event with
+  // registrationAutoApprove off), on the registrant and each plus-one.
+  // While true, no token of theirs opens anything (findByToken), no guest
+  // email or announcement reaches them and check-in doesn't list them; they
+  // hold their seats. Approving clears it (registrationApprovedAt);
+  // declining clears it (registrationDeclinedAt) and archives the party.
+  // registrationDecidedBy: the deciding organiser's userId.
+  pendingApproval        Boolean   @default(false)
+  registrationApprovedAt DateTime?
+  registrationDeclinedAt DateTime?
+  registrationDecidedBy  String?
 
   event                  Event                  @relation(fields: [eventId], references: [id])
   invites                Invite[]
@@ -753,6 +815,7 @@ model Invite {
   ticketPurchases TicketPurchase[]
   smsSendLogs     SmsSendLog[]
   reminderLogs    InviteReminderLog[]
+  documents       GuestDocument[]
 }
 
 // ─────────────────────────────────────────
@@ -908,6 +971,17 @@ model MemoryItem {
   // (media-retention.service.ts). The row stays, archived as well, so every
   // live-items query leaves it out; it can never be restored.
   purgedAt           DateTime?
+  // When the organiser rejected it, or removed it (archived it): 7 days
+  // later its file is requested for deletion and it is purged
+  // (storage-retention.service.ts), unless approved again (clears
+  // rejectedAt) or restored (clears removedAt) first. Items rejected or
+  // removed before the columns existed were given the migration's time
+  // (20261106090000_storage_rules).
+  rejectedAt         DateTime?
+  removedAt          DateTime?
+  // Its StoredFile (storage module). Null only for a row the backfill
+  // could not match.
+  storedFileId       String?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
   createdBy          String
@@ -917,6 +991,10 @@ model MemoryItem {
   uploadedByGuest Guest?          @relation("MemoryItemUploadedByGuest", fields: [uploadedByGuestId], references: [id])
   uploadedByUser  User?           @relation("MemoryItemUploadedByUser", fields: [uploadedByUserId], references: [id])
   consentRecords  ConsentRecord[]
+  storedFile      StoredFile?     @relation(fields: [storedFileId], references: [id], onDelete: SetNull)
+
+  @@index([rejectedAt])
+  @@index([removedAt])
 }
 
 // ─────────────────────────────────────────
@@ -1019,21 +1097,25 @@ model Product {
 // ─────────────────────────────────────────
 
 model RsvpField {
-  id         String        @id @default(cuid())
-  eventId    String
-  label      String
-  fieldType  RsvpFieldType
-  isRequired Boolean       @default(false)
-  options    String?
-  order      Int
-  isArchived Boolean       @default(false)
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-  createdBy  String
-  updatedBy  String
+  id          String        @id @default(cuid())
+  eventId     String
+  label       String
+  // Optional help text under the question, e.g. where to pay before
+  // uploading the proof. Null for every question saved before it existed.
+  description String?
+  fieldType   RsvpFieldType
+  isRequired  Boolean       @default(false)
+  options     String?
+  order       Int
+  isArchived  Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  createdBy   String
+  updatedBy   String
 
-  event     Event          @relation(fields: [eventId], references: [id])
+  event     Event           @relation(fields: [eventId], references: [id])
   responses RsvpResponse[]
+  documents GuestDocument[]
 }
 
 // ─────────────────────────────────────────
@@ -1051,6 +1133,59 @@ model RsvpResponse {
   rsvpField RsvpField @relation(fields: [rsvpFieldId], references: [id])
 
   @@unique([inviteId, rsvpFieldId])
+}
+
+// ─────────────────────────────────────────
+//  GUEST DOCUMENT
+//
+//  A file a guest uploaded for a DOCUMENT question (guest-document module):
+//  a proof of payment, say, which can hold bank details. Stored in
+//  Cloudinary as a PRIVATE raw asset in the event's documents folder, never
+//  at a public URL; an organiser reads it through a 5-minute signed link.
+//  The answer (RsvpResponse.value) is this row's id.
+//
+//  The id is a random UUID minted by the server: a registration upload has
+//  no other credential before the registration that references it, so the
+//  id is what ties the two together.
+//
+//  Never hard-deleted. The FILE is deleted (deleteRequestedAt, then
+//  deletedAt once Cloudinary confirms): replaced by another upload, never
+//  attached within 24 hours, its guest removed, its event deleted, or the
+//  archived event's media purge. A requested deletion that failed is
+//  retried by the documents sweep.
+// ─────────────────────────────────────────
+
+model GuestDocument {
+  id                 String              @id
+  eventId            String
+  rsvpFieldId        String
+  // The invite it belongs to: set at upload for an INVITE upload, and when
+  // the registration that references it is created for a REGISTRATION one.
+  inviteId           String?
+  source             GuestDocumentSource
+  cloudinaryPublicId String              @unique
+  // The name the guest's file had, for the organiser. Never logged.
+  fileName           String
+  contentType        String
+  sizeBytes          Int
+  uploadedAt         DateTime            @default(now())
+  // When an RSVP or registration referenced it. Unattached for 24 hours:
+  // deleted by the sweep.
+  attachedAt         DateTime?
+  deleteRequestedAt  DateTime?
+  deletedAt          DateTime?
+  lastDeleteError    String?
+  // Its StoredFile, created before the file is sent to Cloudinary.
+  storedFileId       String?             @unique
+
+  event      Event       @relation(fields: [eventId], references: [id])
+  rsvpField  RsvpField   @relation(fields: [rsvpFieldId], references: [id])
+  invite     Invite?     @relation(fields: [inviteId], references: [id])
+  storedFile StoredFile? @relation(fields: [storedFileId], references: [id], onDelete: SetNull)
+
+  @@index([eventId])
+  @@index([inviteId])
+  @@index([deletedAt, attachedAt, uploadedAt])
 }
 
 // ─────────────────────────────────────────
@@ -1395,6 +1530,8 @@ model InvitationDesign {
   overrides          Json?
   imageUrl           String?
   cloudinaryPublicId String?
+  // The UPLOAD's StoredFile; null for a TEMPLATE.
+  storedFileId       String?
   width              Int?
   height             Int?
   altText            String?
@@ -1404,7 +1541,8 @@ model InvitationDesign {
   createdBy          String
   updatedBy          String
 
-  event Event @relation(fields: [eventId], references: [id])
+  event      Event       @relation(fields: [eventId], references: [id])
+  storedFile StoredFile? @relation(fields: [storedFileId], references: [id], onDelete: SetNull)
 
   @@index([eventId])
 }
@@ -1434,6 +1572,13 @@ model SubscriptionTierConfig {
   // repository hands it to the code as a plain number
   // (subscription-tier-config.repository.ts).
   maxMemoryHubBytesPerEvent BigInt?
+  // Guests' documents (DOCUMENT questions) have their own allowance, never
+  // counted in the Memory Hub's: the total bytes an event's kept documents
+  // may hold (BigInt, like the Memory Hub's), and the most one document may
+  // be (at most GUEST_DOCUMENT_CEILING_BYTES, the upload route's fixed
+  // safety ceiling). null = unlimited (one document: the ceiling).
+  maxDocumentBytesPerEvent  BigInt?
+  maxDocumentBytesPerFile   Int?
   emailEnabled              Boolean          @default(true)
   smsEnabled                Boolean          @default(false)
   vendorMarketplace         Boolean          @default(false)
@@ -1821,6 +1966,7 @@ model EventFeedback {
   // (upload-folders.ts's feedbackLogoFolder) and checked on save.
   logoUrl      String?
   logoPublicId String?
+  logoFileId   String?
   // User.ids, no relation (same as Announcement.sentBy).
   submittedBy  String
   updatedBy    String
@@ -1828,8 +1974,9 @@ model EventFeedback {
   submittedAt  DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  event    Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tenant   Tenant      @relation(fields: [tenantId], references: [id])
+  logoFile StoredFile? @relation(fields: [logoFileId], references: [id], onDelete: SetNull)
 }
 
 // The "How did <event> go?" email, claimed once per event BEFORE it is
@@ -1850,6 +1997,61 @@ model FeedbackRequestClaim {
 //  ARCHIVED EVENTS: MEMORY HUB RETENTION
 //  (media-retention.service.ts)
 // ─────────────────────────────────────────
+
+// ─────────────────────────────────────────
+//  GUESTS' DOCUMENTS: RETENTION (storage-retention.service.ts)
+// ─────────────────────────────────────────
+
+enum DocumentRetentionReason {
+  // The event finished (the end of its last day): documents of guests,
+  // invites and questions still archived then.
+  ARCHIVED_AT_FINISH
+  // 90 days after the event finished: every document left.
+  FINISHED
+  // 30 days after the event was cancelled: every document.
+  CANCELLED
+}
+
+// One deletion of an event's documents, per rule: claimed once, under the
+// event's row lock, in the same transaction as the deletion requests (the
+// storage worker deletes the files). requestedCount: documents requested.
+model EventDocumentPurge {
+  id             String                  @id @default(cuid())
+  eventId        String
+  reason         DocumentRetentionReason
+  claimedAt      DateTime                @default(now())
+  requestedCount Int                     @default(0)
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, reason])
+}
+
+// The organisers' email 7 days before a FINISHED or CANCELLED deletion,
+// claimed once before it is sent. The deletion waits a full week after it.
+model DocumentPurgeReminderClaim {
+  id             String                  @id @default(cuid())
+  eventId        String
+  reason         DocumentRetentionReason
+  recipientCount Int
+  claimedAt      DateTime                @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, reason])
+}
+
+// One row (id "singleton"): when the retention sweep last ran with
+// storageRetention on, and when it last resumed after not running for a
+// while (the flag off, or the server down). No retention deletion happens
+// until 7 days after a resume, so nothing is ever deleted without a full
+// countdown first (storage-retention.service.ts).
+model StorageRetentionState {
+  id          String    @id @default("singleton")
+  lastSweptAt DateTime?
+  resumedAt   DateTime?
+  updatedAt   DateTime  @updatedAt
+}
 
 enum EventMediaPurgeReason {
   // The sweep, 30 days after the event was archived.
@@ -1907,4 +2109,126 @@ model MediaPurgeReminderClaim {
   event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
 
   @@unique([eventId, archivedAt])
+}
+
+// ─────────────────────────────────────────
+//  STORED FILE — one row per file this app puts in Cloudinary
+//  (storage module; STEERING "Storage: one record per file").
+//
+//  Written when an upload is SIGNED (a guest document: before it is sent),
+//  so a file whose save never happens still has a record and is deleted by
+//  the unsaved-uploads sweep. Status only moves forward:
+//    SIGNED → UPLOADED (its real size known: Cloudinary's notification, or
+//    an explicit call at save) → ATTACHED (an owning row points at it: an
+//    event's cover, a Memory Hub item, a design, a feedback logo, a guest
+//    document; or a wizard draft holding a cover, draftId)
+//    → DELETE_REQUESTED → DELETED.
+//  A file is only ever deleted through its row: by the storage worker, or,
+//  for a guest document or a purged Memory Hub item, by that pipeline,
+//  which marks the row DELETED. Never by folder.
+//
+//  No isArchived: the row is the file's history, kept after the file is
+//  gone (a soft-delete exception, see STEERING). legacy: created by the
+//  20261105090000_stored_files migration for a file a record already
+//  referenced.
+// ─────────────────────────────────────────
+
+enum StoredFileKind {
+  COVER
+  MEMORY_ITEM
+  INVITATION_DESIGN
+  FEEDBACK_LOGO
+  GUEST_DOCUMENT
+}
+
+enum StoredFileStatus {
+  SIGNED
+  UPLOADED
+  ATTACHED
+  DELETE_REQUESTED
+  DELETED
+}
+
+enum StoredFileResourceType {
+  IMAGE
+  VIDEO
+  RAW
+}
+
+enum StoredFileDeliveryType {
+  UPLOAD
+  PRIVATE
+}
+
+model StoredFile {
+  id                  String                 @id @default(cuid())
+  publicId            String                 @unique
+  resourceType        StoredFileResourceType
+  deliveryType        StoredFileDeliveryType @default(UPLOAD)
+  kind                StoredFileKind
+  tenantId            String
+  eventId             String?
+  // The wizard draft holding this cover (EventDraft is hard-deleted, so no
+  // relation): ATTACHED to the draft until the event is created from it.
+  draftId             String?
+  // Who uploaded it: an organiser (User.id) or a guest (Invite.id). Only
+  // the uploader may release an unsaved upload.
+  uploadedByUserId    String?
+  uploadedByInviteId  String?
+  // Measured by Cloudinary, never reported by the browser. Null until known.
+  bytes               Int?
+  format              String?
+  status              StoredFileStatus
+  legacy              Boolean                @default(false)
+  signedAt            DateTime               @default(now())
+  uploadedAt          DateTime?
+  attachedAt          DateTime?
+  deleteRequestedAt   DateTime?
+  deletedAt           DateTime?
+  deleteAttempts      Int                    @default(0)
+  // The worker's next try, after a failure (backoff) or while one worker
+  // holds it (a lease). Null: due now.
+  nextDeleteAttemptAt DateTime?
+  lastDeleteError     String?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  event             Event?             @relation("StoredFileEvent", fields: [eventId], references: [id], onDelete: Cascade)
+  coverOfEvents     Event[]            @relation("EventCoverFile")
+  memoryItems       MemoryItem[]
+  invitationDesigns InvitationDesign[]
+  feedbackLogos     EventFeedback[]
+  guestDocument     GuestDocument?
+
+  @@index([status, nextDeleteAttemptAt])
+  @@index([status, signedAt])
+  @@index([eventId])
+  @@index([draftId])
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────
+//  STORAGE RECONCILIATION — the weekly report of this environment's files
+//  in Cloudinary against StoredFile (storage-reconciliation.service.ts).
+//  Read by super admins; it never deletes anything. periodKey claims a
+//  run once however many servers race: an ISO week ("2026-W45"), or
+//  "manual-<uuid>" for a super admin's own run.
+// ─────────────────────────────────────────
+
+model StorageReconciliation {
+  id                String    @id @default(cuid())
+  periodKey         String    @unique
+  requestedBy       String?
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  error             String?
+  listedCount       Int       @default(0)
+  listedBytes       BigInt    @default(0)
+  orphanCount       Int       @default(0)
+  orphanBytes       BigInt    @default(0)
+  missingCount      Int       @default(0)
+  sizeMismatchCount Int       @default(0)
+  // { orphans: [...], missing: [...], sizeMismatches: [...] }, each capped.
+  details           Json?
 }

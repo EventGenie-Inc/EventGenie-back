@@ -80,6 +80,19 @@ export const requireEventAdmin = requireRole(
   PlatformRole.EVENT_ADMIN
 );
 
+// requireEventAdmin, hidden: any other role gets the global 404 body rather
+// than a 403, like requireSuperAdminHidden. For a route whose very
+// existence says something about guests' private files (a guest's
+// document link), so no other caller can tell it from one that isn't there.
+export const requireEventAdminHidden = (req: Request, res: Response, next: NextFunction): void => {
+  const role = req.user?.role;
+  if (role === PlatformRole.SUPER_ADMIN || role === PlatformRole.TENANT_ADMIN || role === PlatformRole.EVENT_ADMIN) {
+    next();
+    return;
+  }
+  res.status(404).json(ROUTE_NOT_FOUND_BODY);
+};
+
 // Platform owner, tenant admin, or a vendor managing their own space
 export const requireVendor = requireRole(
   PlatformRole.SUPER_ADMIN,

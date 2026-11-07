@@ -190,8 +190,21 @@ export const eventRepository = {
   // its own Guest+Invite pair, created already ACCEPTED — so they're
   // included here deliberately: they occupy a seat, so they count toward
   // the venue-capacity indicator this feeds (acceptedGuestCount).
+  // A registration awaiting approval isn't accepted by the organiser yet,
+  // so it is counted apart (countPendingApprovalForEvent), never here.
   countAcceptedInvitesForEvent: (eventId: string) =>
-    prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED' } }),
+    prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED', guest: { pendingApproval: false } } }),
+
+  // Registrations awaiting the organiser's approval: `registrations` the
+  // registrants, `guests` their seats (registrants and plus-ones, live
+  // invites), the same unit as acceptedGuestCount.
+  countPendingApprovalForEvent: async (eventId: string) => {
+    const [registrations, guests] = await Promise.all([
+      prisma.guest.count({ where: { eventId, isArchived: false, hostGuestId: null, pendingApproval: true } }),
+      prisma.invite.count({ where: { eventId, isArchived: false, guest: { isArchived: false, pendingApproval: true } } }),
+    ]);
+    return { registrations, guests };
+  },
 
   // Wrapped in a transaction so the event never exists without a
   // MemoryHub — the wizard's materialize path (event-draft.service.ts)
@@ -203,7 +216,19 @@ export const eventRepository = {
   // assignCreator: the creator is a locked EVENT_ADMIN (eventService.create
   // decides), so they're assigned to the new event in the same transaction —
   // otherwise they'd create an event they can't open.
-  create: (tenantId: string, userId: string, data: CreateEventDto, assignCreator = false) =>
+  //
+  // coverFileId: the cover's StoredFile, already accepted
+  // (event-cover-image.util.ts). afterCreate runs inside the same
+  // transaction with the new event's id (the service attaches the cover
+  // there, so a cover another save used in the meantime refuses this one).
+  create: (
+    tenantId: string,
+    userId: string,
+    data: CreateEventDto,
+    assignCreator = false,
+    coverFileId: string | null = null,
+    afterCreate?: (tx: Tx, eventId: string) => Promise<void>
+  ) =>
     prisma.$transaction(async (tx) => {
       const event = await tx.event.create({
         data: {
@@ -214,6 +239,7 @@ export const eventRepository = {
           description: data.description ?? null,
           coverImageUrl: data.coverImageUrl ?? null,
           coverImagePublicId: data.coverImagePublicId ?? null,
+          coverFileId,
           status: 'DRAFT',
           visibility: data.visibility ?? 'PRIVATE',
           ticketing: data.ticketing ?? 'FREE',
@@ -244,6 +270,8 @@ export const eventRepository = {
         await eventAssignmentRepository.create(tx, tenantId, userId, event.id, userId);
       }
 
+      if (afterCreate) await afterCreate(tx, event.id);
+
       return withPlainCoordinates(event);
     }),
 
@@ -269,8 +297,8 @@ export const eventRepository = {
   // archivedAt starts the Memory Hub retention clock
   // (media-retention.service.ts). Only a live event is archived (the caller
   // looks it up live first), so archiving never moves an existing clock.
-  archive: (id: string, userId: string) =>
-    prisma.event
+  archive: (id: string, userId: string, db: Tx | typeof prisma = prisma) =>
+    db.event
       .update({
         where: { id },
         data: { isArchived: true, archivedAt: new Date(), updatedBy: userId },
@@ -298,11 +326,13 @@ export const eventRepository = {
   // record-not-found) when the event is already in that status. Cancel
   // passes CANCELLED, so of two cancels racing only one succeeds, and
   // guests get one cancellation email, not two.
+  // Cancelling records cancelledAt: the cancelled event's documents are
+  // deleted 30 days later (storage-retention.service.ts).
   updateStatus: (id: string, userId: string, status: EventStatus, unlessStatus?: EventStatus) =>
     prisma.event
       .update({
         where: { id, ...(unlessStatus ? { status: { not: unlessStatus } } : {}) },
-        data: { status, updatedBy: userId },
+        data: { status, updatedBy: userId, ...(status === 'CANCELLED' && { cancelledAt: new Date() }) },
       })
       .then(withPlainCoordinates),
 };
