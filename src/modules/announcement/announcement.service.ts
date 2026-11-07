@@ -163,8 +163,13 @@ const parseNote = (data: CancelEventDto | undefined): string | null => {
   return clean || null;
 };
 
-const resolveAudience = async (eventId: string, audience: AnnouncementAudience, eventDayId: string | null): Promise<AudienceSelection> =>
-  selectAudience(toAudienceCandidates(await announcementRepository.findAudienceGuests(eventId)), audience, eventDayId);
+const resolveAudience = async (
+  eventId: string,
+  audience: AnnouncementAudience,
+  eventDayId: string | null,
+  options: { includePending?: boolean } = {}
+): Promise<AudienceSelection> =>
+  selectAudience(toAudienceCandidates(await announcementRepository.findAudienceGuests(eventId, options)), audience, eventDayId);
 
 const toView = (
   row: {
@@ -300,7 +305,10 @@ const notifyCancellation = async (
       organiserEmail,
       selfRegistered: recipient.selfRegistered,
       days,
-      note,
+      // A registration still awaiting approval gets the standard email
+      // without the organiser's note: free text meant for invited guests,
+      // it could carry details they were never approved to see.
+      note: recipient.awaitingApproval ? null : note,
     })
   );
   return report(toView(row, null, countOutcomes(outcomes)), outcomes, selection);
@@ -455,7 +463,8 @@ export const announcementService = {
     let guestNotification: AnnouncementDeliveryReport;
     let selection: AudienceSelection | null = null;
     try {
-      selection = await resolveAudience(cancelled.id, 'EVERYONE', null);
+      // Registrations awaiting approval are told too (without the note).
+      selection = await resolveAudience(cancelled.id, 'EVERYONE', null, { includePending: true });
       guestNotification = await notifyCancellation(cancelled, userId, note, selection);
     } catch (err) {
       // The event IS cancelled; an answer of 500 would say it wasn't.

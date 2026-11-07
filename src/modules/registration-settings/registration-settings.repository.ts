@@ -5,6 +5,7 @@ export interface RegistrationSettingsWrite {
   registrationCap?: number | null;
   registrationClosesAt?: Date | null;
   registrationPlusOnesAllowed?: number;
+  registrationAutoApprove?: boolean;
 }
 
 // Event and EventDay have no tenantId of their own to check here: the
@@ -22,6 +23,7 @@ export const registrationSettingsRepository = {
           ...(data.registrationCap !== undefined && { registrationCap: data.registrationCap }),
           ...(data.registrationClosesAt !== undefined && { registrationClosesAt: data.registrationClosesAt }),
           ...(data.registrationPlusOnesAllowed !== undefined && { registrationPlusOnesAllowed: data.registrationPlusOnesAllowed }),
+          ...(data.registrationAutoApprove !== undefined && { registrationAutoApprove: data.registrationAutoApprove }),
           updatedBy: userId,
         },
       });

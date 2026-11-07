@@ -38,6 +38,7 @@ import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.rout
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import eventPublicRouter from './modules/event-public/event-public.router.js';
 import registrationSettingsRouter from './modules/registration-settings/registration-settings.router.js';
+import registrationApprovalRouter from './modules/registration-approval/registration-approval.router.js';
 import announcementRouter from './modules/announcement/announcement.router.js';
 import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
@@ -189,6 +190,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/events/:eventId/memory-hub
 //  /api/events/:eventId/memory-hub/download (zip links for every approved item)
 //  /api/events/:eventId/registration-settings (public events' registration rules)
+//  /api/events/:eventId/registrations (approving public registrations)
 //  /api/event-drafts/current
 //  /api/invites/:inviteId/rsvp-responses
 //  /api/ticket-purchases
@@ -228,6 +230,7 @@ app.use('/api/events/:eventId/tickets', ticketRouter);
 app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
 app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
+app.use('/api/events/:eventId/registrations', registrationApprovalRouter);
 app.use('/api/events/:eventId/announcements', announcementRouter);
 app.use('/api/events/:eventId/feedback', feedbackRouter);
 app.use('/api/events/:eventId/documents', guestDocumentRouter);

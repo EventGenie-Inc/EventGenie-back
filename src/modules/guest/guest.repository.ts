@@ -112,6 +112,15 @@ export const guestRepository = {
       { maxWait: 10_000, timeout }
     ),
 
+  // The plus-ones archived by the decline of their host's registration
+  // (stamped with the host's registrationDeclinedAt), for restoring them
+  // together (guest.service.ts's reactivate).
+  findPlusOnesArchivedWith: (hostGuestId: string, declinedAt: Date) =>
+    prisma.guest.findMany({
+      where: { hostGuestId, isArchived: true, registrationDeclinedAt: declinedAt },
+      select: { id: true },
+    }),
+
   // Every live guest, plus-ones included: what the hard guest ceiling
   // (guest-ceiling.util.ts) counts, unlike countForEvent above.
   countAllForEvent: (eventId: string, tx?: Prisma.TransactionClient) =>

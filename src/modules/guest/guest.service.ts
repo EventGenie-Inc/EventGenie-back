@@ -25,6 +25,10 @@ import { assertGuestExportEnabled } from '../subscription-tier-config/guest-expo
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { guestDocumentRepository } from '../guest-document/guest-document.repository.js';
+import { eventPublicRepository } from '../event-public/event-public.repository.js';
+
+// Restoring a guest would take public registration past the event's cap.
+export const GUEST_RESTORE_OVER_REGISTRATION_CAP = 'GUEST_RESTORE_OVER_REGISTRATION_CAP';
 
 // PUBLIC events have no organiser-built guest list by design — guests
 // self-create on RSVP. The frontend never offers add/import for a
@@ -233,25 +237,60 @@ export const guestService = {
     // vs cascade) to preserve an individually-archived invite through a
     // guest reactivation — out of scope for v1, matching the tenant
     // precedent's documented simplification.
-    const invites = await prisma.invite.findMany({ where: { guestId: id, isArchived: true } });
+    // A declined registrant comes back with the plus-ones that decline
+    // archived (registration-approval.repository.ts's decline stamps them
+    // with the same registrationDeclinedAt), never a plus-one removed some
+    // other way.
+    const party =
+      guest.registrationDeclinedAt && !guest.hostGuestId
+        ? await guestRepository.findPlusOnesArchivedWith(id, guest.registrationDeclinedAt)
+        : [];
+    const restoredIds = [id, ...party.map((p) => p.id)];
+    const invites = await prisma.invite.findMany({ where: { guestId: { in: restoredIds }, isArchived: true } });
 
     // A live guest may have this guest's email by now (archiving freed it):
     // restoring would make two, so it is refused, by the unique index if
     // not before.
     //
-    // Restoring adds a live guest back, so it is held to what adding one
+    // Restoring adds live guests back, so it is held to what adding them
     // is: the plan's own guest limit, then the hard ceiling
-    // (guest-ceiling.util.ts), counted and written under the event's row
-    // lock like add and import. A plus-one doesn't count toward the plan's
-    // limit (guestRepository.countForEvent), only toward the ceiling.
+    // (guest-ceiling.util.ts), then the event's registration cap, counted
+    // and written under the event's row lock (the one registration takes)
+    // like add and import. A plus-one doesn't count toward the plan's limit
+    // (guestRepository.countForEvent), only toward the ceiling and the cap.
     await guestRepository.withEventGuestLock(guest.eventId, async (tx) => {
+      const seatsBefore = await eventPublicRepository.countSeats(guest.eventId, tx);
       if (guest.isArchived) {
         if (guest.hostGuestId) await assertWithinGuestCeiling(guest.eventId, 1, tx);
         else await assertGuestsCreatable(event, 1, tx);
+        if (party.length > 0) await assertWithinGuestCeiling(guest.eventId, restoredIds.length, tx);
       }
-      await tx.guest.update({ where: { id }, data: { isArchived: false } });
+      // A declined registration restored is undecided again: back to
+      // awaiting approval, so the organiser approves it (which sends the
+      // invitation) or declines it once more (registration-approval.service.ts).
+      // Its token stays shut until then (registration-approval-gate.util.ts).
+      const undecline = { pendingApproval: true, registrationDeclinedAt: null, registrationDecidedBy: null };
+      await tx.guest.update({ where: { id }, data: { isArchived: false, ...(guest.registrationDeclinedAt ? undecline : {}) } });
+      if (party.length > 0) {
+        await tx.guest.updateMany({ where: { id: { in: party.map((p) => p.id) } }, data: { isArchived: false, ...undecline } });
+      }
       for (const invite of invites) {
         await tx.invite.update({ where: { id: invite.id }, data: { isArchived: false } });
+      }
+      // The cap counts registrants who haven't declined and their plus-ones
+      // (registration-rules.util.ts). Counted after the write, exactly as
+      // registration counts it; a restore that adds seats past the cap is
+      // refused and the whole restore rolls back.
+      if (event.registrationCap !== null) {
+        const seatsAfter = await eventPublicRepository.countSeats(guest.eventId, tx);
+        if (seatsAfter.registeredSeats > seatsBefore.registeredSeats && seatsAfter.registeredSeats > event.registrationCap) {
+          throw new HttpError(
+            422,
+            `Restoring this guest would take registration past its cap of ${event.registrationCap}. ` +
+              'Raise the cap in the registration settings, or remove someone else first.',
+            GUEST_RESTORE_OVER_REGISTRATION_CAP
+          );
+        }
       }
     }).catch(rethrowGuestEmailTaken);
 

@@ -586,6 +586,12 @@ model Event {
   registrationClosesAt        DateTime?
   // Copied onto each registrant's Guest.plusOnesAllowed at registration.
   registrationPlusOnesAllowed Int             @default(0)
+  // On (the default, and every event made before 2026-11): registering
+  // emails the registrant their invitation at once. Off: a registration is
+  // saved awaiting the organiser's approval (Guest.pendingApproval) and
+  // nothing about the event reaches the registrant until it is approved
+  // (registration-approval.service.ts).
+  registrationAutoApprove     Boolean         @default(true)
   // Organiser-chosen, informational only — Ticketing & Payments batch.
   // With split-at-source, a ticket's money lands directly in the
   // organiser's bank account (possibly weeks before a refund request
@@ -746,6 +752,17 @@ model Guest {
   // organiser added, and for plus-ones. A marker only: reminders, check-in
   // and the guest list treat a self-registered guest like any other.
   selfRegisteredAt DateTime?
+  // A registration awaiting the organiser's approval (an event with
+  // registrationAutoApprove off), on the registrant and each plus-one.
+  // While true, no token of theirs opens anything (findByToken), no guest
+  // email or announcement reaches them and check-in doesn't list them; they
+  // hold their seats. Approving clears it (registrationApprovedAt);
+  // declining clears it (registrationDeclinedAt) and archives the party.
+  // registrationDecidedBy: the deciding organiser's userId.
+  pendingApproval        Boolean   @default(false)
+  registrationApprovedAt DateTime?
+  registrationDeclinedAt DateTime?
+  registrationDecidedBy  String?
 
   event                  Event                  @relation(fields: [eventId], references: [id])
   invites                Invite[]

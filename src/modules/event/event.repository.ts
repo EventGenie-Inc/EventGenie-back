@@ -190,8 +190,21 @@ export const eventRepository = {
   // its own Guest+Invite pair, created already ACCEPTED — so they're
   // included here deliberately: they occupy a seat, so they count toward
   // the venue-capacity indicator this feeds (acceptedGuestCount).
+  // A registration awaiting approval isn't accepted by the organiser yet,
+  // so it is counted apart (countPendingApprovalForEvent), never here.
   countAcceptedInvitesForEvent: (eventId: string) =>
-    prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED' } }),
+    prisma.invite.count({ where: { eventId, isArchived: false, status: 'ACCEPTED', guest: { pendingApproval: false } } }),
+
+  // Registrations awaiting the organiser's approval: `registrations` the
+  // registrants, `guests` their seats (registrants and plus-ones, live
+  // invites), the same unit as acceptedGuestCount.
+  countPendingApprovalForEvent: async (eventId: string) => {
+    const [registrations, guests] = await Promise.all([
+      prisma.guest.count({ where: { eventId, isArchived: false, hostGuestId: null, pendingApproval: true } }),
+      prisma.invite.count({ where: { eventId, isArchived: false, guest: { isArchived: false, pendingApproval: true } } }),
+    ]);
+    return { registrations, guests };
+  },
 
   // Wrapped in a transaction so the event never exists without a
   // MemoryHub — the wizard's materialize path (event-draft.service.ts)

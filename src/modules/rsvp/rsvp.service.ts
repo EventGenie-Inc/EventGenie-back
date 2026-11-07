@@ -12,6 +12,7 @@ import { resolveDocumentLimits } from '../guest-document/guest-document-allowanc
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
@@ -408,8 +409,10 @@ export const rsvpService = {
       // measured in testing at ~300-500ms; a handful of "just one more
       // lookup" calls is exactly what re-introduces the timeout this
       // whole file exists to avoid, even after every WRITE is batched.
+      // Removed, awaiting approval or declined: the same as an unknown token
+      // (registration-approval-gate.util.ts).
       const invite = await tx.invite.findUnique({
-        where: { token: data.token },
+        where: { token: data.token, ...INVITE_TOKEN_USABLE },
         include: {
           guest: {
             include: {

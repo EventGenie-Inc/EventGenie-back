@@ -259,6 +259,7 @@ export const eventService = {
   getDetail: async (id: string, requestingRole: PlatformRole, tenantId: string | null, { includeArchived = false }: { includeArchived?: boolean } = {}) => {
     const event = await eventService.getById(id, requestingRole, tenantId, includeArchived);
     const acceptedGuestCount = await eventRepository.countAcceptedInvitesForEvent(id);
+    const pendingApproval = await eventRepository.countPendingApprovalForEvent(id);
     const guestLimitInfo = await resolveGuestLimit(event);
     const currentGuestCount = await guestRepository.countForEvent(id);
     const documentStorage = isFeatureEnabled('documentFields') ? await resolveEventDocumentStorage(event) : undefined;
@@ -266,6 +267,11 @@ export const eventService = {
       ...event,
       ...(documentStorage && { documentStorage }),
       acceptedGuestCount,
+      // Registrations awaiting approval, never in acceptedGuestCount:
+      // the registrants (as the registration settings count them) and
+      // their seats, plus-ones included.
+      pendingApprovalCount: pendingApproval.registrations,
+      pendingApprovalGuestCount: pendingApproval.guests,
       guestLimit: {
         limit: guestLimitInfo.limit, // null = unlimited; the object itself is always present
         currentCount: currentGuestCount,

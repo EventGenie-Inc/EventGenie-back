@@ -93,10 +93,13 @@ export interface PublicEventView {
   maxDocumentBytes: number | null;
 }
 
-// One outcome: a repeat registration answers exactly as a new one does
-// (event-public.service.ts's registrationAnswer), so nothing in the
-// response says whether the email was already a guest.
-export type RegistrationOutcome = 'REGISTERED';
+// One outcome per event setting, never per person: a repeat registration
+// answers exactly as a new one would (event-public.service.ts), so nothing
+// in the response says whether the email was already a guest.
+//   REGISTERED        auto-approve on: the invitation is emailed now.
+//   PENDING_APPROVAL  auto-approve off: nothing is emailed until the
+//                     organiser approves; emailSent is always false.
+export type RegistrationOutcome = 'REGISTERED' | 'PENDING_APPROVAL';
 
 // POST /api/public-events/:shareToken/register. Never the invite token:
 // the link goes only to the email address, so a registration (or a
