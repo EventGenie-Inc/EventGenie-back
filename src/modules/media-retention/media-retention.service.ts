@@ -25,6 +25,7 @@ import { reportError } from '../../shared/monitoring/error-reporting.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
+import { currentRetentionFloor } from '../storage-retention/retention-state.util.js';
 
 // ─────────────────────────────────────────
 //  ARCHIVED EVENTS: MEMORY HUB MEDIA DELETED AFTER 30 DAYS
@@ -33,9 +34,9 @@ import { guestDocumentService } from '../guest-document/guest-document.service.j
 //  Cloudinary forever. Now, MEDIA_RETENTION_DAYS after it was archived
 //  (Event.archivedAt), they are deleted from Cloudinary and their
 //  MemoryItem rows marked purged (purgedAt, and archived), never deleted.
-//  The event, its cover photo and its invitation design are kept: only
-//  items' own public ids are ever deleted, each checked against the event's
-//  Memory Hub folder first. MEDIA_PURGE_REMINDER_DAYS_BEFORE that, its
+//  The event itself is kept. Items' public ids are each checked against the
+//  event's Memory Hub folder first; its cover and invitation design go too,
+//  by their own StoredFiles (below). MEDIA_PURGE_REMINDER_DAYS_BEFORE that, its
 //  organisers are emailed once, with a button to download them.
 //
 //  A periodic in-process sweep (startMediaRetentionSweeps, started by
@@ -68,6 +69,23 @@ import { guestDocumentService } from '../guest-document/guest-document.service.j
 //    (mediaPurgeDueAt), so a late reminder moves the purge to a week after
 //    it, the date the email gives. Only an event with nothing to download
 //    is purged without one, at 30 days.
+//  - GUESTS' DOCUMENTS (since 2026-11) follow the same rule: archiving the
+//    event keeps them, downloadable by its organisers, for the 30 days;
+//    restoring before the purge keeps them; the purge deletes them with the
+//    photos, and its reminder says so. But documents are storageRetention's
+//    too: with it off the reminder doesn't mention them and the purge leaves
+//    them (an event with only documents is then purged without a reminder,
+//    deleting nothing), and within 7 days of its resume the purge leaves them
+//    as well (retention-state.util.ts). The storage retention sweep requests
+//    any a purge left once it may (storage-retention.service.ts). Whichever of
+//    the document rules comes first wins.
+//  - THE COVER AND INVITATION DESIGN (since 2026-11) go with them too:
+//    archiving keeps them, so a restore before the purge brings the event
+//    back as it was; the purge requests the files made before it began and
+//    clears the event's cover and archives its uploaded design, so a
+//    restore after it brings the event back without them. A cover or
+//    design replaced while the event is live is deleted at once, as ever.
+//    They are not counted in purgedCount, and alone need no reminder.
 //  - NOTHING IS IMMEDIATE AT DEPLOY. Events archived before archivedAt
 //    existed were given the migration's time, so their 30 days start then.
 //
@@ -104,6 +122,13 @@ export const ARCHIVE_MEDIA_PURGE_OFF = 'ARCHIVE_MEDIA_PURGE_OFF';
 // failed (storageDeletion off, or a lease held elsewhere).
 const WAITING_FOR_WORKER = 'Waiting for the storage worker';
 
+// Whether a purge at `now` may delete guests' documents: storageRetention
+// on, and past the 7 days after its last resume.
+const documentsDeletable = async (now: Date): Promise<boolean> => {
+  const floor = await currentRetentionFloor(now);
+  return floor !== null && now >= floor;
+};
+
 const chunk = <T>(items: T[], size: number): T[][] => {
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
@@ -138,12 +163,16 @@ export const mediaRetentionService = {
 
     if (now < mediaPurgeReminderDueAt(event.archivedAt)) return null;
     if (await mediaRetentionRepository.purgeExists(event.id, event.archivedAt)) return null;
-    if ((await mediaRetentionRepository.countDownloadableItems(event.id)) === 0) return null;
+    const itemCount = await mediaRetentionRepository.countDownloadableItems(event.id);
+    // Documents are mentioned only when the purge will delete them.
+    const documentCount = isFeatureEnabled('storageRetention') ? await mediaRetentionRepository.countKeptDocuments(event.id) : 0;
+    if (itemCount === 0 && documentCount === 0) return null;
 
     // 30 days after archiving, or a week from now when this reminder is
     // late: the purge waits for the date the email gives.
     const purgeAt = mediaPurgeDueAt(event.archivedAt, now);
     const recipients = await resolveEventOrganisers(event);
+    const kept = await mediaRetentionRepository.findKeptCoverAndDesign(event.id);
     if (!(await mediaRetentionRepository.claimReminder(event.id, event.archivedAt, recipients.length, now))) return null;
 
     if (recipients.length === 0) {
@@ -152,7 +181,16 @@ export const mediaRetentionService = {
     }
 
     const results = await sendEmailBatch(
-      recipients.map((r) => buildMediaPurgeReminderEmail({ to: r.email, eventId: event.id, eventName: event.name, purgeAt }))
+      recipients.map((r) => buildMediaPurgeReminderEmail({
+        to: r.email,
+        eventId: event.id,
+        eventName: event.name,
+        purgeAt,
+        includesPhotos: itemCount > 0,
+        includesDocuments: documentCount > 0,
+        hasCover: kept.cover,
+        hasDesign: kept.design,
+      }))
     );
     const failedCount = results.filter((r) => !r.ok).length;
     if (failedCount > 0) {
@@ -202,11 +240,19 @@ export const mediaRetentionService = {
         });
       }
 
-      // Its guests' uploaded documents too (guest-document.service.ts),
-      // counted with the items. Archiving already requested them, so this
-      // is the backstop for any left.
-      purgedCount += await mediaRetentionRepository.withTransaction((tx) =>
-        guestDocumentService.requestPurgeForEvent(tx, purge.eventId, purge.startedAt, now)
+      // Its guests' documents too (guest-document.service.ts), counted
+      // with the items: kept since the archiving, deleted now unless
+      // storageRetention forbids it (off, or within a resume's 7 days). Any
+      // left are requested by the storage retention sweep once it may.
+      if (await documentsDeletable(now)) {
+        purgedCount += await mediaRetentionRepository.withTransaction((tx) =>
+          guestDocumentService.requestPurgeForEvent(tx, purge.eventId, purge.startedAt, now)
+        );
+      }
+
+      // Its cover and uploaded invitation design, kept since the archiving.
+      await mediaRetentionRepository.withTransaction((tx) =>
+        mediaRetentionRepository.requestCoverAndDesignFiles(tx, purge.eventId, purge.startedAt, now, actor)
       );
 
       const outstanding = await mediaRetentionRepository.findOutstandingFiles(purge.eventId, purge.startedAt);
@@ -249,7 +295,11 @@ export const mediaRetentionService = {
     // A purge also waits a full week after its reminder.
     const remindedBy = new Date(now.getTime() - MEDIA_PURGE_REMINDER_DAYS_BEFORE * DAY_MS);
 
-    for (const eventId of await mediaRetentionRepository.findReminderCandidates(remindFrom)) {
+    // Documents count as something to remind about (and so hold the purge
+    // for its reminder) only while storageRetention lets them be deleted.
+    const withDocuments = isFeatureEnabled('storageRetention');
+
+    for (const eventId of await mediaRetentionRepository.findReminderCandidates(remindFrom, withDocuments)) {
       try {
         const outcome = await mediaRetentionService.remindFor(eventId, now);
         if (outcome) result.reminders.push(outcome);
@@ -260,7 +310,7 @@ export const mediaRetentionService = {
       }
     }
 
-    for (const eventId of await mediaRetentionRepository.findDuePurgeEventIds(purgeFrom, remindedBy)) {
+    for (const eventId of await mediaRetentionRepository.findDuePurgeEventIds(purgeFrom, remindedBy, withDocuments)) {
       try {
         await mediaRetentionRepository.claimPurge(eventId, { reason: 'RETENTION', requestedBy: null, dueBy: purgeFrom, now });
       } catch (err) {

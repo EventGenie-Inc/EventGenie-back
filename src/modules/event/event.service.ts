@@ -1,5 +1,4 @@
 import { dayHasVenue } from '../event-day/event-day-venue.util.js';
-import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { resolveEventDocumentStorage } from '../storage-retention/document-storage.util.js';
 import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
@@ -16,7 +15,6 @@ import { assertValidHostName, assertHostNamePresent, assertHostNamePresentAfterE
 import { acceptCover, applyCoverChange, planCoverChange, type CoverChange } from './event-cover-image.util.js';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { storedFileService } from '../storage/stored-file.service.js';
-import { invitationDesignRepository } from '../invitation-design/invitation-design.repository.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
@@ -340,15 +338,14 @@ export const eventService = {
   },
 
   // Deleting an event archives it, and its files go (STEERING "Storage"):
-  //  - its cover and its uploaded invitation design are requested for
-  //    deletion, in the same transaction, and the event and its design
-  //    stop naming them (the cover fields are cleared, an uploaded design
-  //    archived), so a restore brings the event back without them;
-  //  - every upload signed for it and never saved, likewise;
-  //  - its guests' documents are deleted at once (they can hold bank
-  //    details), by the documents pipeline (guest-document.service.ts);
-  //  - its Memory Hub photos and videos wait 30 days, so they can still be
-  //    downloaded, then go with the archived-media purge.
+  //  - every upload signed for it and never saved is requested for
+  //    deletion, in the same transaction;
+  //  - everything saved stays for 30 days: its cover, its uploaded
+  //    invitation design, its Memory Hub photos and videos and its guests'
+  //    documents, then goes with the archived-media purge
+  //    (media-retention.service.ts), after its reminder. Restoring before
+  //    then brings the event back with all of them. (Until 2026-11 the
+  //    cover, design and documents were deleted at once.)
   // A feedback logo is the company's (kept in the tenant's folder, and
   // shown with any permission it gave), so it stays.
   archive: async (id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
@@ -357,18 +354,11 @@ export const eventService = {
       const row = await eventRepository.archive(id, userId, tx);
       await storedFileService.requestDeletion(tx, {
         eventId: id,
-        OR: [
-          { kind: { in: ['COVER', 'INVITATION_DESIGN'] } },
-          { kind: { in: ['MEMORY_ITEM', 'FEEDBACK_LOGO'] }, status: { in: ['SIGNED', 'UPLOADED'] } },
-        ],
+        kind: { in: ['COVER', 'INVITATION_DESIGN', 'MEMORY_ITEM', 'FEEDBACK_LOGO'] },
+        status: { in: ['SIGNED', 'UPLOADED'] },
       });
-      if (row.coverFileId) {
-        await tx.event.update({ where: { id }, data: { coverImageUrl: null, coverImagePublicId: null, coverFileId: null } });
-      }
-      await invitationDesignRepository.archiveActiveUploadForEvent(id, userId, tx);
-      return { ...row, ...(row.coverFileId ? { coverImageUrl: null, coverImagePublicId: null, coverFileId: null } : {}) };
+      return row;
     });
-    await guestDocumentService.deleteForEvent(id);
     return archived;
   },
 

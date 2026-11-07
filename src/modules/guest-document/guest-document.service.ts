@@ -53,7 +53,8 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 //    deleted by the sweep.
 //  - FILES ARE DELETED, ROWS KEPT, THROUGH THE STORAGE WORKER. Replaced
 //    (another upload for the same question, or an RSVP naming another
-//    file), its event deleted, the archived event's media purge, never
+//    file), the archived event's media purge 30 days after it was deleted
+//    (archived; kept and downloadable until then), never
 //    attached, or a retention rule (storage-retention.service.ts: its
 //    guest, invite or question still archived when the event finishes, 90
 //    days after it finishes, 30 days after it is cancelled): the row is
@@ -406,7 +407,7 @@ export const guestDocumentService = {
 
   // The files of documents matching `where` that are requested and not yet
   // deleted, deleted now if due (storageDeletionWorker.deleteNow). Never
-  // throws: after a request has succeeded (an event deleted, an RSVP
+  // throws: after a request has succeeded (a retention rule, an RSVP
   // replacing a file) the deletion is the worker's to retry, never a
   // reason to fail what the person did.
   deleteRequestedNow: async (where: Prisma.GuestDocumentWhereInput, now: Date = new Date()): Promise<void> => {
@@ -418,18 +419,13 @@ export const guestDocumentService = {
     }
   },
 
-  // An event deleted (eventService.archive): every file of the event, at
-  // once, not 30 days later: these are bank details, not photos to
-  // download. Restoring the event doesn't bring them back.
-  deleteForEvent: async (eventId: string): Promise<void> => {
-    await guestDocumentService.requestDeletion(prisma, { eventId });
-    await guestDocumentService.deleteRequestedNow({ eventId });
-  },
-
-  // The archived event's media purge (media-retention.service.ts): every
-  // document uploaded before it began, requested for deletion in the
-  // purge's transaction. Archiving already did, so this is the backstop for
-  // any still left. Returns the number requested.
+  // The archived event's media purge (media-retention.service.ts), and the
+  // storage retention sweep's catch-up for a purge that ran while the
+  // documents couldn't be deleted (storageRetention off, or within a
+  // resume's 7 days): every document uploaded before the purge began,
+  // requested for deletion in the caller's transaction. Archiving the event
+  // deletes nothing (since 2026-11): its documents are kept, and
+  // downloadable, for the photos' 30 days. Returns the number requested.
   requestPurgeForEvent: (db: Prisma.TransactionClient, eventId: string, startedAt: Date, now: Date): Promise<number> =>
     guestDocumentService.requestDeletion(db, { eventId, uploadedAt: { lte: startedAt } }, now),
 

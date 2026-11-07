@@ -49,8 +49,12 @@ import { reportError } from '../../shared/monitoring/error-reporting.js';
 //  3. A CANCELLED EVENT'S DOCUMENTS, all of them, 30 days after it was
 //     cancelled (cancelledAt).
 //  4. A FINISHED EVENT'S DOCUMENTS, the rest, 90 days after it finished.
-//     Whichever deletion comes first (this, 2, or deleting the event) wins:
-//     each requests only what is still kept.
+//     Whichever deletion comes first (this, 2, 3, or the archived event's
+//     purge) wins: each requests only what is still kept.
+//  5. AN ARCHIVED EVENT'S DOCUMENTS go with its Memory Hub media purge, 30
+//     days after archiving (media-retention.service.ts). A purge that
+//     couldn't delete them (this flag off, or within a resume's 7 days)
+//     leaves them; this sweep requests them once it may.
 //
 //  CLAIMED ONCE. Each document rule is one EventDocumentPurge row per event
 //  and rule, inserted under the event's row lock with the event re-checked
@@ -198,7 +202,7 @@ export const storageRetentionService = {
   // delete what was requested. One event failing never stops the others.
   // With storageRetention off it does nothing at all.
   sweep: async (now: Date = new Date()): Promise<StorageRetentionSweepResult> => {
-    const result: StorageRetentionSweepResult = { skipped: true, itemsClaimed: 0, documentPurges: [], reminders: [] };
+    const result: StorageRetentionSweepResult = { skipped: true, itemsClaimed: 0, documentPurges: [], archivedEventDocuments: [], reminders: [] };
     if (!isFeatureEnabled('storageRetention')) return result;
     result.skipped = false;
 
@@ -228,6 +232,19 @@ export const storageRetentionService = {
       }
     };
 
+    // 5. What an archived event's purge had to leave.
+    for (const purge of deleting ? await storageRetentionRepository.findPurgesWithDocumentsLeft() : []) {
+      try {
+        const requestedCount = await storageRetentionRepository.withTransaction((tx) =>
+          guestDocumentService.requestPurgeForEvent(tx, purge.eventId, purge.startedAt, now)
+        );
+        if (requestedCount > 0) result.archivedEventDocuments.push({ eventId: purge.eventId, requestedCount });
+      } catch (err) {
+        console.error(`[storage retention] the archived event ${purge.eventId}'s documents failed`);
+        reportError(err);
+      }
+    }
+
     for (const eventId of deleting ? await storageRetentionRepository.findEventsDue('ARCHIVED_AT_FINISH', now) : []) {
       await claim(eventId, 'ARCHIVED_AT_FINISH');
     }
@@ -253,7 +270,7 @@ export const storageRetentionService = {
       }
     }
 
-    for (const purge of result.documentPurges) {
+    for (const purge of [...result.documentPurges, ...result.archivedEventDocuments]) {
       await guestDocumentService.deleteRequestedNow({ eventId: purge.eventId }, now);
     }
     await storageDeletionWorker.deleteNow(fileIds, now);

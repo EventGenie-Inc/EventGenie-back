@@ -161,7 +161,7 @@ const memoriesLink = (eventId: string) => `${BASE}/events/${eventId}/manage/memo
 const remindersFor = (eventId: string) => sentEmails().filter((e) => e.text.includes(memoriesLink(eventId)));
 
 describe('the purge: 30 days after archiving, not before', () => {
-  it('archiving records archivedAt; at 29 days nothing is deleted; past 30 the media goes, the rows, event and cover stay', async () => {
+  it('archiving records archivedAt; at 29 days nothing is deleted; past 30 the media goes; the rows, the event and a cover with no StoredFile (never sent) stay', async () => {
     const ev = await newEvent(tenantId, organiser.id);
     const cover = `${legacyCoverFolder(tenantId)}/${randomUUID()}`;
     await prisma.event.update({ where: { id: ev.event.id }, data: { coverImagePublicId: cover, coverImageUrl: `https://res.cloudinary.com/x/image/upload/${cover}.jpg` } });

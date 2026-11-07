@@ -42,6 +42,11 @@ import { invitationDesignService } from '../../src/modules/invitation-design/inv
 import { guestDocumentService } from '../../src/modules/guest-document/guest-document.service.js';
 import { guestDocumentRepository } from '../../src/modules/guest-document/guest-document.repository.js';
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
+import { mediaRetentionService } from '../../src/modules/media-retention/media-retention.service.js';
+import { subscriptionTierConfigRepository } from '../../src/modules/subscription-tier-config/subscription-tier-config.repository.js';
+import { sentEmails } from '../helpers/sent-emails.js';
+
+const realFindByTier = subscriptionTierConfigRepository.findByTier;
 import { EVENT_COVER_MAX_BYTES, MEMORY_ITEM_IMAGE_MAX_BYTES } from '../../src/modules/upload/upload-constants.js';
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -369,7 +374,9 @@ describe('the unsaved-uploads sweep', () => {
 // ── 6. Deleted and abandoned ────────────────────────────────
 
 describe('deleting an event', () => {
-  it('requests deletion of its cover, its designs and its unsaved uploads; its saved Memory Hub media waits for the 30-day purge', async () => {
+  // An event with a saved cover, an uploaded design, a saved Memory Hub
+  // photo, and an unsaved design and photo upload.
+  const eventWithFiles = async () => {
     const cover = await signCover();
     const event = await eventService.create(tenantId, organiser.id, { name: 'To delete', hostName: 'Host', coverImageUrl: cover.url, coverImagePublicId: cover.publicId });
     const design = await signedUpload({ kind: 'INVITATION_DESIGN', tenantId, eventId: event.id, uploadedBy: { userId: organiser.id }, format: 'png' });
@@ -379,14 +386,72 @@ describe('deleting an event', () => {
     const savedMemory = await signedUpload({ kind: 'MEMORY_ITEM', tenantId, eventId: event.id, mediaType: 'IMAGE', uploadedBy: { userId: organiser.id } });
     const hub = await memoryHubRepository.findByEventId(event.id);
     await memoryHubService.createOrganiserItem(event.id, hub!.id, organiser.id, organiser.role, tenantId, { mediaUrl: savedMemory.url, cloudinaryPublicId: savedMemory.publicId, mediaType: 'IMAGE' });
+    return { event, cover, design, unsavedDesign, unsavedMemory, savedMemory };
+  };
+  const archivedAtOf = async (eventId: string) => (await prisma.event.findUniqueOrThrow({ where: { id: eventId } })).archivedAt!;
+  const dayAfter = (archivedAt: Date, days: number) => new Date(archivedAt.getTime() + days * 24 * 60 * MINUTE + MINUTE);
+  const liveDesigns = (eventId: string) => prisma.invitationDesign.count({ where: { eventId, isArchived: false } });
+
+  it('keeps its cover and design (only unsaved uploads go); on day 29 still, on day 30 the purge deletes them, after a reminder that says so', async () => {
+    const { event, cover, design, unsavedDesign, unsavedMemory, savedMemory } = await eventWithFiles();
 
     await eventService.archive(event.id, organiser.id, organiser.role, tenantId);
 
-    for (const u of [cover, design, unsavedDesign, unsavedMemory]) expect((await storedFile(u.publicId)).status, u.publicId).toBe('DELETE_REQUESTED');
-    expect((await storedFile(savedMemory.publicId)).status).toBe('ATTACHED');
-    const after = await prisma.event.findUniqueOrThrow({ where: { id: event.id } });
-    expect(after).toMatchObject({ isArchived: true, coverImageUrl: null, coverImagePublicId: null, coverFileId: null });
-    expect(await prisma.invitationDesign.count({ where: { eventId: event.id, isArchived: false } })).toBe(0);
+    for (const u of [unsavedDesign, unsavedMemory]) expect((await storedFile(u.publicId)).status, u.publicId).toBe('DELETE_REQUESTED');
+    for (const u of [cover, design, savedMemory]) expect((await storedFile(u.publicId)).status, u.publicId).toBe('ATTACHED');
+    expect(await prisma.event.findUniqueOrThrow({ where: { id: event.id } })).toMatchObject({ isArchived: true, coverImageUrl: cover.url, coverImagePublicId: cover.publicId });
+    expect(await liveDesigns(event.id)).toBe(1);
+    const archivedAt = await archivedAtOf(event.id);
+
+    // The reminder, a week before, says the cover and design go too.
+    await mediaRetentionService.sweep(dayAfter(archivedAt, 23));
+    const reminder = sentEmails().find((e) => e.text.includes(`/events/${event.id}/manage`));
+    expect(reminder!.text).toContain('Its cover image and invitation design will be deleted with them. The event itself is kept.');
+    expect(reminder!.text).not.toContain('are kept');
+
+    await mediaRetentionService.sweep(dayAfter(archivedAt, 29));
+    for (const u of [cover, design]) expect((await storedFile(u.publicId)).status, u.publicId).toBe('ATTACHED');
+    const day29 = await request(app).get(`/api/events/${event.id}`).set(headersFor(organiser));
+    expect(day29.body.data).toMatchObject({ coverImageUrl: cover.url, coverImagePublicId: cover.publicId });
+
+    await mediaRetentionService.sweep(dayAfter(archivedAt, 30));
+    for (const u of [cover, design, savedMemory]) expect((await storedFile(u.publicId)).status, u.publicId).toBe('DELETED');
+    for (const u of [cover, design]) expect(fakeCloudinary.destroyedIds()).toContain(u.publicId);
+    expect(await prisma.event.findUniqueOrThrow({ where: { id: event.id } })).toMatchObject({ coverImageUrl: null, coverImagePublicId: null, coverFileId: null });
+    expect(await liveDesigns(event.id)).toBe(0);
+    const purge = await prisma.eventMediaPurge.findFirstOrThrow({ where: { eventId: event.id } });
+    expect(purge).toMatchObject({ failedCount: 0, completedAt: expect.any(Date) });
+  });
+
+  it('restored on day 10, the event comes back with its cover and design, and keeps them past the 30 days', async () => {
+    vi.spyOn(subscriptionTierConfigRepository, 'findByTier').mockImplementation(async (tier) => {
+      const config = await realFindByTier(tier);
+      return config ? { ...config, maxEvents: null } : config;
+    });
+    const { event, cover, design } = await eventWithFiles();
+    await eventService.archive(event.id, organiser.id, organiser.role, tenantId);
+    const archivedAt = new Date(Date.now() - 10 * 24 * 60 * MINUTE);
+    await prisma.event.update({ where: { id: event.id }, data: { archivedAt } });
+
+    expect((await request(app).post(`/api/events/${event.id}/reactivate`).set(headersFor(superAdmin))).status).toBe(200);
+    const restored = await request(app).get(`/api/events/${event.id}`).set(headersFor(organiser));
+    expect(restored.status).toBe(200);
+    expect(restored.body.data).toMatchObject({ isArchived: false, coverImageUrl: cover.url, coverImagePublicId: cover.publicId });
+    const shownDesign = await request(app).get(`/api/events/${event.id}/invitation-design`).set(headersFor(organiser));
+    expect(JSON.stringify(shownDesign.body)).toContain(design.publicId);
+
+    await mediaRetentionService.sweep(dayAfter(archivedAt, 31));
+    for (const u of [cover, design]) expect((await storedFile(u.publicId)).status, u.publicId).toBe('ATTACHED');
+    expect(fakeCloudinary.destroyedIds()).not.toContain(cover.publicId);
+  });
+
+  it('a cover replaced while the event is live is still deleted at once', async () => {
+    const { event, cover } = await eventWithFiles();
+    const next = await signCover(1000, event.id);
+    const res = await request(app).put(`/api/events/${event.id}`).set(headersFor(organiser)).send({ coverImageUrl: next.url, coverImagePublicId: next.publicId });
+    expect(res.status).toBe(200);
+    expect(['DELETE_REQUESTED', 'DELETED']).toContain((await storedFile(cover.publicId)).status);
+    expect((await storedFile(next.publicId)).status).toBe('ATTACHED');
   });
 
   it('an organiser upload saved after its event was deleted is requested for deletion, and the save is the 404', async () => {

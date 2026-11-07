@@ -447,7 +447,7 @@ describe('the document allowance', () => {
     const detail = async () => (await request(app).get(`/api/events/${setup.eventId}`).set(headersFor(organiser))).body.data.documentStorage;
 
     planOverride = { maxDocumentBytesPerEvent: Math.ceil(PDF.length / 0.8) }; // exactly 80% used: no warning yet
-    expect(await detail()).toEqual({ usedBytes: PDF.length, limitBytes: Math.ceil(PDF.length / 0.8), nearLimit: false, deletesAt: null });
+    expect(await detail()).toEqual({ usedBytes: PDF.length, limitBytes: Math.ceil(PDF.length / 0.8), nearLimit: false, documentCount: 1, deletesAt: null });
 
     planOverride = { maxDocumentBytesPerEvent: Math.floor(PDF.length / 0.8) - 1 }; // past 80%
     expect(await detail()).toMatchObject({ usedBytes: PDF.length, nearLimit: true });
@@ -727,12 +727,14 @@ describe('finished events', () => {
     expect(await isDeleted(live.documentId)).toBe(false);
     expect(remindersFor(setup.eventId)).toHaveLength(1);
 
-    // An event deleted before its 90 days: its documents went at once, so
-    // there is nothing to remind anyone about.
+    // An event deleted (archived) before its 90 days keeps its documents
+    // for its own purge (tests/guest-document/archived-event-documents.test.ts);
+    // once they are gone (as if purged) there is nothing to remind anyone about.
     const deleted = await docEvent();
     const gone = await received(deleted);
     expect((await request(app).delete(`/api/events/${deleted.eventId}`).set(headersFor(organiser))).status).toBe(200);
-    expect(await isDeleted(gone.documentId)).toBe(true);
+    expect(await isDeleted(gone.documentId)).toBe(false);
+    await prisma.guestDocument.update({ where: { id: gone.documentId }, data: { deleteRequestedAt: new Date(), deletedAt: new Date() } });
     await finishedAgo(deleted, 84 * DAY_MS);
     await sweep();
     expect(remindersFor(deleted.eventId)).toEqual([]);
@@ -758,7 +760,7 @@ describe('storageRetention off', () => {
     await cancelledAgo(cancelled, 40 * DAY_MS);
 
     vi.stubEnv('FEATURES_DISABLED', 'storageRetention');
-    expect(await storageRetentionService.sweep()).toEqual({ skipped: true, itemsClaimed: 0, documentPurges: [], reminders: [] });
+    expect(await storageRetentionService.sweep()).toEqual({ skipped: true, itemsClaimed: 0, documentPurges: [], archivedEventDocuments: [], reminders: [] });
     expect((await item(rejected.id)).purgedAt).toBeNull();
     for (const doc of [archivedGuest, cancelledDoc]) expect(await isDeleted(doc.documentId)).toBe(false);
     expect(remindersFor(finished.eventId)).toEqual([]);

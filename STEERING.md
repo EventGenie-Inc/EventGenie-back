@@ -590,12 +590,15 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   storage sweep. A guest document with its `GuestDocument` row is the
   documents sweep's; one whose row was never written (its upload failed or
   timed out, or the row's write did) is this one's.
-- **Deleting an event** requests its cover and its invitation designs (and
-  clears the event's cover fields and archives an uploaded design), and
-  every upload signed for it and never saved, in the archive's own
-  transaction. Its guests' documents are requested and deleted at once. Its
-  saved Memory Hub photos and videos wait 30 days, so they can still be
-  downloaded (see "Archived events: Memory Hub retention"). A feedback
+- **Deleting an event** requests every upload signed for it and never
+  saved, in the archive's own transaction. Everything saved waits 30 days
+  and goes with the archived-media purge, after its reminder: its cover and
+  uploaded invitation design (the purge then clears the event's cover
+  fields and archives the design), its Memory Hub photos and videos and its
+  guests' documents (see "Archived events: Memory Hub retention"; until
+  2026-11 the cover, design and documents were deleted at once). Restoring
+  before the purge brings the event back with all of them. A cover or
+  design replaced while the event is live is still deleted at once (above). A feedback
   logo is the company's and stays. Restoring the event never brings a
   deleted file back. An upload signed before the event was deleted and
   saved after is requested for deletion, organiser or guest.
@@ -650,8 +653,16 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
     (`Event.cancelledAt`, set by cancel; events already cancelled got the
     migration's time), every one, archived guests' included.
   - **A finished event's documents: 90 days after the finish**, every one
-    left. Whichever deletion comes first (this, the finish rule, deleting
-    the event) wins: each requests only what is still kept.
+    left. Whichever deletion comes first (this, the finish rule, the
+    cancel rule, an archived event's purge) wins: each requests only what
+    is still kept.
+  - **An archived event's documents: with its Memory Hub media**, 30 days
+    after archiving, after the purge's reminder (see "Archived events:
+    Memory Hub retention"). The purge requests them only with
+    `storageRetention` on and past the floor below; a purge that ran
+    without them leaves them, and this sweep requests them once it may
+    (`findPurgesWithDocumentsLeft`: documents uploaded before a begun
+    purge, still kept; reported as `archivedEventDocuments`).
   - **The organisers are emailed 7 days before** the 30- and 90-day
     deletions (see "Email"), claimed once per event and rule
     (`DocumentPurgeReminderClaim`) before it is sent, only while documents
@@ -799,9 +810,18 @@ retention") reads like the feedback request: the same From, no seal,
 subject "Photos from <event> will be deleted on <date>" (the event name
 header-safe, the date UTC through `formatGuestDate`), a line that the event
 is archived and its Memory Hub photos and videos will be permanently deleted
-on that date, a line to download them first (the event, its cover and its
-invitation design are kept), and one button "Download your photos" to
-`<FRONTEND_BASE_URL>/events/<id>/manage/memories`.
+on that date, a line to download them first, then, when the event still
+has them, "Its cover image and invitation design will be deleted with
+them." (or just one of the two), then "The event itself is kept.", the same
+in every variant below, and one button "Download your photos" to
+`<FRONTEND_BASE_URL>/events/<id>/manage/memories`. With guests' documents
+kept (and `storageRetention` on) it names them too: "Photos and documents
+from <event> ...", "its Memory Hub photos and videos, and the documents its
+guests uploaded,", button "Download your photos and documents" (same
+link); documents only: "Documents from <event> ...", "the documents its
+guests uploaded", "The event itself is kept.", button "Download your
+documents" to `<FRONTEND_BASE_URL>/events/<id>/manage`. Never a count or a
+file name.
 
 **The documents reminder** (see "Storage", retention rules) is the same
 kind of email: From `"e-velope" <RESEND_EVENT_EMAIL>`, no seal, subject
@@ -885,9 +905,10 @@ entries at read time — there is no balance column to instead mark
 (see "Storage"), which is never deleted itself: it has no `isArchived`
 and is the file's history, marked DELETED once the file is gone. A file is
 deleted when it is replaced or released, never saved within 24 hours, or
-its event is deleted (its cover and designs at once, its guests' documents
-at once, its Memory Hub media 30 days later, see "Archived events: Memory
-Hub retention"), and a guest's documents when the guest is removed. The
+its event is deleted (its cover, design, Memory Hub media and guests'
+documents 30 days later, see "Archived events: Memory Hub retention"), and
+guests' documents by the retention rules (see "Storage").
+The
 `MemoryItem` and `GuestDocument` rows stay (marked `purgedAt`, or
 `deleteRequestedAt` then `deletedAt`); the purge itself is recorded
 (`EventMediaPurge`). Restoring a guest or an event never brings a file
@@ -910,7 +931,8 @@ Also: if archiving hides a record from the only list an admin could use
 to restore it, the feature is broken even though every method works.
 
 An event restored after its Memory Hub media was purged comes back without
-it, and a purged item can't be restored (409): its file is gone.
+it (or its cover and uploaded design), and a purged item can't be restored
+(409): its file is gone.
 
 ### Errors
 
@@ -2143,10 +2165,12 @@ adds a new question instead.
   only). A repeat registration stores no second answers, so its upload is
   left to it. Every deletion goes through the storage worker, which
   retries a refusal.
-- **Deleted with its event, kept with its guest.** Deleting an event
-  (`DELETE /api/events/:id`) deletes its files at once (bank details are
-  not kept for a restore, unlike Memory Hub photos), and the archived-media
-  purge deletes any left, counted in its `purgedCount`/`failedCount`.
+- **Kept with its event and its guest.** Deleting (archiving) an event
+  (`DELETE /api/events/:id`) deletes nothing (since 2026-11; before, its
+  files went at once): they stay for 30 days, downloadable by its
+  organisers, and go with the archived-media purge, after its reminder,
+  counted in its `purgedCount`/`failedCount`; restoring the event before
+  then keeps them (see "Archived events: Memory Hub retention").
   Removing a guest, their invite or the question deletes nothing (since
   Round B): restoring brings the files back, and those still archived when
   the event finishes are deleted then; the rest go 30 days after a cancel
@@ -2158,11 +2182,18 @@ adds a new question instead.
   /api/invites/:inviteId/rsvp-responses` gives every answer a `document`,
   for a DOCUMENT answer whose file is kept `{ id, fileName, contentType,
   sizeBytes, uploadedAt }`, else `null` (a DOCUMENT question with no
-  answer, or `document: null`, means nothing was received). To open one:
+  answer, or `document: null`, means nothing was received). Every kept,
+  answered document of an event: `GET /api/events/:eventId/documents`,
+  `{ documents: [{ id, fileName, contentType, sizeBytes, uploadedAt,
+  question: { id, label }, guest: { id, firstName, surname, isArchived } |
+  null }] }`, oldest first, removed guests' included (`isArchived`: the
+  guest or their invite). To open one:
   `GET /api/events/:eventId/documents/:documentId/link` (event admins
   under tenant scoping and the assignment lock; `{ url, expiresAt,
   fileName, contentType, sizeBytes }`, the link downloading the file for 5
-  minutes). Another tenant, a locked member, another event's document, an
+  minutes). Both are read-only and open an archived event too (its guest
+  list doesn't, so the list is how its documents are reached in their 30
+  days). Another tenant, a locked member, another event's document, an
   unsubmitted or deleted one: 404; a vendor, or anyone while the flag is
   off: the global 404. The guest export says "Received" or blank, never a
   link or an id.
@@ -2174,10 +2205,15 @@ adds a new question instead.
   enforcement"), never the Memory Hub's: they don't count in its
   `usedBytes` or quota. The organiser's event detail (`GET
   /api/events/:id`, while `documentFields` is on) carries
-  `documentStorage: { usedBytes, limitBytes, nearLimit, deletesAt }`:
-  every kept document, the plan's allowance (null = unlimited), `nearLimit`
-  once usage passes 80%, and when the kept documents are deleted (null
-  unless cancelled or finished, none kept, or `storageRetention` off).
+  `documentStorage: { usedBytes, limitBytes, nearLimit, documentCount,
+  deletesAt }`: every kept document, the plan's allowance (null =
+  unlimited), `nearLimit` once usage passes 80%, `documentCount` (the kept
+  answered documents: what the confirmation before archiving the event
+  counts), and when the kept documents are deleted: the earliest rule that
+  applies (archived: the media purge's date, `mediaPurgeAt`; cancelled;
+  finished), held to the retention floor; null when none applies, none are
+  kept, or `storageRetention` is off. The archived event's detail carries
+  it too.
 
 ### Multi-select fields
 
@@ -2806,8 +2842,24 @@ tenant, an event with feedback already given, or with `feedback` off.
 **30 days after an event is archived, its Memory Hub photos and videos are
 deleted from Cloudinary** (`MEDIA_RETENTION_DAYS`,
 `event/event-media-retention.util.ts`; the sweep is
-`media-retention/media-retention.service.ts`). Its cover and uploaded
-invitation design are deleted at once, when it is archived (see "Storage").
+`media-retention/media-retention.service.ts`). **Its cover and uploaded
+invitation design go with them** (since 2026-11; before, they were deleted
+at once when it was archived): archiving keeps them, so a restore before
+the purge brings the event back as it was; the purge requests the cover's
+and design's StoredFiles made before it began, clears the event's cover
+fields and archives the uploaded design, so a restore after it brings the
+event back without them. Not counted in `purgedCount`, but the purge isn't
+complete until they are deleted; a cover or design alone needs no
+reminder (the event is purged at 30 days).
+**Its guests' documents follow the photos** (since 2026-11; before, they
+were deleted at once): kept for the 30 days, downloadable read-only by its
+organisers (`GET /api/events/:eventId/documents` and the document link,
+see "Document fields"), kept if it is restored before the purge, and
+deleted by the purge, after its reminder, which names them. The other
+document rules still apply (see "Storage", retention rules); whichever
+comes first wins. With `storageRetention` off (or within its resume's 7
+days) the purge leaves them, and the storage retention sweep requests them
+once it may.
 Everything else is kept: the event and every `MemoryItem` row,
 marked `purgedAt` and archived, so every live-items query (the gallery,
 guest-view, the download, the storage quota, the feedback photos) leaves it
@@ -2843,7 +2895,9 @@ Cloudinary and the media was kept forever.
   get one email (see "Email"), claimed once per event and archiving
   (`MediaPurgeReminderClaim`) before it is sent. Not for a restored event,
   one whose purge has already begun, or one with nothing to download (no
-  live approved item). **A purge never runs until its reminder went at least
+  live approved item and, while `storageRetention` is on, no kept answered
+  document). It says what goes: photos, documents, or both (see "Email").
+  **A purge never runs until its reminder went at least
   7 days earlier** (`mediaPurgeDueAt(archivedAt, remindedAt)`, the later of
   archivedAt + 30 days and remindedAt + 7 days): a late reminder (the sweep
   down, or `archiveMediaPurge` off past the 30 days) goes on the next sweep,
@@ -2859,7 +2913,9 @@ Cloudinary and the media was kept forever.
   /api/events?archived=true` lists the caller's archived events (scope and
   assignment lock as ever); `GET /api/events/:id`, the Memory Hub's detail,
   its items and its download open an archived event, so its organisers can
-  keep the photos. Every other route, and every write, is still the 404.
+  keep the photos, and the document list and link (see "Document fields")
+  so they can keep the guests' documents. Every other route, and every
+  write, is still the 404.
   Restoring stays a super admin action (`POST /api/events/:id/reactivate`),
   held to the plan's active-event limit (403 `EVENT_LIMIT_REACHED`; an event
   that has held an Event Pass doesn't count, as at creation).
@@ -3073,8 +3129,9 @@ videos really are deleted after 30 days, so their reminder, the countdown
 and their refusals say "deleted" (see "Archived events: Memory Hub
 retention"). "Archive" there would promise a restore that can't happen.
 The same goes for guests' uploaded documents (see "Document fields"):
-copy about removing a guest or deleting an event that has them says the
-files are deleted.
+copy about deleting an event that has them says they are deleted 30 days
+later (with its photos), and copy about removing a guest says when theirs
+are deleted.
 
 ---
 
@@ -3415,6 +3472,15 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   reminder's button opens the event's Memories tab, which the current
   frontend may not show for an archived event. Remove this entry once
   built.
+- **Archived events' documents need their frontend half** (backend
+  `fix/archive-documents`): the confirmation before archiving an event
+  saying its guests' documents (`documentStorage.documentCount`), cover and
+  invitation design are kept 30 days and then deleted with its photos (not
+  at once), and an archived event's view showing its cover; an archived
+  event's read-only view listing them (`GET /api/events/:eventId/documents`)
+  with the download link and `documentStorage.deletesAt`; and a page at
+  `/events/<id>/manage` (the documents-only reminder's button) that shows
+  them for an archived event. Remove this entry once built.
 - **The pilot polish needs its frontend half** (backend
   `feature/pilot-polish`): a Terms screen answering `TERMS_NOT_ACCEPTED`,
   event forms requiring a host name, and the sign-up form no longer

@@ -51,13 +51,8 @@ export const invitationDesignRepository = {
     db.invitationDesign.create({
       data: { eventId, ...columnsFor(data), storedFileId, isArchived: false, createdBy: userId, updatedBy: userId },
     }),
-
-  // Deleting an event takes its uploaded design with it (event.service.ts).
-  archiveActiveUploadForEvent: (eventId: string, userId: string, db: Db = prisma) =>
-    db.invitationDesign.updateMany({
-      where: { eventId, isArchived: false, kind: 'UPLOAD' },
-      data: { isArchived: true, updatedBy: userId },
-    }),
+  // (An archived event's uploaded design is archived by its media purge,
+  // 30 days later: media-retention.repository.ts.)
 };
 
 // The partial unique index ("InvitationDesign_eventId_active_key") firing:

@@ -118,6 +118,28 @@ export const guestDocumentRepository = {
   countLiveForGuest: (guestId: string) =>
     prisma.guestDocument.count({ where: { invite: { guestId }, attachedAt: { not: null }, ...LIVE } }),
 
+  // The event's kept, answered documents (attached: an unsubmitted upload
+  // isn't the organiser's to see), archived guests' included, oldest first:
+  // the organiser's document list, and its count on the event detail.
+  findKeptAttachedForEvent: (eventId: string) =>
+    prisma.guestDocument.findMany({
+      where: { eventId, attachedAt: { not: null }, ...LIVE },
+      select: {
+        id: true,
+        cloudinaryPublicId: true,
+        fileName: true,
+        contentType: true,
+        sizeBytes: true,
+        uploadedAt: true,
+        rsvpField: { select: { id: true, label: true } },
+        invite: { select: { isArchived: true, guest: { select: { id: true, firstName: true, surname: true, isArchived: true } } } },
+      },
+      orderBy: [{ uploadedAt: 'asc' }, { id: 'asc' }],
+    }),
+
+  countKeptAttachedForEvent: (eventId: string) =>
+    prisma.guestDocument.count({ where: { eventId, attachedAt: { not: null }, ...LIVE } }),
+
   // ── Deleting ──────────────────────────────
 
   // Live documents matching `where` that have no StoredFile (a row older

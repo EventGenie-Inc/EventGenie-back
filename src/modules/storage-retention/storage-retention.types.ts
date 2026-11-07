@@ -69,5 +69,7 @@ export interface StorageRetentionSweepResult {
   itemsClaimed: number;
   // Per event: documents requested, and why.
   documentPurges: { eventId: string; reason: DocumentRetentionReason; requestedCount: number }[];
+  // Per archived event: documents its media purge left, requested now.
+  archivedEventDocuments: { eventId: string; requestedCount: number }[];
   reminders: { eventId: string; reason: RemindedReason; recipientCount: number; failedCount: number }[];
 }

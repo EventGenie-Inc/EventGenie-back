@@ -115,6 +115,21 @@ export const storageRetentionRepository = {
       ORDER BY e."id"
     `).map((r) => r.id),
 
+  // Archived events' media purges that began but left documents uploaded
+  // before them still kept: the purge couldn't delete them then
+  // (storageRetention off, or within a resume's 7 days). A purge that has
+  // begun always finishes, a restore included, as for its photos.
+  findPurgesWithDocumentsLeft: (): Promise<{ eventId: string; startedAt: Date }[]> =>
+    prisma.$queryRaw<{ eventId: string; startedAt: Date }[]>`
+      SELECT p."eventId", p."startedAt" FROM "EventMediaPurge" p
+      WHERE EXISTS (
+        SELECT 1 FROM "GuestDocument" g
+        WHERE g."eventId" = p."eventId" AND g."uploadedAt" <= p."startedAt"
+          AND g."deleteRequestedAt" IS NULL AND g."deletedAt" IS NULL
+      )
+      ORDER BY p."startedAt", p."eventId"
+    `,
+
   // ── Documents: one event ─────────────────
 
   // What the claims and the reminder re-check, and whom it emails.

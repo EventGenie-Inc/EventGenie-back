@@ -48,6 +48,19 @@ export interface OrganiserDocumentInfo {
   uploadedAt: Date;
 }
 
+// One row of GET /api/events/:eventId/documents. guest: null for an
+// answer with no invite (none today: a registration's is attached to the
+// invite it creates). isArchived: the guest or their invite was removed.
+export interface OrganiserDocumentListItem {
+  id: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedAt: Date;
+  question: { id: string; label: string };
+  guest: { id: string; firstName: string | null; surname: string | null; isArchived: boolean } | null;
+}
+
 export interface DocumentLinkView {
   url: string;
   expiresAt: Date;

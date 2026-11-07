@@ -11,9 +11,10 @@ import JSZip from 'jszip';
 //  token, or on a public event's registration page; the upload's id is
 //  the answer. The bytes decide the type, 5 MB at most, stored privately;
 //  an organiser views it through a 5-minute signed link; the file is
-//  deleted when replaced, when its event is deleted, by the archived-event
-//  purge, and when never attached within 24 hours, always by the storage
-//  worker (Round B: one deletion path). Removing a guest keeps their files
+//  deleted when replaced, by the archived-event purge (deleting the event
+//  keeps it until then: tests/guest-document/archived-event-documents.test.ts),
+//  and when never attached within 24 hours, always by the storage worker
+//  (Round B: one deletion path). Removing a guest keeps their files
 //  (tests/storage-retention/ has what happens at the event's finish).
 //  Behind documentFields.
 //
@@ -569,11 +570,14 @@ describe('deleting documents', () => {
 
   it('a deletion Cloudinary refuses stays requested, with its reason, and the storage worker retries it', async () => {
     const setup = await newEvent();
-    const { documentId } = await receivedDocument(setup);
+    const { token, documentId } = await receivedDocument(setup);
     const { cloudinaryPublicId } = await documentRow(documentId);
     fakeCloudinary.failDestroy.add(cloudinaryPublicId);
 
-    expect((await request(app).delete(`/api/events/${setup.eventId}`).set(headersFor(organiser))).status).toBe(200);
+    // The guest replies again with another file: the first is deleted.
+    const replacement = await uploadAsGuest(token, setup.fieldId, PDF, 'Proof of payment (new).pdf');
+    expect(replacement.status).toBe(201);
+    expect((await submit(token, setup, replacement.body.data.id)).status).toBe(200);
     expect(await documentRow(documentId)).toMatchObject({ deletedAt: null, deleteRequestedAt: expect.any(Date) });
     expect((await documentRow(documentId)).lastDeleteError).toBe('HTTP 500');
 
@@ -582,22 +586,32 @@ describe('deleting documents', () => {
     expect((await documentRow(documentId)).deletedAt).not.toBeNull();
   });
 
-  it('deletes every file of an event when the event is deleted', async () => {
+  it('deleting (archiving) the event deletes none of its files: they wait for its purge', async () => {
     const setup = await newEvent();
     const { documentId } = await receivedDocument(setup);
     const pending = await uploadAsGuest((await newGuest(setup)).token, setup.fieldId, PDF, 'pending.pdf');
 
     expect((await request(app).delete(`/api/events/${setup.eventId}`).set(headersFor(organiser))).status).toBe(200);
 
-    for (const id of [documentId, pending.body.data.id]) expect((await documentRow(id)).deletedAt).not.toBeNull();
+    for (const id of [documentId, pending.body.data.id]) expect(await documentRow(id)).toMatchObject({ deleteRequestedAt: null, deletedAt: null });
+    expect(destroyedIds()).toEqual([]);
   });
 
   it('the archived-event purge deletes any document still kept, counted in the purge', async () => {
     const setup = await newEvent();
     const { documentId } = await receivedDocument(setup);
-    // Archived 31 days ago without going through archive (which deletes at
-    // once): the purge is the backstop for whatever is left.
-    await prisma.event.update({ where: { id: setup.eventId }, data: { isArchived: true, archivedAt: new Date(Date.now() - 31 * DAY_MS) } });
+    // Archived 31 days ago and reminded 8 days ago (documents need the
+    // reminder too), the storage retention sweep running all along.
+    const archivedAt = new Date(Date.now() - 31 * DAY_MS);
+    await prisma.event.update({ where: { id: setup.eventId }, data: { isArchived: true, archivedAt } });
+    await prisma.mediaPurgeReminderClaim.create({
+      data: { eventId: setup.eventId, archivedAt, recipientCount: 1, claimedAt: new Date(Date.now() - 8 * DAY_MS) },
+    });
+    await prisma.storageRetentionState.upsert({
+      where: { id: 'singleton' },
+      create: { id: 'singleton', lastSweptAt: new Date(Date.now() - 60_000), resumedAt: new Date(Date.now() - 30 * DAY_MS) },
+      update: { lastSweptAt: new Date(Date.now() - 60_000), resumedAt: new Date(Date.now() - 30 * DAY_MS) },
+    });
 
     const result = await mediaRetentionService.sweep();
 

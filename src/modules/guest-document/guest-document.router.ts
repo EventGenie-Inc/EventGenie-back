@@ -10,8 +10,11 @@ import { DOCUMENT_ERROR_CODES } from './guest-document.types.js';
 import { guestDocumentOrganiserService } from './guest-document-organiser.service.js';
 
 // ─────────────────────────────────────────
-//  The organiser's link to a guest's document:
+//  The organiser's list of an event's documents and link to one:
+//  GET /api/events/:eventId/documents
 //  GET /api/events/:eventId/documents/:documentId/link
+//  Both read-only, and open for an archived event too: its documents are
+//  kept, downloadable, for 30 days (media-retention.service.ts).
 //
 //  Behind documentFields; event admins only, and anyone else (a vendor, or
 //  every tenant while the flag is off) gets the global 404, never a 403.
@@ -23,6 +26,15 @@ import { guestDocumentOrganiserService } from './guest-document-organiser.servic
 
 const router = Router({ mergeParams: true });
 router.use(authenticate, requireFeature('documentFields'), requireEventAdminHidden);
+
+// Every kept document of the event, live or archived (read-only).
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const list = await guestDocumentOrganiserService.list(req.params['eventId'] as string, auth.user.role, auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: list });
+  } catch (err) { next(err); }
+});
 
 router.get('/:documentId/link', async (req: Request, res: Response, next: NextFunction) => {
   try {
