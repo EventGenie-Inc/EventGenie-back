@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { inviteService } from './invite.service.js';
 import { inviteDispatchService } from './invite-dispatch.service.js';
+import { emailSendService } from '../email-send/email-send.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
@@ -60,6 +61,23 @@ router.post('/:id/reactivate', async (req: Request, res: Response, next: NextFun
   } catch (err) { next(err); }
 });
 
+// GET /api/events/:eventId/invites/sends/:sendId
+// A queued send's progress (invitations or reminders; see
+// email-send.service.ts): queued, sent, failed and skipped counts, and who
+// didn't get theirs and why. The organiser's screen polls it after Send
+// or Remind until `done`.
+router.get('/sends/:sendId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const result = await emailSendService.getProgress(
+      req.params['eventId'] as string, req.params['sendId'] as string, auth.user.role, auth.user.tenantId
+    );
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// Invitations: emails are queued and the answer comes at once, with the
+// send's id to follow (sendId); SMS go in the request.
 router.post('/send', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;

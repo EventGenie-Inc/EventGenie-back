@@ -6,6 +6,7 @@ import { createTenant, createActor, createEventWithDay, deleteTenantsDeep, heade
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
 import { claimEventEmails, EVENT_EMAILS_PER_DAY } from '../../src/modules/invite/event-email-limit.util.js';
 import { sentEmails, clearSentEmails } from '../helpers/sent-emails.js';
+import { emailSendWorker } from '../../src/modules/email-send/email-send.worker.js';
 
 // ─────────────────────────────────────────
 //  SAFETY LIMITS — invitation and reminder emails per event per day
@@ -62,6 +63,19 @@ const seedClaim = (emailCount: number, hoursAgo = 1) =>
 const send = (guestIds: string[]) =>
   request(app).post(`/api/events/${eventId}/invites/send`).set(headersFor(organiser)).send({ guestIds });
 
+describe('the refusal reads correctly however many are left', () => {
+  it('says 2 more, never 2 mores', async () => {
+    const guests = await addGuests(3);
+    await seedClaim(EVENT_EMAILS_PER_DAY - 2);
+    const res = await send(guests.map((g) => g.guest.id));
+    expect(res.status).toBe(429);
+    expect(res.body.message).toBe(
+      'This would send 3 emails, but only 2 more can go from this event in the next 24 hours ' +
+        '(the limit is 2,000 a day), so nothing was sent. Choose fewer guests, or try again later.'
+    );
+  });
+});
+
 describe('invitations', () => {
   it('a send that would pass 2,000 in 24 hours is 429 with the code, and nothing goes', async () => {
     const guests = await addGuests(2);
@@ -79,11 +93,14 @@ describe('invitations', () => {
     expect(sentEmails()).toHaveLength(0);
     expect(await prisma.invite.count({ where: { eventId, deliveredAt: { not: null } } })).toBe(0);
     expect(await prisma.eventEmailClaim.count({ where: { eventId } })).toBe(1);
+    // Nothing queued either, so the worker has nothing to send.
+    expect(await prisma.emailSendItem.count({ where: { eventId } })).toBe(0);
 
     // The one that fits goes, and is counted.
     const one = await send([guests[0]!.guest.id]);
     expect(one.status).toBe(200);
-    expect(one.body.data).toMatchObject({ sent: 1, failed: 0 });
+    expect(one.body.data).toMatchObject({ queued: 1, failed: 0 });
+    await emailSendWorker.runOnce({ eventId });
     expect(sentEmails()).toHaveLength(1);
     expect(await prisma.eventEmailClaim.findFirst({ where: { eventId, emailCount: 1 } })).toMatchObject({ kind: 'INVITATION', claimedBy: organiser.id });
 
@@ -102,7 +119,7 @@ describe('invitations', () => {
     await seedClaim(EVENT_EMAILS_PER_DAY, 25);
     const res = await send([guests[0]!.guest.id]);
     expect(res.status).toBe(200);
-    expect(res.body.data).toMatchObject({ sent: 1 });
+    expect(res.body.data).toMatchObject({ queued: 1 });
   }, 60000);
 
   it('another event’s sends never count against this one', async () => {
@@ -134,7 +151,7 @@ describe('reminders', () => {
     await prisma.eventEmailClaim.deleteMany({ where: { eventId } });
     const ok = await request(app).post(`/api/events/${eventId}/invites/remind`).set(headersFor(organiser)).send({});
     expect(ok.status).toBe(200);
-    expect(ok.body.data).toMatchObject({ sent: 2 });
+    expect(ok.body.data).toMatchObject({ queued: 2 });
     expect(await prisma.eventEmailClaim.findFirst({ where: { eventId } })).toMatchObject({ kind: 'REMINDER', emailCount: 2 });
     await prisma.inviteReminderLog.deleteMany({ where: { eventId } });
   }, 60000);

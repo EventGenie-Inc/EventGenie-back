@@ -187,7 +187,7 @@ before the pilot merge:
 | `/program/:programId/items/:id` (all) | safe (`assertProgramInScope`, then the item's own program); a body `eventDayId` must be the event's |
 | `/program/:id` (GET, PUT, DELETE) | **fixed** (gated on the program's own event) |
 | `/invites/:id` (GET, PUT, DELETE), `/:id/reactivate`, `/:id/resend` | **fixed** (`inviteInScope`; gated on the invite's own event) |
-| `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event) |
+| `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event; a guest of another event the caller can see is skipped and named, any other id refuses the whole request naming nobody: `sortOutUnsendable`) |
 | `/memory-hub/:id…`, `/memory-hub/:hubId/items…` | **fixed** in the wave 2 follow-ups |
 | `/check-in/days/:dayId`, `…/guests/:guestId` (and an `inviteToken`) | safe (the day from the event's own days; guest and token looked up by event) |
 | `/guests` create and import (body `eventDayIds`, the file's days) | safe (the event's own days) |
@@ -439,6 +439,23 @@ refusal (see "Guest contact"). Per invite and not per IP, for the shared-IP
 reason above; 20 because a guest replies once and edits rarely, and the
 frontend submits once per tap, never on its own.
 
+**The invitation page's QR code** (`POST /api/rsvp/qr`, `{ token }`, so
+the token stays out of URLs and logs; `rsvp.service.ts`'s `getInviteQr`).
+The page shows "Continue on your phone" on wide screens with the same code
+as the guest's emails (see "The guest's QR code" under Email): `{ url,
+image, width, height }`, `url` the guest's own link, `image` a
+`data:image/png;base64,` PNG of exactly that link, 320 × 320. Refused as the
+page itself is (`validate`): no token is 400 "token is required"; an
+unknown token, or a removed, pending or declined guest's, the standard 404
+with the page's own words (`findTokenForQr` uses `INVITE_TOKEN_USABLE`,
+`findByToken`'s `where`); an archived event, the page's 410. The code is
+built from the invite's stored token, so it can only be the caller's own.
+**Never cached**: `Cache-Control: no-store`, and nothing on the server
+keeps a drawn code, so no one guest's code can reach another. Limited per
+invite like the program, with its own budgets: `rsvpQrLimiter`, 60 / 5
+minutes per invite (`RSVP_QR_VIEWS_PER_INVITE_PER_5_MIN`, the SHA-256 of
+the token), behind `rsvpQrIpLimiter`, 100 failed / 5 minutes per IP.
+
 ### Client-supplied Cloudinary assets
 
 **A client-supplied Cloudinary publicId is accepted only through its
@@ -556,7 +573,9 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   minutes, at most 6 hours apart) and never given up; Sentry hears on the
   3rd failure in a row and every 10th after (ids only, never a public id,
   which can carry a document's file name). Each batch is a lease taken
-  with `SKIP LOCKED`, so servers never take the same file. **It is the one
+  with `SKIP LOCKED` in a materialized CTE (`claimDue`; see "Claim queries"
+  under Migrations and the shared database), so servers never take the
+  same file and a batch is never more than its limit. **It is the one
   deletion path** (since Round B, 2026-11): guests' documents (the worker
   marks the `GuestDocument` deleted with its file), an archived event's
   Memory Hub media and every retention rule below request deletion and the
@@ -690,20 +709,122 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
 `sendEmailBatch` for many. Never call Resend directly, and never
 hand-write email HTML.
 
-**Guest sends are batched.** Invitations, reminders, announcements and
-the cancellation email go through `sendEmailBatch`: Resend's batch
-endpoint, up to 100 emails per call (`RESEND_BATCH_LIMIT`), one call after
-another, never one email at a time. Each email is still its own message to
-one guest, with their own link, From and Reply-To. Permissive validation:
-an email Resend refuses fails alone, by its index, and the rest of its
-batch goes. A batch call that is refused or throws fails exactly that
-batch's emails, and the next batch still goes. Results come back one per
-email, so every guest's success or failure is recorded exactly as before
-(delivered, reminder log and cooldown, announcement delivery rows). SMS
-still goes one at a time; a single resend, registration and auth emails
-use `sendEmail`. A builder describes its message
+**Guest sends: batched, or queued when they carry the QR code.**
+Announcements and the cancellation email (and the other many-recipient
+sends: feedback request, retention reminders) go through `sendEmailBatch`,
+in the request: Resend's batch endpoint, up to 100 emails per call
+(`RESEND_BATCH_LIMIT`), one call after another. Permissive validation: an
+email Resend refuses fails alone, by its index, and the rest of its batch
+goes; a batch call that is refused or throws fails exactly that batch's
+emails, and the next batch still goes. **Invitations and reminders can't be
+batched**: each carries the guest's QR code as an inline attachment (see
+"The guest's QR code" below), and Resend's batch endpoint takes no
+attachments, inline ones included ("The attachments field is not supported
+yet"; the SDK's `CreateBatchEmailOptions` omits it). One call per email is
+too slow to hold a request open (6 a second: 300 guests, 50 seconds), so
+they are **queued and sent in the background** (see "Invitations and
+reminders go out in the background" below). Either way each email is its
+own message to one guest, with their own link, From and Reply-To, and every
+guest's success or failure is recorded (delivered, reminder log and
+cooldown, announcement delivery rows). The types hold the line:
+`OutgoingEmail` (every builder, and all `sendEmailBatch` takes) has
+`inlineImages?: never`; only `OutgoingEmailWithImages` (`sendEmail`,
+`sendEmailAttempt`) can carry one. SMS still goes in the request, one at a
+time; registration and auth emails use `sendEmail`, in the request.
+
+**Invitations and reminders go out in the background** (the `email-send`
+module). Send, Resend and Remind queue their emails, one `EmailSendItem`
+per email under an `EmailSend` (additive migration
+`20261110090000_email_send_queue`), and answer at once with the send's id;
+nothing is sent in the request. The queue is the database, so a send
+survives a restart.
+- **The worker** (`email-send.worker.ts`, started by `server.ts` only, so
+  tests start no timer) runs straight away at startup (whatever a restart
+  left), every 5 seconds, and at once when something is queued; it never
+  overlaps itself. It takes due emails 20 at a time in one statement
+  (`claimDue`: a materialized CTE with `FOR UPDATE SKIP LOCKED`, a 5-minute
+  lease, each take an attempt; see "Claim queries" under Migrations and the
+  shared database), so any number of workers on any number of servers
+  never take the same email. An email
+  whose lease ran out (a worker died mid-send) is taken again.
+- **Each email is built when its turn comes**, from the invite as it is
+  then (the guest's days, the event's design, their QR code), one after
+  another (~10 ms of synchronous work each), and sent with
+  `sendEmailAttempt`: one Resend call, paced by `waitForSendSlot` (one
+  schedule shared by the process, at most `EMAIL_SENDS_PER_SECOND` a second,
+  default 6: Resend allows 10 a second for the whole team, every key and
+  server instance together, and 6 leaves room for what isn't paced).
+- **Never the same email twice.** Every Resend call carries the item's own
+  idempotency key (`email-send-item/<id>`): an email taken again after a
+  crash or restart is the same email to Resend, which sends nothing new
+  (`invalid_idempotent_request`, the key used with a different body, counts
+  as sent). Queueing (`email-send.service.ts`'s `enqueue`, under the event's
+  email lock, the daily-limit claim in the same transaction) leaves out an
+  invite whose email of the same kind is QUEUED or SENDING
+  (`ALREADY_QUEUED`, with the send that has it) or SENT in the last 10
+  minutes (`RECENTLY_SENT`, `DUPLICATE_SEND_WINDOW_MS`): a second press of
+  Send or Resend, a double click, or a browser retrying the request sends
+  nothing twice. A partial unique index (one QUEUED or SENDING item per
+  invite and kind) backs the first rule up in the database. After the
+  window a deliberate re-send goes as it always did. Reminders also keep
+  their cooldown, claimed when queued.
+- **Outcomes.** Sent: an invitation marks the invite delivered, a reminder
+  writes its `InviteReminderLog` row as whoever pressed Remind. A 429,
+  Resend's own trouble (5xx), a concurrent call with the same key or no
+  answer is retried: back to QUEUED, 30 seconds then doubling, up to 5 calls
+  (`EMAIL_SEND_MAX_ATTEMPTS`). Anything else (an invalid address) is FAILED
+  at once, as is the 5th failure. **SKIPPED** when no longer needed as its
+  turn comes: the guest or invite removed, a registration not approved, the
+  event no longer published and private (cancelled, completed, archived),
+  or for a reminder the guest answered or replies closed. A reminder that
+  fails or is skipped gives its cooldown back (only if still the one it
+  claimed); a failed one is logged as failed.
+- **Progress**: `GET /api/events/:eventId/invites/sends/:sendId`
+  (organisers of the event, tenant-scoped like every invite route; 404
+  otherwise) answers `{ id, kind: 'INVITATION' | 'REMINDER', createdAt,
+  total, queued, sent, failed, skipped, done, finishedAt, failures,
+  skippedGuests }`. `queued` counts waiting and in flight; `done` is
+  `queued === 0`; `failures` and `skippedGuests` are `{ guestId, name,
+  contact, reason }`, the reason in words.
+- **What the buttons answer.** `POST /invites/send`: `{ totalSelected,
+  sendId, queued, sent, failed, failures, skipped, skippedGuests }`:
+  `sendId` the new send (null if nothing was queued), `queued` its emails,
+  `sent`/`failed`/`failures` the SMS sent in the request, `skippedGuests`
+  `{ guestId, name, contact, reason: 'ALREADY_QUEUED' | 'RECENTLY_SENT',
+  message, sendId }`, or a guest who can't be sent to (below) with
+  `sendId: null`. `POST /invites/remind`: as before plus `sendId` and
+  `queued`; `queued + sent + failed + skipped === totalSelected` (each
+  guest selected counted once). `POST
+  /invites/:id/resend`: `{ guestId, name, contact, deliveryMethod, status:
+  'QUEUED' | 'ALREADY_QUEUED' | 'RECENTLY_SENT' | 'SENT' | 'FAILED',
+  sendId, reason? }` (SENT or FAILED only for an SMS, sent in the request).
+  The daily limit is claimed for the emails queued only; refused, nothing
+  is queued (429 `EVENT_EMAIL_DAILY_LIMIT`, as before).
+- **A selection with guests who can't be sent to** (Send, a re-send of a
+  selection, which is the same request, and Remind with `guestIds`;
+  `invite-selection.util.ts`'s `sortOutUnsendable`). Everyone who can be
+  sent to goes; each who can't is left out and listed in `skippedGuests`
+  as `{ guestId, name, contact, reason, message }`, named by name and
+  contact (email, else phone, else empty for a plus-one), never an id in
+  the words. `reason`, first that applies: `NOT_IN_EVENT` (a guest of
+  another event the caller can see), `REGISTRATION_DECLINED`, `ARCHIVED`
+  (removed from the guest list), `PLUS_ONE`, `PENDING_APPROVAL`,
+  `NO_INVITATION` (every invite of theirs archived). A Send of only such
+  guests is 200 with nothing queued; a Remind with nobody left to remind is
+  the 422 it always was, its message counting these reasons too, each in
+  the singular or plural to agree with its number, as the reminder rules'
+  own are ("1 was removed from the guest list", "2 are guests of another
+  event", "1 has already responded"; `countPhrase`). **An id the caller can't reach** (no such
+  guest, another tenant's, also for a `SUPER_ADMIN`, or an event the
+  assignment lock hides) refuses the whole request: 400
+  `GUEST_SELECTION_UNKNOWN`, "N of the selected guests aren't on your guest
+  lists, so nothing was sent", naming nobody and no id, the same for all
+  three so none can be told apart. Until 2026-11 any one such guest refused
+  the whole send, and the message listed database ids.
+
+A builder describes its message
 as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
-`message`, `image`, `details`, `code`, `button`). `message` is an
+`message`, `image`, `details`, `code`, `button`, `qr`). `message` is an
 organiser's own multi-line words (an announcement, a cancellation note):
 left-aligned, escaped like everything else, its line breaks turned into
 `<br>` only after escaping. The layout turns the same blocks
@@ -763,8 +884,8 @@ event name in serif, "From <host>" when there is one, an UPLOAD design's
 image, each invited day (date and UTC time via `guest-date.util.ts`,
 venue, address, or for an online day "Online" and its link; labelled when
 there are several), and one button, "Open
-your e-velope". The preheader is the event name, plus the date and venue of
-the guest's first invited day. A reminder adds the reply deadline when
+your e-velope", then the guest's QR code (below). The preheader is the event
+name, plus the date and venue of the guest's first invited day. A reminder adds the reply deadline when
 there is one. **The registration email** (public self-registration, see
 "Public events and self-registration") is the same guest email: subject
 "You're registered for <event>", eyebrow "You're registered", the days
@@ -775,6 +896,28 @@ eyebrow "Here's your link again", a line saying the address was entered
 again and that nothing changed if it wasn't them, the same button. Both
 go through `inviteDispatchService.sendRegistrationEmail`, so their From,
 Reply-To and design image are an invitation's.
+
+**The guest's QR code.** Invitations (a company's year-end function above
+all) mostly land on work laptops, but guests take their phones to the
+event. The
+invitation, the reminder, a single resend and both registration emails (and
+an organiser-added guest's invitation sent through registration) end, under
+the button, with "Opened this on a computer? Scan to take your invitation
+with you." and a QR code of **exactly the guest's own link**
+(`buildInviteRsvpLink`, the button's link; `invite-qr.util.ts`). It is
+drawn on the server as a PNG (`qr-code.util.ts`: the `qrcode` package,
+error correction M, the 4-module quiet zone in the image, 320px shown at
+160px, ~3 KB) and sent as an **inline attachment** (`cid:invite-qr`,
+`InlineImage`, base64 content), never a hosted image or a `data:` URI:
+the link must not travel in an image address, an embedded image shows
+without "load images" in Gmail and Outlook, and Gmail drops `data:`
+images. The `qr` block puts it on a white panel so it scans in dark mode,
+and leaves it out of the plain-text part (nothing to scan there). The
+button and its link are unchanged. Announcements and the cancellation email
+carry no code. The code opens nothing the link doesn't: a token that stops
+working (a removed, pending or declined guest) stops the code with it. The
+invitation page gets the same code from `POST /api/rsvp/qr` (see "The
+invitation page's QR code" under Guest-facing responses).
 
 **The announcement and cancellation emails** (see "Announcements") are
 guest emails too, sent through `inviteDispatchService.sendGuestMessages`
@@ -930,14 +1073,16 @@ This exact bug has shipped **three times** — `user.reactivate`,
 Also: if archiving hides a record from the only list an admin could use
 to restore it, the feature is broken even though every method works.
 
-**A removed guest's token opens nothing.** Archiving (removing) a guest
-ends their access: every query that resolves an invite token requires a
-live guest (`registration-approval-gate.util.ts`'s `INVITE_TOKEN_USABLE`,
-shared with registrations awaiting approval), so the invitation, its online
-link, submit, the program, the photo album, documents, ticket routes,
-storage guest-release and check-in's QR scan all answer exactly as for an
-unknown token. Restoring them opens it again. Until 2026-11 a removed
-guest's link still opened their whole invitation.
+**A removed guest's token opens nothing, nor does an archived invite's.**
+Archiving (removing) a guest ends their access, and so does archiving one
+invite while keeping its guest: every query that resolves an invite token
+requires a live invite and a live guest (`registration-approval-gate.util.ts`'s
+`INVITE_TOKEN_USABLE`, shared with registrations awaiting approval), so the
+invitation, its online link, submit, the program, the photo album,
+documents, ticket routes, storage guest-release, the invitation page's QR
+code and check-in's QR scan all answer exactly as for an unknown token.
+Restoring the guest or the invite opens it again. Until 2026-11 both a
+removed guest's link and an archived invite's still opened the invitation.
 
 **Restoring a guest** (`POST /api/guests/:id/reactivate`) is held to what
 adding one is, under the event's row lock (the one registration takes):
@@ -1531,7 +1676,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
   `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`,
-  `storageRetention`.
+  `storageRetention`, `scheduledReminders`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1650,6 +1795,12 @@ codebase: a feature is switched off by configuration, **never deleted**.
     or removed item, no document is deleted by a retention rule, no
     reminder is sent, and `deletesAt` (items, and the event's
     `documentStorage`) is null. The clocks are still recorded.
+  - `scheduledReminders` off (see "Reminders", scheduled reminders):
+    `/api/events/:eventId/reminder-schedules` is 404 and the worker queues
+    nothing. Schedules already made stay SCHEDULED; back on, an overdue one
+    is taken at once and judged against the event as it is then (skipped
+    if replies have closed or the event has started). The manual Remind
+    button is untouched.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1664,6 +1815,23 @@ Dev and prod share one database until the Frankfurt migration. Agents
 never apply migrations to it. The human does that at deploy. Agents
 apply migrations only to the test database, and only through the
 harness behind the refusal guard.
+
+**Claim queries: a materialized CTE, never `IN (... LIMIT ...)`.** A query
+that claims up to n rows for a worker (`stored-file.repository.ts`'s,
+`email-send.repository.ts`'s and `reminder-schedule.repository.ts`'s
+`claimDue`) picks them in `WITH due AS
+MATERIALIZED (SELECT ... ORDER BY ... LIMIT n FOR UPDATE SKIP LOCKED)` and
+updates `FROM due`. Never `UPDATE ... WHERE id IN (SELECT ... LIMIT n FOR
+UPDATE SKIP LOCKED)`: on a plan that runs the subquery once per outer row (a
+nested-loop semi join, chosen when a table's statistics are stale: new, or
+emptied and refilled), each run skips the rows the UPDATE has already
+changed and returns the next ones, so the claim keeps growing. With the
+rows on disk in claim order (a queue's normal state) a claim of 1 took all
+60 due rows. A materialized CTE runs once, whatever the plan. Until
+2026-11 both claims used the `IN` form (the email queue's took 24 for a
+limit of 20 on its new table). The other claims (`claimReminders`,
+`claimItemsForDeletion`, the purge and reminder claims) update or insert
+an explicit set (ids, a unique key), with no `LIMIT`, so they can't grow.
 
 ### Session and tokens
 
@@ -2148,7 +2316,8 @@ their own invitation.
     check-in's QR lookup), so their token is exactly an unknown one, the
     same 404 and words, on every guest route: the invitation and its online
     link, submit, the program, guest-view and the photo album's uploads,
-    ticket quote and payment, storage guest-release. (A removed guest's
+    ticket quote and payment, storage guest-release, the invitation's QR
+    code (`findTokenForQr`). (A removed guest's
     token is shut the same way, see "Soft delete".) Announcements leave them
     out (`findAudienceGuests`), as do invitation sends, reminders and
     check-in (the door list, by guest and by QR). **The cancellation email
@@ -2656,13 +2825,16 @@ The body, every key optional (a key left out leaves that part alone):
 
 ### Reminders
 
-Manual only — the organiser presses a button. Nothing here runs on a
-timer by deliberate choice, with three exceptions, the feedback request
+Manual (the organiser presses a button) or scheduled by the organiser
+(see "Scheduled reminders" below); never sent on the system's own
+initiative. Nothing else here runs on a timer by deliberate choice, with
+three exceptions, the feedback request
 sweep (see "Feedback and sharing permissions"), the archived-media
 retention sweep (see "Archived events: Memory Hub retention") and the
 documents sweep (see "Document fields"), all built to be correct whether
-or not their timer fires. They go through the same dispatch path as
-invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
+or not their timer fires. (The email-send worker runs on a timer too, but
+only delivers what an organiser queued.) Manual reminders go through the same dispatch
+path as invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
 all-or-nothing on a shortfall.
@@ -2671,14 +2843,102 @@ A guest is reminded only if their invitation was **delivered**
 (`Invite.deliveredAt`), they have **not responded** (`PENDING`), the
 invite has not expired, and they were not reminded in the last 24 hours
 (`REMINDER_COOLDOWN_HOURS`). Archived guests, archived invites and
-plus-ones are excluded at query level. Refused outright when the event is
+plus-ones are excluded at query level; one the organiser selected is
+skipped and named (see "A selection with guests who can't be sent to"
+under Email). Refused outright when the event is
 not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
 
-The cooldown is claimed atomically before sending (`Invite.lastRemindedAt`,
-for the whole batch in one conditional write, `claimReminders`) and
-released for each guest whose send failed, so overlapping requests cannot
-double-send and a failed send never starts it. Every attempt, failures included, is
-written to `InviteReminderLog`.
+The cooldown is claimed atomically when the reminder is queued
+(`Invite.lastRemindedAt`, for the whole batch in one conditional write,
+`claimReminders`) and released for each guest whose reminder failed or was
+skipped (by the email-send worker for an email, in the request for an SMS),
+so overlapping requests cannot double-send and a failed send never starts
+it. Every attempt that reached a send, failures included, is written to
+`InviteReminderLog`.
+
+**Scheduled reminders** (the `reminder-schedule` module, behind
+`scheduledReminders`; additive migration `20261111090000_reminder_schedules`).
+An organiser schedules a reminder to every guest who hasn't replied:
+`/api/events/:eventId/reminder-schedules`, organisers of the event only,
+tenant-scoped like every invite route (`eventService.getScoped`).
+
+- **`POST /`** takes `{ preset: 'IN_1_DAY' | 'IN_1_WEEK' | 'IN_1_MONTH' }`
+  or `{ preset: 'CUSTOM', sendAt: '2026-11-20T09:00' }` and answers 201
+  with the schedule. Presets count from now, to the minute; a month is a
+  calendar month, kept to the last day of a shorter one.
+- **Times are stored in UTC and entered and shown in South African time**
+  (UTC+2 all year; `reminder-schedule-time.util.ts`). `sendAt` in a request
+  is a South African wall clock with no offset, nothing else is accepted;
+  every schedule answers with `sendAt` (the instant, ISO UTC) and
+  `sendAtLocal` (the same in South African time). This is deliberately
+  unlike "Dates", where an offset-less string is literal UTC: a reminder
+  goes out at a real moment. The event's own values (RSVP deadline, day
+  start) are still literal UTC clocks, so a reminder is compared with them
+  as its South African wall clock (`wallClock`): "RSVP by 25 October" is
+  the end of 25 October in South Africa, never more lenient than comparing
+  instants.
+- **Refused when scheduling**, each with its code: a malformed request 400
+  `REMINDER_SCHEDULE_INVALID`; a time not in the future 422
+  `REMINDER_TIME_IN_PAST`; after the RSVP deadline (the end-of-day rule,
+  `hasDeadlinePassed`) 422 `REMINDER_AFTER_RSVP_DEADLINE`; at or after the
+  event's start (its first live day's `startTime`, else the start of that
+  day) 422 `REMINDER_AFTER_EVENT_START`; a sixth while 5 are SCHEDULED or
+  SENDING (`MAX_SCHEDULED_REMINDERS_PER_EVENT`, counted and written under
+  the event's row lock) 409 `REMINDER_SCHEDULE_LIMIT`. An event a manual
+  reminder is refused for (a draft, finished, cancelled, public, replies
+  closed) is refused the same way, with the same statuses.
+- **`GET /`** answers `{ schedules, counts: { scheduled, sending, sent,
+  skipped, cancelled }, maxScheduled, remaining, cooldownHours, timeZone }`
+  (an archived event's history still lists). Each schedule: `{ id, status:
+  'SCHEDULED' | 'SENDING' | 'SENT' | 'SKIPPED' | 'CANCELLED', preset,
+  sendAt, sendAtLocal, createdAt, createdBy, cancelledAt, processedAt,
+  sendId, queued, skippedRecentlyReminded, skippedOther, delivery,
+  skipReason, skipMessage }`. `sendId` is the queued send (its progress:
+  `GET .../invites/sends/:sendId`); `delivery` is `{ queued, sent, failed,
+  skipped }` counted from that send's emails; `skippedRecentlyReminded` is
+  how many unreplied guests were left out for the 24-hour cooldown,
+  `skippedOther` for anything else (an expired invitation, SMS only,
+  already queued). **The frontend keeps no copy of the 5 or the 24**: it
+  shows `maxScheduled`, `remaining` and `cooldownHours`.
+- **`POST /:scheduleId/cancel`** cancels one still SCHEDULED (again: still
+  200). One a worker has taken, sent or skipped is 409
+  `REMINDER_SCHEDULE_NOT_CANCELLABLE`.
+- **Sending** (`reminder-schedule.worker.ts`, started by `server.ts` only:
+  at startup and every 30 seconds). It claims due schedules by the Claim
+  queries rule (SCHEDULED and due, or SENDING with its 5-minute lease run
+  out) and for each, **in one transaction under the event's email lock**,
+  claims the guests' cooldown, queues a REMINDER send (`enqueueLocked`, the
+  queue's own duplicate check and daily-limit claim) and marks the schedule
+  SENT with its counts. All of it happens or none of it, and the outcome
+  write is guarded by the lease, so a schedule is queued exactly once
+  across crashes, restarts and any number of servers. The email-send worker
+  then sends it like any reminder (pacing, retries, the QR code, never
+  twice), as the organiser who scheduled it.
+- **Who gets it** is decided when it is due, never when it is scheduled:
+  the guests a manual "remind everyone" would pick
+  (`findReminderCandidates`, `classifyGuestForReminder`), so never a guest
+  who has replied, a registration awaiting approval or declined, a removed
+  guest, an archived invite or a plus-one, and nobody inside the cooldown.
+  **Email only**: an SMS-only guest is left out and counted in
+  `skippedOther`, whatever `sms` says (a text costs quota nobody was there
+  to approve).
+- **SKIPPED when due**, with `skipReason` and its words in `skipMessage`:
+  `EVENT_ARCHIVED`, `EVENT_CANCELLED`, `EVENT_FINISHED`, `EVENT_NOT_OPEN`
+  (a draft, or made public), `EVENT_STARTED`, `RSVP_DEADLINE_PASSED`,
+  `NO_ONE_WAITING` (everyone replied), `NONE_ELIGIBLE` (guests are waiting
+  but none could be reminded: cooldown, expired invitation, SMS only),
+  `EVENT_EMAIL_DAILY_LIMIT` and `ERROR` (it couldn't be queued in 5 tries).
+  One rule file for both ends (`reminder-schedule-rules.util.ts`): a time
+  refused when scheduling is a time the worker skips.
+- **Plan and limits: exactly a manual email reminder's.** No plan setting
+  gates email reminders, so none gates these. Over the daily email limit
+  it is refused whole, as the button is: nothing queued, no cooldown
+  started, the schedule SKIPPED with `EVENT_EMAIL_DAILY_LIMIT`. It is not
+  retried. Its `skipMessage` is its own, not the button's ("Choose fewer
+  guests" is nothing a scheduled reminder can act on): "Not sent: today's
+  email limit for this event was reached (2,000 invitation and reminder
+  emails in 24 hours), so this reminder was skipped and nobody was
+  emailed. You can schedule another one for tomorrow."
 
 ### Announcements
 
@@ -2797,11 +3057,18 @@ each refusal carries a code (see "Machine-readable codes" under Errors).
   invitations and a reminder round are 600; a 1,000-guest event still fits
   both in a day; a runaway loop stops at 2,000 instead of draining the shared
   Resend quota. Every invitation email (bulk or a single resend) and
-  reminder email counts, claimed before anything goes under a row lock on
-  the event (`EventEmailClaim`, append-only, one row per send with its
-  count), so a refused email still counts and racing sends can't pass it.
-  All-or-nothing: 429 `EVENT_EMAIL_DAILY_LIMIT`, nothing sent, no reminder
-  cooldown started, saying how many could still go. SMS, announcements
+  reminder email counts, claimed when it is queued under a row lock on the
+  event (`EventEmailClaim`, append-only, one row per send with its count;
+  the queue's duplicate check and the claim in one transaction), so a
+  refused email still counts, racing sends can't pass it, and an email left
+  out as a duplicate isn't counted. All-or-nothing: 429
+  `EVENT_EMAIL_DAILY_LIMIT`, nothing queued, no reminder cooldown started,
+  saying how many could still go ("This would send 3 emails, but only 2
+  more can go from this event in the next 24 hours (the limit is 2,000 a
+  day), so nothing was sent. Choose fewer guests, or try again later."; "1
+  more", "2 more", never "2 mores", which it said until 2026-11). A
+  scheduled reminder over the limit has its own words (see "Reminders").
+  SMS, announcements
   (their own limit), the cancellation email and registration emails are not
   counted.
 
@@ -3203,7 +3470,9 @@ client date string becomes a `Date` through `parseClientDateTime`
 `2026-09-19T23:59:59` means literal UTC, matching what the frontend assumes,
 whereas plain `new Date` reads it in the server's zone. The organiser picks
 calendar dates; UTC is the identity that prints back the date they picked.
-Events have no timezone of their own (see Known gaps).
+Events have no timezone of their own (see Known gaps). **One exception:
+a scheduled reminder's time** is a real instant, entered and shown in
+South African time (see "Reminders", scheduled reminders).
 
 **"RSVP by 25 October" means until the end of 25 October.** The RSVP
 deadline and the registration closing date are dates
@@ -3478,7 +3747,8 @@ signature and StoredFile, then the file in the fake at the size Cloudinary
 would report. `STORAGE_ENV` is `dev` in tests whatever `.env` says.
 
 **Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
-only** — a separate Neon database, never the shared dev/prod one. The
+only** — a local Postgres database (`localhost:5432`), never the shared
+dev/prod one. The
 isolation guard (`resolve-database-url.util.ts`) refuses to run
 otherwise. New migrations reach it through the guarded harness
 (`npm run test:db:reset`, or `NODE_ENV=test npx prisma migrate deploy`);
@@ -3490,9 +3760,22 @@ row, `updatedAt` included, or removes a row only if it created it; it never
 deletes a row it found. To test "no config row", stub
 `subscriptionTierConfigRepository.findByTier` (`vi.spyOn`) instead
 (`tests/subscription/tier-capability-settings.test.ts`). The test database
-is still a real remote Postgres, which is what catches round-trip bugs
-like the Prisma transaction timeout at 50 rows that a fast local database
-or a 5-row fixture would never show.
+is a real Postgres, so the SQL itself is tested (the queue's claim
+returned more rows than its limit against it; `tests/storage/claim-limits.test.ts`
+pins the plan that showed it, with `SET LOCAL` in the claim's own
+transaction, so it fails on the old form every time); it is local and fast, so a
+round-trip cost like the Prisma transaction timeout at 50 rows (found on
+the remote Neon test database it replaced) needs a realistic row count,
+not a 5-row fixture. On Windows, run vitest from PowerShell: from Git
+Bash every suite fails with "Vitest failed to find the runner".
+
+**The email-send worker never starts in tests**; a test runs it
+(`emailSendWorker.runOnce({ eventId })`, or `startEmailSendWorker({
+eventId })` for a restart) scoped to its own event, since the test
+database holds every test file's queue. `runOnce({ now })` steps past a
+retry's backoff or a lease. The scheduled-reminder worker is the same
+(`reminderScheduleWorker.runOnce({ eventId, now })`), and queues only: a
+test then runs the email-send worker to send.
 
 **Every fixture user has accepted the current Terms of Service** unless the
 test says otherwise: the user helpers (`createTestTenantAndUser`,
@@ -3508,6 +3791,13 @@ accepts for them.
 loads `.env`, so a developer's launch-mode `.env` can't make a test pass or
 fail. A test about a switched-off feature sets the flag itself
 (`vi.stubEnv('FEATURES_DISABLED', …)`, undone by `vi.unstubAllEnvs()`).
+
+**Paced email sends don't wait in tests**: `tests/setup.ts` sets
+`EMAIL_SENDS_PER_SECOND` to 1000 (Resend is mocked); the pacing itself is
+tested at a real rate (`tests/email/paced-sending.test.ts`). **A QR code is
+tested by decoding it** (`tests/helpers/qr.ts`'s `decodeQrPng`, jsQR), as a
+phone would, never by its presence alone; `inlineQrOf` reads one from what
+Resend was handed.
 
 **Manual smoke runs use the dev database** with the seed accounts
 (`npm run seed`). They exist specifically so authenticated and
@@ -3550,6 +3840,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
   would skip them anyway; a registrant who lost their link registers again
   with the same email to have it re-sent.
+- **The email pace is per process.** Two server instances sending at once
+  together exceed 6 a second; the 429 retry absorbs it. A 300-guest send
+  takes about 50 seconds to finish in the background (the request itself
+  answers at once).
+- **SMS invitations and reminders are still sent in the request**, and a
+  retried request can text an invitation twice: the duplicate rules are the
+  email queue's. Reminders are covered by their cooldown. SMS is switched
+  off at launch.
 - **Announcements are email only and sent in the request.** A guest
   without an email can't be reached (they are listed to the organiser).
   Every guest send still finishes before the response returns: batched,
@@ -4082,8 +4380,6 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   services have no spec, and nothing runs in a real browser: the
   cross-tab, tab-freezing and Android behaviours in particular are
   verified only by a manual browser run.
-- **`npm test` against Neon can hang on dropped connections.** Run test
-  files individually until the suite moves to local Postgres.
 - **Events have no timezone.** Every event is implicitly UTC: "23:59:59"
   on a deadline means 23:59:59 UTC for a guest anywhere, so for a UTC+2
   audience it passes at 01:59 the next morning, and for a UTC−8 audience

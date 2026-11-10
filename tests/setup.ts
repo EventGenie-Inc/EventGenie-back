@@ -38,6 +38,15 @@ process.env.PRISMA_TEST_ADAPTER = 'pg';
 process.env.FEATURES_DISABLED = '';
 
 // ─────────────────────────────────────────
+//  EMAIL PACING — invitations and reminders go one Resend call per email,
+//  paced (email.engine.ts's sendEmailsPaced, 6 a second in production).
+//  Resend is mocked here, so the suite doesn't wait on that pace; the test
+//  of the pacing itself (tests/email/paced-sending.test.ts) stubs a real
+//  rate. Set before dotenv, so a developer's .env can't slow the suite.
+// ─────────────────────────────────────────
+process.env.EMAIL_SENDS_PER_SECOND = '1000';
+
+// ─────────────────────────────────────────
 //  STORAGE — every new file's path starts with STORAGE_ENV, which the
 //  server refuses to start without. Tests use dev's, whatever .env says,
 //  and Cloudinary itself is the in-memory fake (tests/helpers/

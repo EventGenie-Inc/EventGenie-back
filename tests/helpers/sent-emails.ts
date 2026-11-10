@@ -15,6 +15,8 @@ export interface SentEmail {
   subject: string;
   html: string;
   text: string;
+  // Inline images (a guest's QR code), as handed to the SDK: base64 content.
+  attachments?: { content: string; filename: string; contentType: string; contentId: string }[];
 }
 
 export const sentEmails = (): SentEmail[] => [
@@ -29,10 +31,13 @@ export const clearSentEmails = (): void => {
 
 // Resend refuses the emails to these addresses, on either endpoint (in a
 // batch, the way permissive validation reports one email by its index);
-// everything else is accepted.
+// everything else is accepted. A refusal for good (422), as for an invalid
+// address: the email-send worker doesn't retry it.
 export const failEmailsTo = (addresses: string[], message: string): void => {
   mockResendSend.mockImplementation(async (msg: { to: string }) =>
-    addresses.includes(msg.to) ? { data: null, error: { message } } : { data: { id: 'ok' }, error: null }
+    addresses.includes(msg.to)
+      ? { data: null, error: { message, name: 'validation_error', statusCode: 422 } }
+      : { data: { id: 'ok' }, error: null }
   );
   mockResendBatchSend.mockImplementation(async (payload: { to: string }[]) => ({
     data: {

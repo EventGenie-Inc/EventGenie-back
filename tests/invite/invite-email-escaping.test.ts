@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildInviteEmail, buildReminderEmail, type InviteEmailInput } from '../../src/modules/invite/invite-message.util.js';
+import { STAND_IN_QR } from '../helpers/qr.js';
 
 // ─────────────────────────────────────────
 //  SECURITY SWEEP BEFORE G3 — FIX 3
@@ -42,6 +43,7 @@ const html = (
     fallbackDateLabel: null,
     rsvpDeadline: null,
     rsvpLink: 'https://example.test/rsvp?token=abc',
+    rsvpQr: STAND_IN_QR,
     design: null,
     organiserEmail: null,
   }).html;

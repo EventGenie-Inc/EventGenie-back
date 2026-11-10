@@ -12,13 +12,17 @@ import { type Prisma } from '@prisma/client';
 //
 //  A guest an organiser has removed (archived) is shut out the same way:
 //  removing someone from the guest list ends their access, and restoring
-//  them opens it again.
+//  them opens it again. So is an archived INVITE, whatever its guest (an
+//  organiser can archive one invite and keep the guest): its token is an
+//  unknown one until the invite is restored. Until 2026-11 an archived
+//  invite's link still opened the invitation.
 //
 //  Every query that resolves an invite TOKEN adds INVITE_TOKEN_USABLE to
 //  its `where`, so such a token is exactly an unknown one (the same 404,
 //  the same words): invite.repository.ts's findByToken (RSVP validate,
 //  ticket quote and payment, program, Memory Hub guest routes, guest
-//  feedback, storage guest-release), rsvp.service.ts's submit,
+//  feedback, storage guest-release), its findTokenForQr (the invitation
+//  page's QR code, POST /api/rsvp/qr), rsvp.service.ts's submit,
 //  guest-document.repository.ts's upload, and check-in's QR lookup.
 //
 //  Every query that picks guests to EMAIL adds GUEST_NOT_AWAITING_APPROVAL
@@ -34,5 +38,6 @@ export const GUEST_NOT_AWAITING_APPROVAL = {
 } as const satisfies Prisma.GuestWhereInput;
 
 export const INVITE_TOKEN_USABLE = {
+  isArchived: false,
   guest: { isArchived: false, ...GUEST_NOT_AWAITING_APPROVAL },
 } as const satisfies Prisma.InviteWhereInput;

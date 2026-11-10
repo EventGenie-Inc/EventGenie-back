@@ -11,6 +11,7 @@ import {
 } from '../src/modules/invite/invite-message.util.js';
 import { buildOtpEmail, buildPasswordResetEmail } from '../src/modules/auth/auth-email.util.js';
 import { sendEmail } from '../src/shared/messaging/email.engine.js';
+import { inviteQrImage } from '../src/modules/invite/invite-qr.util.js';
 import { frontendUrl } from '../src/shared/utils/frontend-url.util.js';
 
 // ─────────────────────────────────────────
@@ -57,6 +58,8 @@ const input: InviteEmailInput = {
   fallbackDateLabel: null,
   rsvpDeadline: new Date('2027-05-20T23:59:59Z'),
   rsvpLink: buildInviteRsvpLink('test-email-preview-token'),
+  // A real code of that link, so its look and size can be checked by eye.
+  rsvpQr: await inviteQrImage('test-email-preview-token'),
   design: {
     kind: 'UPLOAD',
     imageUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',

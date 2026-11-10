@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../../src/app.js';
 import { sentEmails } from '../helpers/sent-emails.js';
 import { inviteDispatchService } from '../../src/modules/invite/invite-dispatch.service.js';
+import { emailSendWorker } from '../../src/modules/email-send/email-send.worker.js';
 import {
   createTestTenant,
   deleteTestTenant,
@@ -116,7 +117,8 @@ describe('guest responses carry per-day venues', () => {
 
   it('invitation emails name the guest\'s own day(s) and venue(s)', async () => {
     const result = await inviteDispatchService.sendBulk(eventId, [bothGuest.guestId, oneDayGuest.guestId], userId, 'TENANT_ADMIN', tenantId);
-    expect(result).toMatchObject({ sent: 2, failed: 0 });
+    expect(result).toMatchObject({ queued: 2, failed: 0 });
+    expect((await emailSendWorker.runOnce({ eventId })).sent).toBe(2);
 
     const sentTo = async (guestId: string) => {
       const guest = await prisma.guest.findUniqueOrThrow({ where: { id: guestId } });

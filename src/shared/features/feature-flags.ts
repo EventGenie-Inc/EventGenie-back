@@ -66,6 +66,12 @@ export const FEATURE_NAMES = [
   // is reported. The clocks keep running (rejectedAt, removedAt,
   // cancelledAt are recorded), so switching it on catches up.
   'storageRetention',
+  // Scheduled reminders (reminder-schedule module): an organiser schedules
+  // a reminder to everyone who hasn't replied, and the worker queues it
+  // when it is due. Off: the routes are 404 and the worker queues nothing;
+  // schedules already made are kept, still SCHEDULED, and a due one is
+  // checked against the event as usual (deadline, start) once it is back on.
+  'scheduledReminders',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

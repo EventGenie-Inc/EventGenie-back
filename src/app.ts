@@ -21,6 +21,7 @@ import eventDraftRouter from './modules/event-draft/event-draft.router.js';
 import guestRouter from './modules/guest/guest.router.js';
 import guestEventRouter from './modules/guest/guest-event.router.js';
 import inviteRouter from './modules/invite/invite.router.js';
+import reminderScheduleRouter from './modules/reminder-schedule/reminder-schedule.router.js';
 import attendanceRouter from './modules/attendance/attendance.router.js';
 import checkInRouter from './modules/check-in/check-in.router.js';
 import authRouter from './modules/auth/auth.router.js';
@@ -182,6 +183,7 @@ app.get('/health', (_req: Request, res: Response) => {
 //  /api/events/:eventId/days
 //  /api/events/:eventId/guests
 //  /api/events/:eventId/invites
+//  /api/events/:eventId/reminder-schedules (reminders sent on a schedule)
 //  /api/events/:eventId/check-in (day-of check-in — per event day)
 //  /api/events/:eventId/rsvp-fields
 //  /api/events/:eventId/program
@@ -222,6 +224,7 @@ app.use('/api/events/:eventId/full', eventFullUpdateRouter);
 app.use('/api/events/:eventId/days', eventDayRouter);
 app.use('/api/events/:eventId/guests', guestEventRouter);
 app.use('/api/events/:eventId/invites', inviteRouter);
+app.use('/api/events/:eventId/reminder-schedules', reminderScheduleRouter);
 app.use('/api/events/:eventId/check-in', checkInRouter);
 app.use('/api/events/:eventId/rsvp-fields', rsvpFieldRouter);
 app.use('/api/events/:eventId/program', eventProgramRouter);

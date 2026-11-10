@@ -78,6 +78,7 @@ describe('GET /api/config/features', () => {
       documentFields: true,
       storageDeletion: true,
       storageRetention: true,
+      scheduledReminders: true,
     });
   });
 

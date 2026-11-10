@@ -3,6 +3,11 @@ import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
 import crypto from 'crypto';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { GUEST_NOT_AWAITING_APPROVAL, INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
+import { type Prisma } from '@prisma/client';
+
+// The client or a transaction: the scheduled-reminder worker claims and
+// releases cooldowns inside its own transaction.
+type Db = Prisma.TransactionClient | typeof prisma;
 
 export const inviteRepository = {
 
@@ -32,8 +37,8 @@ export const inviteRepository = {
   // archived independently of its guest and vice versa), plus hostGuestId
   // (a plus-one has no invitation of their own to send). Any requested
   // guestId missing from the result is wrong-event, archived-guest,
-  // archived-invite, or a plus-one, and the caller rejects the whole batch
-  // on that basis.
+  // archived-invite, a plus-one or a registration not approved; the caller
+  // sorts those out (invite-selection.util.ts) and sends the rest.
   findByGuestIds: (eventId: string, guestIds: string[]) =>
     prisma.invite.findMany({
       where: {
@@ -47,14 +52,29 @@ export const inviteRepository = {
       include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
     }),
 
+  // The selected guests a send or reminder couldn't take, by id alone and
+  // UNSCOPED: invite-selection.util.ts's sortOutUnsendable checks each one's
+  // tenant and event itself before naming anyone.
+  findSelectedGuests: (guestIds: string[]) =>
+    prisma.guest.findMany({
+      where: { id: { in: guestIds } },
+      select: {
+        id: true,
+        eventId: true,
+        firstName: true,
+        surname: true,
+        email: true,
+        phoneNumber: true,
+        isArchived: true,
+        hostGuestId: true,
+        pendingApproval: true,
+        registrationDeclinedAt: true,
+        event: { select: { tenantId: true } },
+      },
+    }),
+
   markDelivered: (id: string) =>
     prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
-
-  // A batch's delivered invitations, in one write (invite-dispatch.service.ts).
-  markDeliveredMany: (ids: string[]) =>
-    ids.length
-      ? prisma.invite.updateMany({ where: { id: { in: ids } }, data: { deliveredAt: new Date() } })
-      : Promise.resolve({ count: 0 }),
 
   // Reminder candidates — STRUCTURAL filter only: this event, live invite,
   // live guest, and never a plus-one (hostGuestId: null — a plus-one has
@@ -87,9 +107,9 @@ export const inviteRepository = {
   // could not give that guarantee. Returns the ids it claimed; an invite
   // missing from it was lost, whatever the reason (already reminded, or the
   // guest just answered).
-  claimReminders: async (ids: string[], cutoff: Date, claimedAt: Date): Promise<Set<string>> => {
+  claimReminders: async (ids: string[], cutoff: Date, claimedAt: Date, db: Db = prisma): Promise<Set<string>> => {
     if (!ids.length) return new Set();
-    const claimed = await prisma.invite.updateManyAndReturn({
+    const claimed = await db.invite.updateManyAndReturn({
       where: {
         id: { in: ids },
         isArchived: false,
@@ -107,7 +127,7 @@ export const inviteRepository = {
   // it can only ever undo THIS claim, never a later one. Each invite goes
   // back to its own previous value: one write per distinct value (usually
   // one, never reminded before), not one per invite.
-  releaseReminderClaims: async (invites: { id: string; previous: Date | null }[], claimedAt: Date): Promise<void> => {
+  releaseReminderClaims: async (invites: { id: string; previous: Date | null }[], claimedAt: Date, db: Db = prisma): Promise<void> => {
     const byPrevious = new Map<number | null, { previous: Date | null; ids: string[] }>();
     for (const { id, previous } of invites) {
       const key = previous ? previous.getTime() : null;
@@ -116,7 +136,7 @@ export const inviteRepository = {
       byPrevious.set(key, group);
     }
     for (const { previous, ids } of byPrevious.values()) {
-      await prisma.invite.updateMany({
+      await db.invite.updateMany({
         where: { id: { in: ids }, lastRemindedAt: claimedAt },
         data: { lastRemindedAt: previous },
       });
@@ -163,6 +183,16 @@ export const inviteRepository = {
           },
         },
       },
+    }),
+
+  // POST /api/rsvp/qr (rsvp.service.ts's getInviteQr): findByToken's own
+  // `where`, so a token opens a QR code exactly when it opens the
+  // invitation (a removed, pending or declined guest's is null, like an
+  // unknown one), and nothing read beyond what the answer needs.
+  findTokenForQr: (token: string) =>
+    prisma.invite.findUnique({
+      where: { token, ...INVITE_TOKEN_USABLE },
+      select: { token: true, event: { select: { isArchived: true } } },
     }),
 
   // Feeds event-public.service.ts's duplicate-registration path: a

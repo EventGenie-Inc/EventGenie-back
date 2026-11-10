@@ -77,7 +77,13 @@ export type EmailBlock =
   // A one-time code, large and spaced.
   | { kind: 'code'; text: string }
   // The single call to action.
-  | { kind: 'button'; label: string; href: string };
+  | { kind: 'button'; label: string; href: string }
+  // A QR code sent with the email as an inline attachment (`cid:`), never a
+  // hosted image: what it encodes (a guest's own link) must not travel in an
+  // image address, and an embedded image shows without "load images". A
+  // caption above it, the image on a white panel so its quiet zone holds in
+  // dark mode. Not in the plain-text part: there is nothing to scan there.
+  | { kind: 'qr'; contentId: string; alt: string; caption: string; size: number };
 
 export interface EmailContent {
   subject: string;
@@ -166,12 +172,23 @@ const blockHtml = (block: EmailBlock): string => {
           `</td></tr></table>`,
         `4px ${SIDE}px 28px`
       );
+    case 'qr':
+      return row(
+        `<p class="eg-muted" style="margin:0 0 12px;font-family:${SANS};font-size:14px;line-height:1.6;color:${MUTED};text-align:center;">${escapeHtml(block.caption)}</p>` +
+          `<table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">` +
+          `<tr><td bgcolor="${PAPER}" style="background-color:${PAPER};padding:0;border-radius:4px;">` +
+          `<img src="cid:${escapeHtml(block.contentId)}" width="${block.size}" height="${block.size}" alt="${escapeHtml(block.alt)}" ` +
+          `style="display:block;border:0;outline:none;width:${block.size}px;height:${block.size}px;">` +
+          `</td></tr></table>`,
+        `0 ${SIDE}px 28px`
+      );
   }
 };
 
 const blockText = (block: EmailBlock): string | null => {
   switch (block.kind) {
     case 'seal':
+    case 'qr':
       return null;
     case 'eyebrow':
     case 'title':

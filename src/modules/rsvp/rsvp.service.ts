@@ -12,6 +12,9 @@ import { resolveDocumentLimits } from '../guest-document/guest-document-allowanc
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { QR_PNG_WIDTH } from '../../shared/utils/qr-code.util.js';
+import { inviteQrPng } from '../invite/invite-qr.util.js';
+import { buildInviteRsvpLink } from '../invite/invite-message.util.js';
 import { INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
 import {
   normalizeEmail,
@@ -216,6 +219,30 @@ export const rsvpService = {
       throw new HttpError(404, 'This ticket type is no longer available.');
     }
     return ticketPurchaseService.quote(ticket, data.quantity);
+  },
+
+  // POST /api/rsvp/qr — the invitation page's "Continue on your phone": a
+  // QR code of this guest's own link, drawn here as a PNG (invite-qr.util.ts),
+  // the same code as in their emails. Refused exactly as the page itself is
+  // (validate): an unknown token, or a removed, pending or declined guest's,
+  // is the standard 404; an archived event the same 410. Built from the
+  // invite's stored token, so it can only ever be the caller's own link.
+  getInviteQr: async (token: unknown) => {
+    if (typeof token !== 'string' || !token) {
+      throw new HttpError(400, 'token is required');
+    }
+    const invite = await inviteRepository.findTokenForQr(token);
+    if (!invite) {
+      throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+    }
+    assertEventNotArchived(invite.event);
+    const png = await inviteQrPng(invite.token);
+    return {
+      url: buildInviteRsvpLink(invite.token),
+      image: `data:image/png;base64,${png.toString('base64')}`,
+      width: QR_PNG_WIDTH,
+      height: QR_PNG_WIDTH,
+    };
   },
 
   // Public, unauthenticated read — returns flags rather than throwing on

@@ -6,7 +6,10 @@ import { assertSmsSendable, type SmsSendPool } from '../subscription-tier-config
 import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
 import { inviteReminderLogRepository } from '../invite-reminder-log/invite-reminder-log.repository.js';
 import { sendSms } from '../../shared/messaging/sms.engine.js';
-import { sendEmail, sendEmailBatch } from '../../shared/messaging/email.engine.js';
+import { sendEmail, sendEmailBatch, type InlineImage } from '../../shared/messaging/email.engine.js';
+import { emailSendService, NOT_QUEUED_MESSAGES } from '../email-send/email-send.service.js';
+import { type EnqueueResult, type NotQueuedReason } from '../email-send/email-send.types.js';
+import { inviteQrImage } from './invite-qr.util.js';
 import {
   buildInviteRsvpLink,
   buildInviteEmail,
@@ -36,7 +39,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { formatEarliestDay } from '../../shared/utils/guest-date.util.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
-import { claimEventEmails } from './event-email-limit.util.js';
+import { sortOutUnsendable, describeUnsendable, type UnsendableGuest, type UnsendableReason } from './invite-selection.util.js';
 
 // Bulk invite orchestrator — knows guests/invites/tiers and routes each
 // guest to whichever engine matches their contact. Kept separate from
@@ -49,12 +52,16 @@ import { claimEventEmails } from './event-email-limit.util.js';
 // only differences between an invitation and a reminder are the words, and
 // that a reminder must not touch Invite.deliveredAt.
 //
-// A batch (invitations, reminders, announcements, the cancellation email)
-// sends its emails through sendEmailBatch, up to 100 per Resend call, so a
-// few hundred guests take a few calls instead of a few hundred one after
-// another inside the request. Every guest still gets their own message and
-// their own link, and their own success or failure. SMS still goes one at
-// a time (dispatchOne). A single resend uses dispatchOne too.
+// Invitation and reminder EMAILS (bulk and a single resend) are queued,
+// not sent here: each carries the guest's QR code as an inline image,
+// which Resend's batch endpoint can't take, so they go one Resend call
+// each, paced, from the email-send worker (email-send.worker.ts). The
+// request answers at once with the send's id; GET .../invites/sends/:id
+// reports progress. Queueing never adds an email a guest is already
+// waiting for or got in the last few minutes (email-send.service.ts).
+// SMS still goes in the request, one at a time (dispatchSms). Announcements
+// and the cancellation email carry no image and still go through
+// sendEmailBatch, up to 100 per call, in the request.
 
 export interface InviteDispatchFailure {
   guestId: string;
@@ -63,35 +70,71 @@ export interface InviteDispatchFailure {
   reason: string;
 }
 
+// A guest whose email wasn't queued (email-send.service.ts): already on
+// its way, or sent minutes ago. `sendId` is the send that has it.
+export interface NotQueuedGuest {
+  guestId: string;
+  name: string;
+  contact: string;
+  reason: NotQueuedReason;
+  message: string;
+  sendId: string;
+}
+
+// A selected guest who couldn't be sent to at all (invite-selection.util.ts):
+// named by name and contact, with sendId null since no send has them.
+export type UnsendableSkip = UnsendableGuest & { sendId: null };
+export type SendSkip = NotQueuedGuest | UnsendableSkip;
+
+// POST /invites/send. queued + sent + failed + skipped counts every guest
+// selected. Emails are queued (sendId: their send, null if none was);
+// sent/failed/failures are the SMS sent in the request. skippedGuests:
+// those who can't be sent to (removed, plus-one, …) first, then those whose
+// email was already on its way.
 export interface SendInvitesResult {
   totalSelected: number;
+  sendId: string | null;
+  queued: number;
   sent: number;
   failed: number;
   failures: InviteDispatchFailure[];
+  skipped: number;
+  skippedGuests: SendSkip[];
 }
 
+// POST /invites/:id/resend. An email is QUEUED (or not: ALREADY_QUEUED,
+// RECENTLY_SENT, with `reason` saying so and `sendId` the send that has
+// it); an SMS is SENT or FAILED in the request.
 export interface InviteDispatchOutcome {
   guestId: string;
   name: string;
   contact: string;
   deliveryMethod: DeliveryMethod;
-  ok: boolean;
+  status: 'QUEUED' | NotQueuedReason | 'SENT' | 'FAILED';
+  sendId: string | null;
   reason?: string;
 }
 
+// reason: a reminder rule (invite-reminder.util.ts), or why the selected
+// guest can't be sent to at all (invite-selection.util.ts).
 export interface ReminderSkip {
   guestId: string;
   name: string;
   contact: string;
-  reason: ReminderSkipReason;
+  reason: ReminderSkipReason | UnsendableReason;
   message: string;
   // Only for RECENTLY_REMINDED — when they can next be reminded.
   nextEligibleAt?: string;
 }
 
 export interface SendRemindersResult {
-  // Guests this request concerned. sent + failed + skipped always equals it.
+  // Guests this request concerned. queued + sent + failed + skipped always
+  // equals it.
   totalSelected: number;
+  // Email reminders queued under this send (null if none was).
+  sendId: string | null;
+  queued: number;
+  // SMS reminders sent (or not) in the request.
   sent: number;
   failed: number;
   skipped: number;
@@ -160,12 +203,7 @@ export const SMS_UNAVAILABLE_REASON =
 const smsCountFor = (invites: { deliveryMethod: DeliveryMethod }[]): number =>
   isFeatureEnabled('sms') ? invites.filter((i) => i.deliveryMethod === 'SMS').length : 0;
 
-// How many emails a batch would send, for the daily email limit
-// (event-email-limit.util.ts).
-const emailCountFor = (invites: { deliveryMethod: DeliveryMethod }[]): number =>
-  invites.filter((i) => i.deliveryMethod === 'EMAIL').length;
-
-interface DispatchContext {
+export interface DispatchContext {
   eventId: string;
   tenantId: string;
   eventName: string;
@@ -225,42 +263,45 @@ const buildDispatchContext = async (event: {
   };
 };
 
-const buildMessage = (kind: DispatchKind, ctx: DispatchContext, days: InviteDayLine[], rsvpLink: string) => {
+const buildEmail = (kind: DispatchKind, ctx: DispatchContext, days: InviteDayLine[], token: string, rsvpQr: InlineImage) => {
   const input = {
     eventName: ctx.eventName,
     hostName: ctx.hostName,
     days,
     fallbackDateLabel: ctx.dateLabel,
     rsvpDeadline: ctx.rsvpDeadline,
-    rsvpLink,
+    rsvpLink: buildInviteRsvpLink(token),
+    rsvpQr,
     design: ctx.design,
     organiserEmail: ctx.organiserEmail,
   };
-  return kind === 'INVITE'
-    ? { email: buildInviteEmail(input), smsBody: buildInviteSmsBody(ctx.eventName, rsvpLink) }
-    : { email: buildReminderEmail(input), smsBody: buildReminderSmsBody(ctx.eventName, rsvpLink, ctx.rsvpDeadline) };
+  return kind === 'INVITE' ? buildInviteEmail(input) : buildReminderEmail(input);
 };
 
-const dispatchOne = async (
+const buildSmsBody = (kind: DispatchKind, ctx: DispatchContext, token: string): string => {
+  const rsvpLink = buildInviteRsvpLink(token);
+  return kind === 'INVITE'
+    ? buildInviteSmsBody(ctx.eventName, rsvpLink)
+    : buildReminderSmsBody(ctx.eventName, rsvpLink, ctx.rsvpDeadline);
+};
+
+// One guest's email, with their own QR code (generated here, on the server).
+const buildEmailFor = async (kind: DispatchKind, ctx: DispatchContext, invite: DispatchableInvite) =>
+  buildEmail(kind, ctx, invitedDaysFor(invite), invite.token, await inviteQrImage(invite.token));
+
+// One SMS, in the request (emails are queued: email-send.worker.ts).
+const dispatchSms = async (
   ctx: DispatchContext,
   invite: DispatchableInvite,
   // Which of the two never-pooled SMS accounting systems this batch was
   // already resolved (once, by assertSmsSendable) to draw from — passed
   // through rather than re-derived per guest, so the log can never
-  // disagree with what was actually enforced. Meaningless for an EMAIL
-  // delivery.
+  // disagree with what was actually enforced.
   smsSource: SmsSendPool,
-  kind: DispatchKind = 'INVITE'
-): Promise<{ ok: true } | { ok: false; reason: string }> => {
-  if (invite.deliveryMethod === 'SMS' && !isFeatureEnabled('sms')) {
-    return { ok: false, reason: SMS_UNAVAILABLE_REASON };
-  }
-  const message = buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token));
-
-  const result = invite.deliveryMethod === 'EMAIL'
-    ? await sendEmail({ to: invite.guest.email ?? '', ...message.email })
-    : await sendSms(invite.guest.phoneNumber ?? '', message.smsBody);
-
+  kind: DispatchKind
+): Promise<DispatchResult> => {
+  if (!isFeatureEnabled('sms')) return { ok: false, reason: SMS_UNAVAILABLE_REASON };
+  const result = await sendSms(invite.guest.phoneNumber ?? '', buildSmsBody(kind, ctx, invite.token));
   if (!result.ok) return { ok: false, reason: result.reason ?? 'Delivery failed' };
 
   // Only marked delivered on real dispatch success — a resend remains
@@ -268,48 +309,20 @@ const dispatchOne = async (
   // A REMINDER never touches it: deliveredAt is "when the invitation
   // reached them", which is what makes a guest reminder-eligible.
   if (kind === 'INVITE') await inviteRepository.markDelivered(invite.id);
-  if (invite.deliveryMethod === 'SMS') {
-    await smsSendLogRepository.create(ctx.tenantId, ctx.eventId, invite.id, smsSource);
-  }
+  await smsSendLogRepository.create(ctx.tenantId, ctx.eventId, invite.id, smsSource);
   return { ok: true };
 };
 
 type DispatchResult = { ok: true } | { ok: false; reason: string };
 
-// A whole batch: every EMAIL invite in one sendEmailBatch, then every SMS
-// invite through dispatchOne as before. What success means afterwards is
-// dispatchOne's: an INVITE marks the delivered ones delivered (one write
-// for all of them), a REMINDER never does. Each invite's result goes into
-// `results` by id as soon as it is known, so if a write throws partway the
-// caller can still tell who was reached; callers report them in their own
-// order.
-const dispatchMany = async (
-  ctx: DispatchContext,
-  invites: DispatchableInvite[],
-  smsSource: SmsSendPool,
-  kind: DispatchKind,
-  results: Map<string, DispatchResult> = new Map()
-): Promise<Map<string, DispatchResult>> => {
-  const emailInvites = invites.filter((i) => i.deliveryMethod === 'EMAIL');
-  const sent = await sendEmailBatch(
-    emailInvites.map((invite) => ({
-      to: invite.guest.email ?? '',
-      ...buildMessage(kind, ctx, invitedDaysFor(invite), buildInviteRsvpLink(invite.token)).email,
-    }))
-  );
-  emailInvites.forEach((invite, i) => {
-    const result = sent[i]!;
-    results.set(invite.id, result.ok ? { ok: true } : { ok: false, reason: result.reason ?? 'Delivery failed' });
+// The invites an enqueue left out, as the organiser sees them.
+const notQueuedGuests = (invites: DispatchableInvite[], queued: EnqueueResult): NotQueuedGuest[] =>
+  invites.flatMap((invite) => {
+    const left = queued.notQueued.get(invite.id);
+    return left
+      ? [{ guestId: invite.guestId, name: guestDisplayName(invite.guest), contact: contactFor(invite), reason: left.reason, message: NOT_QUEUED_MESSAGES[left.reason], sendId: left.sendId }]
+      : [];
   });
-  if (kind === 'INVITE') {
-    await inviteRepository.markDeliveredMany(emailInvites.filter((i) => results.get(i.id)?.ok).map((i) => i.id));
-  }
-
-  for (const invite of invites.filter((i) => i.deliveryMethod !== 'EMAIL')) {
-    results.set(invite.id, await dispatchOne(ctx, invite, smsSource, kind));
-  }
-  return results;
-};
 
 // One guest an announcement or the cancellation email goes to
 // (announcement.service.ts). Only guests with an email get here: a guest
@@ -366,7 +379,8 @@ export const inviteDispatchService = {
   // `kind` is REGISTRATION for a guest who registered themselves, INVITE
   // for one the organiser added (their own email is the invitation).
   // Marks the invite delivered the first time a send succeeds, exactly as
-  // dispatchOne does, so the guest counts as invited everywhere else.
+  // a sent invitation does, so the guest counts as invited everywhere else.
+  // Sent in the request (one email, sendEmail), not queued.
   sendRegistrationEmail: async (
     event: Parameters<typeof buildDispatchContext>[0],
     invite: { id: string; token: string; deliveredAt: Date | null },
@@ -383,6 +397,7 @@ export const inviteDispatchService = {
       fallbackDateLabel: ctx.dateLabel,
       rsvpDeadline: ctx.rsvpDeadline,
       rsvpLink: buildInviteRsvpLink(invite.token),
+      rsvpQr: await inviteQrImage(invite.token),
       design: ctx.design,
       organiserEmail: ctx.organiserEmail,
     };
@@ -440,19 +455,21 @@ export const inviteDispatchService = {
       throw new HttpError(400, 'guestIds is required');
     }
 
-    // Guest-ownership/eligibility pre-flight — wrong event, archived
-    // guest, or archived invite all land here, and reject the WHOLE
-    // request (nobody in the batch is dispatched), before any tier check.
-    const invites = await inviteRepository.findByGuestIds(eventId, guestIds) as DispatchableInvite[];
+    // Guest-ownership/eligibility pre-flight, before any tier check. A
+    // selected guest who can't be sent to (removed, a plus-one, awaiting
+    // approval, another of the organiser's events) is left out and named
+    // in skippedGuests; everyone else goes. An id outside the caller's
+    // reach refuses the WHOLE request, naming nobody
+    // (invite-selection.util.ts).
+    const selectedIds = [...new Set(guestIds)];
+    const invites = await inviteRepository.findByGuestIds(eventId, selectedIds) as DispatchableInvite[];
     const foundGuestIds = new Set(invites.map((i) => i.guestId));
-    const missing = guestIds.filter((id) => !foundGuestIds.has(id));
-    if (missing.length) {
-      throw new HttpError(
-        400,
-        `${missing.length} guest(s) can't be sent an invitation. They may be archived, belong to ` +
-          `another event, or be a plus-one: ${missing.join(', ')}`
-      );
-    }
+    const unsendable = await sortOutUnsendable(
+      event,
+      selectedIds.filter((id) => !foundGuestIds.has(id)),
+      requestingRole,
+      tenantId
+    );
 
     // Tier check — all-or-nothing, evaluated BEFORE any dispatch begins.
     // Also resolves WHICH pool (bundle vs quota) this whole batch draws
@@ -460,34 +477,45 @@ export const inviteDispatchService = {
     // that decision is made once per batch, never per guest.
     const { source: smsSource } = await assertSmsSendable(event, smsCountFor(invites));
 
-    // The daily email limit, all-or-nothing, last before anything goes:
-    // a refusal above claims nothing against it.
-    await claimEventEmails(event.id, 'INVITATION', emailCountFor(invites), userId);
+    // Emails are queued (the daily limit claimed in the same transaction,
+    // all or nothing, last before anything goes) and sent by the worker;
+    // a guest whose invitation is already on its way, or went in the last
+    // few minutes, isn't queued again.
+    const emailInvites = invites.filter((i) => i.deliveryMethod === 'EMAIL');
+    const queued = await emailSendService.enqueue({
+      eventId: event.id,
+      kind: 'INVITATION',
+      createdBy: userId,
+      items: emailInvites.map((i) => ({ inviteId: i.id })),
+    });
 
-    const ctx = await buildDispatchContext(event);
+    // SMS still goes now, one at a time, as before.
+    const smsInvites = invites.filter((i) => i.deliveryMethod !== 'EMAIL');
     const failures: InviteDispatchFailure[] = [];
     let sent = 0;
-
-    // Emails in batches, SMS one at a time (dispatchMany). Partial failure
-    // is expected and fine here (a different category from the pre-flight
-    // rejects above): one bad address or number must not abort the rest.
-    // Reported in the order the invites were loaded, as before.
-    const results = await dispatchMany(ctx, invites, smsSource, 'INVITE');
-    for (const invite of invites) {
-      const result = results.get(invite.id)!;
-      if (result.ok) {
-        sent += 1;
-      } else {
-        failures.push({
-          guestId: invite.guestId,
-          name: guestDisplayName(invite.guest),
-          contact: contactFor(invite),
-          reason: result.reason,
-        });
+    if (smsInvites.length) {
+      const ctx = await buildDispatchContext(event);
+      for (const invite of smsInvites) {
+        const result = await dispatchSms(ctx, invite, smsSource, 'INVITE');
+        if (result.ok) sent += 1;
+        else failures.push({ guestId: invite.guestId, name: guestDisplayName(invite.guest), contact: contactFor(invite), reason: result.reason });
       }
     }
 
-    return { totalSelected: guestIds.length, sent, failed: failures.length, failures };
+    const skippedGuests: SendSkip[] = [
+      ...unsendable.map((g) => ({ ...g, sendId: null })),
+      ...notQueuedGuests(emailInvites, queued),
+    ];
+    return {
+      totalSelected: selectedIds.length,
+      sendId: queued.sendId,
+      queued: queued.queuedInviteIds.size,
+      sent,
+      failed: failures.length,
+      failures,
+      skipped: skippedGuests.length,
+      skippedGuests,
+    };
   },
 
   resend: async (
@@ -516,43 +544,50 @@ export const inviteDispatchService = {
     assertEventIsPublished(event.status);
     assertEventAcceptsInvites(event.visibility);
 
-    // A resend still costs a real SMS — re-check the tier rules for a
-    // batch-of-one before dispatching. EMAIL never touches either SMS
-    // pool, so `smsSource` is meaningless (and unused) in that branch —
-    // 'QUOTA' is just a harmless placeholder, never written anywhere.
-    const smsSource: SmsSendPool =
-      smsCountFor([invite]) ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
-    await claimEventEmails(event.id, 'INVITATION', emailCountFor([invite]), userId);
-
-    const ctx = await buildDispatchContext(event);
-    // Dispatches using the invite's EXISTING token — never regenerated,
-    // so a guest who opens an old link days later doesn't find it dead.
-    const result = await dispatchOne(ctx, invite, smsSource);
-
-    return {
+    const outcome = {
       guestId: invite.guestId,
       name: guestDisplayName(invite.guest),
       contact: contactFor(invite),
       deliveryMethod: invite.deliveryMethod,
-      ok: result.ok,
-      ...(result.ok ? {} : { reason: result.reason }),
     };
+
+    // An email is queued like a bulk send (the same duplicate rules and
+    // daily limit) and goes from the worker, with the invite's EXISTING
+    // token — never regenerated, so a guest who opens an old link days
+    // later doesn't find it dead.
+    if (invite.deliveryMethod === 'EMAIL') {
+      const queued = await emailSendService.enqueue({ eventId: event.id, kind: 'INVITATION', createdBy: userId, items: [{ inviteId: invite.id }] });
+      const notQueued = queued.notQueued.get(invite.id);
+      return notQueued
+        ? { ...outcome, status: notQueued.reason, sendId: notQueued.sendId, reason: NOT_QUEUED_MESSAGES[notQueued.reason] }
+        : { ...outcome, status: 'QUEUED', sendId: queued.sendId };
+    }
+
+    // A resend still costs a real SMS — re-check the tier rules for a
+    // batch-of-one before dispatching.
+    const smsSource: SmsSendPool = smsCountFor([invite]) ? (await assertSmsSendable(event, 1)).source : 'QUOTA';
+    const result = await dispatchSms(await buildDispatchContext(event), invite, smsSource, 'INVITE');
+    return result.ok
+      ? { ...outcome, status: 'SENT', sendId: null }
+      : { ...outcome, status: 'FAILED', sendId: null, reason: result.reason };
   },
 
   // Manual "chase the non-responders" — the organiser presses the button;
-  // there is deliberately no scheduler. Reuses dispatchOne and
-  // assertSmsSendable, so an SMS reminder is counted and gated exactly
-  // like an SMS invitation: the same never-pooled bundle/quota rule, the
-  // same all-or-nothing refusal.
+  // there is deliberately no scheduler. An SMS reminder is counted and
+  // gated exactly like an SMS invitation (assertSmsSendable: the same
+  // never-pooled bundle/quota rule, the same all-or-nothing refusal); an
+  // email reminder is queued and sent by the worker.
   //
   // guestIds omitted  -> every guest still waiting on a reminder.
-  // guestIds given    -> only those guests (e.g. one table). Structural
-  //                      problems reject the whole request, as bulk send
-  //                      does; state-based ones (already responded, not yet
-  //                      invited, reminded recently) are SKIPPED and
-  //                      reported, because a guest answering between the
-  //                      organiser's screen and their click is normal, not
-  //                      a malformed request.
+  // guestIds given    -> only those guests (e.g. one table). A guest who
+  //                      can't be reminded at all (removed, a plus-one,
+  //                      awaiting approval, another event) and a guest whose
+  //                      state rules them out (already responded, not yet
+  //                      invited, reminded recently) are both SKIPPED and
+  //                      reported, as bulk send does: a guest answering or
+  //                      being removed between the organiser's screen and
+  //                      their click is normal, not a malformed request. An
+  //                      id outside the caller's reach refuses it whole.
   remindBulk: async (
     eventId: string,
     guestIds: string[] | undefined,
@@ -576,17 +611,13 @@ export const inviteDispatchService = {
     const selectedIds = explicit ? [...new Set(guestIds)] : undefined;
 
     const invites = await inviteRepository.findReminderCandidates(eventId, selectedIds) as (ReminderInvite & DispatchableInvite)[];
-    if (selectedIds) {
-      const foundGuestIds = new Set(invites.map((i) => i.guestId));
-      const missing = selectedIds.filter((id) => !foundGuestIds.has(id));
-      if (missing.length) {
-        throw new HttpError(
-          400,
-          `${missing.length} guest(s) can't be sent a reminder. They may be archived, belong to ` +
-            `another event, or be a plus-one: ${missing.join(', ')}`
-        );
-      }
-    }
+    // As sendBulk: a selected guest who can't be reminded at all (removed,
+    // a plus-one, awaiting approval, another event) is skipped and named;
+    // an id outside the caller's reach refuses the whole request.
+    const foundGuestIds = new Set(invites.map((i) => i.guestId));
+    const unsendable = selectedIds
+      ? await sortOutUnsendable(event, selectedIds.filter((id) => !foundGuestIds.has(id)), requestingRole, tenantId)
+      : [];
 
     // Per GUEST, never per invite — see classifyGuestForReminder.
     const byGuest = new Map<string, (ReminderInvite & DispatchableInvite)[]>();
@@ -596,7 +627,7 @@ export const inviteDispatchService = {
 
     const now = new Date();
     const toRemind: (ReminderInvite & DispatchableInvite)[] = [];
-    const skippedGuests: ReminderSkip[] = [];
+    const skippedGuests: ReminderSkip[] = [...unsendable];
     const skipReasons: ReminderSkipReason[] = [];
     // With no selection, people who have responded or were never invited
     // are simply not part of "everyone waiting on a reminder" — listing
@@ -623,16 +654,17 @@ export const inviteDispatchService = {
       });
     }
 
-    // Every guest this request concerns, fixed BEFORE the send loop moves
-    // anyone from toRemind to skipped — so sent + failed + skipped is
-    // always exactly this number.
+    // Every guest this request concerns, fixed BEFORE anyone moves from
+    // toRemind to skipped — so queued + sent + failed + skipped is always
+    // exactly this number.
     const totalSelected = toRemind.length + skippedGuests.length;
 
     if (!toRemind.length) {
+      const why = [describeUnsendable(unsendable.map((g) => g.reason)), describeSkips(skipReasons)].filter(Boolean).join(', ');
       throw new HttpError(
         422,
-        skipReasons.length
-          ? `No one was reminded: ${describeSkips(skipReasons)}. Reminders go only to guests who were sent an ` +
+        why
+          ? `No one was reminded: ${why}. Reminders go only to guests who were sent an ` +
               `invitation and haven't responded yet.`
           : "There is no one to remind. Reminders go only to guests who were sent an invitation and haven't responded yet."
       );
@@ -644,14 +676,11 @@ export const inviteDispatchService = {
     // never pool here either.
     const { source: smsSource } = await assertSmsSendable(event, smsCountFor(toRemind), 'reminder');
 
-    const ctx = await buildDispatchContext(event);
-    const failures: InviteDispatchFailure[] = [];
-    let sent = 0;
-
     // Claimed together, in one conditional write: only invites still
     // pending and outside the cooldown are claimed. One that changed since
     // it was classified (answered, or reminded by an overlapping request) is
-    // skipped and reported, as before.
+    // skipped and reported, as before. The cooldown starts when a reminder
+    // is queued, so a second press of Remind finds it held.
     const claimedAt = new Date();
     const claimedIds = await inviteRepository.claimReminders(
       toRemind.map((i) => i.id),
@@ -659,7 +688,7 @@ export const inviteDispatchService = {
       claimedAt
     );
     const claimed = toRemind.filter((i) => claimedIds.has(i.id));
-    for (const invite of toRemind.filter((i) => !claimedIds.has(i.id))) {
+    const stateChanged = (invite: DispatchableInvite) => {
       skipReasons.push('STATE_CHANGED');
       skippedGuests.push({
         guestId: invite.guestId,
@@ -668,75 +697,78 @@ export const inviteDispatchService = {
         reason: 'STATE_CHANGED',
         message: SKIP_MESSAGES.STATE_CHANGED,
       });
-    }
+    };
+    for (const invite of toRemind.filter((i) => !claimedIds.has(i.id))) stateChanged(invite);
 
-    // A failed send must not start the cooldown: they never got it. The
-    // same if the batch throws partway: everyone not known to have been
-    // reached is released, and those who were keep their claim.
-    const releaseUnreached = () =>
-      inviteRepository.releaseReminderClaims(
-        claimed.filter((i) => !results.get(i.id)?.ok).map((i) => ({ id: i.id, previous: i.lastRemindedAt })),
-        claimedAt
-      );
-    const results = new Map<string, DispatchResult>();
-
-    // The daily email limit, on the emails this round will actually send
-    // (after the cooldown claim above, so a guest another request just
-    // reminded isn't counted twice). Refused, nobody is reminded and every
-    // cooldown just claimed is given back.
+    // Emails: queued with the cooldown each claimed (the worker gives it
+    // back if the reminder doesn't go), the daily limit claimed in the same
+    // transaction. Refused, nobody is reminded and every cooldown just
+    // claimed is given back; one the queue already holds is given back too.
+    const claimedEmail = claimed.filter((i) => i.deliveryMethod === 'EMAIL');
+    const claimedSms = claimed.filter((i) => i.deliveryMethod !== 'EMAIL');
+    let queued: EnqueueResult;
     try {
-      await claimEventEmails(event.id, 'REMINDER', emailCountFor(claimed), userId);
+      queued = await emailSendService.enqueue({
+        eventId: event.id,
+        kind: 'REMINDER',
+        createdBy: userId,
+        items: claimedEmail.map((i) => ({ inviteId: i.id, remindedAt: claimedAt, previousRemindedAt: i.lastRemindedAt })),
+      });
     } catch (err) {
-      await releaseUnreached();
+      await inviteRepository.releaseReminderClaims(claimed.map((i) => ({ id: i.id, previous: i.lastRemindedAt })), claimedAt);
       throw err;
     }
+    const notQueued = claimedEmail.filter((i) => !queued.queuedInviteIds.has(i.id));
+    await inviteRepository.releaseReminderClaims(notQueued.map((i) => ({ id: i.id, previous: i.lastRemindedAt })), claimedAt);
+    for (const invite of notQueued) stateChanged(invite);
 
-    try {
-      await dispatchMany(ctx, claimed, smsSource, 'REMINDER', results);
-    } catch (err) {
-      await releaseUnreached();
-      throw err;
-    }
-    await releaseUnreached();
-
-    // The audit rows must never abort a batch that has already reached
-    // people — losing the per-guest results is worse than missing log rows,
-    // which are reported loudly instead.
-    try {
-      await inviteReminderLogRepository.createMany(
-        claimed.map((invite) => {
-          const result = results.get(invite.id)!;
-          return {
-            tenantId: event.tenantId,
-            eventId: event.id,
-            inviteId: invite.id,
-            deliveryMethod: invite.deliveryMethod,
-            succeeded: result.ok,
-            failureReason: result.ok ? null : result.reason,
-            sentBy: userId,
-          };
-        })
-      );
-    } catch (err) {
-      console.error(`[reminders] could not write the reminder log rows for event ${event.id}:`, err);
-    }
-
-    for (const invite of claimed) {
-      const result = results.get(invite.id)!;
-      if (result.ok) {
-        sent += 1;
-      } else {
-        failures.push({
-          guestId: invite.guestId,
-          name: guestDisplayName(invite.guest),
-          contact: contactFor(invite),
-          reason: result.reason,
-        });
+    // SMS: now, one at a time, as before. A text that didn't go gives its
+    // cooldown back; every text is logged.
+    const failures: InviteDispatchFailure[] = [];
+    let sent = 0;
+    if (claimedSms.length) {
+      const ctx = await buildDispatchContext(event);
+      const results = new Map<string, DispatchResult>();
+      try {
+        for (const invite of claimedSms) results.set(invite.id, await dispatchSms(ctx, invite, smsSource, 'REMINDER'));
+      } finally {
+        await inviteRepository.releaseReminderClaims(
+          claimedSms.filter((i) => !results.get(i.id)?.ok).map((i) => ({ id: i.id, previous: i.lastRemindedAt })),
+          claimedAt
+        );
+      }
+      // The audit rows must never abort a batch that has already reached
+      // people — losing the per-guest results is worse than missing log rows,
+      // which are reported loudly instead.
+      try {
+        await inviteReminderLogRepository.createMany(
+          claimedSms.map((invite) => {
+            const result = results.get(invite.id)!;
+            return {
+              tenantId: event.tenantId,
+              eventId: event.id,
+              inviteId: invite.id,
+              deliveryMethod: invite.deliveryMethod,
+              succeeded: result.ok,
+              failureReason: result.ok ? null : result.reason,
+              sentBy: userId,
+            };
+          })
+        );
+      } catch (err) {
+        console.error(`[reminders] could not write the reminder log rows for event ${event.id}:`, err);
+      }
+      for (const invite of claimedSms) {
+        const result = results.get(invite.id)!;
+        if (result.ok) sent += 1;
+        else failures.push({ guestId: invite.guestId, name: guestDisplayName(invite.guest), contact: contactFor(invite), reason: result.reason });
       }
     }
 
     return {
       totalSelected,
+      sendId: queued.sendId,
+      queued: queued.queuedInviteIds.size,
       sent,
       failed: failures.length,
       skipped: skippedGuests.length,
@@ -747,3 +779,7 @@ export const inviteDispatchService = {
     };
   },
 };
+
+// The email rendering the worker uses (email-send.worker.ts): the same
+// context and builder an in-request send used.
+export const inviteEmailRendering = { buildDispatchContext, buildEmailFor };

@@ -636,6 +636,8 @@ model Event {
   inviteReminderLogs       InviteReminderLog[]
   announcements            Announcement[]
   emailClaims              EventEmailClaim[]
+  emailSends               EmailSend[]
+  reminderSchedules        ReminderSchedule[]
   // Feedback and sharing permissions — see EventFeedback and ConsentRecord.
   feedback                 EventFeedback?
   consentRecords           ConsentRecord[]
@@ -815,6 +817,7 @@ model Invite {
   ticketPurchases TicketPurchase[]
   smsSendLogs     SmsSendLog[]
   reminderLogs    InviteReminderLog[]
+  emailSendItems  EmailSendItem[]
   documents       GuestDocument[]
 }
 
@@ -1521,6 +1524,89 @@ model EventEmailClaim {
   @@index([eventId, claimedAt])
 }
 
+
+// ─────────────────────────────────────────
+//  EMAIL SENDS — invitations and reminders, sent in the background
+//
+//  Each carries the guest's QR code as an inline attachment, which Resend's
+//  batch endpoint can't take, so they go one Resend call per email, paced:
+//  too slow to hold the organiser's request open. Pressing Send (bulk or a
+//  single resend) or Remind queues one EmailSendItem per email under an
+//  EmailSend and answers at once with the send's id; the email-send worker
+//  (email-send.worker.ts) sends them, and GET .../invites/sends/:sendId
+//  reports progress. The queue is the database, so a send survives a
+//  restart. Additive (20261110090000_email_send_queue).
+//
+//  Never the same email twice: at most one QUEUED or SENDING item per
+//  invite and kind (the partial unique index
+//  "EmailSendItem_pending_invite_kind_key", in the migration only), an
+//  invitation sent within the last few minutes isn't queued again
+//  (email-send.service.ts), and each item's id is Resend's idempotency key,
+//  so an item re-sent after a crash mid-send is still one email.
+// ─────────────────────────────────────────
+
+enum EmailSendItemStatus {
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  // Not sent, and nothing went wrong: no longer needed by the time its
+  // turn came (the guest was removed, answered before a reminder went, the
+  // event was cancelled).
+  SKIPPED
+}
+
+model EmailSend {
+  id        String         @id @default(cuid())
+  eventId   String
+  kind      EventEmailKind
+  // The organiser who pressed the button: a User.id (no relation, same as
+  // InviteReminderLog.sentBy). Reminder log rows are written as them.
+  createdBy String
+  createdAt DateTime       @default(now())
+
+  event Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  items EmailSendItem[]
+  // Set when a scheduled reminder (ReminderSchedule) made this send.
+  reminderSchedule ReminderSchedule?
+
+  @@index([eventId, createdAt])
+}
+
+model EmailSendItem {
+  // Also the Resend idempotency key (as email-send-item/<id>).
+  id            String              @id @default(cuid())
+  sendId        String
+  // Denormalised from the send, for the duplicate checks and the index.
+  eventId       String
+  kind          EventEmailKind
+  inviteId      String
+  status        EmailSendItemStatus @default(QUEUED)
+  // Resend calls made for it so far.
+  attempts      Int                 @default(0)
+  // Due from then (a retry backs off).
+  nextAttemptAt DateTime            @default(now())
+  // While SENDING: a worker holds it until then. A worker that dies
+  // mid-send leaves it to be taken again after this (same idempotency key).
+  leaseUntil    DateTime?
+  lastError     String?
+  sentAt        DateTime?
+  // When it ended FAILED or SKIPPED.
+  finishedAt    DateTime?
+  // REMINDER only: the cooldown this send claimed on the invite
+  // (Invite.lastRemindedAt) and the value before it, put back if the
+  // reminder fails for good, exactly as a failed in-request reminder did.
+  remindedAt         DateTime?
+  previousRemindedAt DateTime?
+  createdAt     DateTime            @default(now())
+
+  send   EmailSend @relation(fields: [sendId], references: [id], onDelete: Cascade)
+  invite Invite    @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([sendId, status])
+  @@index([inviteId, kind, sentAt])
+}
 model InvitationDesign {
   id                 String               @id @default(cuid())
   eventId            String
@@ -2231,4 +2317,73 @@ model StorageReconciliation {
   sizeMismatchCount Int       @default(0)
   // { orphans: [...], missing: [...], sizeMismatches: [...] }, each capped.
   details           Json?
+}
+
+
+// ─────────────────────────────────────────
+//  SCHEDULED REMINDERS — "remind everyone who hasn't replied, on <date>"
+//  (reminder-schedule module, behind the scheduledReminders flag)
+//
+//  An organiser schedules up to 5 at a time per event (SCHEDULED or
+//  SENDING). When one is due, the reminder-schedule worker claims it
+//  (materialized CTE, FOR UPDATE SKIP LOCKED, a lease) and, in ONE
+//  transaction under the event's email lock, claims each guest's reminder
+//  cooldown, claims the daily email limit, queues a REMINDER EmailSend and
+//  marks the schedule SENT with its counts. All of it happens or none of
+//  it, so a crash or a second server can never queue it twice. The
+//  email-send worker then sends it like any reminder.
+//
+//  Times are instants (UTC); the organiser enters and reads them in South
+//  African time (UTC+2, no daylight saving).
+//
+//  ON DELETE CASCADE only so a hard-deleted test fixture event takes its
+//  schedules with it; product code never hard-deletes an event.
+// ─────────────────────────────────────────
+
+enum ReminderScheduleStatus {
+  SCHEDULED
+  // A worker holds it (leaseUntil); it ends SENT or SKIPPED.
+  SENDING
+  SENT
+  // Not sent when it was due, with the reason (skipReason).
+  SKIPPED
+  CANCELLED
+}
+
+model ReminderSchedule {
+  id                      String                 @id @default(cuid())
+  eventId                 String
+  status                  ReminderScheduleStatus @default(SCHEDULED)
+  // When it goes: the worker takes it at or after this.
+  sendAt                  DateTime
+  // How the organiser picked it: IN_1_DAY, IN_1_WEEK, IN_1_MONTH, CUSTOM.
+  preset                  String
+  // The organiser who scheduled it (a User.id, no relation, like
+  // EmailSend.createdBy): the queued send and its reminder log are theirs.
+  createdBy               String
+  createdAt               DateTime               @default(now())
+  cancelledAt             DateTime?
+  cancelledBy             String?
+  // While SENDING: a worker holds it until then; taken again after.
+  leaseUntil              DateTime?
+  attempts                Int                    @default(0)
+  // When it ended SENT or SKIPPED.
+  processedAt             DateTime?
+  // SENT: the queued reminder send (its progress: GET .../invites/sends/:id).
+  emailSendId             String?                @unique
+  // SENT: reminders queued. SENT or SKIPPED: guests without a reply left
+  // out because they were reminded in the last 24 hours, and for any other
+  // reason (an expired invitation, an SMS-only guest, one already queued).
+  queuedCount             Int?
+  skippedRecentlyReminded Int?
+  skippedOther            Int?
+  // SKIPPED: a code (reminder-schedule.types.ts) and the words for it.
+  skipReason              String?
+  skipMessage             String?
+
+  event     Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  emailSend EmailSend? @relation(fields: [emailSendId], references: [id], onDelete: SetNull)
+
+  @@index([status, sendAt])
+  @@index([eventId, createdAt])
 }

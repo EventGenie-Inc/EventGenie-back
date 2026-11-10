@@ -58,7 +58,7 @@ export const classifyGuestForReminder = (invites: ReminderInvite[], now: Date): 
   if (answered) return { skip: 'ALREADY_RESPONDED', invite: answered };
 
   // "Sent" means Invite.deliveredAt — set only on a genuinely successful
-  // dispatch (invite-dispatch.service.ts's dispatchOne). A guest whose
+  // send (the email-send worker, or an SMS in the request). A guest whose
   // invitation was never delivered needs an invitation, not a reminder.
   const delivered = invites.filter((i) => i.deliveredAt !== null);
   if (!delivered.length) return { skip: 'NOT_INVITED_YET', invite: invites[0]! };
@@ -100,20 +100,28 @@ export const assertRsvpDeadlineNotPassed = (rsvpDeadline: Date | null, now: Date
   }
 };
 
-const SKIP_PHRASES: Record<ReminderSkipReason, string> = {
-  ALREADY_RESPONDED: 'already responded',
-  NOT_INVITED_YET: "haven't been sent an invitation yet",
-  INVITE_EXPIRED: 'have an expired invitation',
-  RECENTLY_REMINDED: `were reminded in the last ${REMINDER_COOLDOWN_HOURS} hours`,
-  STATE_CHANGED: 'changed while sending',
+// Each phrase for one guest and for several: "1 has", "2 have".
+export interface CountedPhrase { one: string; many: string }
+
+export const countPhrase = (n: number, phrase: CountedPhrase): string => `${n} ${n === 1 ? phrase.one : phrase.many}`;
+
+const SKIP_PHRASES: Record<ReminderSkipReason, CountedPhrase> = {
+  ALREADY_RESPONDED: { one: 'has already responded', many: 'have already responded' },
+  NOT_INVITED_YET: { one: "hasn't been sent an invitation yet", many: "haven't been sent an invitation yet" },
+  INVITE_EXPIRED: { one: 'has an expired invitation', many: 'have an expired invitation' },
+  RECENTLY_REMINDED: {
+    one: `was reminded in the last ${REMINDER_COOLDOWN_HOURS} hours`,
+    many: `were reminded in the last ${REMINDER_COOLDOWN_HOURS} hours`,
+  },
+  STATE_CHANGED: { one: 'changed while sending', many: 'changed while sending' },
 };
 
-// "2 already responded, 1 were reminded in the last 24 hours" — the reason
-// an organiser is told when a request leaves nobody to remind.
+// "2 have already responded, 1 was reminded in the last 24 hours" — the
+// reason an organiser is told when a request leaves nobody to remind.
 export const describeSkips = (reasons: ReminderSkipReason[]): string => {
   const counts = new Map<ReminderSkipReason, number>();
   for (const reason of reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
-  return [...counts].map(([reason, n]) => `${n} ${SKIP_PHRASES[reason]}`).join(', ');
+  return [...counts].map(([reason, n]) => countPhrase(n, SKIP_PHRASES[reason])).join(', ');
 };
 
 export const SKIP_MESSAGES: Record<ReminderSkipReason, string> = {
