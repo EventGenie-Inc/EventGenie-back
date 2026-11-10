@@ -413,6 +413,49 @@ export const rsvpProgramIpLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITERS — THE INVITATION'S QR CODE (POST /api/rsvp/qr)
+//
+//  The program's shape, with its own budgets: per invite (the SHA-256 of
+//  the token in the body, never the raw token; no token falls back to the
+//  IP and the service refuses it with a 400), and a backstop of FAILED
+//  requests per IP for a made-up token per request. The page asks once per
+//  open on a wide screen, so 60 / 5 minutes per invite is far above any
+//  guest and bounds a script looping on one invite (each answer is a PNG
+//  drawn on the server).
+// ─────────────────────────────────────────
+export const RSVP_QR_VIEWS_PER_INVITE_PER_5_MIN = 60;
+
+export const rsvpQrInviteKey = (rawToken: string): string => `rsvp-qr-invite:${hashToken(rawToken)}`;
+
+export const rsvpQrLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: RSVP_QR_VIEWS_PER_INVITE_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    typeof req.body?.token === 'string' && req.body.token
+      ? rsvpQrInviteKey(req.body.token as string)
+      : `rsvp-qr-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+export const rsvpQrIpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many requests from this network. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — RSVP SUBMIT (POST /api/rsvp/submit), per invite
 //
 //  Keyed by the SHA-256 hash of the invite token in the body (never the

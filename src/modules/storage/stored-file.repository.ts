@@ -106,10 +106,17 @@ export const storedFileRepository = {
   // workers on two servers never take the same file. Every kind, guest
   // documents and purged Memory Hub media included: this is the one path a
   // file is deleted by. `ids`: only these (an immediate delete).
-  claimDue: (now: Date, leaseUntil: Date, limit: number, ids?: string[]): Promise<ClaimedFile[]> =>
-    prisma.$queryRaw<ClaimedFile[]>`
-      UPDATE "StoredFile" SET "nextDeleteAttemptAt" = ${leaseUntil}
-      WHERE "id" IN (
+  //
+  // The due rows are picked in a MATERIALIZED CTE, which runs once. Not
+  // `UPDATE ... WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`:
+  // on a plan that runs that subquery once per outer row (a nested-loop
+  // semi join, which stale statistics on a new or emptied table invite),
+  // each run skips the rows the UPDATE already changed and returns the next
+  // ones, so a claim of 20 took all 60 due rows. `db`: a transaction (the
+  // test that pins that plan).
+  claimDue: (now: Date, leaseUntil: Date, limit: number, ids?: string[], db: Db = prisma): Promise<ClaimedFile[]> =>
+    db.$queryRaw<ClaimedFile[]>`
+      WITH due AS MATERIALIZED (
         SELECT s."id" FROM "StoredFile" s
         WHERE s."status" = 'DELETE_REQUESTED'
           AND (s."nextDeleteAttemptAt" IS NULL OR s."nextDeleteAttemptAt" <= ${now})
@@ -118,7 +125,9 @@ export const storedFileRepository = {
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING "id", "publicId", "resourceType", "deliveryType", "deleteAttempts"`,
+      UPDATE "StoredFile" AS f SET "nextDeleteAttemptAt" = ${leaseUntil}
+      FROM due WHERE f."id" = due."id"
+      RETURNING f."id", f."publicId", f."resourceType", f."deliveryType", f."deleteAttempts"`,
 
   // A guest document's row records it too (deletedAt), in the same
   // transaction: its file is gone.

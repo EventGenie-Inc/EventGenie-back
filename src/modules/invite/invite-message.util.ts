@@ -3,8 +3,9 @@ import { ONLINE_VENUE_LABEL } from '../event-day/event-day-venue.util.js';
 import { normalizeSmsPunctuation } from '../../shared/messaging/sms-segments.util.js';
 import { renderEmail, type EmailBlock } from '../../shared/messaging/email-layout.js';
 import { formatFromHeader, sanitizeDisplayName, sanitizeHeaderText } from '../../shared/messaging/email-address.util.js';
-import { inviteSenderAddress, type OutgoingEmail } from '../../shared/messaging/email.engine.js';
+import { inviteSenderAddress, type InlineImage, type OutgoingEmail, type OutgoingEmailWithImages } from '../../shared/messaging/email.engine.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { QR_DISPLAY_WIDTH } from '../../shared/utils/qr-code.util.js';
 import { formatGuestDate, formatGuestDateShort, formatGuestTime } from '../../shared/utils/guest-date.util.js';
 
 // Domain-aware content builders — this is where "invite"/"event"/"RSVP
@@ -127,11 +128,20 @@ export interface InviteEmailInput {
   fallbackDateLabel: string | null;
   rsvpDeadline: Date | null;
   rsvpLink: string;
+  // rsvpLink as a QR code (invite-qr.util.ts's inviteQrImage), sent inline
+  // under the button. Required: every guest email carries it.
+  rsvpQr: InlineImage;
   design: InviteEmailDesign | null;
   organiserEmail: string | null;
 }
 
 export type BuiltEmail = Omit<OutgoingEmail, 'to'>;
+// A guest email with its QR code: sent through sendEmail or the
+// email-send worker's sendEmailAttempt, never a batch (email.engine.ts).
+export type BuiltGuestEmail = Omit<OutgoingEmailWithImages, 'to'>;
+
+export const INVITE_QR_CAPTION = 'Opened this on a computer? Scan to take your invitation with you.';
+export const INVITE_QR_ALT = 'QR code that opens your e-velope on your phone';
 
 // Who a guest email is from: the host, else the event name.
 type SenderSource = Pick<InviteEmailInput, 'eventName' | 'hostName'>;
@@ -165,7 +175,7 @@ const buildGuestEmail = (
   eyebrow: string,
   extra: EmailBlock[],
   reason: string = guestReason(input)
-): BuiltEmail => {
+): BuiltGuestEmail => {
   const blocks: EmailBlock[] = [
     { kind: 'seal' },
     { kind: 'eyebrow', text: eyebrow },
@@ -175,6 +185,8 @@ const buildGuestEmail = (
     ...extra,
     { kind: 'details', groups: dayGroups(input.days, input.fallbackDateLabel) },
     { kind: 'button', label: 'Open your e-velope', href: input.rsvpLink },
+    // Under the button, for the guest who opened this on a work laptop.
+    { kind: 'qr', contentId: input.rsvpQr.contentId, alt: INVITE_QR_ALT, caption: INVITE_QR_CAPTION, size: QR_DISPLAY_WIDTH },
   ];
   const { html, text } = renderEmail({ subject, preheader: preheaderFor(input), blocks, reason });
   return {
@@ -183,6 +195,7 @@ const buildGuestEmail = (
     subject,
     html,
     text,
+    inlineImages: [input.rsvpQr],
   };
 };
 
@@ -192,10 +205,10 @@ export const buildInviteEmailSubject = (input: InviteEmailInput): string =>
 export const buildReminderEmailSubject = (input: InviteEmailInput): string =>
   `Your e-velope from ${sanitizeHeaderText(senderFor(input))} is waiting`;
 
-export const buildInviteEmail = (input: InviteEmailInput): BuiltEmail =>
+export const buildInviteEmail = (input: InviteEmailInput): BuiltGuestEmail =>
   buildGuestEmail(input, buildInviteEmailSubject(input), "You've received an e-velope", []);
 
-export const buildReminderEmail = (input: InviteEmailInput): BuiltEmail =>
+export const buildReminderEmail = (input: InviteEmailInput): BuiltGuestEmail =>
   buildGuestEmail(input, buildReminderEmailSubject(input), 'Your e-velope is still waiting for a reply', [
     {
       kind: 'paragraph',
@@ -218,7 +231,7 @@ export const buildReminderEmail = (input: InviteEmailInput): BuiltEmail =>
 export const buildRegistrationEmailSubject = (input: InviteEmailInput): string =>
   `You're registered for ${sanitizeHeaderText(input.eventName)}`;
 
-export const buildRegistrationEmail = (input: InviteEmailInput): BuiltEmail =>
+export const buildRegistrationEmail = (input: InviteEmailInput): BuiltGuestEmail =>
   buildGuestEmail(
     input,
     buildRegistrationEmailSubject(input),
@@ -235,7 +248,7 @@ export const buildRegistrationEmail = (input: InviteEmailInput): BuiltEmail =>
 export const buildRegistrationResendEmailSubject = (input: InviteEmailInput): string =>
   `Your link for ${sanitizeHeaderText(input.eventName)}`;
 
-export const buildRegistrationResendEmail = (input: InviteEmailInput): BuiltEmail =>
+export const buildRegistrationResendEmail = (input: InviteEmailInput): BuiltGuestEmail =>
   buildGuestEmail(
     input,
     buildRegistrationResendEmailSubject(input),

@@ -58,7 +58,7 @@ export const classifyGuestForReminder = (invites: ReminderInvite[], now: Date): 
   if (answered) return { skip: 'ALREADY_RESPONDED', invite: answered };
 
   // "Sent" means Invite.deliveredAt — set only on a genuinely successful
-  // dispatch (invite-dispatch.service.ts's dispatchOne). A guest whose
+  // send (the email-send worker, or an SMS in the request). A guest whose
   // invitation was never delivered needs an invitation, not a reminder.
   const delivered = invites.filter((i) => i.deliveredAt !== null);
   if (!delivered.length) return { skip: 'NOT_INVITED_YET', invite: invites[0]! };
