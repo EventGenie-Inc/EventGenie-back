@@ -39,6 +39,7 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { formatEarliestDay } from '../../shared/utils/guest-date.util.js';
 import { assertEventIsPublished } from '../event/event-status.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
+import { sortOutUnsendable, describeUnsendable, type UnsendableGuest, type UnsendableReason } from './invite-selection.util.js';
 
 // Bulk invite orchestrator — knows guests/invites/tiers and routes each
 // guest to whichever engine matches their contact. Kept separate from
@@ -80,9 +81,16 @@ export interface NotQueuedGuest {
   sendId: string;
 }
 
-// POST /invites/send. queued + sent + failed + skipped counts every invite
+// A selected guest who couldn't be sent to at all (invite-selection.util.ts):
+// named by name and contact, with sendId null since no send has them.
+export type UnsendableSkip = UnsendableGuest & { sendId: null };
+export type SendSkip = NotQueuedGuest | UnsendableSkip;
+
+// POST /invites/send. queued + sent + failed + skipped counts every guest
 // selected. Emails are queued (sendId: their send, null if none was);
-// sent/failed/failures are the SMS sent in the request.
+// sent/failed/failures are the SMS sent in the request. skippedGuests:
+// those who can't be sent to (removed, plus-one, …) first, then those whose
+// email was already on its way.
 export interface SendInvitesResult {
   totalSelected: number;
   sendId: string | null;
@@ -91,7 +99,7 @@ export interface SendInvitesResult {
   failed: number;
   failures: InviteDispatchFailure[];
   skipped: number;
-  skippedGuests: NotQueuedGuest[];
+  skippedGuests: SendSkip[];
 }
 
 // POST /invites/:id/resend. An email is QUEUED (or not: ALREADY_QUEUED,
@@ -107,11 +115,13 @@ export interface InviteDispatchOutcome {
   reason?: string;
 }
 
+// reason: a reminder rule (invite-reminder.util.ts), or why the selected
+// guest can't be sent to at all (invite-selection.util.ts).
 export interface ReminderSkip {
   guestId: string;
   name: string;
   contact: string;
-  reason: ReminderSkipReason;
+  reason: ReminderSkipReason | UnsendableReason;
   message: string;
   // Only for RECENTLY_REMINDED — when they can next be reminded.
   nextEligibleAt?: string;
@@ -445,19 +455,21 @@ export const inviteDispatchService = {
       throw new HttpError(400, 'guestIds is required');
     }
 
-    // Guest-ownership/eligibility pre-flight — wrong event, archived
-    // guest, or archived invite all land here, and reject the WHOLE
-    // request (nobody in the batch is dispatched), before any tier check.
-    const invites = await inviteRepository.findByGuestIds(eventId, guestIds) as DispatchableInvite[];
+    // Guest-ownership/eligibility pre-flight, before any tier check. A
+    // selected guest who can't be sent to (removed, a plus-one, awaiting
+    // approval, another of the organiser's events) is left out and named
+    // in skippedGuests; everyone else goes. An id outside the caller's
+    // reach refuses the WHOLE request, naming nobody
+    // (invite-selection.util.ts).
+    const selectedIds = [...new Set(guestIds)];
+    const invites = await inviteRepository.findByGuestIds(eventId, selectedIds) as DispatchableInvite[];
     const foundGuestIds = new Set(invites.map((i) => i.guestId));
-    const missing = guestIds.filter((id) => !foundGuestIds.has(id));
-    if (missing.length) {
-      throw new HttpError(
-        400,
-        `${missing.length} guest(s) can't be sent an invitation. They may be archived, belong to ` +
-          `another event, or be a plus-one: ${missing.join(', ')}`
-      );
-    }
+    const unsendable = await sortOutUnsendable(
+      event,
+      selectedIds.filter((id) => !foundGuestIds.has(id)),
+      requestingRole,
+      tenantId
+    );
 
     // Tier check — all-or-nothing, evaluated BEFORE any dispatch begins.
     // Also resolves WHICH pool (bundle vs quota) this whole batch draws
@@ -490,9 +502,12 @@ export const inviteDispatchService = {
       }
     }
 
-    const skippedGuests = notQueuedGuests(emailInvites, queued);
+    const skippedGuests: SendSkip[] = [
+      ...unsendable.map((g) => ({ ...g, sendId: null })),
+      ...notQueuedGuests(emailInvites, queued),
+    ];
     return {
-      totalSelected: guestIds.length,
+      totalSelected: selectedIds.length,
       sendId: queued.sendId,
       queued: queued.queuedInviteIds.size,
       sent,
@@ -564,13 +579,15 @@ export const inviteDispatchService = {
   // email reminder is queued and sent by the worker.
   //
   // guestIds omitted  -> every guest still waiting on a reminder.
-  // guestIds given    -> only those guests (e.g. one table). Structural
-  //                      problems reject the whole request, as bulk send
-  //                      does; state-based ones (already responded, not yet
-  //                      invited, reminded recently) are SKIPPED and
-  //                      reported, because a guest answering between the
-  //                      organiser's screen and their click is normal, not
-  //                      a malformed request.
+  // guestIds given    -> only those guests (e.g. one table). A guest who
+  //                      can't be reminded at all (removed, a plus-one,
+  //                      awaiting approval, another event) and a guest whose
+  //                      state rules them out (already responded, not yet
+  //                      invited, reminded recently) are both SKIPPED and
+  //                      reported, as bulk send does: a guest answering or
+  //                      being removed between the organiser's screen and
+  //                      their click is normal, not a malformed request. An
+  //                      id outside the caller's reach refuses it whole.
   remindBulk: async (
     eventId: string,
     guestIds: string[] | undefined,
@@ -594,17 +611,13 @@ export const inviteDispatchService = {
     const selectedIds = explicit ? [...new Set(guestIds)] : undefined;
 
     const invites = await inviteRepository.findReminderCandidates(eventId, selectedIds) as (ReminderInvite & DispatchableInvite)[];
-    if (selectedIds) {
-      const foundGuestIds = new Set(invites.map((i) => i.guestId));
-      const missing = selectedIds.filter((id) => !foundGuestIds.has(id));
-      if (missing.length) {
-        throw new HttpError(
-          400,
-          `${missing.length} guest(s) can't be sent a reminder. They may be archived, belong to ` +
-            `another event, or be a plus-one: ${missing.join(', ')}`
-        );
-      }
-    }
+    // As sendBulk: a selected guest who can't be reminded at all (removed,
+    // a plus-one, awaiting approval, another event) is skipped and named;
+    // an id outside the caller's reach refuses the whole request.
+    const foundGuestIds = new Set(invites.map((i) => i.guestId));
+    const unsendable = selectedIds
+      ? await sortOutUnsendable(event, selectedIds.filter((id) => !foundGuestIds.has(id)), requestingRole, tenantId)
+      : [];
 
     // Per GUEST, never per invite — see classifyGuestForReminder.
     const byGuest = new Map<string, (ReminderInvite & DispatchableInvite)[]>();
@@ -614,7 +627,7 @@ export const inviteDispatchService = {
 
     const now = new Date();
     const toRemind: (ReminderInvite & DispatchableInvite)[] = [];
-    const skippedGuests: ReminderSkip[] = [];
+    const skippedGuests: ReminderSkip[] = [...unsendable];
     const skipReasons: ReminderSkipReason[] = [];
     // With no selection, people who have responded or were never invited
     // are simply not part of "everyone waiting on a reminder" — listing
@@ -647,10 +660,11 @@ export const inviteDispatchService = {
     const totalSelected = toRemind.length + skippedGuests.length;
 
     if (!toRemind.length) {
+      const why = [describeUnsendable(unsendable.map((g) => g.reason)), describeSkips(skipReasons)].filter(Boolean).join(', ');
       throw new HttpError(
         422,
-        skipReasons.length
-          ? `No one was reminded: ${describeSkips(skipReasons)}. Reminders go only to guests who were sent an ` +
+        why
+          ? `No one was reminded: ${why}. Reminders go only to guests who were sent an ` +
               `invitation and haven't responded yet.`
           : "There is no one to remind. Reminders go only to guests who were sent an invitation and haven't responded yet."
       );

@@ -37,8 +37,8 @@ export const inviteRepository = {
   // archived independently of its guest and vice versa), plus hostGuestId
   // (a plus-one has no invitation of their own to send). Any requested
   // guestId missing from the result is wrong-event, archived-guest,
-  // archived-invite, or a plus-one, and the caller rejects the whole batch
-  // on that basis.
+  // archived-invite, a plus-one or a registration not approved; the caller
+  // sorts those out (invite-selection.util.ts) and sends the rest.
   findByGuestIds: (eventId: string, guestIds: string[]) =>
     prisma.invite.findMany({
       where: {
@@ -50,6 +50,27 @@ export const inviteRepository = {
       // Invited days with their venues — the email names this guest's
       // own days and where each is (invite-dispatch.service.ts).
       include: { guest: true, inviteEventDay: { where: { eventDay: { isArchived: false } }, include: { eventDay: true } } },
+    }),
+
+  // The selected guests a send or reminder couldn't take, by id alone and
+  // UNSCOPED: invite-selection.util.ts's sortOutUnsendable checks each one's
+  // tenant and event itself before naming anyone.
+  findSelectedGuests: (guestIds: string[]) =>
+    prisma.guest.findMany({
+      where: { id: { in: guestIds } },
+      select: {
+        id: true,
+        eventId: true,
+        firstName: true,
+        surname: true,
+        email: true,
+        phoneNumber: true,
+        isArchived: true,
+        hostGuestId: true,
+        pendingApproval: true,
+        registrationDeclinedAt: true,
+        event: { select: { tenantId: true } },
+      },
     }),
 
   markDelivered: (id: string) =>

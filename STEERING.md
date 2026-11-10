@@ -187,7 +187,7 @@ before the pilot merge:
 | `/program/:programId/items/:id` (all) | safe (`assertProgramInScope`, then the item's own program); a body `eventDayId` must be the event's |
 | `/program/:id` (GET, PUT, DELETE) | **fixed** (gated on the program's own event) |
 | `/invites/:id` (GET, PUT, DELETE), `/:id/reactivate`, `/:id/resend` | **fixed** (`inviteInScope`; gated on the invite's own event) |
-| `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event) |
+| `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event; a guest of another event the caller can see is skipped and named, any other id refuses the whole request naming nobody: `sortOutUnsendable`) |
 | `/memory-hub/:id…`, `/memory-hub/:hubId/items…` | **fixed** in the wave 2 follow-ups |
 | `/check-in/days/:dayId`, `…/guests/:guestId` (and an `inviteToken`) | safe (the day from the event's own days; guest and token looked up by event) |
 | `/guests` create and import (body `eventDayIds`, the file's days) | safe (the event's own days) |
@@ -791,13 +791,36 @@ survives a restart.
   `sendId` the new send (null if nothing was queued), `queued` its emails,
   `sent`/`failed`/`failures` the SMS sent in the request, `skippedGuests`
   `{ guestId, name, contact, reason: 'ALREADY_QUEUED' | 'RECENTLY_SENT',
-  message, sendId }`. `POST /invites/remind`: as before plus `sendId` and
-  `queued`; `queued + sent + failed + skipped === totalSelected`. `POST
+  message, sendId }`, or a guest who can't be sent to (below) with
+  `sendId: null`. `POST /invites/remind`: as before plus `sendId` and
+  `queued`; `queued + sent + failed + skipped === totalSelected` (each
+  guest selected counted once). `POST
   /invites/:id/resend`: `{ guestId, name, contact, deliveryMethod, status:
   'QUEUED' | 'ALREADY_QUEUED' | 'RECENTLY_SENT' | 'SENT' | 'FAILED',
   sendId, reason? }` (SENT or FAILED only for an SMS, sent in the request).
   The daily limit is claimed for the emails queued only; refused, nothing
   is queued (429 `EVENT_EMAIL_DAILY_LIMIT`, as before).
+- **A selection with guests who can't be sent to** (Send, a re-send of a
+  selection, which is the same request, and Remind with `guestIds`;
+  `invite-selection.util.ts`'s `sortOutUnsendable`). Everyone who can be
+  sent to goes; each who can't is left out and listed in `skippedGuests`
+  as `{ guestId, name, contact, reason, message }`, named by name and
+  contact (email, else phone, else empty for a plus-one), never an id in
+  the words. `reason`, first that applies: `NOT_IN_EVENT` (a guest of
+  another event the caller can see), `REGISTRATION_DECLINED`, `ARCHIVED`
+  (removed from the guest list), `PLUS_ONE`, `PENDING_APPROVAL`,
+  `NO_INVITATION` (every invite of theirs archived). A Send of only such
+  guests is 200 with nothing queued; a Remind with nobody left to remind is
+  the 422 it always was, its message counting these reasons too, each in
+  the singular or plural to agree with its number, as the reminder rules'
+  own are ("1 was removed from the guest list", "2 are guests of another
+  event", "1 has already responded"; `countPhrase`). **An id the caller can't reach** (no such
+  guest, another tenant's, also for a `SUPER_ADMIN`, or an event the
+  assignment lock hides) refuses the whole request: 400
+  `GUEST_SELECTION_UNKNOWN`, "N of the selected guests aren't on your guest
+  lists, so nothing was sent", naming nobody and no id, the same for all
+  three so none can be told apart. Until 2026-11 any one such guest refused
+  the whole send, and the message listed database ids.
 
 A builder describes its message
 as blocks of **plain text** (`seal`, `eyebrow`, `title`, `paragraph`,
@@ -2820,7 +2843,9 @@ A guest is reminded only if their invitation was **delivered**
 (`Invite.deliveredAt`), they have **not responded** (`PENDING`), the
 invite has not expired, and they were not reminded in the last 24 hours
 (`REMINDER_COOLDOWN_HOURS`). Archived guests, archived invites and
-plus-ones are excluded at query level. Refused outright when the event is
+plus-ones are excluded at query level; one the organiser selected is
+skipped and named (see "A selection with guests who can't be sent to"
+under Email). Refused outright when the event is
 not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
 
 The cooldown is claimed atomically when the reminder is queued
