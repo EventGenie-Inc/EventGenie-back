@@ -63,6 +63,19 @@ const seedClaim = (emailCount: number, hoursAgo = 1) =>
 const send = (guestIds: string[]) =>
   request(app).post(`/api/events/${eventId}/invites/send`).set(headersFor(organiser)).send({ guestIds });
 
+describe('the refusal reads correctly however many are left', () => {
+  it('says 2 more, never 2 mores', async () => {
+    const guests = await addGuests(3);
+    await seedClaim(EVENT_EMAILS_PER_DAY - 2);
+    const res = await send(guests.map((g) => g.guest.id));
+    expect(res.status).toBe(429);
+    expect(res.body.message).toBe(
+      'This would send 3 emails, but only 2 more can go from this event in the next 24 hours ' +
+        '(the limit is 2,000 a day), so nothing was sent. Choose fewer guests, or try again later.'
+    );
+  });
+});
+
 describe('invitations', () => {
   it('a send that would pass 2,000 in 24 hours is 429 with the code, and nothing goes', async () => {
     const guests = await addGuests(2);

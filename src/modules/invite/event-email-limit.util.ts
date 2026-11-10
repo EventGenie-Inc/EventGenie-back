@@ -47,7 +47,7 @@ export const eventEmailLimitRefusal = (wanted: number, remaining: number): HttpE
     remaining === 0
       ? `This event has sent the most invitation and reminder emails allowed in 24 hours ` +
         `(${EVENT_EMAILS_PER_DAY.toLocaleString('en-US')}), so nothing was sent. Try again later.`
-      : `This would send ${plural(wanted, 'email')}, but only ${plural(remaining, 'more')} can go from this event ` +
+      : `This would send ${plural(wanted, 'email')}, but only ${remaining.toLocaleString('en-US')} more can go from this event ` +
         `in the next 24 hours (the limit is ${EVENT_EMAILS_PER_DAY.toLocaleString('en-US')} a day), so nothing was sent. ` +
         `Choose fewer guests, or try again later.`,
     EVENT_EMAIL_DAILY_LIMIT

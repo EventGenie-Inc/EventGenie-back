@@ -1,4 +1,4 @@
-import { type EventEmailKind, type PlatformRole } from '@prisma/client';
+import { type EventEmailKind, type PlatformRole, type Prisma } from '@prisma/client';
 import { emailSendRepository, type NewEmailItem } from './email-send.repository.js';
 import { type EmailSendProgress, type EnqueueResult, type NotQueuedReason } from './email-send.types.js';
 import { eventEmailClaimRepository } from '../invite/event-email-claim.repository.js';
@@ -48,45 +48,62 @@ export const setEmailSendWake = (fn: (() => void) | null): void => {
   wake = fn;
 };
 
+// Wakes the worker now: after enqueue (below), or after a transaction that
+// called enqueueLocked has committed (a scheduled reminder).
+export const wakeEmailSendWorker = (): void => {
+  wake?.();
+};
+
+export interface EnqueueInput {
+  eventId: string;
+  kind: EventEmailKind;
+  createdBy: string;
+  items: NewEmailItem[];
+}
+
+// The queueing itself, inside a transaction that already holds the event's
+// email lock (withEventEmailLock): the duplicate check, the daily-limit
+// claim (throws the 429, and the caller's transaction rolls back) and the
+// rows. The scheduled-reminder worker calls it with its own work in the
+// same transaction (reminder-schedule.worker.ts); the caller wakes the
+// worker once it has committed.
+export const enqueueLocked = async (tx: Prisma.TransactionClient, input: EnqueueInput): Promise<EnqueueResult> => {
+  const result: EnqueueResult = { sendId: null, queuedInviteIds: new Set(), notQueued: new Map() };
+  if (input.items.length === 0) return result;
+
+  const blocking = await emailSendRepository.findBlocking(
+    tx,
+    input.items.map((i) => i.inviteId),
+    input.kind,
+    new Date(Date.now() - DUPLICATE_SEND_WINDOW_MS)
+  );
+  for (const row of blocking) {
+    // Waiting beats recently sent: that's the send to watch.
+    const reason: NotQueuedReason = row.status === 'SENT' ? 'RECENTLY_SENT' : 'ALREADY_QUEUED';
+    const existing = result.notQueued.get(row.inviteId);
+    if (!existing || reason === 'ALREADY_QUEUED') result.notQueued.set(row.inviteId, { reason, sendId: row.sendId });
+  }
+  const toQueue = input.items.filter((i) => !result.notQueued.has(i.inviteId));
+  if (toQueue.length === 0) return result;
+
+  await claimEventEmailsLocked(tx, input.eventId, input.kind, toQueue.length, input.createdBy);
+  const send = await emailSendRepository.createSend(tx, { eventId: input.eventId, kind: input.kind, createdBy: input.createdBy });
+  const written = await emailSendRepository.createItems(tx, { id: send.id, eventId: input.eventId, kind: input.kind }, toQueue);
+  result.sendId = send.id;
+  for (const row of written) result.queuedInviteIds.add(row.inviteId);
+  // Under the lock nothing else can have queued these since the check;
+  // if the index refused one anyway, it is reported as already queued.
+  for (const item of toQueue) {
+    if (!result.queuedInviteIds.has(item.inviteId)) result.notQueued.set(item.inviteId, { reason: 'ALREADY_QUEUED', sendId: send.id });
+  }
+  return result;
+};
+
 export const emailSendService = {
-  enqueue: async (input: {
-    eventId: string;
-    kind: EventEmailKind;
-    createdBy: string;
-    items: NewEmailItem[];
-  }): Promise<EnqueueResult> => {
-    const result: EnqueueResult = { sendId: null, queuedInviteIds: new Set(), notQueued: new Map() };
-    if (input.items.length === 0) return result;
-
-    await eventEmailClaimRepository.withEventEmailLock(input.eventId, async (tx) => {
-      const blocking = await emailSendRepository.findBlocking(
-        tx,
-        input.items.map((i) => i.inviteId),
-        input.kind,
-        new Date(Date.now() - DUPLICATE_SEND_WINDOW_MS)
-      );
-      for (const row of blocking) {
-        // Waiting beats recently sent: that's the send to watch.
-        const reason: NotQueuedReason = row.status === 'SENT' ? 'RECENTLY_SENT' : 'ALREADY_QUEUED';
-        const existing = result.notQueued.get(row.inviteId);
-        if (!existing || reason === 'ALREADY_QUEUED') result.notQueued.set(row.inviteId, { reason, sendId: row.sendId });
-      }
-      const toQueue = input.items.filter((i) => !result.notQueued.has(i.inviteId));
-      if (toQueue.length === 0) return;
-
-      await claimEventEmailsLocked(tx, input.eventId, input.kind, toQueue.length, input.createdBy);
-      const send = await emailSendRepository.createSend(tx, { eventId: input.eventId, kind: input.kind, createdBy: input.createdBy });
-      const written = await emailSendRepository.createItems(tx, { id: send.id, eventId: input.eventId, kind: input.kind }, toQueue);
-      result.sendId = send.id;
-      for (const row of written) result.queuedInviteIds.add(row.inviteId);
-      // Under the lock nothing else can have queued these since the check;
-      // if the index refused one anyway, it is reported as already queued.
-      for (const item of toQueue) {
-        if (!result.queuedInviteIds.has(item.inviteId)) result.notQueued.set(item.inviteId, { reason: 'ALREADY_QUEUED', sendId: send.id });
-      }
-    });
-
-    if (result.sendId) wake?.();
+  enqueue: async (input: EnqueueInput): Promise<EnqueueResult> => {
+    if (input.items.length === 0) return { sendId: null, queuedInviteIds: new Set(), notQueued: new Map() };
+    const result = await eventEmailClaimRepository.withEventEmailLock(input.eventId, (tx) => enqueueLocked(tx, input));
+    if (result.sendId) wakeEmailSendWorker();
     return result;
   },
 

@@ -1653,7 +1653,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
   `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`,
-  `storageRetention`.
+  `storageRetention`, `scheduledReminders`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -1772,6 +1772,12 @@ codebase: a feature is switched off by configuration, **never deleted**.
     or removed item, no document is deleted by a retention rule, no
     reminder is sent, and `deletesAt` (items, and the event's
     `documentStorage`) is null. The clocks are still recorded.
+  - `scheduledReminders` off (see "Reminders", scheduled reminders):
+    `/api/events/:eventId/reminder-schedules` is 404 and the worker queues
+    nothing. Schedules already made stay SCHEDULED; back on, an overdue one
+    is taken at once and judged against the event as it is then (skipped
+    if replies have closed or the event has started). The manual Remind
+    button is untouched.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -1788,8 +1794,9 @@ apply migrations only to the test database, and only through the
 harness behind the refusal guard.
 
 **Claim queries: a materialized CTE, never `IN (... LIMIT ...)`.** A query
-that claims up to n rows for a worker (`stored-file.repository.ts`'s and
-`email-send.repository.ts`'s `claimDue`) picks them in `WITH due AS
+that claims up to n rows for a worker (`stored-file.repository.ts`'s,
+`email-send.repository.ts`'s and `reminder-schedule.repository.ts`'s
+`claimDue`) picks them in `WITH due AS
 MATERIALIZED (SELECT ... ORDER BY ... LIMIT n FOR UPDATE SKIP LOCKED)` and
 updates `FROM due`. Never `UPDATE ... WHERE id IN (SELECT ... LIMIT n FOR
 UPDATE SKIP LOCKED)`: on a plan that runs the subquery once per outer row (a
@@ -2795,13 +2802,15 @@ The body, every key optional (a key left out leaves that part alone):
 
 ### Reminders
 
-Manual only — the organiser presses a button. Nothing here runs on a
-timer by deliberate choice, with three exceptions, the feedback request
+Manual (the organiser presses a button) or scheduled by the organiser
+(see "Scheduled reminders" below); never sent on the system's own
+initiative. Nothing else here runs on a timer by deliberate choice, with
+three exceptions, the feedback request
 sweep (see "Feedback and sharing permissions"), the archived-media
 retention sweep (see "Archived events: Memory Hub retention") and the
 documents sweep (see "Document fields"), all built to be correct whether
 or not their timer fires. (The email-send worker runs on a timer too, but
-only delivers what an organiser queued.) They go through the same dispatch
+only delivers what an organiser queued.) Manual reminders go through the same dispatch
 path as invitations (`invite-dispatch.service.ts`), so an SMS reminder draws on
 the same pool an SMS invitation does: the event's pass bundle if it has
 an active pass, otherwise the tenant's monthly quota — never both, and
@@ -2821,6 +2830,90 @@ skipped (by the email-send worker for an email, in the request for an SMS),
 so overlapping requests cannot double-send and a failed send never starts
 it. Every attempt that reached a send, failures included, is written to
 `InviteReminderLog`.
+
+**Scheduled reminders** (the `reminder-schedule` module, behind
+`scheduledReminders`; additive migration `20261111090000_reminder_schedules`).
+An organiser schedules a reminder to every guest who hasn't replied:
+`/api/events/:eventId/reminder-schedules`, organisers of the event only,
+tenant-scoped like every invite route (`eventService.getScoped`).
+
+- **`POST /`** takes `{ preset: 'IN_1_DAY' | 'IN_1_WEEK' | 'IN_1_MONTH' }`
+  or `{ preset: 'CUSTOM', sendAt: '2026-11-20T09:00' }` and answers 201
+  with the schedule. Presets count from now, to the minute; a month is a
+  calendar month, kept to the last day of a shorter one.
+- **Times are stored in UTC and entered and shown in South African time**
+  (UTC+2 all year; `reminder-schedule-time.util.ts`). `sendAt` in a request
+  is a South African wall clock with no offset, nothing else is accepted;
+  every schedule answers with `sendAt` (the instant, ISO UTC) and
+  `sendAtLocal` (the same in South African time). This is deliberately
+  unlike "Dates", where an offset-less string is literal UTC: a reminder
+  goes out at a real moment. The event's own values (RSVP deadline, day
+  start) are still literal UTC clocks, so a reminder is compared with them
+  as its South African wall clock (`wallClock`): "RSVP by 25 October" is
+  the end of 25 October in South Africa, never more lenient than comparing
+  instants.
+- **Refused when scheduling**, each with its code: a malformed request 400
+  `REMINDER_SCHEDULE_INVALID`; a time not in the future 422
+  `REMINDER_TIME_IN_PAST`; after the RSVP deadline (the end-of-day rule,
+  `hasDeadlinePassed`) 422 `REMINDER_AFTER_RSVP_DEADLINE`; at or after the
+  event's start (its first live day's `startTime`, else the start of that
+  day) 422 `REMINDER_AFTER_EVENT_START`; a sixth while 5 are SCHEDULED or
+  SENDING (`MAX_SCHEDULED_REMINDERS_PER_EVENT`, counted and written under
+  the event's row lock) 409 `REMINDER_SCHEDULE_LIMIT`. An event a manual
+  reminder is refused for (a draft, finished, cancelled, public, replies
+  closed) is refused the same way, with the same statuses.
+- **`GET /`** answers `{ schedules, counts: { scheduled, sending, sent,
+  skipped, cancelled }, maxScheduled, remaining, cooldownHours, timeZone }`
+  (an archived event's history still lists). Each schedule: `{ id, status:
+  'SCHEDULED' | 'SENDING' | 'SENT' | 'SKIPPED' | 'CANCELLED', preset,
+  sendAt, sendAtLocal, createdAt, createdBy, cancelledAt, processedAt,
+  sendId, queued, skippedRecentlyReminded, skippedOther, delivery,
+  skipReason, skipMessage }`. `sendId` is the queued send (its progress:
+  `GET .../invites/sends/:sendId`); `delivery` is `{ queued, sent, failed,
+  skipped }` counted from that send's emails; `skippedRecentlyReminded` is
+  how many unreplied guests were left out for the 24-hour cooldown,
+  `skippedOther` for anything else (an expired invitation, SMS only,
+  already queued). **The frontend keeps no copy of the 5 or the 24**: it
+  shows `maxScheduled`, `remaining` and `cooldownHours`.
+- **`POST /:scheduleId/cancel`** cancels one still SCHEDULED (again: still
+  200). One a worker has taken, sent or skipped is 409
+  `REMINDER_SCHEDULE_NOT_CANCELLABLE`.
+- **Sending** (`reminder-schedule.worker.ts`, started by `server.ts` only:
+  at startup and every 30 seconds). It claims due schedules by the Claim
+  queries rule (SCHEDULED and due, or SENDING with its 5-minute lease run
+  out) and for each, **in one transaction under the event's email lock**,
+  claims the guests' cooldown, queues a REMINDER send (`enqueueLocked`, the
+  queue's own duplicate check and daily-limit claim) and marks the schedule
+  SENT with its counts. All of it happens or none of it, and the outcome
+  write is guarded by the lease, so a schedule is queued exactly once
+  across crashes, restarts and any number of servers. The email-send worker
+  then sends it like any reminder (pacing, retries, the QR code, never
+  twice), as the organiser who scheduled it.
+- **Who gets it** is decided when it is due, never when it is scheduled:
+  the guests a manual "remind everyone" would pick
+  (`findReminderCandidates`, `classifyGuestForReminder`), so never a guest
+  who has replied, a registration awaiting approval or declined, a removed
+  guest, an archived invite or a plus-one, and nobody inside the cooldown.
+  **Email only**: an SMS-only guest is left out and counted in
+  `skippedOther`, whatever `sms` says (a text costs quota nobody was there
+  to approve).
+- **SKIPPED when due**, with `skipReason` and its words in `skipMessage`:
+  `EVENT_ARCHIVED`, `EVENT_CANCELLED`, `EVENT_FINISHED`, `EVENT_NOT_OPEN`
+  (a draft, or made public), `EVENT_STARTED`, `RSVP_DEADLINE_PASSED`,
+  `NO_ONE_WAITING` (everyone replied), `NONE_ELIGIBLE` (guests are waiting
+  but none could be reminded: cooldown, expired invitation, SMS only),
+  `EVENT_EMAIL_DAILY_LIMIT` and `ERROR` (it couldn't be queued in 5 tries).
+  One rule file for both ends (`reminder-schedule-rules.util.ts`): a time
+  refused when scheduling is a time the worker skips.
+- **Plan and limits: exactly a manual email reminder's.** No plan setting
+  gates email reminders, so none gates these. Over the daily email limit
+  it is refused whole, as the button is: nothing queued, no cooldown
+  started, the schedule SKIPPED with `EVENT_EMAIL_DAILY_LIMIT`. It is not
+  retried. Its `skipMessage` is its own, not the button's ("Choose fewer
+  guests" is nothing a scheduled reminder can act on): "Not sent: today's
+  email limit for this event was reached (2,000 invitation and reminder
+  emails in 24 hours), so this reminder was skipped and nobody was
+  emailed. You can schedule another one for tomorrow."
 
 ### Announcements
 
@@ -2945,7 +3038,12 @@ each refusal carries a code (see "Machine-readable codes" under Errors).
   refused email still counts, racing sends can't pass it, and an email left
   out as a duplicate isn't counted. All-or-nothing: 429
   `EVENT_EMAIL_DAILY_LIMIT`, nothing queued, no reminder cooldown started,
-  saying how many could still go. SMS, announcements
+  saying how many could still go ("This would send 3 emails, but only 2
+  more can go from this event in the next 24 hours (the limit is 2,000 a
+  day), so nothing was sent. Choose fewer guests, or try again later."; "1
+  more", "2 more", never "2 mores", which it said until 2026-11). A
+  scheduled reminder over the limit has its own words (see "Reminders").
+  SMS, announcements
   (their own limit), the cancellation email and registration emails are not
   counted.
 
@@ -3347,7 +3445,9 @@ client date string becomes a `Date` through `parseClientDateTime`
 `2026-09-19T23:59:59` means literal UTC, matching what the frontend assumes,
 whereas plain `new Date` reads it in the server's zone. The organiser picks
 calendar dates; UTC is the identity that prints back the date they picked.
-Events have no timezone of their own (see Known gaps).
+Events have no timezone of their own (see Known gaps). **One exception:
+a scheduled reminder's time** is a real instant, entered and shown in
+South African time (see "Reminders", scheduled reminders).
 
 **"RSVP by 25 October" means until the end of 25 October.** The RSVP
 deadline and the registration closing date are dates
@@ -3648,7 +3748,9 @@ Bash every suite fails with "Vitest failed to find the runner".
 (`emailSendWorker.runOnce({ eventId })`, or `startEmailSendWorker({
 eventId })` for a restart) scoped to its own event, since the test
 database holds every test file's queue. `runOnce({ now })` steps past a
-retry's backoff or a lease.
+retry's backoff or a lease. The scheduled-reminder worker is the same
+(`reminderScheduleWorker.runOnce({ eventId, now })`), and queues only: a
+test then runs the email-send worker to send.
 
 **Every fixture user has accepted the current Terms of Service** unless the
 test says otherwise: the user helpers (`createTestTenantAndUser`,

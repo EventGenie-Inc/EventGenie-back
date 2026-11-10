@@ -3,6 +3,11 @@ import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
 import crypto from 'crypto';
 import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
 import { GUEST_NOT_AWAITING_APPROVAL, INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
+import { type Prisma } from '@prisma/client';
+
+// The client or a transaction: the scheduled-reminder worker claims and
+// releases cooldowns inside its own transaction.
+type Db = Prisma.TransactionClient | typeof prisma;
 
 export const inviteRepository = {
 
@@ -81,9 +86,9 @@ export const inviteRepository = {
   // could not give that guarantee. Returns the ids it claimed; an invite
   // missing from it was lost, whatever the reason (already reminded, or the
   // guest just answered).
-  claimReminders: async (ids: string[], cutoff: Date, claimedAt: Date): Promise<Set<string>> => {
+  claimReminders: async (ids: string[], cutoff: Date, claimedAt: Date, db: Db = prisma): Promise<Set<string>> => {
     if (!ids.length) return new Set();
-    const claimed = await prisma.invite.updateManyAndReturn({
+    const claimed = await db.invite.updateManyAndReturn({
       where: {
         id: { in: ids },
         isArchived: false,
@@ -101,7 +106,7 @@ export const inviteRepository = {
   // it can only ever undo THIS claim, never a later one. Each invite goes
   // back to its own previous value: one write per distinct value (usually
   // one, never reminded before), not one per invite.
-  releaseReminderClaims: async (invites: { id: string; previous: Date | null }[], claimedAt: Date): Promise<void> => {
+  releaseReminderClaims: async (invites: { id: string; previous: Date | null }[], claimedAt: Date, db: Db = prisma): Promise<void> => {
     const byPrevious = new Map<number | null, { previous: Date | null; ids: string[] }>();
     for (const { id, previous } of invites) {
       const key = previous ? previous.getTime() : null;
@@ -110,7 +115,7 @@ export const inviteRepository = {
       byPrevious.set(key, group);
     }
     for (const { previous, ids } of byPrevious.values()) {
-      await prisma.invite.updateMany({
+      await db.invite.updateMany({
         where: { id: { in: ids }, lastRemindedAt: claimedAt },
         data: { lastRemindedAt: previous },
       });
