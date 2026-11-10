@@ -5,6 +5,7 @@ import request from 'supertest';
 import app from '../../src/app.js';
 import { mockResendSend, mockResendBatchSend } from '../setup.js';
 import { inviteDispatchService } from '../../src/modules/invite/invite-dispatch.service.js';
+import { emailSendWorker } from '../../src/modules/email-send/email-send.worker.js';
 import { createTenant, createActor, createEventWithDay, deleteTenantsDeep, headersFor, installFirebaseMock, prisma, type Actor } from '../helpers/team.js';
 
 // ─────────────────────────────────────────
@@ -18,7 +19,10 @@ import { createTenant, createActor, createEventWithDay, deleteTenantsDeep, heade
 //  way a real API round trip would be. Measures the dispatch alone (no
 //  database beyond the Reply-To lookup), then each send over HTTP against
 //  the test database: invitations, reminders, an announcement and the
-//  cancellation email. Prints the timings; asserts only that everyone was
+//  cancellation email. Invitations and reminders are queued: the request
+//  is timed, then the email-send worker sending them (at the test pace,
+//  tests/setup.ts's EMAIL_SENDS_PER_SECOND; in production 6 a second
+//  bounds it, 50 s for 300). Prints the timings; asserts only that everyone was
 //  reached. Each send sets up its own starting state, so one can be run on
 //  its own with -t (the cancellation last: it cancels the event).
 // ─────────────────────────────────────────
@@ -118,7 +122,9 @@ describe.skipIf(!process.env['MEASURE_SEND_TIMING'])(`sending to ${GUESTS} guest
       request(app).post(`/api/events/${eventId}/invites/send`).set(headersFor(organiser)).send({ guestIds })
     );
     expect(res.status).toBe(200);
-    expect(res.body.data.sent).toBe(GUESTS);
+    expect(res.body.data.queued).toBe(GUESTS);
+    expect(emailsSent()).toBe(0);
+    await time('invitations: the worker sending them', () => emailSendWorker.runOnce({ eventId }));
     expect(emailsSent()).toBe(GUESTS);
   }, 900_000);
 
@@ -130,7 +136,8 @@ describe.skipIf(!process.env['MEASURE_SEND_TIMING'])(`sending to ${GUESTS} guest
       request(app).post(`/api/events/${eventId}/invites/remind`).set(headersFor(organiser)).send({})
     );
     expect(res.status).toBe(200);
-    expect(res.body.data.sent).toBe(GUESTS);
+    expect(res.body.data.queued).toBe(GUESTS);
+    await time('reminders: the worker sending them', () => emailSendWorker.runOnce({ eventId }));
     expect(emailsSent()).toBe(GUESTS);
   }, 900_000);
 

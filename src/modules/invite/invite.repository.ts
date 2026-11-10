@@ -50,12 +50,6 @@ export const inviteRepository = {
   markDelivered: (id: string) =>
     prisma.invite.update({ where: { id }, data: { deliveredAt: new Date() } }),
 
-  // A batch's delivered invitations, in one write (invite-dispatch.service.ts).
-  markDeliveredMany: (ids: string[]) =>
-    ids.length
-      ? prisma.invite.updateMany({ where: { id: { in: ids } }, data: { deliveredAt: new Date() } })
-      : Promise.resolve({ count: 0 }),
-
   // Reminder candidates — STRUCTURAL filter only: this event, live invite,
   // live guest, and never a plus-one (hostGuestId: null — a plus-one has
   // no contact and cannot be reminded, so they are excluded here rather
@@ -163,6 +157,16 @@ export const inviteRepository = {
           },
         },
       },
+    }),
+
+  // POST /api/rsvp/qr (rsvp.service.ts's getInviteQr): findByToken's own
+  // `where`, so a token opens a QR code exactly when it opens the
+  // invitation (a removed, pending or declined guest's is null, like an
+  // unknown one), and nothing read beyond what the answer needs.
+  findTokenForQr: (token: string) =>
+    prisma.invite.findUnique({
+      where: { token, ...INVITE_TOKEN_USABLE },
+      select: { token: true, event: { select: { isArchived: true } } },
     }),
 
   // Feeds event-public.service.ts's duplicate-registration path: a

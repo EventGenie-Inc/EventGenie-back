@@ -6,6 +6,8 @@ import {
   ticketQuoteLimiter,
   rsvpProgramLimiter,
   rsvpProgramIpLimiter,
+  rsvpQrLimiter,
+  rsvpQrIpLimiter,
   rsvpSubmitInviteLimiter,
   documentUploadInviteLimiter,
   documentUploadIpLimiter,
@@ -44,6 +46,21 @@ router.post('/ticket-quote', requireFeature('ticketing'), ticketQuoteLimiter, as
 router.post('/program', rsvpProgramIpLimiter, rsvpProgramLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await eventProgramService.getProgramForInvite(req.body?.token);
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/rsvp/qr
+// { token } → { url, image (a PNG data URL), width, height }: the QR code
+// of this guest's own invitation link, for the page's "Continue on your
+// phone" (rsvp.service.ts's getInviteQr). POST so the token stays out of
+// URLs and logs. Never cached, by the browser or anything between: each
+// answer is one guest's credential. Its own two limiters, the program's
+// shape (rate-limit.middleware.ts).
+router.post('/qr', rsvpQrIpLimiter, rsvpQrLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await rsvpService.getInviteQr(req.body?.token);
+    res.set('Cache-Control', 'no-store');
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });

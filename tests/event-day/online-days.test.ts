@@ -17,6 +17,7 @@ import { createActor, createTenant, createEventWithDay, deleteTenantsDeep, heade
 import { clearSentEmails, sentEmails } from '../helpers/sent-emails.js';
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
 import { buildInviteEmail, buildReminderEmail } from '../../src/modules/invite/invite-message.util.js';
+import { STAND_IN_QR } from '../helpers/qr.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -195,6 +196,7 @@ describe('who sees the link', () => {
       fallbackDateLabel: null,
       rsvpDeadline: null,
       rsvpLink: `${BASE}/rsvp?token=x`,
+      rsvpQr: STAND_IN_QR,
       design: null,
       organiserEmail: null,
     };

@@ -4,6 +4,7 @@ import { sentEmails, clearSentEmails } from '../helpers/sent-emails.js';
 import { rsvpService } from '../../src/modules/rsvp/rsvp.service.js';
 import { eventService } from '../../src/modules/event/event.service.js';
 import { inviteDispatchService, SMS_UNAVAILABLE_REASON } from '../../src/modules/invite/invite-dispatch.service.js';
+import { emailSendWorker } from '../../src/modules/email-send/email-send.worker.js';
 import { TICKETING_UNAVAILABLE_MESSAGE } from '../../src/modules/ticket/ticketing-availability.util.js';
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
 import {
@@ -110,13 +111,17 @@ describe('invitationDesigns off — invite emails', () => {
 
     vi.stubEnv('FEATURES_DISABLED', '');
     const on = await inviteDispatchService.sendBulk(event.id, [guest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId);
-    expect(on.sent).toBe(1);
+    expect(on.queued).toBe(1);
+    expect((await emailSendWorker.runOnce({ eventId: event.id })).sent).toBe(1);
     expect(sentHtml()).toContain('launch-mode-design.png');
 
     clearSentEmails();
+    // Out of the duplicate window, so the same guest can be sent again.
+    await prisma.emailSendItem.updateMany({ where: { eventId: event.id }, data: { sentAt: new Date(Date.now() - 60 * 60 * 1000) } });
     vi.stubEnv('FEATURES_DISABLED', 'invitationDesigns');
     const off = await inviteDispatchService.sendBulk(event.id, [guest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId);
-    expect(off.sent).toBe(1);
+    expect(off.queued).toBe(1);
+    expect((await emailSendWorker.runOnce({ eventId: event.id })).sent).toBe(1);
     expect(sentEmails()).toHaveLength(1);
     expect(sentHtml()).not.toContain('launch-mode-design');
   }, 90000);
@@ -138,8 +143,9 @@ describe('sms off — invite sending', () => {
     vi.stubEnv('FEATURES_DISABLED', 'sms');
 
     const result = await inviteDispatchService.sendBulk(event.id, [guest.id, phoneGuest.id], organiser.id, 'TENANT_ADMIN', organiser.tenantId);
+    await emailSendWorker.runOnce({ eventId: event.id });
 
-    expect(result).toMatchObject({ totalSelected: 2, sent: 1, failed: 1 });
+    expect(result).toMatchObject({ totalSelected: 2, queued: 1, sent: 0, failed: 1 });
     expect(result.failures).toEqual([
       { guestId: phoneGuest.id, name: 'Phone Only', contact: '+27825550123', reason: SMS_UNAVAILABLE_REASON },
     ]);

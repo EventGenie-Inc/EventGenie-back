@@ -1,4 +1,4 @@
-import { type EventEmailKind } from '@prisma/client';
+import { type EventEmailKind, type Prisma } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventEmailClaimRepository } from './event-email-claim.repository.js';
 
@@ -63,11 +63,23 @@ export const claimEventEmails = async (
   claimedBy: string
 ): Promise<void> => {
   if (emailCount <= 0) return;
-  await eventEmailClaimRepository.withEventEmailLock(eventId, async (tx) => {
-    const recent = await eventEmailClaimRepository.findSince(eventId, new Date(Date.now() - EVENT_EMAIL_WINDOW_MS), tx);
-    const used = recent.reduce((sum, claim) => sum + claim.emailCount, 0);
-    const remaining = Math.max(0, EVENT_EMAILS_PER_DAY - used);
-    if (emailCount > remaining) throw eventEmailLimitRefusal(emailCount, remaining);
-    await eventEmailClaimRepository.create({ eventId, kind, emailCount, claimedBy }, tx);
-  });
+  await eventEmailClaimRepository.withEventEmailLock(eventId, (tx) => claimEventEmailsLocked(tx, eventId, kind, emailCount, claimedBy));
+};
+
+// The same claim, inside a transaction that already holds the event's
+// email lock (withEventEmailLock): the email-send queue counts, claims and
+// queues in one transaction (email-send.service.ts's enqueue).
+export const claimEventEmailsLocked = async (
+  tx: Prisma.TransactionClient,
+  eventId: string,
+  kind: EventEmailKind,
+  emailCount: number,
+  claimedBy: string
+): Promise<void> => {
+  if (emailCount <= 0) return;
+  const recent = await eventEmailClaimRepository.findSince(eventId, new Date(Date.now() - EVENT_EMAIL_WINDOW_MS), tx);
+  const used = recent.reduce((sum, claim) => sum + claim.emailCount, 0);
+  const remaining = Math.max(0, EVENT_EMAILS_PER_DAY - used);
+  if (emailCount > remaining) throw eventEmailLimitRefusal(emailCount, remaining);
+  await eventEmailClaimRepository.create({ eventId, kind, emailCount, claimedBy }, tx);
 };

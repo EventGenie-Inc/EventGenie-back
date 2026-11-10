@@ -221,7 +221,7 @@ describe('sms off — resend and reminders to an SMS-only guest', () => {
     const { tenant, organiser, event, invite } = await smsGuest();
     vi.stubEnv('FEATURES_DISABLED', 'sms');
     const outcome = await inviteDispatchService.resend(event.id, invite.id, organiser.id, 'TENANT_ADMIN', tenant.id);
-    expect(outcome).toMatchObject({ ok: false, reason: SMS_UNAVAILABLE_REASON, deliveryMethod: 'SMS' });
+    expect(outcome).toMatchObject({ status: 'FAILED', sendId: null, reason: SMS_UNAVAILABLE_REASON, deliveryMethod: 'SMS' });
     expect(mockTwilioCreate).not.toHaveBeenCalled();
     expect(await prisma.smsSendLog.count({ where: { eventId: event.id } })).toBe(0);
     expect((await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).deliveredAt).toBeNull();
@@ -241,7 +241,7 @@ describe('sms off — resend and reminders to an SMS-only guest', () => {
     vi.stubEnv('FEATURES_DISABLED', 'sms');
     const result = await inviteDispatchService.remindBulk(event.id, undefined, organiser.id, 'TENANT_ADMIN', tenant.id);
 
-    expect(result).toMatchObject({ totalSelected: 1, sent: 0, failed: 1, skipped: 0 });
+    expect(result).toMatchObject({ totalSelected: 1, sendId: null, queued: 0, sent: 0, failed: 1, skipped: 0 });
     expect(result.failures).toEqual([{ guestId: guest.id, name: 'Phone Only', contact: '+27825550199', reason: SMS_UNAVAILABLE_REASON }]);
     expect(mockTwilioCreate).not.toHaveBeenCalled();
     expect((await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).lastRemindedAt).toBeNull();

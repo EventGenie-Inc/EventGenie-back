@@ -14,6 +14,7 @@ import {
   EMAIL_SEAL_PATH,
 } from '../../src/shared/messaging/email-layout.js';
 import { formatFromHeader, sanitizeDisplayName } from '../../src/shared/messaging/email-address.util.js';
+import { STAND_IN_QR } from '../helpers/qr.js';
 
 // ─────────────────────────────────────────
 //  EVERY EMAIL IS ONE FAMILY
@@ -70,6 +71,7 @@ const input = (over: Partial<InviteEmailInput> = {}): InviteEmailInput => ({
   fallbackDateLabel: null,
   rsvpDeadline: new Date('2027-05-20T23:59:59Z'),
   rsvpLink: RSVP_LINK,
+  rsvpQr: STAND_IN_QR,
   design: null,
   organiserEmail: 'organiser@example.test',
   ...over,
