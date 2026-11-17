@@ -14,12 +14,14 @@ import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 import { QR_PNG_WIDTH } from '../../shared/utils/qr-code.util.js';
 import { inviteQrPng } from '../invite/invite-qr.util.js';
+import { isShortCodeShaped } from '../invite/invite-short-code.service.js';
 import { buildInviteRsvpLink } from '../invite/invite-message.util.js';
 import { INVITE_TOKEN_USABLE } from '../registration-approval/registration-approval-gate.util.js';
 import {
   normalizeEmail,
   assertValidEmail,
   normalizePhoneToE164,
+  resolvePhoneCountry,
   CONTACT_ERROR_CODES,
   GUEST_EMAIL_REQUIRED_MESSAGE,
   CONTACT_EMAIL_UNAVAILABLE_MESSAGE,
@@ -180,10 +182,10 @@ const contactIntent = (value: string | null | undefined): ContactIntent => {
 // The guest-import validators (guest-validation.util.ts) throw 400 — right
 // for an organiser's spreadsheet row, which is malformed input. On the RSVP
 // form it is a well-formed answer that fails a precondition, so the same
-// specific message ("'0821234567' is missing a country code, use
-// +27821234567") is re-raised as 422, its machine-readable code kept. The
-// normalisation itself is exactly guest import's: same functions, same
-// default country (ZA).
+// specific message ("'12345' is not a valid phone number") is re-raised as
+// 422, its machine-readable code kept. The normalisation itself is exactly
+// guest import's: same functions, same default country (ZA), the guest's
+// selected country (phoneCountry) when they send one.
 const asUnprocessable = <T>(fn: () => T): T => {
   try {
     return fn();
@@ -243,6 +245,26 @@ export const rsvpService = {
       width: QR_PNG_WIDTH,
       height: QR_PNG_WIDTH,
     };
+  },
+
+  // POST /api/rsvp/short-link — the frontend's /r/:code page (a text
+  // message's short link, invite-short-code.service.ts) swaps the code for
+  // the invite's token, then opens /rsvp?token=… as any other link. Refused
+  // exactly as a token is (validate, the QR code): an unknown code, or a
+  // removed, pending or declined guest's, or an archived invite's, is the
+  // standard 404 with the standard words; an archived event the same 410.
+  // A string that isn't code-shaped is an unknown code, not a 400, so the
+  // answer never says what a code looks like; only a missing one is 400.
+  resolveShortLink: async (code: unknown) => {
+    if (typeof code !== 'string' || !code) {
+      throw new HttpError(400, 'code is required');
+    }
+    const invite = isShortCodeShaped(code) ? await inviteRepository.findTokenByShortCode(code) : null;
+    if (!invite) {
+      throw new HttpError(404, "This invitation link isn't valid. Check the link in your message, or ask the organiser to resend it.");
+    }
+    assertEventNotArchived(invite.event);
+    return { token: invite.token };
   },
 
   // Public, unauthenticated read — returns flags rather than throwing on
@@ -535,7 +557,7 @@ export const rsvpService = {
         guestUpdateData.email = null;
       }
       if (phoneIntent.kind === 'set') {
-        const normalizedPhone = asUnprocessable(() => normalizePhoneToE164(phoneIntent.value));
+        const normalizedPhone = asUnprocessable(() => normalizePhoneToE164(phoneIntent.value, resolvePhoneCountry(data.phoneCountry)));
         if (normalizedPhone !== invite.guest.phoneNumber) guestUpdateData.phoneNumber = normalizedPhone;
       } else if (phoneIntent.kind === 'remove' && invite.guest.phoneNumber !== null) {
         guestUpdateData.phoneNumber = null;

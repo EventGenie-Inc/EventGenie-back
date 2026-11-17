@@ -40,7 +40,7 @@ branch; the frontend deploys via CI to its matching Firebase Hosting site.
 |---|---|
 | Firebase Authentication | User identity (first auth factor) |
 | Resend | Transactional email — OTP, password reset, invitations |
-| Twilio | SMS invitations (South African number, local rates) |
+| SMSPortal | SMS invitations and reminders (South African provider), with delivery reports |
 | Cloudinary | Photo and video storage for the Memory Hub |
 | Neon | Managed PostgreSQL |
 
@@ -243,7 +243,8 @@ DATABASE_URL_TEST
 JWT_SECRET, JWT_EXPIRES_IN
 FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY
 RESEND_API_KEY, RESEND_FROM_EMAIL
-TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
+SMS_PROVIDER (smsportal), SMSPORTAL_CLIENT_ID, SMSPORTAL_API_SECRET
+SMSPORTAL_TEST_MODE (test mode unless exactly "false"), SMSPORTAL_WEBHOOK_SECRET
 CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET
 FRONTEND_BASE_URL
 ALLOWED_ORIGINS

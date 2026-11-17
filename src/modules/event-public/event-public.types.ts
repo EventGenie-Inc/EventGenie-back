@@ -9,6 +9,9 @@ export interface RegisterGuestDto {
   // Required: the registrant's personal link is emailed, never returned.
   email?: unknown;
   phoneNumber?: unknown;
+  // The country selected beside the phone field (ISO 3166, e.g. "GB"); a
+  // number without a country code is read in it. Default ZA.
+  phoneCountry?: unknown;
   // Multi-day events: the days they'll attend, from the days open to
   // registration. Omitted = every open day.
   dayIds?: unknown;

@@ -1,4 +1,4 @@
-import { Prisma, type EventEmailKind } from '@prisma/client';
+import { Prisma, type DeliveryMethod, type EventEmailKind, type SmsSendSource } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 
 type Tx = Prisma.TransactionClient;
@@ -14,12 +14,20 @@ export interface ClaimedEmailItem {
   leaseUntil: Date;
   remindedAt: Date | null;
   previousRemindedAt: Date | null;
+  // EMAIL or SMS: the queue carries both.
+  channel: DeliveryMethod;
+  smsSource: SmsSendSource | null;
+  // SMS: when the provider was last called for it (see the schema).
+  providerCallAt: Date | null;
 }
 
 export interface NewEmailItem {
   inviteId: string;
   remindedAt?: Date | null;
   previousRemindedAt?: Date | null;
+  // Default EMAIL. An SMS carries the pool it was counted against.
+  channel?: DeliveryMethod;
+  smsSource?: SmsSendSource | null;
 }
 
 const ERROR_MAX_LENGTH = 500;
@@ -54,6 +62,8 @@ export const emailSendRepository = {
         inviteId: item.inviteId,
         remindedAt: item.remindedAt ?? null,
         previousRemindedAt: item.previousRemindedAt ?? null,
+        channel: item.channel ?? 'EMAIL',
+        smsSource: item.channel === 'SMS' ? (item.smsSource ?? 'QUOTA') : null,
       })),
       skipDuplicates: true,
       select: { inviteId: true },
@@ -89,7 +99,8 @@ export const emailSendRepository = {
       )
       UPDATE "EmailSendItem" AS e SET "status" = 'SENDING', "leaseUntil" = ${leaseUntil}, "attempts" = e."attempts" + 1
       FROM due WHERE e."id" = due."id"
-      RETURNING e."id", e."sendId", e."eventId", e."kind", e."inviteId", e."attempts", e."leaseUntil", e."remindedAt", e."previousRemindedAt"`,
+      RETURNING e."id", e."sendId", e."eventId", e."kind", e."inviteId", e."attempts", e."leaseUntil", e."remindedAt", e."previousRemindedAt",
+                e."channel", e."smsSource", e."providerCallAt"`,
 
   // What the worker needs to build each email and decide whether it still
   // should go: the invite, its guest and live days, and its event.
@@ -117,10 +128,46 @@ export const emailSendRepository = {
     return count === 1;
   },
 
+  // A retry: for a text, the provider certainly didn't take it, so
+  // providerCallAt is cleared and the next take may call again.
   markRetry: async (item: ClaimedEmailItem, nextAttemptAt: Date, reason: string): Promise<boolean> => {
     const { count } = await prisma.emailSendItem.updateMany({
       where: { id: item.id, status: 'SENDING', leaseUntil: item.leaseUntil },
-      data: { status: 'QUEUED', nextAttemptAt, leaseUntil: null, lastError: reason.slice(0, ERROR_MAX_LENGTH) },
+      data: { status: 'QUEUED', nextAttemptAt, leaseUntil: null, providerCallAt: null, lastError: reason.slice(0, ERROR_MAX_LENGTH) },
+    });
+    return count === 1;
+  },
+
+  // ── Text messages ─────────────────────────────────────────────────────
+
+  // Written (and committed) just before the provider is called, under the
+  // lease. A text found SENDING with this set was mid-call when a worker
+  // died: it is never called again (SMSPortal has no idempotency key).
+  markProviderCall: async (item: ClaimedEmailItem, at: Date): Promise<boolean> => {
+    const { count } = await prisma.emailSendItem.updateMany({
+      where: { id: item.id, status: 'SENDING', leaseUntil: item.leaseUntil },
+      data: { providerCallAt: at },
+    });
+    return count === 1;
+  },
+
+  markSmsSent: async (
+    tx: Tx,
+    item: ClaimedEmailItem,
+    sent: { at: Date; providerMessageId: string | null; parts: number }
+  ): Promise<boolean> => {
+    const { count } = await tx.emailSendItem.updateMany({
+      where: { id: item.id, status: 'SENDING', leaseUntil: item.leaseUntil },
+      data: {
+        status: 'SENT',
+        sentAt: sent.at,
+        leaseUntil: null,
+        lastError: null,
+        providerMessageId: sent.providerMessageId,
+        smsParts: sent.parts,
+        deliveryStatus: 'SENT',
+        deliveryStatusAt: sent.at,
+      },
     });
     return count === 1;
   },
@@ -150,8 +197,18 @@ export const emailSendRepository = {
       select: {
         status: true,
         lastError: true,
-        invite: { select: { guestId: true, guest: { select: { firstName: true, surname: true, email: true } } } },
+        channel: true,
+        invite: { select: { guestId: true, guest: { select: { firstName: true, surname: true, email: true, phoneNumber: true } } } },
       },
+    }),
+
+  // This send's texts that went, by where they got to (SENT, then
+  // DELIVERED or FAILED from their delivery reports).
+  countSmsByDelivery: (sendId: string) =>
+    prisma.emailSendItem.groupBy({
+      by: ['deliveryStatus'],
+      where: { sendId, channel: 'SMS', status: 'SENT' },
+      _count: { _all: true },
     }),
 
   latestFinishedAt: (sendId: string) =>

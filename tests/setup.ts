@@ -1,6 +1,8 @@
 import { vi, beforeEach } from 'vitest';
 import dotenv from 'dotenv';
 import { fakeCloudinary, installFakeCloudinary } from './helpers/fake-cloudinary.js';
+import { fakeSms } from './helpers/fake-sms.js';
+import { setSmsProviderForTests } from '../src/shared/messaging/sms-provider.js';
 
 // ─────────────────────────────────────────
 //  NODE_ENV=test — set here, not just in the npm script, so it is true
@@ -45,6 +47,16 @@ process.env.FEATURES_DISABLED = '';
 //  rate. Set before dotenv, so a developer's .env can't slow the suite.
 // ─────────────────────────────────────────
 process.env.EMAIL_SENDS_PER_SECOND = '1000';
+
+// ─────────────────────────────────────────
+//  SMS — no test ever reaches SMSPortal: every text goes to the fake
+//  provider (tests/helpers/fake-sms.ts), installed below and reset before
+//  every test. Test mode is forced on and the pace lifted, before dotenv,
+//  so a developer's .env (SMSPORTAL_TEST_MODE=false, say) changes nothing
+//  here. The test of the SMSPortal provider itself stubs fetch.
+// ─────────────────────────────────────────
+process.env.SMSPORTAL_TEST_MODE = 'true';
+process.env.SMS_SENDS_PER_SECOND = '1000';
 
 // ─────────────────────────────────────────
 //  STORAGE — every new file's path starts with STORAGE_ENV, which the
@@ -150,6 +162,8 @@ vi.mock('resend', () => ({
 
 beforeEach(() => {
   fakeCloudinary.reset();
+  fakeSms.reset();
+  setSmsProviderForTests(fakeSms.provider);
   mockVerifyIdToken.mockReset();
   mockGetUserByEmail.mockReset();
   mockGeneratePasswordResetLink.mockReset();

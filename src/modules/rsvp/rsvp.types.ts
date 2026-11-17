@@ -23,6 +23,10 @@ export interface SubmitRsvpDto {
   // assertExactlyOneContact for why the "not both" rule doesn't apply here.
   email?: string | null;
   phoneNumber?: string | null;
+  // The country selected beside the phone field (ISO 3166, e.g. "GB"): a
+  // number without a country code is read in it. Default ZA; 422
+  // CONTACT_PHONE_COUNTRY_INVALID if it isn't a known code.
+  phoneCountry?: string;
 }
 
 export interface QuoteTicketDto {

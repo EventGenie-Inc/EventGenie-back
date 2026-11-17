@@ -1,3 +1,4 @@
+import { fakeSms } from '../helpers/fake-sms.js';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { mockResendSend } from '../setup.js';
@@ -7,7 +8,7 @@ import { eventDraftService } from '../../src/modules/event-draft/event-draft.ser
 import { eventDraftRepository } from '../../src/modules/event-draft/event-draft.repository.js';
 import { userService } from '../../src/modules/user/user.service.js';
 import { rsvpService } from '../../src/modules/rsvp/rsvp.service.js';
-import { inviteDispatchService, SMS_UNAVAILABLE_REASON } from '../../src/modules/invite/invite-dispatch.service.js';
+import { inviteDispatchService, SMS_UNAVAILABLE_REASON, SMS_UNAVAILABLE_CODE } from '../../src/modules/invite/invite-dispatch.service.js';
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
 import { TICKETING_UNAVAILABLE_MESSAGE } from '../../src/modules/ticket/ticketing-availability.util.js';
 import { PUBLIC_EVENTS_UNAVAILABLE_MESSAGE } from '../../src/modules/event/public-events-availability.util.js';
@@ -34,19 +35,14 @@ import {
 //    (422, before any plan message), and an RSVP carrying a ticketId is
 //    refused;
 //  - sms: a resend or reminder to an SMS-only guest is a reported failure,
-//    Twilio is never called, and a failed reminder doesn't start the
+//    no text is sent, and a failed reminder doesn't start the
 //    cooldown.
 // ─────────────────────────────────────────
 
-const mockTwilioCreate = vi.fn();
-vi.mock('twilio', () => ({
-  default: () => ({ messages: { create: (...args: unknown[]) => mockTwilioCreate(...args) } }),
-}));
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
-  mockTwilioCreate.mockReset();
   while (cleanup.length) {
     const fn = cleanup.shift();
     if (fn) await fn();
@@ -222,7 +218,7 @@ describe('sms off — resend and reminders to an SMS-only guest', () => {
     vi.stubEnv('FEATURES_DISABLED', 'sms');
     const outcome = await inviteDispatchService.resend(event.id, invite.id, organiser.id, 'TENANT_ADMIN', tenant.id);
     expect(outcome).toMatchObject({ status: 'FAILED', sendId: null, reason: SMS_UNAVAILABLE_REASON, deliveryMethod: 'SMS' });
-    expect(mockTwilioCreate).not.toHaveBeenCalled();
+    expect(fakeSms.sent()).toHaveLength(0);
     expect(await prisma.smsSendLog.count({ where: { eventId: event.id } })).toBe(0);
     expect((await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).deliveredAt).toBeNull();
   }, 60000);
@@ -242,8 +238,8 @@ describe('sms off — resend and reminders to an SMS-only guest', () => {
     const result = await inviteDispatchService.remindBulk(event.id, undefined, organiser.id, 'TENANT_ADMIN', tenant.id);
 
     expect(result).toMatchObject({ totalSelected: 1, sendId: null, queued: 0, sent: 0, failed: 1, skipped: 0 });
-    expect(result.failures).toEqual([{ guestId: guest.id, name: 'Phone Only', contact: '+27825550199', reason: SMS_UNAVAILABLE_REASON }]);
-    expect(mockTwilioCreate).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([{ guestId: guest.id, name: 'Phone Only', contact: '+27825550199', reason: SMS_UNAVAILABLE_REASON, code: SMS_UNAVAILABLE_CODE }]);
+    expect(fakeSms.sent()).toHaveLength(0);
     expect((await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).lastRemindedAt).toBeNull();
     const logs = await prisma.inviteReminderLog.findMany({ where: { inviteId: invite.id } });
     expect(logs).toHaveLength(1);

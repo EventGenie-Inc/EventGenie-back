@@ -59,6 +59,8 @@ import mediaRetentionRouter from './modules/media-retention/media-retention.rout
 import storageRouter from './modules/storage/storage.router.js';
 import storageAdminRouter from './modules/storage/storage-admin.router.js';
 import guestDocumentRouter from './modules/guest-document/guest-document.router.js';
+import smsDeliveryRouter from './modules/sms-delivery/sms-delivery.router.js';
+import { assertSmsProviderConfigValid } from './shared/messaging/sms-provider.js';
 
 // ─────────────────────────────────────────
 //  FEATURE FLAGS
@@ -75,6 +77,13 @@ assertFeatureConfigValid();
 //  instead of sending "undefined/…" links. See frontend-url.util.ts.
 // ─────────────────────────────────────────
 assertFrontendUrlConfigured();
+
+// ─────────────────────────────────────────
+//  SMS_PROVIDER
+//  Unset means no texts are sent; "smsportal" is the one provider. Any
+//  other value stops the app here. See shared/messaging/sms-provider.ts.
+// ─────────────────────────────────────────
+assertSmsProviderConfigValid();
 
 const app: Application = express();
 
@@ -313,6 +322,8 @@ app.use('/api/storage', storageRouter);
 // ─────────────────────────────────────────
 app.use('/api/payments/subaccount', paymentAccountRouter);
 app.use('/api/payments/webhook', paymentWebhookRouter);
+// SMSPortal's delivery reports — public, signed (sms-delivery.service.ts)
+app.use('/api/sms/delivery-reports', smsDeliveryRouter);
 app.use('/api/subscriptions', subscriptionRouter);
 app.use('/api/billing-history', paymentLedgerRouter);
 app.use('/api/event-passes', eventPassSignalRouter);

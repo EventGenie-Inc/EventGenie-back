@@ -1,4 +1,4 @@
-import { type EventEmailKind } from '@prisma/client';
+import { type DeliveryMethod, type EventEmailKind } from '@prisma/client';
 
 // Why an email wasn't queued: it is already waiting or going out, or the
 // same email went to this invite a few minutes ago (a repeated Send, or a
@@ -16,11 +16,14 @@ export interface EnqueueResult {
 export interface EmailSendGuest {
   guestId: string;
   name: string;
+  // The email, or for a text the phone number.
   contact: string;
+  channel: DeliveryMethod;
   reason: string;
 }
 
-// GET /api/events/:eventId/invites/sends/:sendId
+// GET /api/events/:eventId/invites/sends/:sendId. Counts cover emails and
+// texts together; `sms` breaks the texts that went down by delivery report.
 export interface EmailSendProgress {
   id: string;
   kind: EventEmailKind;
@@ -32,6 +35,12 @@ export interface EmailSendProgress {
   failed: number;
   // Not sent, nothing wrong: no longer needed when its turn came.
   skipped: number;
+  sms: {
+    sent: number;
+    delivered: number;
+    undelivered: number;
+    awaitingReport: number;
+  };
   // Nothing left waiting: queued === 0.
   done: boolean;
   // When the last email finished, once done.

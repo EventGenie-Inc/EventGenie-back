@@ -85,7 +85,8 @@ router.post('/import', (req: Request, res: Response, next: NextFunction) => {
       auth.user.id,
       auth.user.role,
       auth.user.tenantId,
-      { buffer: req.file.buffer, originalname: req.file.originalname, mimetype: req.file.mimetype }
+      { buffer: req.file.buffer, originalname: req.file.originalname, mimetype: req.file.mimetype },
+      (req.body as { phoneCountry?: unknown } | undefined)?.phoneCountry
     );
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }

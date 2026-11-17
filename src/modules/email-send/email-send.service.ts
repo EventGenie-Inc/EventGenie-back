@@ -31,7 +31,7 @@ export const DUPLICATE_SEND_WINDOW_MS = 10 * 60 * 1000;
 export const DUPLICATE_SEND_WINDOW_MINUTES = DUPLICATE_SEND_WINDOW_MS / 60_000;
 
 export const NOT_QUEUED_MESSAGES: Record<NotQueuedReason, string> = {
-  ALREADY_QUEUED: "Already on its way: this email is in a send that hasn't finished, so it wasn't added again.",
+  ALREADY_QUEUED: "Already on its way: this message is in a send that hasn't finished, so it wasn't added again.",
   RECENTLY_SENT:
     `Sent in the last ${DUPLICATE_SEND_WINDOW_MINUTES} minutes, so it wasn't sent again. ` +
     'Try again later if they still haven’t received it.',
@@ -86,7 +86,10 @@ export const enqueueLocked = async (tx: Prisma.TransactionClient, input: Enqueue
   const toQueue = input.items.filter((i) => !result.notQueued.has(i.inviteId));
   if (toQueue.length === 0) return result;
 
-  await claimEventEmailsLocked(tx, input.eventId, input.kind, toQueue.length, input.createdBy);
+  // The daily limit is an email limit: texts are counted by the SMS quota
+  // or bundle (assertSmsSendable), checked before queueing.
+  const emailCount = toQueue.filter((i) => (i.channel ?? 'EMAIL') === 'EMAIL').length;
+  await claimEventEmailsLocked(tx, input.eventId, input.kind, emailCount, input.createdBy);
   const send = await emailSendRepository.createSend(tx, { eventId: input.eventId, kind: input.kind, createdBy: input.createdBy });
   const written = await emailSendRepository.createItems(tx, { id: send.id, eventId: input.eventId, kind: input.kind }, toQueue);
   result.sendId = send.id;
@@ -117,17 +120,20 @@ export const emailSendService = {
     const send = await emailSendRepository.findSendForEvent(sendId, eventId);
     if (!send) throw new HttpError(404, 'Send not found');
 
-    const [counts, unsent, latest] = await Promise.all([
+    const [counts, unsent, latest, smsDelivery] = await Promise.all([
       emailSendRepository.countByStatus(sendId),
       emailSendRepository.findUnsent(sendId),
       emailSendRepository.latestFinishedAt(sendId),
+      emailSendRepository.countSmsByDelivery(sendId),
     ]);
     const count = (...statuses: string[]) => counts.filter((c) => statuses.includes(c.status)).reduce((n, c) => n + c._count._all, 0);
+    const delivery = (status: string) => smsDelivery.find((c) => c.deliveryStatus === status)?._count._all ?? 0;
     const queued = count('QUEUED', 'SENDING');
     const toGuest = (row: (typeof unsent)[number]) => ({
       guestId: row.invite.guestId,
       name: guestName(row.invite.guest),
-      contact: row.invite.guest.email ?? '',
+      contact: (row.channel === 'SMS' ? row.invite.guest.phoneNumber : row.invite.guest.email) ?? '',
+      channel: row.channel,
       reason: row.lastError ?? '',
     });
     const last = [latest._max.sentAt, latest._max.finishedAt].filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0];
@@ -141,6 +147,13 @@ export const emailSendService = {
       sent: count('SENT'),
       failed: count('FAILED'),
       skipped: count('SKIPPED'),
+      // Of `sent`, the texts, by their delivery reports.
+      sms: {
+        sent: delivery('SENT') + delivery('DELIVERED') + delivery('FAILED'),
+        delivered: delivery('DELIVERED'),
+        undelivered: delivery('FAILED'),
+        awaitingReport: delivery('SENT'),
+      },
       done: queued === 0,
       finishedAt: queued === 0 && last ? last.toISOString() : null,
       failures: unsent.filter((r) => r.status === 'FAILED').map(toGuest),

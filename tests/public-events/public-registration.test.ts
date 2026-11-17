@@ -363,9 +363,9 @@ describe('the form itself', () => {
     expect(noEmail.status).toBe(422);
     expect(noEmail.body.code).toBe('GUEST_EMAIL_REQUIRED');
 
-    const badPhone = await register(ev.shareToken, { phoneNumber: '0825550102' });
+    const badPhone = await register(ev.shareToken, { phoneNumber: '082555' });
     expect(badPhone.status).toBe(422);
-    expect(badPhone.body.code).toBe('CONTACT_PHONE_NOT_INTERNATIONAL');
+    expect(badPhone.body.code).toBe('CONTACT_PHONE_INVALID');
 
     expect((await register(ev.shareToken, { firstName: '  ' })).status).toBe(422);
     expect(await guestsOf(ev.eventId)).toHaveLength(0);

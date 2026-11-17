@@ -48,8 +48,7 @@
     "multer": "^2.2.0",
     "prisma": "^7.8.0",
     "qrcode": "^1.5.4",
-    "resend": "^6.16.0",
-    "twilio": "^6.1.0"
+    "resend": "^6.16.0"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "^7.10.0",

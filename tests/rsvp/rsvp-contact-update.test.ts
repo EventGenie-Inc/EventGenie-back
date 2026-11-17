@@ -79,9 +79,9 @@ describe('RSVP submit — contact update', () => {
     expect(bad.status).toBe(422);
     expect(bad.body.message).toBe("'call me maybe' is not a valid phone number");
 
-    const local = await submit({ token: invite.token, attending: false, phoneNumber: '0825551234' });
-    expect(local.status).toBe(422);
-    expect(local.body.message).toBe("'0825551234' is missing a country code, use +27825551234");
+    const tooShort = await submit({ token: invite.token, attending: false, phoneNumber: '082555' });
+    expect(tooShort.status).toBe(422);
+    expect(tooShort.body.message).toBe("'082555' is not a valid phone number");
 
     const badEmail = await submit({ token: invite.token, attending: false, email: 'not-an-email' });
     expect(badEmail.status).toBe(422);

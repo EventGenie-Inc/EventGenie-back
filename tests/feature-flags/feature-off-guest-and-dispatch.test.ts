@@ -1,9 +1,10 @@
+import { fakeSms } from '../helpers/fake-sms.js';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { sentEmails, clearSentEmails } from '../helpers/sent-emails.js';
 import { rsvpService } from '../../src/modules/rsvp/rsvp.service.js';
 import { eventService } from '../../src/modules/event/event.service.js';
-import { inviteDispatchService, SMS_UNAVAILABLE_REASON } from '../../src/modules/invite/invite-dispatch.service.js';
+import { inviteDispatchService, SMS_UNAVAILABLE_REASON, SMS_UNAVAILABLE_CODE } from '../../src/modules/invite/invite-dispatch.service.js';
 import { emailSendWorker } from '../../src/modules/email-send/email-send.worker.js';
 import { TICKETING_UNAVAILABLE_MESSAGE } from '../../src/modules/ticket/ticketing-availability.util.js';
 import { guestRepository } from '../../src/modules/guest/guest.repository.js';
@@ -28,20 +29,15 @@ import {
 //  - ticketing off: validate offers no tickets; a paid event can't be
 //    created (422, before any plan message).
 //  - sms off: an SMS-only guest is a failure the organiser sees, nothing
-//    reaches Twilio, and email guests in the same batch still go out.
+//    is texted, and email guests in the same batch still go out.
 //
 //  Each case also runs with the flag ON, so the difference is the flag.
 // ─────────────────────────────────────────
 
-const mockTwilioCreate = vi.fn();
-vi.mock('twilio', () => ({
-  default: () => ({ messages: { create: (...args: unknown[]) => mockTwilioCreate(...args) } }),
-}));
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
-  mockTwilioCreate.mockReset();
   while (cleanup.length) {
     const fn = cleanup.shift();
     if (fn) await fn();
@@ -137,7 +133,7 @@ describe('sms off — invite sending', () => {
     ).rejects.toMatchObject({ statusCode: 403, message: expect.stringMatching(/plan/) });
   }, 60000);
 
-  it('flag off: the SMS guest is a visible failure, Twilio is never called, the email guest is sent', async () => {
+  it('flag off: the SMS guest is a visible failure, no text is sent, the email guest is sent', async () => {
     const { event, organiser, guest, addPhoneGuest } = await setup();
     const phoneGuest = await addPhoneGuest();
     vi.stubEnv('FEATURES_DISABLED', 'sms');
@@ -147,9 +143,9 @@ describe('sms off — invite sending', () => {
 
     expect(result).toMatchObject({ totalSelected: 2, queued: 1, sent: 0, failed: 1 });
     expect(result.failures).toEqual([
-      { guestId: phoneGuest.id, name: 'Phone Only', contact: '+27825550123', reason: SMS_UNAVAILABLE_REASON },
+      { guestId: phoneGuest.id, name: 'Phone Only', contact: '+27825550123', reason: SMS_UNAVAILABLE_REASON, code: SMS_UNAVAILABLE_CODE },
     ]);
-    expect(mockTwilioCreate).not.toHaveBeenCalled();
+    expect(fakeSms.sent()).toHaveLength(0);
     expect(sentEmails()).toHaveLength(1);
     // Not delivered, so it can be sent again once the guest has an email.
     const smsInvite = await prisma.invite.findFirstOrThrow({ where: { guestId: phoneGuest.id } });

@@ -20,8 +20,9 @@ import {
 //  POST /api/rsvp/submit's contact refusals are all 422, so the client
 //  can't tell which field to mark from the status alone. Each now carries
 //  a code (STEERING "Machine-readable codes"), with the message unchanged:
-//  CONTACT_PHONE_INVALID, CONTACT_PHONE_NOT_INTERNATIONAL,
+//  CONTACT_PHONE_INVALID, CONTACT_PHONE_COUNTRY_INVALID,
 //  CONTACT_LAST_REMOVED. Nothing about the guest changes on a refusal.
+//  (CONTACT_PHONE_NOT_INTERNATIONAL is no longer produced: 2026-11.)
 // ─────────────────────────────────────────
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -73,12 +74,22 @@ describe('RSVP submit — contact error codes', () => {
       code: 'CONTACT_PHONE_INVALID',
     });
 
-    const local = await submit({ ...base, phoneNumber: '0825551234' });
-    expect(local.status).toBe(422);
-    expect(local.body).toEqual({
+    // Since 2026-11 a local number is read in the selected country (ZA by
+    // default) rather than refused; a short one is simply invalid.
+    const tooShort = await submit({ ...base, phoneNumber: '082555' });
+    expect(tooShort.status).toBe(422);
+    expect(tooShort.body).toEqual({
       status: 'error',
-      message: "'0825551234' is missing a country code, use +27825551234",
-      code: 'CONTACT_PHONE_NOT_INTERNATIONAL',
+      message: "'082555' is not a valid phone number",
+      code: 'CONTACT_PHONE_INVALID',
+    });
+
+    const badCountry = await submit({ ...base, phoneNumber: '07700 900123', phoneCountry: 'XX' });
+    expect(badCountry.status).toBe(422);
+    expect(badCountry.body).toEqual({
+      status: 'error',
+      message: 'Choose a country for this phone number from the list.',
+      code: 'CONTACT_PHONE_COUNTRY_INVALID',
     });
 
     const lastRemoved = await submit({ ...base, phoneNumber: null });

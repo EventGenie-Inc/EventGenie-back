@@ -189,6 +189,16 @@ enum SmsSendSource {
   BUNDLE
 }
 
+// Where a text message got to (SMS provider: SMSPortal). SENT: the
+// provider accepted it. DELIVERED / FAILED: its delivery report said so
+// (sms-delivery module). On EmailSendItem per message, and on Invite for
+// that guest's most recent text, which is what the organiser sees.
+enum SmsDeliveryStatus {
+  SENT
+  DELIVERED
+  FAILED
+}
+
 // Every state change a payment can go through. Failures are first-class
 // members, not an afterthought — see PaymentLedgerEntry's own comment on
 // why an absent failure record is indistinguishable from an attempt that
@@ -802,6 +812,20 @@ model Invite {
   // from deliveredAt, which stays "when the original invitation reached
   // them" and is what makes a guest reminder-eligible in the first place.
   lastRemindedAt     DateTime?
+  // The guest's most recent text message (invitation or reminder): SENT
+  // when SMSPortal accepted it, then DELIVERED or FAILED from its delivery
+  // report, with when and (FAILED) why in words. Null: never texted.
+  // Additive (20261117090000_sms_queue).
+  smsStatus          SmsDeliveryStatus?
+  smsStatusAt        DateTime?
+  smsStatusReason    String?
+  // The guest's short link, <FRONTEND_BASE_URL>/r/<shortCode>, used in text
+  // messages (the full /rsvp?token= link is 98 of an SMS's 160 characters).
+  // 10 random letters and digits (invite-short-code.service.ts), created the
+  // first time a text needs it, never changed or cleared, so never reused.
+  // It opens exactly what the token does (POST /api/rsvp/short-link).
+  // Additive (20261117100000_invite_short_code).
+  shortCode          String?        @unique
   isArchived         Boolean        @default(false)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
@@ -1344,8 +1368,8 @@ model TicketPurchase {
 // ─────────────────────────────────────────
 //  SMS SEND LOG
 //
-//  One row per SUCCESSFUL SMS send only — written by the invite dispatch
-//  orchestrator after a real Twilio success, never on failure (a failed
+//  One row per SUCCESSFUL SMS send only — written by the email-send worker
+//  (which sends texts too) when SMSPortal accepts one, never on failure (a failed
 //  send costs nothing and must not consume quota). Deliberately no
 //  @@unique on inviteId: a resend that succeeds writes a second row
 //  against the same invite, since it costs a second real SMS. This is
@@ -1370,6 +1394,13 @@ model SmsSendLog {
   // existing rows default to QUOTA, which is correct for their history.
   eventId  String?
   source   SmsSendSource @default(QUOTA)
+  // How many SMS parts the message cost (SMSPortal's `parts`): the quota
+  // and the bundle count parts, not rows. Rows before this column were one
+  // part each. Additive (20261117090000_sms_queue).
+  parts    Int           @default(1)
+  // The queued message it was for. Unique, so a message is never counted
+  // twice (one confirmed late by its delivery report included).
+  emailSendItemId String?  @unique
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   invite Invite @relation(fields: [inviteId], references: [id])
@@ -1600,12 +1631,33 @@ model EmailSendItem {
   previousRemindedAt DateTime?
   createdAt     DateTime            @default(now())
 
+  // ── Text messages (20261117090000_sms_queue) ──
+  // The queue carries texts too: EMAIL (the default, every row before) or
+  // SMS, by the invite's deliveryMethod when queued.
+  channel            DeliveryMethod     @default(EMAIL)
+  // SMS: which never-pooled pool it was counted against when queued
+  // (sms-tier-enforcement.util.ts), written to its SmsSendLog row.
+  smsSource          SmsSendSource?
+  // SMS: set just before the provider is called. SMSPortal has no
+  // idempotency key, so a text taken again with this set (a worker died
+  // mid-call) is never sent again: it ends FAILED as unconfirmed, and its
+  // delivery report confirms it if it went.
+  providerCallAt     DateTime?
+  // SMS: SMSPortal's eventId for the send; parts it cost.
+  providerMessageId  String?
+  smsParts           Int?
+  // SMS: SENT, then DELIVERED / FAILED from the delivery report.
+  deliveryStatus     SmsDeliveryStatus?
+  deliveryStatusAt   DateTime?
+  deliveryError      String?
+
   send   EmailSend @relation(fields: [sendId], references: [id], onDelete: Cascade)
   invite Invite    @relation(fields: [inviteId], references: [id], onDelete: Cascade)
 
   @@index([status, nextAttemptAt])
   @@index([sendId, status])
   @@index([inviteId, kind, sentAt])
+  @@index([providerMessageId])
 }
 model InvitationDesign {
   id                 String               @id @default(cuid())

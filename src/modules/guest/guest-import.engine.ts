@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { parse as parseCsvSync } from 'csv-parse/sync';
 import { type DeliveryMethod } from '@prisma/client';
+import { type CountryCode } from 'libphonenumber-js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {
   detectContactShape,
@@ -242,6 +243,8 @@ export interface ImportRowFailure {
   row: number;
   contact: string;
   reason: string;
+  // Set when the refusal has one: a phone number's CONTACT_PHONE_INVALID.
+  code?: string;
 }
 
 export interface ImportEngineResult {
@@ -256,7 +259,10 @@ export const validateImportRows = (
   existingContacts: ExistingContact[],
   // Set while the sms feature is off: a phone-only row is refused with
   // GUEST_EMAIL_REQUIRED_MESSAGE, and the rest of the file imports.
-  options: { requireEmail?: boolean } = {}
+  // phoneCountry: the country a number without a country code is read in
+  // (the upload's phoneCountry, default ZA), the same rule as every other
+  // phone field (normalizePhoneToE164).
+  options: { requireEmail?: boolean; phoneCountry?: CountryCode } = {}
 ): ImportEngineResult => {
   const failures: ImportRowFailure[] = [];
   const validRows: ValidatedGuestRow[] = [];
@@ -275,8 +281,8 @@ export const validateImportRows = (
 
   for (const row of rows) {
     const contactRaw = row.contactRaw.trim();
-    const fail = (reason: string): void => {
-      failures.push({ row: row.rowNumber, contact: contactRaw || '(blank)', reason });
+    const fail = (reason: string, code?: string): void => {
+      failures.push({ row: row.rowNumber, contact: contactRaw || '(blank)', reason, ...(code ? { code } : {}) });
     };
 
     if (!contactRaw) {
@@ -293,13 +299,13 @@ export const validateImportRows = (
         email = normalizeEmail(contactRaw);
         assertValidEmail(email);
       } else if (shape === 'phone') {
-        phoneNumber = normalizePhoneToE164(contactRaw);
+        phoneNumber = normalizePhoneToE164(contactRaw, options.phoneCountry);
       } else {
         fail(`'${contactRaw}' does not look like a valid email or phone number`);
         continue;
       }
     } catch (err) {
-      fail((err as Error).message);
+      fail((err as Error).message, (err as { code?: string }).code);
       continue;
     }
 

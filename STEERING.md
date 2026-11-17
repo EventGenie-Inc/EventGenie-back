@@ -729,15 +729,19 @@ guest's success or failure is recorded (delivered, reminder log and
 cooldown, announcement delivery rows). The types hold the line:
 `OutgoingEmail` (every builder, and all `sendEmailBatch` takes) has
 `inlineImages?: never`; only `OutgoingEmailWithImages` (`sendEmail`,
-`sendEmailAttempt`) can carry one. SMS still goes in the request, one at a
-time; registration and auth emails use `sendEmail`, in the request.
+`sendEmailAttempt`) can carry one. Invitation and reminder texts are queued
+beside the emails (see "SMS (SMSPortal)"); registration and auth emails use
+`sendEmail`, in the request.
 
 **Invitations and reminders go out in the background** (the `email-send`
-module). Send, Resend and Remind queue their emails, one `EmailSendItem`
-per email under an `EmailSend` (additive migration
-`20261110090000_email_send_queue`), and answer at once with the send's id;
+module). Send, Resend and Remind queue their emails **and texts**, one
+`EmailSendItem` per message under an `EmailSend` (additive migrations
+`20261110090000_email_send_queue`, and `20261117090000_sms_queue` for
+`channel`, `EMAIL` or `SMS`), and answer at once with the send's id;
 nothing is sent in the request. The queue is the database, so a send
-survives a restart.
+survives a restart. What follows describes emails; a text's sending,
+"never twice" and outcomes are under "SMS (SMSPortal)". The daily email
+limit counts the emails only; texts are counted by the SMS quota or bundle.
 - **The worker** (`email-send.worker.ts`, started by `server.ts` only, so
   tests start no timer) runs straight away at startup (whatever a restart
   left), every 5 seconds, and at once when something is queued; it never
@@ -782,22 +786,29 @@ survives a restart.
 - **Progress**: `GET /api/events/:eventId/invites/sends/:sendId`
   (organisers of the event, tenant-scoped like every invite route; 404
   otherwise) answers `{ id, kind: 'INVITATION' | 'REMINDER', createdAt,
-  total, queued, sent, failed, skipped, done, finishedAt, failures,
-  skippedGuests }`. `queued` counts waiting and in flight; `done` is
-  `queued === 0`; `failures` and `skippedGuests` are `{ guestId, name,
-  contact, reason }`, the reason in words.
+  total, queued, sent, failed, skipped, sms: { sent, delivered,
+  undelivered, awaitingReport }, done, finishedAt, failures,
+  skippedGuests }`. The counts cover emails and texts together; `sms`
+  breaks down the texts that went by their delivery reports. `queued`
+  counts waiting and in flight; `done` is `queued === 0`; `failures` and
+  `skippedGuests` are `{ guestId, name, contact, channel: 'EMAIL' | 'SMS',
+  reason }` (`contact` the email, or the phone for a text), the reason in
+  words.
 - **What the buttons answer.** `POST /invites/send`: `{ totalSelected,
   sendId, queued, sent, failed, failures, skipped, skippedGuests }`:
-  `sendId` the new send (null if nothing was queued), `queued` its emails,
-  `sent`/`failed`/`failures` the SMS sent in the request, `skippedGuests`
+  `sendId` the new send (null if nothing was queued), `queued` its emails
+  and texts, `sent` always 0 (kept for the shape), `failed`/`failures` the
+  texts refused before queueing (`{ guestId, name, contact, reason, code }`,
+  code `SMS_UNAVAILABLE` or an `SMS_NUMBER_*`), `skippedGuests`
   `{ guestId, name, contact, reason: 'ALREADY_QUEUED' | 'RECENTLY_SENT',
   message, sendId }`, or a guest who can't be sent to (below) with
   `sendId: null`. `POST /invites/remind`: as before plus `sendId` and
   `queued`; `queued + sent + failed + skipped === totalSelected` (each
   guest selected counted once). `POST
   /invites/:id/resend`: `{ guestId, name, contact, deliveryMethod, status:
-  'QUEUED' | 'ALREADY_QUEUED' | 'RECENTLY_SENT' | 'SENT' | 'FAILED',
-  sendId, reason? }` (SENT or FAILED only for an SMS, sent in the request).
+  'QUEUED' | 'ALREADY_QUEUED' | 'RECENTLY_SENT' | 'FAILED', sendId,
+  reason?, code? }` (FAILED only for a text refused before queueing, with
+  its code; until 2026-11 a text was SENT or FAILED in the request).
   The daily limit is claimed for the emails queued only; refused, nothing
   is queued (429 `EVENT_EMAIL_DAILY_LIMIT`, as before).
 - **A selection with guests who can't be sent to** (Send, a re-send of a
@@ -1003,6 +1014,175 @@ response stays the generic one.
 scripts/send-test-emails.ts` sends one of each email to that address and
 nowhere else.
 
+### SMS (SMSPortal)
+
+**One provider interface, SMSPortal behind it** (South African provider;
+REST API, docs.smsportal.com). `shared/messaging/sms-provider.ts` is the
+interface (`SmsProvider.send`: one text to one number) and picks the
+implementation from `SMS_PROVIDER`; `smsportal.provider.ts` is the one
+implementation. The email-send worker is its only caller: nothing else
+reaches a provider. **Twilio is gone** (2026-11): `sms.engine.ts` and the
+`twilio` package were removed, and its `TWILIO_*` variables are unused.
+
+**Environment variables** (names exact):
+
+| Variable | Is |
+|---|---|
+| `SMS_PROVIDER` | `smsportal`. Unset or blank: no provider, every text fails with "Text messages aren't set up on this server" and nothing is sent. Any other value stops the app at load (`assertSmsProviderConfigValid`, `app.ts`). |
+| `SMSPORTAL_CLIENT_ID`, `SMSPORTAL_API_SECRET` | The REST API key's Client ID and API Secret. Sent as Basic auth on every call (SMSPortal accepts it on every REST endpoint, so no token is fetched or cached). Never logged. |
+| `SMSPORTAL_TEST_MODE` | **Test mode unless exactly `false`** (any case): SMSPortal's `testMode`, which answers as if it sent but sends nothing and appears in no report. Real texts only with `SMSPORTAL_TEST_MODE=false`. |
+| `SMSPORTAL_WEBHOOK_SECRET` | The webhook Signature Secret Key from SMSPortal's Control Panel (base64, as shown there). Unset: every delivery report is refused. |
+| `SMS_SENDS_PER_SECOND` | Optional pace, default 5 (SMSPortal documents no request rate limit). |
+
+Tests never reach SMSPortal: `tests/setup.ts` installs a fake provider
+(`tests/helpers/fake-sms.ts`) before every test and forces test mode; the
+provider's own test stubs `fetch`.
+
+**Sending** (`email-send.worker.ts`, the same queue as emails, see
+"Invitations and reminders go out in the background" under Email). `POST
+https://rest.smsportal.com/v3/BulkMessages`, one message per call (each
+text carries its guest's own link): `{ messages: [{ destination:
+'27821234567', content, customerId: <queue item id> }], sendOptions: {
+testMode, allowContentTrimming: false } }`. Paced by `waitForSmsSlot`. Sent:
+SMSPortal's `eventId` (`providerMessageId`) and `parts` are kept on the
+item, an `SmsSendLog` row counts the parts against the pool the text was
+queued under, the invite's `smsStatus` becomes `SENT`, and an invitation
+marks the invite delivered (`deliveredAt`); a reminder writes its
+`InviteReminderLog` row with `deliveryMethod: 'SMS'`.
+
+**Never the same text twice.** SMSPortal has **no idempotency key**, so:
+- the queue's duplicate rules apply to texts as to emails (one QUEUED or
+  SENDING per invite and kind; not again within 10 minutes): a retried
+  request or a double click texts nobody twice;
+- `providerCallAt` is written and committed **before** the call. A text
+  taken again with it set (a worker died mid-call, a restart) is **never
+  called again**: it ends FAILED with "We couldn't confirm this text went…"
+  (`UNCONFIRMED_SMS`);
+- an answer that says it certainly didn't go is retried with the email
+  backoff (30 s, doubling, 5 calls): 429, 503, 403 (out of credits or
+  account off), SMSPortal unreachable before connecting. `providerCallAt`
+  is cleared for the retry;
+- an unclear answer (a timeout, a 500 or gateway error mid-call) may have
+  gone: FAILED as unconfirmed, **never retried**; its delivery report, if
+  one comes, makes it SENT (below);
+- anything else (a 400 such as `DestinationAddress.Invalid`, an opt-out,
+  401) is FAILED at once, the reason in words.
+
+**Refused before queueing** (`smsRefusalFor`, invite-dispatch.service.ts;
+checked again by the worker when the text's turn comes): `sms` off
+(`SMS_UNAVAILABLE`, as before), or a number that can't take a text
+(`smsDestinationFor`, `shared/messaging/sms-number.util.ts`):
+`SMS_NUMBER_INVALID`, `SMS_NUMBER_NOT_MOBILE` (a landline or VoIP number),
+`SMS_NUMBER_NOT_SOUTH_AFRICAN`. **Texts go to South African mobile
+numbers only**: bundles and the monthly allowance count South African
+parts, and an international text costs SMSPortal several credits. A guest
+abroad can be saved with their number (see "Phone numbers" under "Guest
+contact") but is invited by email. Each refusal is a per-guest failure
+with `reason` and `code`; the rest of the send goes.
+
+**The message** (`invite-message.util.ts`). South Africa doesn't allow a
+named sender, so a text arrives from a number the guest doesn't know: it
+**starts by saying who it is from and why**, then gives the guest's own
+**short link**, and nothing else.
+- Invitation: `<host> invites you to <event>: <link>`.
+- Reminder: `Reminder from <host>: reply to <event> by <5 Dec> <link>`,
+  without `by <date>` when there is no reply deadline.
+- When the host name is the event's name, or there is none, the host isn't
+  repeated: `You're invited to <event>: <link>`, `Reminder: reply to
+  <event>…`. Never "RSVP", as in email subjects.
+- **Always one SMS: at most 160 GSM-7 septets** (`SMS_SINGLE_PART_LIMIT`;
+  an extension character such as `€` or `[` counts two). The short link is
+  39 on production, so the names share about 100: they are **cut only when
+  they don't fit**, and then the shorter keeps its full length when it fits
+  in half, the other takes the rest, and a cut name ends in `...`. A
+  32-character host and an 81-character event name, the longest example
+  checked: the host whole, the event cut to 71 (invitation) or 54
+  (reminder with a deadline), `...` included. Until the short link, the 98-character
+  `/rsvp?token=` link left the two names about 25 between them.
+- **Every name goes through `toGsmText`** first (`sms-segments.util.ts`):
+  typographic apostrophes and quotes (`’ ‘ “ ” „ ′ ″ « »`), dashes and
+  hyphens of every width, `…`, bullets and odd spaces become the plain
+  ones; a letter outside GSM loses its accent (ô → o); anything else
+  (emoji, symbols, other scripts) is left out. A single such character
+  would switch the whole text to UCS-2 (70 characters a part) and double
+  its cost.
+
+**Short links** (`invite-short-code.service.ts`; additive migration
+`20261117100000_invite_short_code`). A text carries
+`<FRONTEND_BASE_URL>/r/<code>`, `https://www.e-velope.co.za/r/<code>` on
+production (`www` is the canonical host: the apex and `evelope` domains
+redirect to it, and `FRONTEND_BASE_URL` is it), never the `/rsvp?token=`
+link. Emails keep the full link and QR code.
+- **The code** (`Invite.shortCode`, unique, `Invite_shortCode_key`): 10
+  characters drawn uniformly from the 62 letters and digits by
+  `crypto.randomInt`, about 59.5 bits. Created by the email-send worker
+  the first time a text for that invite needs one (`ensure`), written only
+  where the invite has none (two workers racing end with the first code),
+  drawn again if another invite has it, and **never changed or cleared**;
+  invites are never hard-deleted, so a code never points at another guest.
+  Nothing is backfilled.
+- **`POST /api/rsvp/short-link`** `{ code }` → `{ token }`, public,
+  `Cache-Control: no-store` (`rsvp.service.ts`'s `resolveShortLink`). It
+  **opens exactly what the token opens**: `findTokenByShortCode` adds
+  `INVITE_TOKEN_USABLE`, so an unknown code, a removed, pending or declined
+  guest's, or an archived invite's is the standard 404 ("This invitation
+  link isn't valid…"), identical in status and words to an unknown token;
+  an archived event 410 (`EVENT_NO_LONGER_AVAILABLE_MESSAGE`). A string
+  that isn't code-shaped is the same 404 (the answer never describes a
+  code); only a missing `code` is 400.
+- **Against guessing** (`rate-limit.middleware.ts`): 30 failed lookups per
+  IP per 15 minutes (`shortLinkIpLimiter`, successes not counted, so a
+  guest opening their own link is never slowed), and 30 lookups per code
+  per 5 minutes (`shortLinkLimiter`, keyed by the code's SHA-256). Under
+  3,000 guesses a day per IP against 62^10 codes. `code` is a sensitive key
+  to the Sentry scrubber, so neither it nor the token answered reaches an
+  error report.
+- **The frontend needs a `/r/:code` route**: Firebase Hosting rewrites
+  every path to the app, so `/r/<code>` reaches Angular. The page posts the
+  code, then replaces the URL with `/rsvp?token=<token>` (so the code
+  doesn't stay in history as the page's address) and opens the invitation
+  as any link; a 404 or 410 shows the invitation page's own answers.
+
+**Costs** (`sms-tier-enforcement.util.ts`, unchanged rules: a passed
+event draws only from its bundle, any other only from the tenant's monthly
+quota, all or nothing, never pooled). Counted in **SMS parts**:
+`SmsSendLog.parts` is the `parts` SMSPortal reported (rows before
+2026-11 are one each), and a text still QUEUED or SENDING is **reserved**
+at one part (every text is built to fit one), so two sends a moment apart
+can't spend the same last credits. The queued item carries the pool
+(`smsSource`) its batch was resolved to, and its log row is written with
+it. `SmsSendLog.emailSendItemId` is unique: a text is counted once.
+
+**Delivery reports** (`sms-delivery` module): `POST
+/api/sms/delivery-reports`, public, set up in SMSPortal's Control Panel
+(Settings > Webhooks, delivery reports, POST, JSON, the default template;
+it can't be set by API) with **signatures on** ("Activate Signatures").
+- **The signature is the authentication**, checked first on the raw
+  bytes: `SmsWebhookEngine-Signature: v1,hmac_sha256=<UPPERCASE HEX>`,
+  HMAC-SHA256 keyed with the base64-decoded `SMSPORTAL_WEBHOOK_SECRET`,
+  over `v1:{SmsWebhookEngine-Timestamp}|{METHOD}|{full URL with
+  query}|{raw body}`; the timestamp within 10 minutes. Anything else: 401,
+  nothing read or written, and nothing about it logged but the refusal.
+  The URL is the one the request reached (`req.protocol`, the Host header,
+  the path; `trust proxy` makes the protocol Render's https), so the
+  webhook must be registered at exactly the public URL.
+- The body is one report or a list. The text is found by `customerId`
+  (our item id), else by `eventId`. Status: `DELIVRD` is DELIVERED;
+  `UNDELIV`, `EXPIRED`, `BLIST`, `CANCELLED`, `NOROUTE` are FAILED with the
+  reason in words; `SUBMITD`, `STAGED` and anything unknown are ignored.
+  DELIVERED is final: a later FAILED never undoes it.
+- Recorded on the item (`deliveryStatus`, `deliveryStatusAt`,
+  `deliveryError`) and, when it is the invite's most recent text, on the
+  invite: **`Invite.smsStatus`** (`SENT` | `DELIVERED` | `FAILED`, null if
+  never texted), `smsStatusAt`, `smsStatusReason`, which `GET
+  /api/events/:eventId/invites` returns per guest. `deliveredAt` is left
+  alone by a FAILED report.
+- A text that ended FAILED as unconfirmed and then gets a report went
+  after all: SENT, its parts counted (once), an invitation marks the invite
+  delivered, a reminder logs a sent row.
+- Answers 200 for every signed report, ours or not (SMSPortal retries
+  anything else); 500 only when recording failed, so it tries again.
+
 ### Soft delete
 
 Nothing is hard-deleted. Records carry `isArchived: Boolean @default(false)`.
@@ -1171,20 +1351,29 @@ for any failure: anyone can call it with any email, so every outcome
 (unknown email, suspended account, a reset link that couldn't be built, a
 failed send) returns the same generic 200.
 
-One trio: `CONTACT_PHONE_INVALID`, `CONTACT_PHONE_NOT_INTERNATIONAL` and
+One trio: `CONTACT_PHONE_INVALID`, `CONTACT_PHONE_COUNTRY_INVALID` and
 `CONTACT_LAST_REMOVED` (`POST /api/rsvp/submit`, all 422) tell the RSVP
 form which contact field to mark: a number that isn't a real one ("Use the
-format +27 82 123 4567" when written with a country code), a local number
-missing its country code ("'0825551234' is missing a country code, use
-+27825551234"), and a guest removing their only contact. With `sms` off,
+format +27 82 123 4567" when written with a country code, "'082555' is not
+a valid phone number" without one, "… for GB" with another country
+selected), a `phoneCountry` that isn't a country code we know ("Choose a
+country for this phone number from the list."), and a guest removing their
+only contact. `CONTACT_PHONE_NOT_INTERNATIONAL` ("missing a country code")
+is **no longer produced** (2026-11): a number without a country code is read
+in the selected country (see "Guest contact"); the constant stays for
+clients that still check it. With `sms` off,
 a guest removing their email (or swapping it for a phone) is 422
 `GUEST_EMAIL_REQUIRED`. Changing to an email the guest can't have (another
 guest on the event has it) is 422 `CONTACT_EMAIL_UNAVAILABLE`, "That
 email address can't be used for this invitation. Please use another
 one.", one message and code for every cause (see "Guest contact"). A
-phone is never refused for being another guest's. The two phone
-codes are set by `normalizePhoneToE164` (`guest-validation.util.ts`), so
-organiser guest create and import carry them too, still as 400.
+phone is never refused for being another guest's. The phone codes are
+set by `normalizePhoneToE164` and `resolvePhoneCountry`
+(`guest-validation.util.ts`), so organiser guest create and edit carry them
+too, still as 400, and an import lists each refused row with its `code`.
+Texts have their own codes (`SMS_UNAVAILABLE`, `SMS_NUMBER_INVALID`,
+`SMS_NUMBER_NOT_MOBILE`, `SMS_NUMBER_NOT_SOUTH_AFRICAN`), per guest in a
+send's `failures` (see "SMS (SMSPortal)").
 
 Public self-registration (`POST /api/public-events/:shareToken/register`)
 tells the registration page which state to show:
@@ -2317,7 +2506,8 @@ their own invitation.
     same 404 and words, on every guest route: the invitation and its online
     link, submit, the program, guest-view and the photo album's uploads,
     ticket quote and payment, storage guest-release, the invitation's QR
-    code (`findTokenForQr`). (A removed guest's
+    code (`findTokenForQr`), and a text's short link
+    (`findTokenByShortCode`, POST `/api/rsvp/short-link`). (A removed guest's
     token is shut the same way, see "Soft delete".) Announcements leave them
     out (`findAudienceGuests`), as do invitation sends, reminders and
     check-in (the door list, by guest and by QR). **The cancellation email
@@ -2587,8 +2777,33 @@ normalised: crediting the wrong tenant is worse than an unclaimed webhook.
 A Postgres regex in a `$queryRaw` template literal needs its backslashes
 doubled (`'^\\s+|\\s+$'`); a single `\s` reaches Postgres as a plain `s`.
 
-Phone numbers are E.164 (`+27...`). Reject with a specific message
-naming the fix, not a generic "invalid".
+**Phone numbers** are stored in international form, E.164 (`+27...`),
+every path through `normalizePhoneToE164` (`guest-validation.util.ts`):
+organiser create and edit, RSVP, self-registration and spreadsheet import.
+- Written **with a country code** (`+44 7911 123456`, or `0044…`): that
+  country, whatever is selected.
+- Written **without one**: read in the **selected country**, the client's
+  optional `phoneCountry` (ISO 3166 two-letter code, any case, e.g. `GB`;
+  the frontend's country selector beside each phone field), **South Africa
+  when none is sent**: `0821234567` becomes `+27821234567`. Every usual
+  South African form is understood (`082 123 4567`, `27821234567`,
+  `0027…`, `+27 (0)82…`). The field is `phoneCountry` in the body of `POST
+  /api/events/:eventId/guests`, `PUT /api/guests/:id` (read only with
+  `phoneNumber`), `POST /api/rsvp/submit` and `POST
+  /api/public-events/:shareToken/register`, and a `phoneCountry` form field
+  beside the file on `POST /api/events/:eventId/guests/import`, applying
+  to every row without a country code.
+- **Refused with a code**, never a generic "invalid": `CONTACT_PHONE_INVALID`
+  (400 on organiser paths, 422 at RSVP and registration, and per row on
+  import with the row's `code`), `CONTACT_PHONE_COUNTRY_INVALID` for an
+  unknown `phoneCountry`. The full metadata (`libphonenumber-js/max`) is
+  used, and a South African number must have 9 digits after `+27`: the
+  library's ZA data also calls `+2782555` "valid".
+- Until 2026-11 a number without a country code was refused
+  ("missing a country code", `CONTACT_PHONE_NOT_INTERNATIONAL`).
+
+Whether a saved number can be **texted** is a separate, narrower check
+(South African mobiles only; see "SMS (SMSPortal)").
 
 **A guest may update their own contact at RSVP** (`POST /api/rsvp/submit`,
 `email`/`phoneNumber`): a value sets it (normalised by the same functions
@@ -2851,7 +3066,8 @@ not `PUBLISHED`, is `PUBLIC`, or its RSVP deadline has passed.
 The cooldown is claimed atomically when the reminder is queued
 (`Invite.lastRemindedAt`, for the whole batch in one conditional write,
 `claimReminders`) and released for each guest whose reminder failed or was
-skipped (by the email-send worker for an email, in the request for an SMS),
+skipped (by the email-send worker, for an email or a text; a text refused
+before queueing, sms off or a number that can't take one, is never claimed),
 so overlapping requests cannot double-send and a failed send never starts
 it. Every attempt that reached a send, failures included, is written to
 `InviteReminderLog`.
@@ -3586,8 +3802,9 @@ Signals and explicit `(input)` handlers, as above; not the Forms API.
 
 - **Rules** (`rules.*`): required, email (the backend's own pattern),
   phone (the backend's own check: same `libphonenumber-js` version, pinned
-  in both repos; a local `082…` number gets the backend's "missing a
-  country code, use +27…" message), whole number / number range,
+  in both repos; since 2026-11 the backend reads a number without a
+  country code in the selected country, ZA by default, and the frontend
+  rule doesn't follow yet: see Known gaps), whole number / number range,
   maximum and minimum length, pattern, matches, date and time order
   (`after`, `notAfter`, `notBefore`), and custom. A form is a list of
   field checks (`field()` for a value it owns, `check()` for one held
@@ -3737,6 +3954,13 @@ below the 3:1 a non-text accent needs. No other page uses these colours.
 
 ## 6. Testing
 
+**SMSPortal is never reached by a test.** `tests/setup.ts` installs the
+fake SMS provider (`tests/helpers/fake-sms.ts`, reset before each test,
+`setSmsProviderForTests`): it records every text, accepts each as one part,
+and answers differently when a test calls `fakeSms.next(...)`. Test mode is
+forced on whatever `.env` says. The SMSPortal provider's own test stubs
+`fetch`.
+
 **Cloudinary is never reached by a test.** `tests/setup.ts` puts every
 request to `api.cloudinary.com` through an in-memory fake
 (`tests/helpers/fake-cloudinary.ts`, reset before each test): it holds what
@@ -3844,16 +4068,36 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   together exceed 6 a second; the 429 retry absorbs it. A 300-guest send
   takes about 50 seconds to finish in the background (the request itself
   answers at once).
-- **SMS invitations and reminders are still sent in the request**, and a
-  retried request can text an invitation twice: the duplicate rules are the
-  email queue's. Reminders are covered by their cooldown. SMS is switched
-  off at launch.
+- **SMS is switched off at launch**, and real texts need
+  `SMSPORTAL_TEST_MODE=false` on top. Not yet verified against SMSPortal
+  itself (only its documentation): the destination format (sent as
+  `27821234567`), the delivery report's body (one object or a list, camel
+  or Pascal keys are all accepted), and the signature's URL behind Render's
+  proxy. Check with one real text and one report before switching it on.
+- **A text whose provider call got no clear answer is never re-sent**
+  (SMSPortal has no idempotency key): it is FAILED as unconfirmed until its
+  delivery report, if one comes, says otherwise. The organiser can resend
+  it by hand.
+- **SMS reservation is per event and tenant, checked outside a lock.** Two
+  sends for different events of one tenant at the same moment can both
+  pass the monthly quota check (each sees the other's texts only once
+  queued), as two in-request sends could before.
+- **Scheduled reminders are email only**, whatever `sms` says (a text
+  costs quota nobody was there to approve); an SMS-only guest is counted in
+  `skippedOther`.
+- **The frontend doesn't follow the 2026-11 SMS and phone changes yet**:
+  **no `/r/:code` route, so a text's short link opens nothing until it is
+  built** (see "Short links"); no country selector beside phone fields
+  (`phoneCountry`), its phone rule
+  still refuses a local number with "missing a country code"; nothing
+  shows a guest's `smsStatus`/`smsStatusReason` or a send's `sms` counts;
+  `failures[].code` and the resend's FAILED `code` aren't read.
 - **Announcements are email only and sent in the request.** A guest
   without an email can't be reached (they are listed to the organiser).
   Every guest send still finishes before the response returns: batched,
   300 guests are three Resend calls rather than 300, but there is no queue
-  behind it, and SMS is still one call per guest. A crash mid-send leaves
-  fewer delivery rows than the announcement's recipient count.
+  behind it. A crash mid-send leaves fewer delivery rows than the
+  announcement's recipient count.
 - **Refunds are not built.** Cancelling a paid event will need a refund
   pipeline once payments exist.
 - **The frontend doesn't follow the 2026-10 deadline and registration
@@ -4395,8 +4639,6 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   `inviteToken` in place of a `guestId`, so a scanner is a second input, not a
   second feature — but nothing renders a code yet, and a plus-one's invite
   token is never given to anyone.
-- **Twilio SMS is blocked** pending compliance approval. Everything
-  except real delivery is testable.
 - **Storage, still open after Round B**: covers uploaded before their
   event exists stay in the tenant's cover folder rather than a reserved
   event id (decided); the frontend still posts its own fields rather than

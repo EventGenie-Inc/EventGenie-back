@@ -195,6 +195,26 @@ export const inviteRepository = {
       select: { token: true, event: { select: { isArchived: true } } },
     }),
 
+  // POST /api/rsvp/short-link (rsvp.service.ts's resolveShortLink):
+  // findByToken's own `where` on the short code, so a code opens exactly
+  // what its token does (a removed, pending or declined guest's, or an
+  // archived invite's, is null, like an unknown code).
+  findTokenByShortCode: (shortCode: string) =>
+    prisma.invite.findUnique({
+      where: { shortCode, ...INVITE_TOKEN_USABLE },
+      select: { token: true, event: { select: { isArchived: true } } },
+    }),
+
+  // invite-short-code.service.ts: a code is written only where the invite
+  // has none, so it is never changed once given. Whether it was written.
+  setShortCodeIfMissing: async (inviteId: string, shortCode: string): Promise<boolean> => {
+    const { count } = await prisma.invite.updateMany({ where: { id: inviteId, shortCode: null }, data: { shortCode } });
+    return count === 1;
+  },
+
+  findShortCode: async (inviteId: string): Promise<string | null> =>
+    (await prisma.invite.findUnique({ where: { id: inviteId }, select: { shortCode: true } }))?.shortCode ?? null,
+
   // Feeds event-public.service.ts's duplicate-registration path: a
   // returning public registrant is matched back to their existing Guest
   // by contact, then handed the token of THIS invite so they land back

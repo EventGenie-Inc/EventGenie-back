@@ -1,7 +1,10 @@
-import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js';
+// The full metadata: the default "min" build checks length only loosely,
+// and accepted "082555" as a South African number (+2782555).
+import { isSupportedCountry, parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/max';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { normalizeEmail, isValidEmail } from '../../shared/utils/email.util.js';
 import { isUniqueViolationOfIndex } from '../../shared/utils/prisma-error.util.js';
+import { isShortSouthAfricanNumber, normaliseSouthAfricanNumber } from '../../shared/messaging/sms-number.util.js';
 
 const DEFAULT_COUNTRY: CountryCode = 'ZA';
 
@@ -35,7 +38,11 @@ export const detectContactShape = (raw: string): ContactShape => {
 // is RSVP submit's own (rsvp.service.ts).
 export const CONTACT_ERROR_CODES = {
   PHONE_INVALID: 'CONTACT_PHONE_INVALID',
+  // No longer produced (2026-11): a number without a country code is read
+  // in the selected country. Kept for clients that still check it.
   PHONE_NOT_INTERNATIONAL: 'CONTACT_PHONE_NOT_INTERNATIONAL',
+  // The client's phoneCountry isn't a country code we know.
+  PHONE_COUNTRY_INVALID: 'CONTACT_PHONE_COUNTRY_INVALID',
   LAST_REMOVED: 'CONTACT_LAST_REMOVED',
   // RSVP submit with sms off: a guest who has an email removing it (or
   // swapping it for a phone alone). rsvp.service.ts's own, like LAST_REMOVED.
@@ -52,30 +59,59 @@ export const CONTACT_EMAIL_UNAVAILABLE_MESSAGE = "That email address can't be us
 // code that still isn't a real number.
 export const PHONE_FORMAT_MESSAGE = 'Use the format +27 82 123 4567';
 
-// Throws a specific, actionable HttpError(400) — distinguishing "you forgot
-// the country code" (the common case for South African numbers typed in
-// local 0xx format) from a genuinely invalid number, rather than a single
-// generic "invalid phone" message. RSVP submit re-raises these as 422,
-// code included.
-export const normalizePhoneToE164 = (raw: string, defaultCountry: CountryCode = DEFAULT_COUNTRY): string => {
-  const trimmed = raw.trim();
+// The country a phone number without a country code belongs to: the
+// client's `phoneCountry` (the country selected beside the phone field, an
+// ISO 3166 two-letter code such as "GB", any case), South Africa when it
+// sends none. An unknown code is a 400 with CONTACT_PHONE_COUNTRY_INVALID
+// (RSVP and registration re-raise it as 422, like the other phone codes).
+export const PHONE_COUNTRY_INVALID_MESSAGE = 'Choose a country for this phone number from the list.';
 
-  if (trimmed.startsWith('+')) {
-    const parsed = parsePhoneNumberFromString(trimmed);
-    if (parsed?.isValid()) return parsed.number;
+export const resolvePhoneCountry = (value: unknown): CountryCode => {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) return DEFAULT_COUNTRY;
+  const code = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (code && isSupportedCountry(code)) return code;
+  throw new HttpError(400, PHONE_COUNTRY_INVALID_MESSAGE, CONTACT_ERROR_CODES.PHONE_COUNTRY_INVALID);
+};
+
+// Every phone number is saved in international form (E.164, +27…):
+// - written with a country code ("+44 7700 900123", or "0044…"): that
+//   country, whatever is selected;
+// - without one: the selected country (`country`, from resolvePhoneCountry),
+//   South Africa by default, so 0821234567 becomes +27821234567. For South
+//   Africa every usual way of writing it is understood (27821234567,
+//   +27 (0)82…; normaliseSouthAfricanNumber, sms-number.util.ts).
+// Anything that isn't a valid number is a specific, actionable
+// HttpError(400) with CONTACT_PHONE_INVALID. RSVP submit re-raises these
+// as 422, code included. Guest create and edit, RSVP, registration and
+// spreadsheet import all come through here.
+//
+// Until 2026-11 a number without a country code was refused with
+// CONTACT_PHONE_NOT_INTERNATIONAL ("missing a country code"); it is now
+// read in the selected country, and that code is no longer produced (the
+// constant stays, for clients that still check it).
+export const normalizePhoneToE164 = (raw: string, country: CountryCode = DEFAULT_COUNTRY): string => {
+  const trimmed = raw.trim();
+  const international = trimmed.replace(/^00/, '+');
+
+  if (country === 'ZA' || international.startsWith('+27')) {
+    const southAfrican = normaliseSouthAfricanNumber(trimmed);
+    if (southAfrican) return southAfrican;
+  }
+
+  if (international.startsWith('+')) {
+    const parsed = parsePhoneNumberFromString(international);
+    if (parsed?.isValid() && !isShortSouthAfricanNumber(parsed)) return parsed.number;
     throw new HttpError(400, PHONE_FORMAT_MESSAGE, CONTACT_ERROR_CODES.PHONE_INVALID);
   }
 
-  const withDefaultCountry = parsePhoneNumberFromString(trimmed, defaultCountry);
-  if (withDefaultCountry?.isValid()) {
-    throw new HttpError(
-      400,
-      `'${raw}' is missing a country code, use ${withDefaultCountry.number}`,
-      CONTACT_ERROR_CODES.PHONE_NOT_INTERNATIONAL
-    );
-  }
+  const inCountry = parsePhoneNumberFromString(trimmed, country);
+  if (inCountry?.isValid() && !isShortSouthAfricanNumber(inCountry)) return inCountry.number;
 
-  throw new HttpError(400, `'${raw}' is not a valid phone number`, CONTACT_ERROR_CODES.PHONE_INVALID);
+  throw new HttpError(
+    400,
+    country === DEFAULT_COUNTRY ? `'${raw}' is not a valid phone number` : `'${raw}' is not a valid phone number for ${country}`,
+    CONTACT_ERROR_CODES.PHONE_INVALID
+  );
 };
 
 // A custom RSVP question of type PHONE: a number written in international

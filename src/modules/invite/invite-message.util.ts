@@ -1,6 +1,6 @@
 import { type EventDayLocationType, type InvitationDesignKind } from '@prisma/client';
 import { ONLINE_VENUE_LABEL } from '../event-day/event-day-venue.util.js';
-import { normalizeSmsPunctuation } from '../../shared/messaging/sms-segments.util.js';
+import { SMS_SINGLE_PART_LIMIT, gsmLength, toGsmText, truncateGsm } from '../../shared/messaging/sms-segments.util.js';
 import { renderEmail, type EmailBlock } from '../../shared/messaging/email-layout.js';
 import { formatFromHeader, sanitizeDisplayName, sanitizeHeaderText } from '../../shared/messaging/email-address.util.js';
 import { inviteSenderAddress, type InlineImage, type OutgoingEmail, type OutgoingEmailWithImages } from '../../shared/messaging/email.engine.js';
@@ -398,29 +398,72 @@ export const buildCancellationEmail = (input: CancellationEmailInput): BuiltEmai
   );
 };
 
-export const buildInviteSmsBody = (eventName: string, rsvpLink: string): string =>
-  `You're invited to ${eventName}! RSVP: ${rsvpLink}`;
+// ─────────────────────────────────────────
+//  TEXT MESSAGES (invitation and reminder)
+//
+//  South Africa doesn't allow a named sender, so the text arrives from a
+//  number the guest doesn't know. Every text therefore starts by saying who
+//  it is from and why (the host's name and the event), then gives the
+//  guest's own link, and nothing else:
+//    invitation  "<host> invites you to <event>: <link>"
+//    reminder    "Reminder from <host>: reply to <event> by <20 Sep> <link>"
+//                (without "by <date>" when there is no reply deadline)
+//  When the host name is the event's name (or there is none), the host
+//  isn't repeated: "You're invited to <event>: <link>",
+//  "Reminder: reply to <event> by <date> <link>".
+//
+//  ALWAYS ONE SMS: at most 160 GSM-7 septets (SMS_SINGLE_PART_LIMIT). The
+//  link is about 100 of them (the frontend address and a 64-character
+//  token), so the names share what is left: if both don't fit, the shorter
+//  keeps its full length when it fits in half, the other takes the rest,
+//  and a name that is cut ends in "...". Names go through toGsmText first:
+//  a typographic apostrophe, quote or dash becomes the plain one, an emoji
+//  is left out, so nothing switches the text to UCS-2 (70 characters, and
+//  double the cost). "RSVP" is never used, as in email subjects.
+// ─────────────────────────────────────────
 
-// Segments cost money, and the RSVP link alone (base URL + a 64-character
-// token) is ~105 characters of a 160-character segment. So the wording is
-// as short as it can be while still saying "reminder", naming the event
-// and giving the deadline; the fuller "we haven't heard from you" lives in
-// the email. Plain ASCII only — a single non-GSM character (curly
-// apostrophes from phone keyboards are the usual culprit) would drop the
-// whole message to UCS-2's 70-character segments, so punctuation is
-// normalised, and the event name is capped so a very long one cannot push
-// the message past two segments.
-const MAX_SMS_EVENT_NAME_LENGTH = 40;
+const sameName = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-export const buildReminderSmsBody = (eventName: string, rsvpLink: string, rsvpDeadline: Date | null): string => {
-  const name = normalizeSmsPunctuation(eventName).trim();
-  const shortName = name.length > MAX_SMS_EVENT_NAME_LENGTH
-    ? `${name.slice(0, MAX_SMS_EVENT_NAME_LENGTH - 3).trimEnd()}...`
-    : name;
-  // "please" is dropped from the deadline variant: it costs 7 characters,
-  // which decides which side of the 160 limit typical names (~20-25
-  // characters) land on — measured, not guessed, against the invitation SMS.
-  return rsvpDeadline
-    ? `Reminder: RSVP to ${shortName} by ${formatGuestDateShort(rsvpDeadline)}. ${rsvpLink}`
-    : `Reminder: please RSVP to ${shortName}. ${rsvpLink}`;
+// The host and event names cut to share `budget` septets between them.
+const fitNames = (host: string, event: string, budget: number): { host: string; event: string } => {
+  const room = Math.max(0, budget);
+  const hostLength = gsmLength(host);
+  const eventLength = gsmLength(event);
+  if (hostLength + eventLength <= room) return { host, event };
+  const half = Math.floor(room / 2);
+  if (hostLength <= half) return { host, event: truncateGsm(event, room - hostLength) };
+  if (eventLength <= half) return { host: truncateGsm(host, room - eventLength), event };
+  return { host: truncateGsm(host, half), event: truncateGsm(event, room - half) };
+};
+
+// Builds `template(host, event)` with the names cut to fit one SMS.
+const fitSms = (
+  hostName: string | null,
+  eventName: string,
+  template: (host: string | null, event: string) => string
+): string => {
+  const event = toGsmText(eventName) || 'an event';
+  const rawHost = hostName ? toGsmText(hostName) : '';
+  const host = rawHost && !sameName(rawHost, event) ? rawHost : null;
+  // Everything but the names, measured with both left empty.
+  const fixed = gsmLength(template(host === null ? null : '', ''));
+  const names = fitNames(host ?? '', event, SMS_SINGLE_PART_LIMIT - fixed);
+  return template(host === null ? null : names.host, names.event);
+};
+
+export const buildInviteSmsBody = (hostName: string | null, eventName: string, rsvpLink: string): string =>
+  fitSms(hostName, eventName, (host, event) =>
+    host === null ? `You're invited to ${event}: ${rsvpLink}` : `${host} invites you to ${event}: ${rsvpLink}`
+  );
+
+export const buildReminderSmsBody = (
+  hostName: string | null,
+  eventName: string,
+  rsvpLink: string,
+  rsvpDeadline: Date | null
+): string => {
+  const by = rsvpDeadline ? ` by ${formatGuestDateShort(rsvpDeadline)}` : '';
+  return fitSms(hostName, eventName, (host, event) =>
+    host === null ? `Reminder: reply to ${event}${by} ${rsvpLink}` : `Reminder from ${host}: reply to ${event}${by} ${rsvpLink}`
+  );
 };

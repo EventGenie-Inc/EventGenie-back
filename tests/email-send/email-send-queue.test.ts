@@ -239,8 +239,8 @@ describe('retries and failures', () => {
     const report = (await progress(res.body.data.sendId)).body.data;
     expect(report).toMatchObject({ total: 3, queued: 0, sent: 1, failed: 2, done: true });
     expect(report.failures).toEqual(expect.arrayContaining([
-      { guestId: always!.guestId, name: expect.any(String), contact: always!.email, reason: 'Too many requests' },
-      { guestId: invalid!.guestId, name: expect.any(String), contact: invalid!.email, reason: 'Invalid `to` field' },
+      { guestId: always!.guestId, name: expect.any(String), contact: always!.email, channel: 'EMAIL', reason: 'Too many requests' },
+      { guestId: invalid!.guestId, name: expect.any(String), contact: invalid!.email, channel: 'EMAIL', reason: 'Invalid `to` field' },
     ]));
   }, 60_000);
 

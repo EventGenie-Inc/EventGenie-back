@@ -22,7 +22,8 @@ import { type Prisma } from '@prisma/client';
 //  the same words): invite.repository.ts's findByToken (RSVP validate,
 //  ticket quote and payment, program, Memory Hub guest routes, guest
 //  feedback, storage guest-release), its findTokenForQr (the invitation
-//  page's QR code, POST /api/rsvp/qr), rsvp.service.ts's submit,
+//  page's QR code, POST /api/rsvp/qr), its findTokenByShortCode (a text's
+//  short link, POST /api/rsvp/short-link), rsvp.service.ts's submit,
 //  guest-document.repository.ts's upload, and check-in's QR lookup.
 //
 //  Every query that picks guests to EMAIL adds GUEST_NOT_AWAITING_APPROVAL

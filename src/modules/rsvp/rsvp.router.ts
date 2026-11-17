@@ -9,6 +9,8 @@ import {
   rsvpQrLimiter,
   rsvpQrIpLimiter,
   rsvpSubmitInviteLimiter,
+  shortLinkIpLimiter,
+  shortLinkLimiter,
   documentUploadInviteLimiter,
   documentUploadIpLimiter,
 } from '../../shared/middleware/rate-limit.middleware.js';
@@ -60,6 +62,20 @@ router.post('/program', rsvpProgramIpLimiter, rsvpProgramLimiter, async (req: Re
 router.post('/qr', rsvpQrIpLimiter, rsvpQrLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await rsvpService.getInviteQr(req.body?.token);
+    res.set('Cache-Control', 'no-store');
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/rsvp/short-link
+// { code } → { token }: a text message's short link (<site>/r/<code>),
+// for the frontend's /r/:code page to open /rsvp?token=… (rsvp.service.ts's
+// resolveShortLink). POST, and never cached: the answer is the guest's
+// credential. The guessing backstop per IP in front, then per code
+// (rate-limit.middleware.ts).
+router.post('/short-link', shortLinkIpLimiter, shortLinkLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await rsvpService.resolveShortLink(req.body?.code);
     res.set('Cache-Control', 'no-store');
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }

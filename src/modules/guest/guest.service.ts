@@ -11,6 +11,7 @@ import {
   normalizeEmail,
   assertValidEmail,
   normalizePhoneToE164,
+  resolvePhoneCountry,
   assertExactlyOneContact,
   assertGuestHasEmail,
   assertValidPlusOnesAllowed,
@@ -113,7 +114,7 @@ export const guestService = {
     // Blank (or whitespace) is "not supplied", never a stored "".
     const email = data.email?.trim() ? normalizeEmail(data.email) : null;
     if (email) assertValidEmail(email);
-    const phoneNumber = data.phoneNumber?.trim() ? normalizePhoneToE164(data.phoneNumber) : null;
+    const phoneNumber = data.phoneNumber?.trim() ? normalizePhoneToE164(data.phoneNumber, resolvePhoneCountry(data.phoneCountry)) : null;
     // Organiser-created guests are never plus-ones — hostGuestId isn't
     // settable through this path — so contact stays required here.
     assertExactlyOneContact(email, phoneNumber);
@@ -164,7 +165,7 @@ export const guestService = {
       ? (data.email === null || !data.email.trim() ? null : normalizeEmail(data.email))
       : guest.email;
     const nextPhone = data.phoneNumber !== undefined
-      ? (data.phoneNumber === null || !data.phoneNumber.trim() ? null : normalizePhoneToE164(data.phoneNumber))
+      ? (data.phoneNumber === null || !data.phoneNumber.trim() ? null : normalizePhoneToE164(data.phoneNumber, resolvePhoneCountry(data.phoneCountry)))
       : guest.phoneNumber;
 
     // Only when a contact field changes is the contact judged, on the
@@ -308,10 +309,14 @@ export const guestService = {
     userId: string,
     requestingRole: PlatformRole,
     tenantId: string | null,
-    file: { buffer: Buffer; originalname: string; mimetype: string }
+    file: { buffer: Buffer; originalname: string; mimetype: string },
+    // The upload's `phoneCountry` form field: the country a number in the
+    // file without a country code is read in. Default ZA.
+    phoneCountryRaw?: unknown
   ) => {
     const event = await eventService.getById(eventId, requestingRole, tenantId);
     assertEventAcceptsOrganiserGuestList(event.visibility);
+    const phoneCountry = resolvePhoneCountry(phoneCountryRaw);
 
     const rows = await parseImportFile(file.buffer, file.originalname, file.mimetype);
     const eventDays = await eventDayRepository.findAll(eventId);
@@ -320,6 +325,7 @@ export const guestService = {
 
     const { totalRows, validRows, failures } = validateImportRows(rows, eventDays, existingContacts, {
       requireEmail: !isFeatureEnabled('sms'),
+      phoneCountry,
     });
 
     if (validRows.length > 0) {

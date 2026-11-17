@@ -4,6 +4,9 @@ export interface CreateGuestDto {
   surname?: string;
   email?: string;
   phoneNumber?: string;
+  // The country selected beside the phone field (ISO 3166, e.g. "GB"):
+  // a number without a country code is read in it. Default ZA.
+  phoneCountry?: string;
   eventDayIds: string[];
   plusOnesAllowed?: number;
 }
@@ -16,5 +19,7 @@ export interface UpdateGuestDto {
   surname?: string | null;
   email?: string | null;
   phoneNumber?: string | null;
+  // As on create; read only with phoneNumber.
+  phoneCountry?: string;
   plusOnesAllowed?: number;
 }

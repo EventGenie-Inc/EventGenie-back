@@ -1,13 +1,20 @@
 import { emailSendRepository, type ClaimedEmailItem } from './email-send.repository.js';
 import { setEmailSendWake } from './email-send.service.js';
 import { sendEmailAttempt, waitForSendSlot } from '../../shared/messaging/email.engine.js';
-import { inviteEmailRendering, type DispatchContext } from '../invite/invite-dispatch.service.js';
+import { getSmsProvider, waitForSmsSlot, type SmsSendOutcome } from '../../shared/messaging/sms-provider.js';
+import { smsDestinationFor } from '../../shared/messaging/sms-number.util.js';
+import { inviteEmailRendering, smsRefusalFor, type DispatchContext } from '../invite/invite-dispatch.service.js';
+import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
+import { inviteShortCodeService, shortLinkFor } from '../invite/invite-short-code.service.js';
 import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
 import prisma from '../../shared/prisma/prisma.client.js';
 
 // ─────────────────────────────────────────
-//  THE EMAIL-SEND WORKER — invitations and reminders, one email at a time
+//  THE EMAIL-SEND WORKER — invitations and reminders, one message at a time
+//
+//  Emails AND texts: an item's channel says which. What follows describes
+//  emails; TEXTS (SMSPortal) differ only where "Texts" below says so.
 //
 //  Takes due emails a batch at a time (claimDue: SKIP LOCKED, a lease,
 //  each take an attempt), builds each from the invite as it is NOW (the
@@ -36,6 +43,26 @@ import prisma from '../../shared/prisma/prisma.client.js';
 //             reminder the guest answered or replies closed. Nothing is
 //             sent; a reminder gives its cooldown back.
 //
+//  Texts: the same skip rules, then the text is refused (FAILED, with its
+//  code in the words) if sms has been switched off or the number can't take
+//  a text. It is built from the invite as it is now (invite-message.util.ts:
+//  who it's from, the event, the guest's link, one SMS) and sent through
+//  the configured provider (sms-provider.ts), paced by waitForSmsSlot.
+//  SMSPortal has NO idempotency key, so "never twice" works differently:
+//    - providerCallAt is written, and committed, before the call. A text
+//      taken again with it set (a worker died mid-call, a restart) is never
+//      called again: FAILED as unconfirmed (UNCONFIRMED_SMS).
+//    - a RETRY answer (429, 503, out of credits, SMSPortal unreachable)
+//      means it certainly didn't go: back to QUEUED with providerCallAt
+//      cleared, the same backoff and attempts as an email.
+//    - an UNKNOWN answer (a timeout, a 5xx mid-call) may have gone: FAILED
+//      as unconfirmed, never retried. Its delivery report, if one comes,
+//      confirms it (sms-delivery module).
+//  Sent: the item records SMSPortal's id and the parts it cost, an
+//  SmsSendLog row counts those parts against the pool it was queued under,
+//  the invite's smsStatus becomes SENT, and an invitation marks the invite
+//  delivered. A reminder's log row says SMS.
+//
 //  Runs from server.ts only (startEmailSendWorker): every
 //  EMAIL_SEND_POLL_MS, and at once when something is queued. Never
 //  overlaps itself. Tests call runOnce.
@@ -60,6 +87,9 @@ export const SKIP_REASONS = {
   REPLIES_CLOSED: 'Not sent: replies had closed before the reminder went.',
 } as const;
 export const NO_EMAIL_ADDRESS = 'This guest has no email address.';
+export const UNCONFIRMED_SMS =
+  "We couldn't confirm this text went, so it wasn't sent again (the guest is never texted twice). " +
+  "If it arrived, its delivery report will mark it sent; if not, send it again.";
 
 type ItemInvite = Awaited<ReturnType<typeof emailSendRepository.findInvitesForItems>>[number];
 
@@ -113,7 +143,7 @@ const logReminder = (
       tenantId: invite.event.tenantId,
       eventId: item.eventId,
       inviteId: item.inviteId,
-      deliveryMethod: 'EMAIL',
+      deliveryMethod: item.channel,
       succeeded: failureReason === null,
       failureReason,
       sentBy,
@@ -121,7 +151,7 @@ const logReminder = (
   });
 
 export const emailSendWorker = {
-  // Every due email, a batch at a time, until none is due.
+  // Every due email and text, a batch at a time, until none is due.
   runOnce: async (options: EmailSendRunOptions = {}): Promise<EmailSendRunResult> => {
     const now = options.now ?? (() => new Date());
     const totals: EmailSendRunResult = { sent: 0, retried: 0, failed: 0, skipped: 0 };
@@ -169,6 +199,47 @@ export const emailSendWorker = {
         }
       };
 
+      // A text's one provider call and its outcome (see the header).
+      const sendSmsOne = async (item: ClaimedEmailItem, invite: ItemInvite, to: string, body: string) => {
+        // Committed before the call: if this worker dies mid-call, the
+        // text is never called again.
+        if (!(await emailSendRepository.markProviderCall(item, now()))) return;
+        const outcome: SmsSendOutcome = await getSmsProvider().send({ to, body, reference: item.id });
+        if (outcome.status === 'ACCEPTED') {
+          await prisma.$transaction(async (tx) => {
+            const at = now();
+            if (!(await emailSendRepository.markSmsSent(tx, item, { at, providerMessageId: outcome.providerMessageId, parts: outcome.parts }))) return;
+            await smsSendLogRepository.create(tx, {
+              tenantId: invite.event.tenantId,
+              eventId: item.eventId,
+              inviteId: item.inviteId,
+              source: item.smsSource ?? 'QUOTA',
+              parts: outcome.parts,
+              emailSendItemId: item.id,
+            });
+            await tx.invite.update({
+              where: { id: item.inviteId },
+              data: {
+                smsStatus: 'SENT',
+                smsStatusAt: at,
+                smsStatusReason: null,
+                ...(item.kind === 'INVITATION' ? { deliveredAt: at } : {}),
+              },
+            });
+            if (item.kind === 'REMINDER') await logReminder(tx, item, invite, sentBy.get(item.sendId) ?? '', null);
+          });
+          totals.sent += 1;
+        } else if (outcome.status === 'RETRY' && item.attempts < EMAIL_SEND_MAX_ATTEMPTS) {
+          await emailSendRepository.markRetry(item, new Date(now().getTime() + emailRetryDelayMs(item.attempts)), outcome.reason);
+          totals.retried += 1;
+        } else if (outcome.status === 'UNKNOWN') {
+          console.error(`[email-send] text ${item.id}: no clear answer from the provider (${outcome.reason})`);
+          await finish(item, 'FAILED', UNCONFIRMED_SMS);
+        } else {
+          await finish(item, 'FAILED', outcome.reason);
+        }
+      };
+
       const inFlight: Promise<void>[] = [];
       for (const item of batch) {
         try {
@@ -176,6 +247,38 @@ export const emailSendWorker = {
           const skip = skipReason(item, invite);
           if (skip) {
             await finish(item, 'SKIPPED', skip);
+            continue;
+          }
+          if (item.channel === 'SMS') {
+            // Taken again after a call that may have gone: never again.
+            if (item.providerCallAt) {
+              await finish(item, 'FAILED', UNCONFIRMED_SMS);
+              continue;
+            }
+            const refusal = smsRefusalFor(invite!.guest.phoneNumber);
+            if (refusal) {
+              await finish(item, 'FAILED', refusal.reason);
+              continue;
+            }
+            const destination = smsDestinationFor(invite!.guest.phoneNumber);
+            let context = contexts.get(item.eventId);
+            if (!context) {
+              context = inviteEmailRendering.buildDispatchContext(invite!.event);
+              contexts.set(item.eventId, context);
+            }
+            // The guest's short link, its code created the first time a
+            // text needs it (never changed afterwards).
+            const code = await inviteShortCodeService.ensure(invite!.id, invite!.shortCode);
+            const body = inviteEmailRendering.buildSmsFor(item.kind === 'INVITATION' ? 'INVITE' : 'REMINDER', await context, shortLinkFor(code));
+            await waitForSmsSlot();
+            inFlight.push(
+              sendSmsOne(item, invite!, destination.ok ? destination.e164 : '', body).catch((err) => {
+                // Left SENDING: taken again when its lease runs out, and
+                // then never called again if the call was made.
+                console.error(`[email-send] text ${item.id} could not be recorded`);
+                reportError(err);
+              })
+            );
             continue;
           }
           if (!invite!.guest.email) {

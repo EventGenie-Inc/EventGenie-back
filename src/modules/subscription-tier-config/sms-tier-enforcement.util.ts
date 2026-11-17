@@ -23,9 +23,14 @@ import { LAUNCH_CONTACT_EMAIL, launchLimitMessage, tierRefusalMessage } from './
 //  exhausted bundle refuses outright rather than quietly spending the
 //  tenant's subscription allowance, and a subscription event never
 //  drains a bundle it was never buying against. The returned `source`
-//  is threaded by the caller (invite-dispatch.service.ts) into every
-//  SmsSendLog row this batch actually sends, which is what makes the
-//  separation a real, auditable fact rather than just documented intent.
+//  is threaded by the caller (invite-dispatch.service.ts) onto every
+//  queued text (EmailSendItem.smsSource) and from there into the SmsSendLog
+//  row the worker writes when it goes, which is what makes the separation
+//  a real, auditable fact rather than just documented intent.
+//
+//  Counted in SMS PARTS (SmsSendLog.parts, what SMSPortal bills), with
+//  texts still in the queue reserved at one part each (every text is built
+//  to fit one). `batchSmsCount` is the batch's texts, one part each.
 // ─────────────────────────────────────────
 
 export type SmsSendPool = 'QUOTA' | 'BUNDLE';
@@ -84,7 +89,8 @@ export const assertSmsSendable = async (
     // BUNDLE pool — this event has an active pass. Never reads
     // maxSmsPerMonth or the tenant's monthly count at all.
     const purchased = await eventPassRepository.sumPaidBundleSmsForEvent(event.id);
-    const used = await smsSendLogRepository.countBundleUsedForEvent(event.id);
+    // Parts sent plus texts still queued against the bundle.
+    const used = await smsSendLogRepository.countBundleCommittedForEvent(event.id);
     const remaining = purchased - used;
 
     if (batchSmsCount > remaining) {

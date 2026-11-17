@@ -456,6 +456,49 @@ export const rsvpQrIpLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITERS — A TEXT'S SHORT LINK (POST /api/rsvp/short-link)
+//
+//  Against guessing: SHORT_LINK_FAILURES_PER_IP_PER_15_MIN failed lookups
+//  (an unknown, removed or malformed code) per IP, successes not counted,
+//  so a guest opening their own link is never slowed. At that rate one IP
+//  tries under 3,000 codes a day against 62^10 (about 8.4 × 10^17). Plus a
+//  per-code budget (the SHA-256 of the code, never the code itself), for a
+//  script looping on one link: a guest opens it a few times at most.
+// ─────────────────────────────────────────
+export const SHORT_LINK_FAILURES_PER_IP_PER_15_MIN = 30;
+export const SHORT_LINK_LOOKUPS_PER_CODE_PER_5_MIN = 30;
+
+export const shortLinkCodeKey = (code: string): string => `short-link-code:${hashToken(code)}`;
+
+export const shortLinkIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: SHORT_LINK_FAILURES_PER_IP_PER_15_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `short-link-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: 'Too many requests from this network. Please wait a few minutes and try again.',
+  },
+});
+
+export const shortLinkLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: SHORT_LINK_LOOKUPS_PER_CODE_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    typeof req.body?.code === 'string' && req.body.code
+      ? shortLinkCodeKey(req.body.code as string)
+      : `short-link-noc:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — RSVP SUBMIT (POST /api/rsvp/submit), per invite
 //
 //  Keyed by the SHA-256 hash of the invite token in the body (never the

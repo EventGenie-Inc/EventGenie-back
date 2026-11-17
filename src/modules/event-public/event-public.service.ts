@@ -6,6 +6,7 @@ import {
   normalizeEmail,
   isValidEmail,
   normalizePhoneToE164,
+  resolvePhoneCountry,
   CONTACT_ERROR_CODES,
   GUEST_EMAIL_REQUIRED_MESSAGE,
   isGuestEmailUniqueViolation,
@@ -159,11 +160,11 @@ const assertNameLength = (name: string, what: string, code: string): void => {
 
 // normalizePhoneToE164's 400s carry the contact codes; a registrant typing
 // a wrong number is a value to fix (422), as at RSVP.
-const parsePhone = (value: unknown): string | null => {
+const parsePhone = (value: unknown, country: unknown): string | null => {
   const raw = optionalText(value);
   if (raw === null) return null;
   try {
-    return normalizePhoneToE164(raw);
+    return normalizePhoneToE164(raw, resolvePhoneCountry(country));
   } catch (err) {
     if (err instanceof HttpError && err.statusCode === 400) throw new HttpError(422, err.message, err.code);
     throw err;
@@ -195,7 +196,7 @@ const parseRegistration = (data: RegisterGuestDto): ParsedRegistration => {
     throw new HttpError(422, `'${rawEmail}' is not a valid email address`, REGISTRATION_ERROR_CODES.EMAIL_INVALID);
   }
 
-  const phoneNumber = parsePhone(data.phoneNumber);
+  const phoneNumber = parsePhone(data.phoneNumber, data.phoneCountry);
 
   let dayIds: string[] | null = null;
   if (data.dayIds !== undefined && data.dayIds !== null) {
