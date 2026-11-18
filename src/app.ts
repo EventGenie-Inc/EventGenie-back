@@ -60,6 +60,11 @@ import storageRouter from './modules/storage/storage.router.js';
 import storageAdminRouter from './modules/storage/storage-admin.router.js';
 import guestDocumentRouter from './modules/guest-document/guest-document.router.js';
 import smsDeliveryRouter from './modules/sms-delivery/sms-delivery.router.js';
+import { recordSuperAdminWrites } from './modules/admin-audit/admin-audit.middleware.js';
+import { auditLogRouter, tenantAuditLogRouter } from './modules/admin-audit/admin-audit.router.js';
+import { customTierRouter, tenantCustomTierRouter } from './modules/custom-tier/custom-tier.router.js';
+import { customTierRequestRouter, adminCustomTierRequestRouter } from './modules/custom-tier/custom-tier-request.router.js';
+import { eventTemplateRouter, eventGrantRouter } from './modules/event-grant/event-grant.router.js';
 import { assertSmsProviderConfigValid } from './shared/messaging/sms-provider.js';
 
 // ─────────────────────────────────────────
@@ -164,6 +169,12 @@ app.use(express.urlencoded({ extended: true, limit: `${REQUEST_BODY_LIMIT_MB}mb`
 // A body that isn't valid JSON is a coded 400, one over the limit a coded
 // 413; neither is a 500.
 app.use(rejectBodyParseErrors);
+
+// The super admin audit log's catch-all: every SUPER_ADMIN write that
+// succeeds and wasn't already recorded by its service is recorded after the
+// response (admin-audit.middleware.ts). Before every router, so it sees them
+// all.
+app.use('/api', recordSuperAdminWrites);
 
 // ─────────────────────────────────────────
 //  HEALTH CHECK
@@ -359,6 +370,28 @@ app.use('/api/admin/events', mediaRetentionRouter);
 //  environment's Cloudinary files against their records; never deletes
 // ─────────────────────────────────────────
 app.use('/api/admin/storage', storageAdminRouter);
+
+// ─────────────────────────────────────────
+//  CUSTOM TIERS (STEERING "Custom tiers")
+//  /api/admin/custom-tiers                   — the super admin's own tiers
+//  /api/admin/tenants/:tenantId/custom-tier  — assign one to a tenant, or take it off
+//  /api/admin/tenants/:tenantId/audit-log    — the super admin audit log, per tenant
+//  /api/admin/audit-log                      — the whole audit log
+//  Behind customTiers:
+//  /api/custom-tier-requests                 — a tenant asks for a custom tier
+//  /api/admin/custom-tier-requests           — the super admin's list and replies
+//  /api/admin/event-templates                — event templates (internal organisation)
+//  /api/admin/event-grants                   — granting a template to tenants
+//  Super admin routes give anyone else the global 404.
+// ─────────────────────────────────────────
+app.use('/api/admin/custom-tiers', customTierRouter);
+app.use('/api/admin/tenants/:tenantId/custom-tier', tenantCustomTierRouter);
+app.use('/api/admin/tenants/:tenantId/audit-log', tenantAuditLogRouter);
+app.use('/api/admin/audit-log', auditLogRouter);
+app.use('/api/custom-tier-requests', customTierRequestRouter);
+app.use('/api/admin/custom-tier-requests', adminCustomTierRequestRouter);
+app.use('/api/admin/event-templates', eventTemplateRouter);
+app.use('/api/admin/event-grants', eventGrantRouter);
 
 // ─────────────────────────────────────────
 //  404 HANDLER

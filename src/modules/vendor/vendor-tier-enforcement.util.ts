@@ -1,15 +1,15 @@
 import { type SubscriptionTier } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
+import { resolveEventPlan, resolveTenantPlan, type ResolvedPlan, type TenantPlanState } from '../subscription-tier-config/effective-plan.util.js';
 import { vendorRepository } from './vendor.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEffectiveTier, type TenantSubscriptionState } from '../subscription/effective-tier.util.js';
-import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { launchLimitMessage, launchUnavailableMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 
 export interface VendorSpaceLimitInfo {
   limit: number | null; // effective ceiling on active vendor spaces for this tenant; null = unlimited
-  tenantTier: SubscriptionTier; // resolved via resolveEffectiveTier — never the raw stored tier
+  tenantTier: SubscriptionTier | null; // the effective standard tier; null on a custom tier (plan.name names it)
+  plan: ResolvedPlan;
   vendorMarketplace: boolean; // whether this tier can use the vendor marketplace at all
 }
 
@@ -28,13 +28,13 @@ export interface VendorSpaceLimitInfo {
 // getDetail) doesn't pay for a second lookup, and there is exactly one
 // config fetch here shared by both the capability gate and the numeric
 // ceiling below, rather than assertVendorSpaceCreatable fetching it twice.
-export const resolveVendorSpaceLimit = async (tenant: TenantSubscriptionState): Promise<VendorSpaceLimitInfo> => {
-  const tenantTier = resolveEffectiveTier(tenant);
-  const config = await subscriptionTierConfigRepository.findByTier(tenantTier);
+export const resolveVendorSpaceLimit = async (tenant: TenantPlanState): Promise<VendorSpaceLimitInfo> => {
+  const plan = await resolveTenantPlan(tenant);
   return {
-    limit: config?.maxVendorSpaces ?? null,
-    tenantTier,
-    vendorMarketplace: config?.vendorMarketplace ?? false,
+    limit: plan.values.maxVendorSpaces,
+    tenantTier: plan.tier,
+    plan,
+    vendorMarketplace: plan.values.vendorMarketplace,
   };
 };
 
@@ -62,8 +62,9 @@ export const assertVendorSpaceCreatable = async (tenantId: string | null): Promi
     throw new HttpError(
       403,
       tierRefusalMessage(
-        `The ${resolved.tenantTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`,
-        launchUnavailableMessage('The vendor marketplace')
+        `The ${resolved.plan.name} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to add a vendor space.`,
+        launchUnavailableMessage('The vendor marketplace'),
+        resolved.plan
       )
     );
   }
@@ -77,8 +78,9 @@ export const assertVendorSpaceCreatable = async (tenantId: string | null): Promi
       throw new HttpError(
         403,
         tierRefusalMessage(
-          `The ${resolved.tenantTier} plan allows a maximum of ${resolved.limit} active vendor space(s). Archive an existing space or upgrade your plan to add another.`,
-          launchLimitMessage(`You've reached the limit of ${resolved.limit} active vendor space(s)`, 'Archive a space you no longer need')
+          `The ${resolved.plan.name} plan allows a maximum of ${resolved.limit} active vendor space(s). Archive an existing space or upgrade your plan to add another.`,
+          launchLimitMessage(`You've reached the limit of ${resolved.limit} active vendor space(s)`, 'Archive a space you no longer need'),
+          resolved.plan
         )
       );
     }
@@ -102,14 +104,14 @@ export const assertVendorMarketplaceAccessible = async (tenantId: string | null)
 
   // Organiser browsing for their own event planning — not guest-facing,
   // so a lapsed tenant losing search access breaks nothing already live.
-  const effectiveTier = resolveEffectiveTier(tenant);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (!config?.vendorMarketplace) {
+  const plan = await resolveTenantPlan(tenant);
+  if (!plan.values.vendorMarketplace) {
     throw new HttpError(
       403,
       tierRefusalMessage(
-        `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`,
-        launchUnavailableMessage('The vendor marketplace')
+        `The ${plan.name} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`,
+        launchUnavailableMessage('The vendor marketplace'),
+        plan
       )
     );
   }
@@ -127,14 +129,14 @@ export const assertEventVendorMarketplaceAccessible = async (event: EntitlementD
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const effectiveTier = resolveEventEntitlement(tenant, event);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (!config?.vendorMarketplace) {
+  const plan = await resolveEventPlan(tenant, event);
+  if (!plan.values.vendorMarketplace) {
     throw new HttpError(
       403,
       tierRefusalMessage(
-        `The ${effectiveTier} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`,
-        launchUnavailableMessage('The vendor marketplace')
+        `The ${plan.name} plan does not include the vendor marketplace. Upgrade to CELEBRATE or ELEVATE to search for vendors.`,
+        launchUnavailableMessage('The vendor marketplace'),
+        plan
       )
     );
   }

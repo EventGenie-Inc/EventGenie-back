@@ -130,13 +130,14 @@ export const registrationSettingsService = {
         if (guestLimit.limit !== null && data.cap > guestLimit.limit) {
           const source = guestLimit.boundByPass
             ? `This event's ${event.eventPass!.passTier} pass allows ${guestLimit.limit} guests`
-            : `The ${guestLimit.tenantTier} plan allows ${guestLimit.limit} guests per event`;
+            : `The ${guestLimit.planName} plan allows ${guestLimit.limit} guests per event`;
           throw new HttpError(
             422,
             tierRefusalMessage(
               `${source}, so the registration cap can be at most ${guestLimit.limit}.`,
               `This event can have up to ${guestLimit.limit} guests during your free trial, so the registration cap ` +
-                `can be at most ${guestLimit.limit}. Contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.`
+                `can be at most ${guestLimit.limit}. Contact us at ${LAUNCH_CONTACT_EMAIL} if you need more.`,
+              guestLimit.plan
             ),
             CODES.CAP_ABOVE_PLAN_LIMIT
           );

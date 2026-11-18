@@ -387,6 +387,24 @@ model Tenant {
   subscriptionPendingTier      SubscriptionTier?
   subscriptionPendingPeriod    SubscriptionPeriod?
 
+  // ── Custom tiers ──
+  // A super admin's own tier (CustomTier), invoiced outside the app. While
+  // assigned and before customTierEndsAt (null = no end), it IS the tenant's
+  // plan, whatever the billing fields above say; after the end date the
+  // tenant is back on the plan its billing gives it (Spark, since an active
+  // Paystack subscription blocks the assignment). Worked out when read
+  // (effective-plan.util.ts's resolvePlanIdentity), never swept.
+  customTierId                 String?
+  customTier                   CustomTier?         @relation(fields: [customTierId], references: [id], onDelete: Restrict)
+  customTierEndsAt             DateTime?
+  customTierAssignedAt         DateTime?
+  // The "your plan ends in 7 days" email, sent once per assignment and end
+  // date: cleared whenever either changes.
+  customTierEndingNoticeSentAt DateTime?
+  // The internal e-velope organisation that holds the super admin's event
+  // templates. Never a grant's recipient, never on a custom tier.
+  isInternal                   Boolean             @default(false)
+
   users                   User[]
   events                  Event[]
   vendorSpaces            VendorSpace[]
@@ -401,6 +419,8 @@ model Tenant {
   teamInvites             TeamInvite[]
   eventFeedback           EventFeedback[]
   storedFiles             StoredFile[]
+  customTierRequests      CustomTierRequest[]
+  eventGrantRecipients    EventGrantRecipient[]
 }
 
 // ─────────────────────────────────────────
@@ -669,6 +689,22 @@ model Event {
   guestDocuments           GuestDocument[]
   coverFile                StoredFile?               @relation("EventCoverFile", fields: [coverFileId], references: [id], onDelete: SetNull)
   storedFiles              StoredFile[]              @relation("StoredFileEvent")
+
+  // Custom tiers — a granted event (a copy of a super admin's template,
+  // see EventGrant). Its granted feature set is one plan, a standard tier or
+  // a custom tier, copied from the grant when the event was made: the event
+  // gets, per setting, the more generous of it and the tenant's own plan
+  // (effective-plan.util.ts's resolveEventPlan), like an Event Pass but
+  // without an expiry. A granted event is never counted against the plan's
+  // active-event limit (eventRepository.countActive).
+  eventGrantId             String?
+  eventGrant               EventGrant?               @relation(fields: [eventGrantId], references: [id], onDelete: SetNull)
+  grantedTier              SubscriptionTier?
+  grantedCustomTierId      String?
+  grantedCustomTier        CustomTier?               @relation("EventGrantedCustomTier", fields: [grantedCustomTierId], references: [id], onDelete: Restrict)
+  grantRecipient           EventGrantRecipient?
+  // As a template: the grants made from it.
+  grantsAsSource           EventGrant[]              @relation("EventGrantSource")
 }
 
 // ─────────────────────────────────────────
@@ -1736,6 +1772,165 @@ model SubscriptionTierConfig {
   vendorPriorityPlacement   Boolean          @default(false)
   isAvailable               Boolean          @default(true)
   updatedAt                 DateTime         @updatedAt
+}
+
+// ─────────────────────────────────────────
+//  CUSTOM TIERS
+//
+//  A super admin's own tiers beside Spark, Celebrate and Elevate: a free
+//  trial, a group deal, an individual arrangement. The same settings as a
+//  SubscriptionTierConfig row (null = unlimited), resolved through the same
+//  one place (effective-plan.util.ts), so they apply everywhere a standard
+//  tier's do. Invoiced outside the app: never sold, never charged through
+//  Paystack, never listed as something to buy.
+//
+//  isActive false = retired: it can't be assigned (to a tenant or a grant),
+//  but tenants already on it keep it until moved. Never deleted.
+// ─────────────────────────────────────────
+model CustomTier {
+  id                        String   @id @default(cuid())
+  name                      String   @unique
+  description               String?
+  maxEvents                 Int?
+  maxGuestsPerEvent         Int?
+  maxSmsPerMonth            Int?
+  maxVendorSpaces           Int?
+  maxMemoryHubBytesPerEvent BigInt?
+  maxDocumentBytesPerEvent  BigInt?
+  maxDocumentBytesPerFile   Int?
+  emailEnabled              Boolean  @default(true)
+  smsEnabled                Boolean  @default(false)
+  vendorMarketplace         Boolean  @default(false)
+  memoryHubEnabled          Boolean  @default(false)
+  dragDropBuilder           Boolean  @default(false)
+  guestExportEnabled        Boolean  @default(false)
+  publicEventsEnabled       Boolean  @default(false)
+  paidTicketingEnabled      Boolean  @default(false)
+  customRsvpFieldsEnabled   Boolean  @default(false)
+  vendorPriorityPlacement   Boolean  @default(false)
+  isActive                  Boolean  @default(true)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  tenants       Tenant[]
+  grants        EventGrant[]
+  grantedEvents Event[]      @relation("EventGrantedCustomTier")
+}
+
+enum CustomTierRequestStatus {
+  NEW
+  IN_DISCUSSION
+  ACCEPTED
+  DECLINED
+}
+
+// A tenant asking for a custom tier: what they need, roughly how many
+// events and guests, and who to talk to. Emailed to the admin address when
+// made; the super admin moves it through its status and can reply with a
+// short note, emailed to the contact address.
+model CustomTierRequest {
+  id                String                  @id @default(cuid())
+  tenantId          String
+  tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedByUserId String
+  needs             String
+  expectedEvents    Int?
+  expectedGuests    Int?
+  contactName       String
+  contactEmail      String
+  contactPhone      String?
+  status            CustomTierRequestStatus @default(NEW)
+  // The super admin's latest reply, as emailed.
+  adminNote         String?
+  adminNoteAt       DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([tenantId, createdAt])
+  @@index([status, createdAt])
+}
+
+// ─────────────────────────────────────────
+//  GRANTED EVENTS
+//
+//  A super admin builds an event as a template in the internal e-velope
+//  organisation (Tenant.isInternal) and grants it: to chosen tenants, or to
+//  every tenant created before allTenantsUntil (existing ones and new
+//  sign-ups). Each recipient gets its own copy, through the duplicate
+//  service, with the grant's feature set (a standard tier or a custom tier,
+//  exactly one) and an email that it's ready. One EventGrantRecipient per
+//  grant and tenant (unique): a tenant gets a given grant once.
+// ─────────────────────────────────────────
+model EventGrant {
+  id                  String            @id @default(cuid())
+  sourceEventId       String
+  sourceEvent         Event             @relation("EventGrantSource", fields: [sourceEventId], references: [id], onDelete: Restrict)
+  // The copy's name and first date (the template's own first date when null).
+  name                String
+  firstDate           DateTime?         @db.Date
+  grantedTier         SubscriptionTier?
+  grantedCustomTierId String?
+  grantedCustomTier   CustomTier?       @relation(fields: [grantedCustomTierId], references: [id], onDelete: Restrict)
+  toAllTenants        Boolean           @default(false)
+  // With toAllTenants: every tenant created before this (sign-ups included).
+  allTenantsUntil     DateTime?
+  createdByUserId     String
+  createdAt           DateTime          @default(now())
+
+  recipients EventGrantRecipient[]
+  events     Event[]
+
+  @@index([toAllTenants, allTenantsUntil])
+}
+
+enum EventGrantDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+model EventGrantRecipient {
+  id            String                   @id @default(cuid())
+  grantId       String
+  grant         EventGrant               @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  tenantId      String
+  tenant        Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  eventId       String?                  @unique
+  event         Event?                   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  status        EventGrantDeliveryStatus @default(PENDING)
+  failureReason String?
+  // When the delivery was last claimed: a PENDING row older than the claim
+  // lease was left by a crash and is taken again by the sweep.
+  claimedAt     DateTime                 @default(now())
+  deliveredAt   DateTime?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+
+  @@unique([grantId, tenantId])
+  @@index([status, claimedAt])
+}
+
+// ─────────────────────────────────────────
+//  ADMIN AUDIT LOG
+//
+//  Every super admin action that changes a tenant's account, or the
+//  platform's tiers: who, which tenant (null for a platform-wide change),
+//  what, when, and the details. Written by the service that acts (with the
+//  details only it knows), and for any other super admin write by
+//  admin-audit.middleware.ts. No foreign keys: an entry outlives whatever it
+//  names, and is never edited or deleted.
+// ─────────────────────────────────────────
+model AdminAuditEntry {
+  id          String   @id @default(cuid())
+  actorUserId String
+  actorEmail  String
+  tenantId    String?
+  action      String
+  details     Json
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([createdAt])
 }
 
 // ─────────────────────────────────────────

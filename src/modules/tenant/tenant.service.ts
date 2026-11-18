@@ -6,7 +6,12 @@ import { withEffectiveStatus } from '../event/event-status.util.js';
 import { withMediaRetention } from '../event/event-media-retention.util.js';
 import { withEffectiveTier } from '../subscription/effective-tier.util.js';
 import { resolveVendorSpaceLimit } from '../vendor/vendor-tier-enforcement.util.js';
-import { resolvePlanSettings } from '../subscription-tier-config/plan-settings.util.js';
+import { planSettingsFromValues } from '../subscription-tier-config/plan-settings.util.js';
+import { isCustomTierCurrent, resolveTenantPlan } from '../subscription-tier-config/effective-plan.util.js';
+import { customTierRepository } from '../custom-tier/custom-tier.repository.js';
+import { type TenantCustomTierView } from '../custom-tier/custom-tier.types.js';
+import { adminAuditService } from '../admin-audit/admin-audit.service.js';
+import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type ClientTenantDto, type ClientTenantDetailDto } from './tenant.types.js';
 import {
@@ -23,15 +28,19 @@ import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 // because the subscription-tier-config/*-tier-enforcement.util.ts
 // family calls it directly (bypassing this service entirely) and needs
 // the full subscription-state columns for resolveEffectiveTier.
-const toClientTenant = (tenant: {
-  id: string;
-  name: string;
-  slug: string;
-  email: string;
-  subscriptionTier: ClientTenantDto['subscriptionTier'];
-  subscriptionStatus: ClientTenantDto['subscriptionStatus'];
-  createdAt: Date;
-}): ClientTenantDto => ({
+const toClientTenant = (
+  tenant: {
+    id: string;
+    name: string;
+    slug: string;
+    email: string;
+    subscriptionTier: ClientTenantDto['subscriptionTier'];
+    subscriptionStatus: ClientTenantDto['subscriptionStatus'];
+    createdAt: Date;
+    isInternal: boolean;
+  },
+  customTier: TenantCustomTierView | null
+): ClientTenantDto => ({
   id: tenant.id,
   name: tenant.name,
   slug: tenant.slug,
@@ -39,7 +48,16 @@ const toClientTenant = (tenant: {
   subscriptionTier: tenant.subscriptionTier,
   subscriptionStatus: tenant.subscriptionStatus,
   createdAt: tenant.createdAt,
+  customTier,
+  isInternal: tenant.isInternal,
 });
+
+// The tenant's custom tier while it is current, from the tier already read.
+const currentCustomTier = (
+  tenant: { customTierId: string | null; customTierEndsAt: Date | null },
+  tier: { id: string; name: string; description: string | null } | null
+): TenantCustomTierView | null =>
+  tier && isCustomTierCurrent(tenant) ? { id: tier.id, name: tier.name, description: tier.description, endsAt: tenant.customTierEndsAt } : null;
 
 export const tenantService = {
 
@@ -49,12 +67,13 @@ export const tenantService = {
   // stored one, or a lapsed tenant's own frontend (GET /api/tenants/me)
   // would keep offering features it no longer has.
   getAll: async (): Promise<ClientTenantDto[]> =>
-    (await tenantRepository.findAll()).map(withEffectiveTier).map(toClientTenant),
+    (await tenantRepository.findAll()).map((tenant) => toClientTenant(withEffectiveTier(tenant), currentCustomTier(tenant, tenant.customTier))),
 
   getById: async (id: string, includeArchived = false): Promise<ClientTenantDto> => {
     const tenant = await tenantRepository.findById(id, includeArchived);
     if (!tenant) throw new Error('Tenant not found');
-    return toClientTenant(withEffectiveTier(tenant));
+    const tier = isCustomTierCurrent(tenant) ? await customTierRepository.findById(tenant.customTierId!) : null;
+    return toClientTenant(withEffectiveTier(tenant), currentCustomTier(tenant, tier));
   },
 
   // Client-facing single-tenant read (GET /api/tenants/me, and
@@ -82,13 +101,16 @@ export const tenantService = {
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
     const effectiveTenant = withEffectiveTier(tenant);
-    // What the tenant's effective plan allows, resolved exactly as the
-    // server enforces it (plan-settings.util.ts). The frontend decides what
-    // to show from these, never from subscriptionTier's name.
-    const planSettings = await resolvePlanSettings(effectiveTenant.subscriptionTier);
+    // What the tenant's effective plan allows (a standard tier, or its
+    // custom tier while current), resolved exactly as the server enforces it
+    // (effective-plan.util.ts, plan-settings.util.ts). The frontend decides
+    // what to show from these, never from subscriptionTier's name.
+    const plan = await resolveTenantPlan(tenant);
+    const planSettings = planSettingsFromValues(plan.values);
+    const client = toClientTenant(effectiveTenant, plan.customTier);
     // A switched-off feature's limit is never shown to a tenant: with
     // vendors off there is no vendorSpaceLimit at all.
-    if (!isFeatureEnabled('vendors')) return { ...toClientTenant(effectiveTenant), planSettings };
+    if (!isFeatureEnabled('vendors')) return { ...client, planSettings };
 
     const [limitInfo, currentCount] = await Promise.all([
       resolveVendorSpaceLimit(tenant),
@@ -96,7 +118,7 @@ export const tenantService = {
     ]);
 
     return {
-      ...toClientTenant(effectiveTenant),
+      ...client,
       planSettings,
       vendorSpaceLimit: {
         limit: limitInfo.limit, // null = unlimited; present whenever the vendors feature is on
@@ -145,6 +167,13 @@ export const tenantService = {
           data: { isArchived: true, isActive: false },
         });
       }
+
+      await adminAuditService.record({
+        actorUserId: superAdminUserId,
+        tenantId: id,
+        action: ADMIN_AUDIT_ACTIONS.TENANT_SUSPENDED,
+        details: { usersSuspended: users.map((u) => u.id) },
+      }, tx);
     }, {
       // Task 0 (Subscription Billing batch) audit: this loop was one of
       // several prisma.$transaction calls found with NEITHER timeout nor
@@ -206,6 +235,13 @@ export const tenantService = {
           data: { isArchived: false, isActive: true },
         });
       }
+
+      await adminAuditService.record({
+        actorUserId: superAdminUserId,
+        tenantId: id,
+        action: ADMIN_AUDIT_ACTIONS.TENANT_REACTIVATED,
+        details: { usersReactivated: users.map((u) => u.id) },
+      }, tx);
     }, {
       // Same reasoning as suspend()'s identical transaction above —
       // Task 0 audit, unbounded per-user loop.

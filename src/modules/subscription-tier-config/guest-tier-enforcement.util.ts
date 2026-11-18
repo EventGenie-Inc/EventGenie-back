@@ -1,18 +1,23 @@
 import { type EventPassTier, type SubscriptionTier, type Prisma } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { guestRepository } from '../guest/guest.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
 import { isEventPassActive, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { resolveEventPlan, type ResolvedPlan } from './effective-plan.util.js';
 import { EVENT_PASS_GUEST_CAP } from '../event-pass/event-pass-plans.config.js';
 import { launchLimitMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 import { assertWithinGuestCeiling } from '../guest/guest-ceiling.util.js';
 
 export interface GuestLimitInfo {
   limit: number | null; // effective limit for this event; null = unlimited
-  tenantTier: SubscriptionTier; // resolved via resolveEffectiveTier — never the raw stored tier
-  tenantLimit: number | null; // the tenant's own plan limit, before any pass; null = unlimited
+  // The tenant's effective standard tier — null on a custom tier (planName
+  // names it). Display only, never compared.
+  tenantTier: SubscriptionTier | null;
+  // The tenant's plan's name: a standard tier's ('CELEBRATE') or a custom
+  // tier's own ('Free trial').
+  planName: string;
+  plan: ResolvedPlan; // for refusal wording (tierRefusalMessage)
+  tenantLimit: number | null; // the plan's own limit (a granted event's raised by its grant), before any pass; null = unlimited
   passTier: EventPassTier | null; // this event's own pass tier, whether or not it's currently active
   passActive: boolean;
   passCap: number | null; // the pass's advertised cap; only set while the pass is active
@@ -32,9 +37,13 @@ export const resolveGuestLimit = async (
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const tenantTier = resolveEffectiveTier(tenant);
-  const tenantConfig = await subscriptionTierConfigRepository.findByTier(tenantTier);
-  const tenantLimit = tenantConfig?.maxGuestsPerEvent ?? null; // null = unlimited
+  // The tenant's effective plan (a standard or custom tier), raised for a
+  // granted event by its granted feature set: resolveEventPlan with the pass
+  // left out, since the pass's guest number is its own (below).
+  const plan = await resolveEventPlan(tenant, { ...event, eventPass: null });
+  const tenantTier = plan.tier;
+  const planName = plan.name;
+  const tenantLimit = plan.values.maxGuestsPerEvent; // null = unlimited
 
   // Deliberately NOT resolveEventEntitlement here. That resolves the
   // pass's GRANTED TIER — the feature mapping where Small and Standard
@@ -55,13 +64,13 @@ export const resolveGuestLimit = async (
   // event suddenly capped at 50. Nothing below can turn a null back into
   // a number, so this is the one and only unlimited exit.
   if (tenantLimit === null) {
-    return { limit: null, tenantTier, tenantLimit: null, passTier, passActive, passCap, boundByPass: false };
+    return { limit: null, tenantTier, planName, plan, tenantLimit: null, passTier, passActive, passCap, boundByPass: false };
   }
 
   const limit = passCap === null ? tenantLimit : Math.max(tenantLimit, passCap);
   const boundByPass = passCap !== null && passCap >= tenantLimit;
 
-  return { limit, tenantTier, tenantLimit, passTier, passActive, passCap, boundByPass };
+  return { limit, tenantTier, planName, plan, tenantLimit, passTier, passActive, passCap, boundByPass };
 };
 
 // Called before creating guest(s) on an event — both manual single-create
@@ -119,7 +128,7 @@ const assertWithinPlanGuestLimit = async (
     // "upgrade" points at the thing that would actually raise the cap.
     const source = resolved.boundByPass
       ? `This event's ${event.eventPass!.passTier} pass allows ${limit} guest(s)`
-      : `The ${resolved.tenantTier} plan allows ${limit} guest(s) per event`;
+      : `The ${resolved.planName} plan allows ${limit} guest(s) per event`;
     const upgradeHint = resolved.boundByPass ? 'upgrade the pass' : 'upgrade the plan';
 
     const counts = `this would bring the event to ${projected} (${over} over the limit)`;
@@ -128,7 +137,8 @@ const assertWithinPlanGuestLimit = async (
       403,
       tierRefusalMessage(
         `${source}, and ${counts}. Remove guests or ${upgradeHint}.`,
-        launchLimitMessage(`This would bring the event to ${projected} guest(s), ${over} over its limit of ${limit}`, 'Remove guests')
+        launchLimitMessage(`This would bring the event to ${projected} guest(s), ${over} over its limit of ${limit}`, 'Remove guests'),
+        resolved.plan
       )
     );
   }

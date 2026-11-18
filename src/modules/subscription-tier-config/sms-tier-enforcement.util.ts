@@ -1,9 +1,9 @@
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
+import { resolveEventPlan } from './effective-plan.util.js';
 import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
 import { eventPassRepository } from '../event-pass/event-pass.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEventEntitlement, isEventPassActive, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { isEventPassActive, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { LAUNCH_CONTACT_EMAIL, launchLimitMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 
 // ─────────────────────────────────────────
@@ -66,10 +66,11 @@ export const assertSmsSendable = async (
   // hardcoded tier check anywhere. ACTION-time (dispatching NEW sms): an
   // already-delivered invite still resolves regardless of this check;
   // only sending MORE is gated on the event's current entitlement.
-  const effectiveTier = resolveEventEntitlement(tenant, event);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
+  const plan = await resolveEventPlan(tenant, event);
+  const effectiveTier = plan.name;
+  const config = plan.values;
 
-  if (!config?.smsEnabled) {
+  if (!config.smsEnabled) {
     throw new HttpError(
       403,
       tierRefusalMessage(
@@ -80,7 +81,8 @@ export const assertSmsSendable = async (
               `only have a phone number, so nothing was sent. Add an email address for them, or upgrade the plan.`,
         `SMS isn't available during your free trial, and ${batchSmsCount} guest(s) in this batch only have a ` +
           `phone number, so ${kind === 'invite' ? 'they cannot be invited' : 'nothing was sent'}. ` +
-          `Add an email address for them, or contact us at ${LAUNCH_CONTACT_EMAIL} if you need SMS.`
+          `Add an email address for them, or contact us at ${LAUNCH_CONTACT_EMAIL} if you need SMS.`,
+        plan
       )
     );
   }
@@ -102,7 +104,8 @@ export const assertSmsSendable = async (
           launchLimitMessage(
             `Nothing was sent, because this batch needs ${batchSmsCount} SMS message(s) and this event ` +
               `has ${Math.max(remaining, 0)} left`
-          )
+          ),
+          plan
         )
       );
     }
@@ -130,7 +133,8 @@ export const assertSmsSendable = async (
           launchLimitMessage(
             `Nothing was sent, because this batch needs ${batchSmsCount} SMS message(s) and your account has ` +
               `${Math.max(remaining, 0)} of its ${config.maxSmsPerMonth} a month left`
-          )
+          ),
+          plan
         )
       );
     }

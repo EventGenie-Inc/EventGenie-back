@@ -1,5 +1,6 @@
 import { type SubscriptionTier, type SubscriptionPeriod } from '@prisma/client';
 import { type PaidSubscriptionTier } from './subscription-plans.config.js';
+import { type TenantCustomTierView } from '../custom-tier/custom-tier.types.js';
 
 // The single source of truth for what each tier+period costs, exposed
 // read-only — see subscription.service.ts's getPricing for why this
@@ -22,6 +23,11 @@ export interface ChangeTierDto {
 }
 
 export interface SubscriptionStatusDto {
+  // Custom tiers: the tenant's custom tier while it is current (its name,
+  // description, end date; null = no end), else null. When set, it IS the
+  // plan (tier below is what the tenant falls back to), invoiced outside
+  // the app: nothing here asks for payment.
+  customTier: TenantCustomTierView | null;
   // The tenant's CURRENT, EFFECTIVE tier — already resolved through
   // effective-tier.util.ts, never the raw stored value.
   tier: SubscriptionTier;

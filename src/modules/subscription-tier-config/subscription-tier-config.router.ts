@@ -3,6 +3,7 @@ import { subscriptionTierConfigService } from './subscription-tier-config.servic
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import { type SubscriptionTier } from '@prisma/client';
+import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 
 const router = Router();
 
@@ -33,7 +34,7 @@ router.get('/:tier', async (req: Request, res: Response, next: NextFunction) => 
 // Creates a tier config — used during initial platform setup
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const config = await subscriptionTierConfigService.create(req.body);
+    const config = await subscriptionTierConfigService.create(req.body, (req as AuthenticatedRequest).user.id);
     res.status(201).json({ status: 'ok', data: config });
   } catch (err) { next(err); }
 });
@@ -43,7 +44,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:tier', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tier = req.params['tier'] as SubscriptionTier;
-    const config = await subscriptionTierConfigService.update(tier, req.body);
+    const config = await subscriptionTierConfigService.update(tier, req.body, (req as AuthenticatedRequest).user.id);
     res.status(200).json({ status: 'ok', data: config });
   } catch (err) { next(err); }
 });
@@ -55,7 +56,7 @@ router.put('/:tier/availability', async (req: Request, res: Response, next: Next
   try {
     const tier = req.params['tier'] as SubscriptionTier;
     const { isAvailable } = req.body;
-    const config = await subscriptionTierConfigService.setAvailability(tier, isAvailable);
+    const config = await subscriptionTierConfigService.setAvailability(tier, isAvailable, (req as AuthenticatedRequest).user.id);
     res.status(200).json({ status: 'ok', data: config });
   } catch (err) { next(err); }
 });

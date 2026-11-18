@@ -18,6 +18,13 @@ import { type SubscriptionTier } from '@prisma/client';
 //      keeps full access for a 5-day grace window from that moment,
 //      per the task's explicit rule, before falling to SPARK.
 //
+//  Custom tiers: this is the BILLING derivation only — which standard
+//  tier Paystack's state gives. A tier check goes through the effective
+//  plan instead (subscription-tier-config/effective-plan.util.ts's
+//  resolveTenantPlan / resolveEventPlan), which calls this for a tenant
+//  with no current custom tier. Outside that file, only billing code
+//  (subscription.service.ts) and the /me presenter read it.
+//
 //  EVERY tier check in this codebase MUST call this function rather
 //  than read tenant.subscriptionTier directly — a missed one means a
 //  lapsed tenant keeping a tier's features. See the batch report for

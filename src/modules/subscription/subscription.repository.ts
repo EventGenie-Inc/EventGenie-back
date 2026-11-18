@@ -28,6 +28,9 @@ const SUBSCRIPTION_FIELDS = {
   subscriptionPendingReference: true,
   subscriptionPendingTier: true,
   subscriptionPendingPeriod: true,
+  // Custom tiers: the plan shown by getStatus may be a custom tier.
+  customTierId: true,
+  customTierEndsAt: true,
 } as const;
 
 export const subscriptionRepository = {
@@ -143,6 +146,12 @@ export const subscriptionRepository = {
         subscriptionPendingReference: null,
         subscriptionPendingTier: null,
         subscriptionPendingPeriod: null,
+        // A paid subscription takes the tenant off any custom tier: what
+        // they now pay for is their plan (a trial converting, say).
+        customTierId: null,
+        customTierEndsAt: null,
+        customTierAssignedAt: null,
+        customTierEndingNoticeSentAt: null,
         ...(data.authorizationCode !== undefined && { paystackAuthorizationCode: data.authorizationCode }),
         ...(data.cardBrand !== undefined && { paystackCardBrand: data.cardBrand }),
         ...(data.cardLast4 !== undefined && { paystackCardLast4: data.cardLast4 }),

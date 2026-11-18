@@ -31,5 +31,24 @@ export const launchUnavailableMessage = (feature: string, { plural = false }: { 
   `${feature} ${plural ? "aren't" : "isn't"} available during your free trial. ` +
   `Contact us at ${LAUNCH_CONTACT_EMAIL} if you need ${plural ? 'them' : 'it'}.`;
 
-export const tierRefusalMessage = (planMessage: string, launchMessage: string): string =>
-  isFeatureEnabled('payments') ? planMessage : launchMessage;
+// Custom tiers: a tenant on a custom tier (invoiced outside the app) is
+// never pointed at a plan to buy either, payments on or off. It gets the
+// launch wording with its own plan named instead of the free trial: "...
+// isn't available on your Free trial plan. Contact us at ... if you need
+// it." `plan` is the effective plan (effective-plan.util.ts); a caller with
+// none (or a standard tier) gets the wording above, unchanged.
+const FREE_TRIAL_PHRASES = [' during your free trial', ' during its free trial'] as const;
+
+export const customPlanMessage = (launchMessage: string, planName: string): string =>
+  launchMessage
+    .replace(FREE_TRIAL_PHRASES[0], ` on your ${planName} plan`)
+    .replace(FREE_TRIAL_PHRASES[1], ` on its ${planName} plan`);
+
+export const tierRefusalMessage = (
+  planMessage: string,
+  launchMessage: string,
+  plan?: { customTier: { name: string } | null } | null
+): string => {
+  if (plan?.customTier) return customPlanMessage(launchMessage, plan.customTier.name);
+  return isFeatureEnabled('payments') ? planMessage : launchMessage;
+};

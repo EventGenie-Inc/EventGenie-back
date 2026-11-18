@@ -48,5 +48,6 @@ export const tiersWithCapability = async (capability: TierCapability): Promise<R
   );
 };
 
-export const isTierCapabilityEnabled = async (tier: SubscriptionTier, capability: TierCapability): Promise<boolean> =>
-  resolveTierCapability(await subscriptionTierConfigRepository.findByTier(tier), tier, capability);
+// (isTierCapabilityEnabled, by a tier's name, is gone: a check reads the
+// effective plan's settings instead — effective-plan.util.ts — since the
+// plan may be a custom tier.)

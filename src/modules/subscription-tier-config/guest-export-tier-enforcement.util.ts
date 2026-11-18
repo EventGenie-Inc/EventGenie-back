@@ -1,7 +1,7 @@
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
+import { resolveEventPlan } from './effective-plan.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { launchUnavailableMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 
 // Called before building/streaming the guest export workbook. Spark has
@@ -23,14 +23,14 @@ export const assertGuestExportEnabled = async (event: EntitlementDerivableEvent)
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const effectiveTier = resolveEventEntitlement(tenant, event);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (!config?.guestExportEnabled) {
+  const plan = await resolveEventPlan(tenant, event);
+  if (!plan.values.guestExportEnabled) {
     throw new HttpError(
       403,
       tierRefusalMessage(
-        `The ${effectiveTier} plan does not include guest list export. Upgrade to CELEBRATE or ELEVATE to use it.`,
-        launchUnavailableMessage('Guest list export')
+        `The ${plan.name} plan does not include guest list export. Upgrade to CELEBRATE or ELEVATE to use it.`,
+        launchUnavailableMessage('Guest list export'),
+        plan
       )
     );
   }

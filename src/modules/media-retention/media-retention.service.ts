@@ -1,3 +1,5 @@
+import { adminAuditService } from '../admin-audit/admin-audit.service.js';
+import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
 import { type PlatformRole } from '@prisma/client';
 import { mediaRetentionRepository } from './media-retention.repository.js';
 import { buildMediaPurgeReminderEmail } from './media-purge-reminder-email.util.js';
@@ -343,10 +345,19 @@ export const mediaRetentionService = {
     if (!isFeatureEnabled('archiveMediaPurge')) {
       throw new HttpError(422, "Deleting archived events' photos and videos is switched off on this server.", ARCHIVE_MEDIA_PURGE_OFF);
     }
-    await eventService.getScoped(eventId, requestingRole, null, true);
+    const event = await eventService.getScoped(eventId, requestingRole, null, true);
 
     const now = new Date();
     const claim = await mediaRetentionRepository.claimPurge(eventId, { reason: 'SUPER_ADMIN', requestedBy: userId, dueBy: null, now });
+    // Recorded once the purge is claimed (it then always finishes).
+    if (claim.outcome === 'CLAIMED') {
+      await adminAuditService.record({
+        actorUserId: userId,
+        tenantId: event.tenantId,
+        action: ADMIN_AUDIT_ACTIONS.EVENT_MEDIA_PURGED,
+        details: { eventId, eventName: event.name, purgeId: claim.purge.id, archivedAt: claim.purge.archivedAt },
+      });
+    }
     if (claim.outcome === 'NOT_ARCHIVED' || claim.outcome === 'NOT_DUE') {
       throw new HttpError(409, 'Archive this event before deleting its photos and videos.', EVENT_NOT_ARCHIVED);
     }

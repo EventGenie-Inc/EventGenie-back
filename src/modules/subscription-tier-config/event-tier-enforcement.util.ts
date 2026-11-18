@@ -1,11 +1,9 @@
-import { type EventVisibility, type EventTicketing, type SubscriptionTier, type Prisma } from '@prisma/client';
+import { type EventVisibility, type EventTicketing, type Prisma } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { eventRepository } from '../event/event.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
-import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
-import { resolveTierCapability } from './tier-capabilities.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { resolveEventPlan, resolveTenantPlan, type ResolvedPlan } from './effective-plan.util.js';
 import { launchLimitMessage, launchUnavailableMessage, tierRefusalMessage } from './tier-refusal-wording.util.js';
 
 export interface EventTierCheckInput {
@@ -15,36 +13,44 @@ export interface EventTierCheckInput {
 }
 
 // Capability gates. These used to be tied to SPARK by name; they are now
-// per-tier settings on SubscriptionTierConfig (tier-capabilities.util.ts),
-// so a Super Admin can switch any of them on for any tier. The config is
-// read only when the input actually asks for one of them.
-const assertCapabilityGates = async (tier: SubscriptionTier, input: EventTierCheckInput): Promise<void> => {
-  if (input.visibility !== 'PUBLIC' && input.ticketing !== 'PAID' && !input.hasCustomRsvpFields) return;
-  const config = await subscriptionTierConfigRepository.findByTier(tier);
-
-  if (input.visibility === 'PUBLIC' && !resolveTierCapability(config, tier, 'publicEventsEnabled')) {
+// per-plan settings (SubscriptionTierConfig, or a custom tier), resolved by
+// effective-plan.util.ts, so a Super Admin can switch any of them on for any
+// tier. The plan is resolved only when the input asks for one of them.
+const assertCapabilityGates = (plan: ResolvedPlan, input: EventTierCheckInput): void => {
+  if (input.visibility === 'PUBLIC' && !plan.values.publicEventsEnabled) {
     throw new HttpError(403, tierRefusalMessage(
-      `The ${tier} plan only supports private events. Upgrade your plan to make this event public.`,
-      launchUnavailableMessage('Public events', { plural: true })
+      `The ${plan.name} plan only supports private events. Upgrade your plan to make this event public.`,
+      launchUnavailableMessage('Public events', { plural: true }),
+      plan
     ));
   }
-  if (input.ticketing === 'PAID' && !resolveTierCapability(config, tier, 'paidTicketingEnabled')) {
-    throw new HttpError(403, paidTicketingRefusal(tier));
+  if (input.ticketing === 'PAID' && !plan.values.paidTicketingEnabled) {
+    throw new HttpError(403, paidTicketingRefusal(plan));
   }
-  if (input.hasCustomRsvpFields && !resolveTierCapability(config, tier, 'customRsvpFieldsEnabled')) {
+  if (input.hasCustomRsvpFields && !plan.values.customRsvpFieldsEnabled) {
     throw new HttpError(403, tierRefusalMessage(
-      `The ${tier} plan does not support additional fields. Upgrade your plan to add them.`,
-      launchUnavailableMessage('Additional fields', { plural: true })
+      `The ${plan.name} plan does not support additional fields. Upgrade your plan to add them.`,
+      launchUnavailableMessage('Additional fields', { plural: true }),
+      plan
     ));
   }
 };
 
+const asksForCapability = (input: EventTierCheckInput): boolean =>
+  input.visibility === 'PUBLIC' || input.ticketing === 'PAID' || !!input.hasCustomRsvpFields;
+
+// The capability gates against a plan already resolved: a granted event's
+// copy is checked against the tenant's plan raised by its granted feature
+// set (event-grant.service.ts).
+export const assertPlanAllowsEvent = (plan: ResolvedPlan, input: EventTierCheckInput): void => assertCapabilityGates(plan, input);
+
 // Shared with payment-account-readiness.util.ts, which refuses the same
 // capability on the bank-details side.
-export const paidTicketingRefusal = (tier: SubscriptionTier, passHint = false): string =>
+export const paidTicketingRefusal = (plan: Pick<ResolvedPlan, 'name' | 'customTier'>, passHint = false): string =>
   tierRefusalMessage(
-    `The ${tier} plan does not support paid ticketing. Upgrade your plan${passHint ? ', or buy an Event Pass for this event,' : ''} to sell tickets.`,
-    launchUnavailableMessage('Paid ticketing')
+    `The ${plan.name} plan does not support paid ticketing. Upgrade your plan${passHint ? ', or buy an Event Pass for this event,' : ''} to sell tickets.`,
+    launchUnavailableMessage('Paid ticketing'),
+    plan
   );
 
 // The plan's active-event limit, on creating an event and on restoring an
@@ -61,8 +67,7 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
   const tenant = await tenantRepository.findById(tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const effectiveTier = resolveEffectiveTier(tenant);
-  await assertCapabilityGates(effectiveTier, input);
+  if (asksForCapability(input)) assertCapabilityGates(await resolveTenantPlan(tenant), input);
   await assertWithinEventLimit(tenantId);
 };
 
@@ -74,22 +79,23 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 // (eventRepository.lockEventCreation), so two creations at once can't both
 // pass a limit only one of them fits.
 //
-// maxEvents is read from SubscriptionTierConfig for every tier (including
-// SPARK) rather than hardcoded, so a Super Admin changing the config
-// takes effect immediately without a code change.
+// maxEvents is read from the tenant's effective plan (a standard tier's
+// config, or its custom tier) rather than hardcoded, so a Super Admin
+// changing either takes effect immediately without a code change.
 export const assertWithinEventLimit = async (tenantId: string, tx?: Prisma.TransactionClient): Promise<void> => {
   const tenant = await tenantRepository.findById(tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  const effectiveTier = resolveEffectiveTier(tenant);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (config?.maxEvents != null) {
+  const plan = await resolveTenantPlan(tenant);
+  const maxEvents = plan.values.maxEvents;
+  if (maxEvents != null) {
     const activeCount = await eventRepository.countActive(tenantId, tx);
-    if (activeCount >= config.maxEvents) {
+    if (activeCount >= maxEvents) {
       throw new HttpError(
         403,
         tierRefusalMessage(
-          `The ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`,
-          launchLimitMessage(`You've reached the limit of ${config.maxEvents} active event(s)`, 'Archive an event you no longer need')
+          `The ${plan.name} plan allows a maximum of ${maxEvents} active event(s). Archive an existing event or upgrade your plan to create another.`,
+          launchLimitMessage(`You've reached the limit of ${maxEvents} active event(s)`, 'Archive an event you no longer need'),
+          plan
         ),
         EVENT_LIMIT_REACHED
       );
@@ -101,23 +107,25 @@ export const assertWithinEventLimit = async (tenantId: string, tx?: Prisma.Trans
 // a super admin action): restoring makes it active again, so it is held to
 // the same maxEvents as creating one, against the tenant's current
 // effective tier. An event that has ever held an Event Pass isn't counted
-// as active (countActive), so restoring one never reaches the limit. Worded
-// for whoever restores it, never for a guest.
-export const assertEventRestorable = async (event: { tenantId: string; eventPass: unknown }): Promise<void> => {
-  if (event.eventPass) return;
+// as active (countActive), so restoring one never reaches the limit, and
+// neither is a granted event (custom tiers). Worded for whoever restores it,
+// never for a guest.
+export const assertEventRestorable = async (event: { tenantId: string; eventPass: unknown; eventGrantId: string | null }): Promise<void> => {
+  if (event.eventPass || event.eventGrantId) return;
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const effectiveTier = resolveEffectiveTier(tenant);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (config?.maxEvents == null) return;
-  if ((await eventRepository.countActive(event.tenantId)) < config.maxEvents) return;
+  const plan = await resolveTenantPlan(tenant);
+  const maxEvents = plan.values.maxEvents;
+  if (maxEvents == null) return;
+  if ((await eventRepository.countActive(event.tenantId)) < maxEvents) return;
 
   throw new HttpError(
     403,
     tierRefusalMessage(
-      `This organisation's ${effectiveTier} plan allows a maximum of ${config.maxEvents} active event(s). Archive another of its events, then restore this one.`,
-      `This organisation has reached its limit of ${config.maxEvents} active event(s) during its free trial. Archive another of its events, then restore this one.`
+      `This organisation's ${plan.name} plan allows a maximum of ${maxEvents} active event(s). Archive another of its events, then restore this one.`,
+      `This organisation has reached its limit of ${maxEvents} active event(s) during its free trial. Archive another of its events, then restore this one.`,
+      plan
     ),
     EVENT_LIMIT_REACHED
   );
@@ -154,7 +162,8 @@ export const assertEventRestorable = async (event: { tenantId: string; eventPass
 // function to compare against the event's stored value, which is a
 // larger signature change out of scope for subscription billing.
 export const assertEventUpdatable = async (event: EntitlementDerivableEvent, input: EventTierCheckInput): Promise<void> => {
+  if (!asksForCapability(input)) return;
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  await assertCapabilityGates(resolveEventEntitlement(tenant, event), input);
+  assertCapabilityGates(await resolveEventPlan(tenant, event), input);
 };

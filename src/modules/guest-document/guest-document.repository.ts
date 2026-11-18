@@ -45,6 +45,8 @@ export const guestDocumentRepository = {
             tenantId: true,
             // The event's own entitlement, for its document allowance.
             eventPass: { select: { passTier: true } },
+            grantedTier: true,
+            grantedCustomTierId: true,
             isArchived: true,
             status: true,
             rsvpDeadline: true,

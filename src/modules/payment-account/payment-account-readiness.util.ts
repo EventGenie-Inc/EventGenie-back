@@ -2,9 +2,8 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { type Prisma } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { paymentAccountRepository } from './payment-account.repository.js';
-import { resolveEffectiveTier } from '../subscription/effective-tier.util.js';
-import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
-import { isTierCapabilityEnabled } from '../subscription-tier-config/tier-capabilities.util.js';
+import { resolveEventPlan, resolveTenantPlan } from '../subscription-tier-config/effective-plan.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { paidTicketingRefusal } from '../subscription-tier-config/event-tier-enforcement.util.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -32,9 +31,9 @@ export const assertTenantReadyToSellTickets = async (tenantId: string, db: Db = 
   const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId, db);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const tier = resolveEffectiveTier(tenant);
-  if (!(await isTierCapabilityEnabled(tier, 'paidTicketingEnabled'))) {
-    throw new HttpError(403, paidTicketingRefusal(tier));
+  const plan = await resolveTenantPlan(tenant);
+  if (!plan.values.paidTicketingEnabled) {
+    throw new HttpError(403, paidTicketingRefusal(plan));
   }
 
   if (tenant.paystackSubaccountStatus !== 'ACTIVE' || !tenant.paystackSubaccountCode) {
@@ -68,9 +67,9 @@ export const assertEventReadyToSellTickets = async (event: EntitlementDerivableE
   const tenant = await paymentAccountRepository.findStatusByTenantId(event.tenantId, db);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const tier = resolveEventEntitlement(tenant, event);
-  if (!(await isTierCapabilityEnabled(tier, 'paidTicketingEnabled'))) {
-    throw new HttpError(403, paidTicketingRefusal(tier, true));
+  const plan = await resolveEventPlan(tenant, event);
+  if (!plan.values.paidTicketingEnabled) {
+    throw new HttpError(403, paidTicketingRefusal(plan, true));
   }
 
   if (tenant.paystackSubaccountStatus !== 'ACTIVE' || !tenant.paystackSubaccountCode) {

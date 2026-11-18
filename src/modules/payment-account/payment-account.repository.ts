@@ -27,6 +27,10 @@ export const  paymentAccountRepository = {
         subscriptionCancelAtPeriodEnd: true,
         subscriptionCurrentPeriodEnd: true,
         subscriptionGraceStartedAt: true,
+        // Custom tiers: the effective plan may be a custom tier
+        // (effective-plan.util.ts), so its assignment is read too.
+        customTierId: true,
+        customTierEndsAt: true,
         paystackSubaccountCode: true,
         paystackSubaccountStatus: true,
         paystackBusinessName: true,

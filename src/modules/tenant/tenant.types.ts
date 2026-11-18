@@ -1,5 +1,6 @@
 import { type SubscriptionTier, type SubscriptionStatus } from '@prisma/client';
 import { type PlanSettings } from '../subscription-tier-config/plan-settings.util.js';
+import { type TenantCustomTierView } from '../custom-tier/custom-tier.types.js';
 
 // Deliberate, hand-picked projection — every tenant.router.ts response
 // (me/list/detail/suspend/reactivate) returns exactly this, never the
@@ -17,9 +18,18 @@ export interface ClientTenantDto {
   name: string;
   slug: string;
   email: string;
+  // The effective STANDARD tier (billing). On a custom tier, customTier
+  // below is the plan; this is what the tenant falls back to after it.
   subscriptionTier: SubscriptionTier;
   subscriptionStatus: SubscriptionStatus;
   createdAt: Date;
+  // Custom tiers: the tenant's custom tier while it is current (assigned
+  // and before its end date), else null. Display only: what the plan
+  // allows is planSettings, never this name.
+  customTier: TenantCustomTierView | null;
+  // The internal e-velope organisation that holds event templates (only a
+  // super admin ever sees it).
+  isInternal: boolean;
 }
 
 // Vendor Space limit info — added to the allowlist deliberately (see

@@ -47,6 +47,12 @@ export interface EntitlementDerivableEvent {
   tenantId: string;
   eventPass: EventPassLike | null;
   eventDays: EventDayLike[];
+  // Custom tiers: a granted event's own feature set (both null on any other
+  // event). Plain columns of Event, so every full event row has them; a
+  // hand-built event must say so (subscription-tier-config/
+  // effective-plan.util.ts's resolveEventPlan reads them).
+  grantedTier: SubscriptionTier | null;
+  grantedCustomTierId: string | null;
 }
 
 // DERIVED AT READ TIME from the event's own EventDays — no stored

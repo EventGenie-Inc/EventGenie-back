@@ -1,6 +1,7 @@
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository, type TierConfigRow } from '../subscription-tier-config/subscription-tier-config.repository.js';
-import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { type TierConfigRow } from '../subscription-tier-config/subscription-tier-config.repository.js';
+import { resolveEventPlan } from '../subscription-tier-config/effective-plan.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { GUEST_DOCUMENT_CEILING_BYTES } from '../upload/upload-constants.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { DOCUMENT_ERROR_CODES } from './guest-document.types.js';
@@ -40,7 +41,7 @@ export const documentLimitsFromConfig = (
 export const resolveDocumentLimits = async (event: EntitlementDerivableEvent): Promise<DocumentLimits> => {
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  return documentLimitsFromConfig(await subscriptionTierConfigRepository.findByTier(resolveEventEntitlement(tenant, event)));
+  return documentLimitsFromConfig((await resolveEventPlan(tenant, event)).values);
 };
 
 // "5 MB", "2.5 MB": a limit as a guest reads it.

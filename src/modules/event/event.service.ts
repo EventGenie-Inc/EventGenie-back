@@ -1,3 +1,5 @@
+import { adminAuditService } from '../admin-audit/admin-audit.service.js';
+import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
 import { dayHasVenue } from '../event-day/event-day-venue.util.js';
 import { resolveEventDocumentStorage } from '../storage-retention/document-storage.util.js';
 import { eventRepository } from './event.repository.js';
@@ -276,7 +278,10 @@ export const eventService = {
         limit: guestLimitInfo.limit, // null = unlimited; the object itself is always present
         currentCount: currentGuestCount,
         source: guestLimitInfo.boundByPass ? 'PASS' : 'PLAN',
+        // The effective standard tier; null on a custom tier, which planName
+        // names (display only).
         tenantTier: guestLimitInfo.tenantTier,
+        planName: guestLimitInfo.planName,
         passTier: guestLimitInfo.passTier,
         passActive: guestLimitInfo.passActive,
       },
@@ -390,6 +395,15 @@ export const eventService = {
     if (!event.isArchived) return event;
     await assertEventRestorable(event);
     await eventRepository.reactivate(id, userId);
+    // A super admin action (the route is requireSuperAdmin): audit-logged.
+    if (requestingRole === 'SUPER_ADMIN') {
+      await adminAuditService.record({
+        actorUserId: userId,
+        tenantId: event.tenantId,
+        action: ADMIN_AUDIT_ACTIONS.EVENT_RESTORED,
+        details: { eventId: id, eventName: event.name, archivedAt: event.archivedAt },
+      });
+    }
     return eventService.getById(id, requestingRole, tenantId, true);
   },
 

@@ -1,8 +1,8 @@
 import { tenantRepository } from '../tenant/tenant.repository.js';
-import { subscriptionTierConfigRepository } from '../subscription-tier-config/subscription-tier-config.repository.js';
+import { resolveEventPlan } from '../subscription-tier-config/effective-plan.util.js';
 import { memoryHubRepository } from './memory-hub.repository.js';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { resolveEventEntitlement, type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
+import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { launchLimitMessage, launchUnavailableMessage, tierRefusalMessage } from '../subscription-tier-config/tier-refusal-wording.util.js';
 
 // Called before issuing an upload signature (organiser AND guest paths)
@@ -48,16 +48,16 @@ export const assertMemoryHubAccessible = async (
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-  const effectiveTier = resolveEventEntitlement(tenant, event);
-  const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
-  if (!config?.memoryHubEnabled) {
+  const plan = await resolveEventPlan(tenant, event);
+  if (!plan.values.memoryHubEnabled) {
     throw new HttpError(
       403,
       audience === 'guest'
         ? "This event doesn't have a photo album available."
         : tierRefusalMessage(
-            `The ${effectiveTier} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`,
-            launchUnavailableMessage('Memory Hub')
+            `The ${plan.name} plan does not include Memory Hub. Upgrade to CELEBRATE or ELEVATE to use it.`,
+            launchUnavailableMessage('Memory Hub'),
+            plan
           )
     );
   }
@@ -73,8 +73,8 @@ export const assertMemoryHubAccessible = async (
 export const isMemoryHubTierEnabled = async (event: EntitlementDerivableEvent): Promise<boolean> => {
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) return false;
-  const config = await subscriptionTierConfigRepository.findByTier(resolveEventEntitlement(tenant, event));
-  return !!config?.memoryHubEnabled;
+  const { values } = await resolveEventPlan(tenant, event);
+  return values.memoryHubEnabled;
 };
 
 // null = unlimited, same convention as every other max* column. Used
@@ -89,8 +89,8 @@ export const isMemoryHubTierEnabled = async (event: EntitlementDerivableEvent): 
 export const getMemoryHubQuotaBytes = async (event: EntitlementDerivableEvent): Promise<number | null> => {
   const tenant = await tenantRepository.findById(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Tenant not found');
-  const config = await subscriptionTierConfigRepository.findByTier(resolveEventEntitlement(tenant, event));
-  return config?.maxMemoryHubBytesPerEvent ?? null;
+  const { values } = await resolveEventPlan(tenant, event);
+  return values.maxMemoryHubBytesPerEvent;
 };
 
 // ─────────────────────────────────────────
@@ -122,14 +122,23 @@ export const assertMemoryHubQuotaAvailable = async (
       throw new HttpError(403, "This event's photo album is full, so new photos can't be added right now.");
     }
     const tenant = await tenantRepository.findById(event.tenantId);
-    const effectiveTier = tenant ? resolveEventEntitlement(tenant, event) : 'current';
+    const plan = tenant ? await resolveEventPlan(tenant, event) : null;
     const limitMb = Math.round(maxBytes / (1024 * 1024));
     throw new HttpError(
       403,
       tierRefusalMessage(
-        `This event's Memory Hub has reached its ${limitMb}MB storage limit for the ${effectiveTier} plan. Remove items or upgrade the plan to add more.`,
-        launchLimitMessage(`This event's Memory Hub has reached its ${limitMb}MB storage limit`, 'Remove items to free up space')
+        `This event's Memory Hub has reached its ${limitMb}MB storage limit for the ${plan?.name ?? 'current'} plan. Remove items or upgrade the plan to add more.`,
+        launchLimitMessage(`This event's Memory Hub has reached its ${limitMb}MB storage limit`, 'Remove items to free up space'),
+        plan
       )
     );
   }
+};
+
+// The event's plan, for an organiser refusal's wording only (a custom tier
+// is named, never sold: tier-refusal-wording.util.ts). Null when the tenant
+// is gone.
+export const memoryHubPlanFor = async (event: EntitlementDerivableEvent) => {
+  const tenant = await tenantRepository.findById(event.tenantId);
+  return tenant ? resolveEventPlan(tenant, event) : null;
 };

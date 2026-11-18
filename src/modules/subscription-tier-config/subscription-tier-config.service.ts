@@ -4,6 +4,8 @@ import { normalizeTierLimits } from './tier-limit-validation.util.js';
 import { resolveTierCapability, type TierCapability } from './tier-capabilities.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type SubscriptionTier } from '@prisma/client';
+import { adminAuditService } from '../admin-audit/admin-audit.service.js';
+import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
 
 const TIER_CAPABILITY_LABELS: Record<TierCapability, string> = {
   publicEventsEnabled: 'Public events',
@@ -38,7 +40,7 @@ export const subscriptionTierConfigService = {
     return config;
   },
 
-  create: async (body: CreateSubscriptionTierConfigDto) => {
+  create: async (body: CreateSubscriptionTierConfigDto, actorUserId?: string) => {
     assertCapabilitySettings(body);
     const data = normalizeTierLimits(body);
     // An omitted capability gets that tier's old in-code default, the same
@@ -49,7 +51,12 @@ export const subscriptionTierConfigService = {
 
     const existing = await subscriptionTierConfigRepository.findByTier(data.tier);
     if (existing) throw new Error(`Configuration for tier ${data.tier} already exists`);
-    return subscriptionTierConfigRepository.create(data);
+    const created = await subscriptionTierConfigRepository.create(data);
+    // Platform-wide (every tenant on the tier): audit-logged with no tenant.
+    if (actorUserId) {
+      await adminAuditService.record({ actorUserId, tenantId: null, action: ADMIN_AUDIT_ACTIONS.TIER_CONFIG_CREATED, details: { tier: data.tier, after: created } });
+    }
+    return created;
   },
 
   // A SUPER_ADMIN is the only writer of this table (subscription-tier-
@@ -57,16 +64,29 @@ export const subscriptionTierConfigService = {
   // is the exact number assertVendorSpaceCreatable/resolveVendorSpaceLimit
   // enforce/read at runtime (vendor-tier-enforcement.util.ts) — a change
   // here takes effect on the very next request, no redeploy needed.
-  update: async (tier: SubscriptionTier, body: UpdateSubscriptionTierConfigDto) => {
+  update: async (tier: SubscriptionTier, body: UpdateSubscriptionTierConfigDto, actorUserId?: string) => {
     assertCapabilitySettings(body);
     const data = normalizeTierLimits(body);
 
-    await subscriptionTierConfigService.getByTier(tier);
-    return subscriptionTierConfigRepository.update(tier, data);
+    const before = await subscriptionTierConfigService.getByTier(tier);
+    const after = await subscriptionTierConfigRepository.update(tier, data);
+    if (actorUserId) {
+      await adminAuditService.record({ actorUserId, tenantId: null, action: ADMIN_AUDIT_ACTIONS.TIER_CONFIG_UPDATED, details: { tier, before, after } });
+    }
+    return after;
   },
 
-  setAvailability: async (tier: SubscriptionTier, isAvailable: boolean) => {
-    await subscriptionTierConfigService.getByTier(tier);
-    return subscriptionTierConfigRepository.setAvailability(tier, isAvailable);
+  setAvailability: async (tier: SubscriptionTier, isAvailable: boolean, actorUserId?: string) => {
+    const before = await subscriptionTierConfigService.getByTier(tier);
+    const after = await subscriptionTierConfigRepository.setAvailability(tier, isAvailable);
+    if (actorUserId) {
+      await adminAuditService.record({
+        actorUserId,
+        tenantId: null,
+        action: ADMIN_AUDIT_ACTIONS.TIER_AVAILABILITY_CHANGED,
+        details: { tier, before: before.isAvailable, after: after.isAvailable },
+      });
+    }
+    return after;
   },
 };

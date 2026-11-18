@@ -79,6 +79,7 @@ describe('GET /api/config/features', () => {
       storageDeletion: true,
       storageRetention: true,
       scheduledReminders: true,
+      customTiers: true,
     });
   });
 

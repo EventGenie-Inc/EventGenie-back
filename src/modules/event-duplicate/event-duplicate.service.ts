@@ -1,12 +1,14 @@
 import crypto from 'crypto';
-import { type PlatformRole, type Prisma } from '@prisma/client';
+import { type PlatformRole, type Prisma, type SubscriptionTier } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService, isCreatorLocked } from '../event/event.service.js';
 import { eventRepository } from '../event/event.repository.js';
 import { eventAssignmentRepository } from '../event-assignment/event-assignment.repository.js';
 import { guestRepository } from '../guest/guest.repository.js';
-import { assertEventCreatable, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertEventCreatable, assertPlanAllowsEvent, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { resolveEventPlan } from '../subscription-tier-config/effective-plan.util.js';
+import { tenantRepository } from '../tenant/tenant.repository.js';
 import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from '../event/public-events-availability.util.js';
@@ -101,6 +103,23 @@ export interface CopyEventInput extends DuplicateOptions {
   // Assign the copy to this user (a locked member making it). Default: the
   // creator rule (isCreatorLocked), as on every create path.
   assignCreator?: boolean;
+  // Custom tiers: a granted event (event-grant.service.ts). The copy goes to
+  // the recipient tenant, not the source's, carries the grant's feature set,
+  // and is not counted against the plan's event limit (so neither the limit
+  // nor the creation lock applies); its creation gates (public, additional
+  // fields) are checked against the tenant's plan raised by that feature
+  // set. Never with guests, never paid, never assigned to the creator.
+  // `withinTransaction` runs inside the copy's own transaction (the grant
+  // marks its delivery there, so the two commit together).
+  grant?: GrantedCopy;
+}
+
+export interface GrantedCopy {
+  grantId: string;
+  targetTenantId: string;
+  grantedTier: SubscriptionTier | null;
+  grantedCustomTierId: string | null;
+  withinTransaction: (tx: Prisma.TransactionClient, eventId: string) => Promise<void>;
 }
 
 export interface CopyEventResult {
@@ -124,7 +143,12 @@ export const eventDuplicateService = {
 
   copyEvent: async (sourceEventId: string, input: CopyEventInput, now: Date = new Date()): Promise<CopyEventResult> => {
     const source = await eventDuplicateRepository.findSource(sourceEventId);
-    const tenantId = source.tenantId;
+    const grant = input.grant ?? null;
+    const tenantId = grant ? grant.targetTenantId : source.tenantId;
+
+    if (grant && (input.copyGuests || source.ticketing === 'PAID')) {
+      throw new HttpError(422, "A granted event can't carry guests or sell tickets.", DUPLICATE_ERROR_CODES.GRANT_NOT_COPYABLE);
+    }
 
     if (input.copyGuests && source.visibility === 'PUBLIC') {
       throw new HttpError(
@@ -140,12 +164,15 @@ export const eventDuplicateService = {
     for (const field of source.rsvpFields) requireFieldType(field.fieldType, field.label);
     assertPaidTicketingAvailable(source.ticketing);
     assertPublicEventsAvailable(source.visibility);
-    await assertEventCreatable(tenantId, {
+    const creationInput = {
       visibility: source.visibility,
       ticketing: source.ticketing,
       hasCustomRsvpFields: source.rsvpFields.length > 0,
-    });
-    if (source.ticketing === 'PAID') await assertTenantReadyToSellTickets(tenantId);
+    };
+    if (!grant) {
+      await assertEventCreatable(tenantId, creationInput);
+      if (source.ticketing === 'PAID') await assertTenantReadyToSellTickets(tenantId);
+    }
 
     // ── Dates: every one moves by the same whole number of days ──
     const firstDay = source.eventDays[0];
@@ -191,10 +218,20 @@ export const eventDuplicateService = {
       tenantId,
       eventPass: null,
       eventDays: source.eventDays.map((d, i) => ({ ...d, id: dayIds[i]!, date: shift(d.date)! })),
+      grantedTier: grant?.grantedTier ?? null,
+      grantedCustomTierId: grant?.grantedCustomTierId ?? null,
     };
     if (guestRows.length > 0) await assertGuestsCreatable(entitlementEvent, guestRows.length);
 
-    const assignCreator = input.assignCreator ?? (await isCreatorLocked(input.userId));
+    // A granted copy: the creation gates against the tenant's plan raised by
+    // the grant's feature set (the copy's own entitlement).
+    if (grant) {
+      const tenant = await tenantRepository.findById(tenantId);
+      if (!tenant) throw new HttpError(404, 'Tenant not found');
+      assertPlanAllowsEvent(await resolveEventPlan(tenant, entitlementEvent), creationInput);
+    }
+
+    const assignCreator = grant ? false : (input.assignCreator ?? (await isCreatorLocked(input.userId)));
 
     // ── Files: copied before the transaction, deleted if it fails ──
     const copiedFileIds: string[] = [];
@@ -252,9 +289,12 @@ export const eventDuplicateService = {
       const audit = { createdBy: input.userId, updatedBy: input.userId };
 
       await prisma.$transaction(async (tx) => {
-        // The plan's event limit, counted again under the creation lock.
-        await eventRepository.lockEventCreation(tx, tenantId);
-        await assertWithinEventLimit(tenantId, tx);
+        // The plan's event limit, counted again under the creation lock. A
+        // granted event isn't counted against it.
+        if (!grant) {
+          await eventRepository.lockEventCreation(tx, tenantId);
+          await assertWithinEventLimit(tenantId, tx);
+        }
 
         await eventDuplicateRepository.createEvent(tx, {
           id: newEventId,
@@ -280,6 +320,11 @@ export const eventDuplicateService = {
           registrationAutoApprove: source.registrationAutoApprove,
           ticketsRefundable: source.ticketsRefundable,
           isArchived: false,
+          ...(grant && {
+            eventGrantId: grant.grantId,
+            grantedTier: grant.grantedTier,
+            grantedCustomTierId: grant.grantedCustomTierId,
+          }),
           ...audit,
         });
 
@@ -387,6 +432,8 @@ export const eventDuplicateService = {
           await assertGuestsCreatable(entitlementEvent, guestRows.length, tx);
           await guestRepository.bulkCreateWithInvites(newEventId, input.userId, guestRows, tx);
         }
+
+        if (grant) await grant.withinTransaction(tx, newEventId);
       }, { maxWait: 10_000, timeout: 30_000 });
     } catch (err) {
       // Never hides the refusal: a cleanup that fails is logged, and the

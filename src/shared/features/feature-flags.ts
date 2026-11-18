@@ -72,6 +72,13 @@ export const FEATURE_NAMES = [
   // schedules already made are kept, still SCHEDULED, and a due one is
   // checked against the event as usual (deadline, start) once it is back on.
   'scheduledReminders',
+  // Custom tiers' requests and granted events (custom-tier-request and
+  // event-grant): a tenant asking for a custom tier, the super admin's
+  // request list, event templates and grants, and the grant sweep. Off: those
+  // routes are 404 and the sweep delivers nothing (granted events already
+  // made stay, with their feature set). Custom tiers themselves (the super
+  // admin's tiers, assigning them, and their limits) are not behind it.
+  'customTiers',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

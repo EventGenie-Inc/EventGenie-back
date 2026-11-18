@@ -6,6 +6,8 @@ export const tenantRepository = {
     prisma.tenant.findMany({
       where: { isArchived: false },
       orderBy: { createdAt: 'desc' },
+      // The super admin's list shows each tenant's custom tier by name.
+      include: { customTier: { select: { id: true, name: true, description: true } } },
     }),
 
   findById: (id: string, includeArchived = false) =>

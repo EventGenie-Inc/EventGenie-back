@@ -58,7 +58,7 @@ const setSpark = (values: Partial<Record<'publicEventsEnabled' | 'paidTicketingE
 let tenantId: string; // SPARK
 let userId: string;
 
-const event = () => ({ id: randomUUID(), tenantId, eventPass: null, eventDays: [] });
+const event = () => ({ id: randomUUID(), tenantId, eventPass: null, eventDays: [], grantedTier: null, grantedCustomTierId: null });
 
 const statusOf = async (fn: () => Promise<unknown>): Promise<number | 'ok'> => {
   try {

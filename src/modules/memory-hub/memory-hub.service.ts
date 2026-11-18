@@ -22,6 +22,7 @@ import {
   assertMemoryHubAccessible,
   assertMemoryHubQuotaAvailable,
   getMemoryHubQuotaBytes,
+  memoryHubPlanFor,
   isMemoryHubTierEnabled,
 } from './memory-hub-tier-enforcement.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
@@ -144,7 +145,8 @@ const acceptMemoryUpload = async (
           ? "This event's photo album is full, so new photos can't be added right now."
           : tierRefusalMessage(
               `This upload would take the event's Memory Hub over its storage limit, so it wasn't saved. Remove items or upgrade the plan.`,
-              launchLimitMessage(`This upload wasn't saved, because it would take the event's Memory Hub over its storage limit`, 'Remove items to free up space')
+              launchLimitMessage(`This upload wasn't saved, because it would take the event's Memory Hub over its storage limit`, 'Remove items to free up space'),
+              await memoryHubPlanFor(event)
             )
       );
     }

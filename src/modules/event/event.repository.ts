@@ -145,7 +145,8 @@ export const eventRepository = {
   // (a retroactive maxEvents penalty the "expiry grandfathers, it does
   // not break" principle argues against).
   countActive: (tenantId: string, db: Tx | typeof prisma = prisma) =>
-    db.event.count({ where: { tenantId, isArchived: false, eventPass: null } }),
+    // A granted event (custom tiers, EventGrant) is never counted either.
+    db.event.count({ where: { tenantId, isArchived: false, eventPass: null, eventGrantId: null } }),
 
   // THE EVENT-CREATION LOCK — one per tenant, held until the transaction
   // ends. Every path that creates an event (create below, the wizard's

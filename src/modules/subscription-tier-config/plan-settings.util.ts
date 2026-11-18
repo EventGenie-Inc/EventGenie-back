@@ -1,6 +1,4 @@
-import { type SubscriptionTier } from '@prisma/client';
-import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
-import { resolveTierCapability } from './tier-capabilities.util.js';
+import { type PlanValues } from './effective-plan.util.js';
 import { isFeatureEnabled, type FeatureName } from '../../shared/features/feature-flags.js';
 import { documentLimitsFromConfig } from '../guest-document/guest-document-allowance.util.js';
 
@@ -11,7 +9,9 @@ import { documentLimitsFromConfig } from '../guest-document/guest-document-allow
 //  from the settings themselves, never from the plan's name: a SUPER_ADMIN
 //  can switch any of them on for any tier, the free one included.
 //
-//  Each value is resolved exactly as the server enforces it, from the
+//  Each value is resolved exactly as the server enforces it (from the
+//  effective plan, effective-plan.util.ts: a standard tier, or a custom
+//  tier while current), from the
 //  tier's SubscriptionTierConfig row, with the same fallback when there is
 //  no row: limits unlimited (null), the on/off features off, and the four
 //  capability settings their old in-code rule (tier-capabilities.util.ts).
@@ -71,26 +71,26 @@ const SETTING_FEATURE: Record<FeatureSettingKey, FeatureName> = {
   maxDocumentBytesPerFile: 'documentFields',
 };
 
-export const resolvePlanSettings = async (tier: SubscriptionTier): Promise<PlanSettings> => {
-  const config = await subscriptionTierConfigRepository.findByTier(tier);
-
+// From the effective plan's settings (effective-plan.util.ts: a standard
+// tier with its no-row fallback, or a custom tier), exactly as enforced.
+export const planSettingsFromValues = (values: PlanValues): PlanSettings => {
   const settings: PlanSettings = {
-    maxEvents: config?.maxEvents ?? null,
-    maxGuestsPerEvent: config?.maxGuestsPerEvent ?? null,
-    maxSmsPerMonth: config?.maxSmsPerMonth ?? null,
-    maxVendorSpaces: config?.maxVendorSpaces ?? null,
-    maxMemoryHubBytesPerEvent: config?.maxMemoryHubBytesPerEvent ?? null,
+    maxEvents: values.maxEvents,
+    maxGuestsPerEvent: values.maxGuestsPerEvent,
+    maxSmsPerMonth: values.maxSmsPerMonth,
+    maxVendorSpaces: values.maxVendorSpaces,
+    maxMemoryHubBytesPerEvent: values.maxMemoryHubBytesPerEvent,
     // The same resolution the upload enforces (guest-document-allowance.util.ts).
-    maxDocumentBytesPerEvent: documentLimitsFromConfig(config).maxBytesPerEvent,
-    maxDocumentBytesPerFile: documentLimitsFromConfig(config).maxBytesPerDocument,
-    smsEnabled: config?.smsEnabled ?? false,
-    memoryHubEnabled: config?.memoryHubEnabled ?? false,
-    guestExportEnabled: config?.guestExportEnabled ?? false,
-    vendorMarketplace: config?.vendorMarketplace ?? false,
-    publicEventsEnabled: resolveTierCapability(config, tier, 'publicEventsEnabled'),
-    paidTicketingEnabled: resolveTierCapability(config, tier, 'paidTicketingEnabled'),
-    customRsvpFieldsEnabled: resolveTierCapability(config, tier, 'customRsvpFieldsEnabled'),
-    vendorPriorityPlacement: resolveTierCapability(config, tier, 'vendorPriorityPlacement'),
+    maxDocumentBytesPerEvent: documentLimitsFromConfig(values).maxBytesPerEvent,
+    maxDocumentBytesPerFile: documentLimitsFromConfig(values).maxBytesPerDocument,
+    smsEnabled: values.smsEnabled,
+    memoryHubEnabled: values.memoryHubEnabled,
+    guestExportEnabled: values.guestExportEnabled,
+    vendorMarketplace: values.vendorMarketplace,
+    publicEventsEnabled: values.publicEventsEnabled,
+    paidTicketingEnabled: values.paidTicketingEnabled,
+    customRsvpFieldsEnabled: values.customRsvpFieldsEnabled,
+    vendorPriorityPlacement: values.vendorPriorityPlacement,
   };
 
   for (const [key, feature] of Object.entries(SETTING_FEATURE) as [FeatureSettingKey, FeatureName][]) {

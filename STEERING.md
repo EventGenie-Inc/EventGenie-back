@@ -1805,15 +1805,29 @@ is on) and the on/off settings
 (`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
 `vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
 `customRsvpFieldsEnabled`, `vendorPriorityPlacement`) of the tenant's
-effective plan. One function resolves them, `resolvePlanSettings`
-(`plan-settings.util.ts`), with exactly the server's fallback when the
-tier has no config row; change an enforcement point's fallback and it
-changes too. A setting of a switched-off feature is left out, not sent as
-false. Whether to show, lock or badge a feature comes from these;
-`subscriptionTier` is for display (the plan's name on a billing screen)
-and is never compared in code. They are the tenant's plan: an event's own
-numbers, which an Event Pass can raise, come with the event (its
-`guestLimit`).
+effective plan, a standard tier or a custom tier (see "Custom tiers"). They
+come from the one resolution every check uses (`resolveTenantPlan`,
+`effective-plan.util.ts`), with exactly the server's fallback when a
+standard tier has no config row, turned into these by
+`planSettingsFromValues` (`plan-settings.util.ts`); change an enforcement
+point's fallback and it changes too. A setting of a switched-off feature is
+left out, not sent as false. Whether to show, lock or badge a feature comes
+from these; `subscriptionTier` and `customTier` (the custom tier's name and
+end date, else null) are for display (the plan's name on a billing screen)
+and are never compared in code. They are the tenant's plan: an event's own
+numbers, which an Event Pass or a grant can raise, come with the event (its
+`guestLimit`, with `planName`).
+
+**Every tier check goes through the effective plan**
+(`subscription-tier-config/effective-plan.util.ts`): `resolveTenantPlan` for
+a tenant-scoped check, `resolveEventPlan` for an event-scoped one, and the
+check reads the plan's settings (`plan.values`), never a tier's name; a
+refusal names `plan.name` and passes the plan to `tierRefusalMessage`.
+`resolveEffectiveTier` is the billing derivation only (grace,
+cancel-at-period-end): called by the plan resolution, billing code and the
+`/me` presenter, never by an enforcement point. Never call
+`subscriptionTierConfigRepository.findByTier` from a check either: a custom
+tier has no row there.
 
 **A new tier column needs a per-tier `UPDATE` in its migration.** `null` on a
 numeric limit means unlimited, so a migration that only does `ADD COLUMN`
@@ -1883,6 +1897,14 @@ Whether a feature is locked at all is read from `/me`'s `planSettings`
 Exception: registration-time tier selection is not an upsell surface —
 nobody is upgrading before they have an account.
 
+**A tenant on a custom tier is never sold a plan.** Its refusals use the
+contact wording with its plan named ("... isn't available on your Free
+trial plan. Contact us at admin@e-velope.co.za if you need it.",
+`tierRefusalMessage` with the plan), payments on or off, and its Pricing,
+Subscriptions and upgrade surfaces show the custom tier's name, limits and
+end date with no payment asked (`customTier` on `/me` and
+`/api/subscriptions`). See "Custom tiers".
+
 ### Feature flags
 
 Production can run a reduced feature set while dev keeps everything. One
@@ -1894,7 +1916,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
   `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`,
-  `storageRetention`, `scheduledReminders`.
+  `storageRetention`, `scheduledReminders`, `customTiers`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -2019,6 +2041,15 @@ codebase: a feature is switched off by configuration, **never deleted**.
     is taken at once and judged against the event as it is then (skipped
     if replies have closed or the event has started). The manual Remind
     button is untouched.
+  - `customTiers` off (see "Custom tiers"): requests for a custom tier
+    (`/api/custom-tier-requests`, `/api/admin/custom-tier-requests`), event
+    templates and grants (`/api/admin/event-templates`,
+    `/api/admin/event-grants`) are 404 (a super admin still reaches them,
+    as with every flag), and the grant sweep delivers nothing; a grant to
+    all catches up once it is back on. Granted events already made keep
+    their feature set. Custom tiers themselves (the super admin's tiers,
+    assigning them, their limits, the "ends in 7 days" email) and the audit
+    log are not behind it.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -3159,6 +3190,222 @@ events); the route's `duplicate` scopes the source and calls it.
   transaction. Any failure after a file was copied requests every copied
   file for deletion and deletes it at once where possible (the unsaved
   sweep is the backstop).
+- **For a grant** (`copyEvent` with `grant`, see "Custom tiers"): the copy
+  goes to the recipient tenant, carries the grant's feature set
+  (`eventGrantId`, `grantedTier` / `grantedCustomTierId`), is made by its
+  first active tenant admin, is never assigned, never has guests, is never
+  paid (422 `GRANTED_EVENT_TEMPLATE_NOT_COPYABLE`), and isn't held to the
+  event limit or the creation lock; its creation gates are checked against
+  the tenant's plan raised by that feature set. Duplicating a granted event
+  through the route makes an ordinary event: the grant isn't copied, like a
+  pass.
+
+### Custom tiers
+
+Beside Spark, Celebrate and Elevate (a fixed list: the `SubscriptionTier`
+enum and `SubscriptionTierConfig`), a super admin's own tiers
+(`CustomTier`): a free trial, a group deal, an individual arrangement.
+**Invoiced outside the app: never sold, never charged through Paystack.**
+Module `src/modules/custom-tier/`.
+
+**A custom tier has the standard tiers' settings** (the same limits, `null`
+= unlimited, and switches, validated the same way,
+`tier-limit-validation.util.ts`), a unique name (case-insensitively), a
+description, and `isActive`. Retired (`isActive: false`) it can't be
+assigned, to a tenant or a grant (422 `CUSTOM_TIER_RETIRED`); tenants
+already on it keep it until moved. Never deleted. The migration made the
+first, "Free trial" (`custom_free_trial`), with Celebrate's settings as
+they were (the seed's Celebrate values on a database with no Celebrate row).
+
+**One resolution** (`subscription-tier-config/effective-plan.util.ts`, see
+"Tier enforcement"). `resolvePlanIdentity` (pure): a tenant with
+`customTierId` and no `customTierEndsAt`, or before it, is on its custom
+tier, whatever its billing fields say; otherwise on the standard tier its
+billing gives (`resolveEffectiveTier`). Worked out when read, never swept,
+like the grace period: **after the end date the tenant is back on Spark**
+(its billing has no active subscription, since one blocks the assignment).
+`resolveTenantPlan` gives the plan's settings, `resolveEventPlan` one
+event's:
+
+- **A standard tier with an Event Pass: the pass rule unchanged** — the
+  pass's tier when it ranks above the tenant's, its settings whole
+  (`resolveEventEntitlement`). A tenant on a standard tier is unaffected by
+  custom tiers.
+- **A custom tier with an Event Pass, and any granted event: per setting,
+  the more generous wins** (`mostGenerousPlanValues`): a switch is on if
+  either has it, a limit is the larger, unlimited beats any number. A
+  "Free trial" with 400 guests keeps 400 under a Small pass (50); with a
+  Large pass its Memory Hub is Elevate's unlimited; a pass adds SMS to a
+  trial without it. The pass's own guest number (`EVENT_PASS_GUEST_CAP`)
+  and SMS bundle work as before (`resolveGuestLimit`, `assertSmsSendable`).
+
+Places that list, rank or switch on tiers, and what each does with a custom
+tier: every enforcement point (event creation gates and limit, restore,
+update gates, guests, export, SMS, Memory Hub access and quota, documents,
+paid ticketing and payout readiness, vendor marketplace, vendor spaces)
+reads the effective plan; vendor discovery's priority placement takes the
+standard and custom tiers with `vendorPriorityPlacement`
+(`plansWithCapability`, `isPriorityPlan`); `/me`'s `planSettings` and
+`customTier`; `/api/subscriptions`' `customTier`; the event detail's
+`guestLimit.planName` (`tenantTier` null on a custom tier); the super admin
+tenant list's `customTier`. Not touched, on purpose: the standard tier
+admin (`/api/subscription-tiers`, standard tiers only), subscription
+pricing and `TIER_RANK` in billing (paid standard tiers only), Event Pass
+ranks (`EVENT_PASS_TIER_RANK`, passes only), the pass's tier mapping, and
+sign-up (new tenants are on Spark, never a custom tier).
+
+**Assigning** (super admin, audit-logged):
+
+```
+PUT    /api/admin/tenants/:tenantId/custom-tier
+       { customTierId, endsAt?: 'YYYY-MM-DD' (through that UTC day) | ISO date-time | null,
+         confirmSubscriptionCancelled?: boolean }
+       → 200 { tenantId, customTier: { id, name, description, endsAt }, assignedAt }
+DELETE /api/admin/tenants/:tenantId/custom-tier → 200 { tenantId, customTier: null }
+```
+
+Many tenants share one tier. The end date is optional and must be in the
+future (422 `CUSTOM_TIER_END_DATE_INVALID`). **A tenant with an active
+Paystack subscription** (a subscription code, not cancelled at period end:
+subscribe's own test) is refused, 409 `CUSTOM_TIER_ACTIVE_SUBSCRIPTION`,
+until the super admin cancels it in Paystack and sends
+`confirmSubscriptionCancelled: true`; the tenant's billing state is then
+cleared to Spark in the same write (subscription code and token, tier,
+period, dates), recorded in the audit entry. The internal organisation
+can't be assigned (422 `CUSTOM_TIER_INTERNAL_TENANT`). Taking a tenant off
+puts it on what its billing gives (Spark, normally). **A paid subscription
+landing** (Paystack's `subscription.create`) takes the tenant off its custom
+tier: what it now pays for is its plan (a trial converting).
+
+**Seven days before the end date** the organisation's address
+(`Tenant.email`) is emailed once ("Your <tier> plan ends on <date>"),
+claimed once per assignment and end date (`customTierEndingNoticeSentAt`,
+cleared when either changes), by the hourly sweep
+(`custom-tier-ending.service.ts`, `startCustomTierSweeps`). The end itself
+needs no sweep.
+
+**Not for sale.** Custom tiers are never in `/api/subscriptions/plans` (the
+standard prices only), and subscribe and change-tier take only Celebrate
+or Elevate, monthly or annual (422 `SUBSCRIPTION_PLAN_UNKNOWN` before
+anything is saved or Paystack is called; an unknown tier used to be a 500).
+A tenant on one sees its name, limits and end date (`customTier`,
+`planSettings`), no payment asked, and its refusals carry the contact
+wording ("Tier enforcement").
+
+The super admin's routes (global 404 for anyone else):
+
+```
+GET  /api/admin/custom-tiers          → [CustomTier & { tenantCount }]   (active first; tenantCount = on it now)
+POST /api/admin/custom-tiers          { name, description?, <limits>, <switches> } → 201 CustomTier
+GET  /api/admin/custom-tiers/:id      → CustomTier
+PUT  /api/admin/custom-tiers/:id      { any of those, isActive? } → CustomTier   (409 CUSTOM_TIER_NAME_TAKEN)
+```
+
+**Requests** (behind `customTiers`). A tenant admin asks for a custom tier:
+
+```
+POST  /api/custom-tier-requests  { needs, expectedEvents?, expectedGuests?, contactName, contactEmail, contactPhone?, contactPhoneCountry? }
+      → 201 CustomTierRequest & { adminNotified: boolean }
+GET   /api/custom-tier-requests  → their own, newest first
+GET   /api/admin/custom-tier-requests[?status=NEW|IN_DISCUSSION|ACCEPTED|DECLINED]
+      → [CustomTierRequest & { tenant: { id, name, email } }]
+PATCH /api/admin/custom-tier-requests/:id  { status?, note? }
+      → CustomTierRequest & { tenant, noteEmailed: boolean | null }
+```
+
+Saved, then emailed to admin@e-velope.co.za (`LAUNCH_CONTACT_EMAIL`,
+Reply-To the contact); a failed email never loses it. The super admin moves
+its status (any order) and may reply with a note (at most 1,000
+characters), emailed to the contact (Reply-To the admin address) and kept
+as `adminNote`. Each change is audit-logged against the tenant.
+
+**The contact phone follows every other number's rules**
+(`normalizePhoneToE164`, `resolvePhoneCountry`; see "Guest contact"):
+optional; a number without a country code is read in `contactPhoneCountry`
+(an ISO two-letter code, any case), South Africa when none is sent; one
+written with a country code keeps it; saved in international form
+(`+27821234567`). A number that isn't valid is 422 `CONTACT_PHONE_INVALID`,
+an unknown country 422 `CONTACT_PHONE_COUNTRY_INVALID` (the shared 400s
+re-raised as 422, as at registration); nothing is saved or emailed.
+
+**Granted events** (behind `customTiers`, module `src/modules/event-grant/`).
+The super admin builds a template in **the internal e-velope organisation**
+(`Tenant.isInternal`, `evelope_internal`, made by the migration, stored on
+Elevate, never billed): created with `POST /api/admin/event-templates`
+(`POST /api/events`' body), then edited through the ordinary event routes
+(a super admin may edit any event). No tenant can see it: tenant scoping,
+since no tenant's user is in that organisation. Then grants it:
+
+```
+GET  /api/admin/event-templates/organisation → { id, name }
+GET  /api/admin/event-templates              → its events
+POST /api/admin/event-templates              → 201 the event
+POST /api/admin/event-grants  { sourceEventId, name?, firstDate?: 'YYYY-MM-DD',
+       grantedTier?: 'SPARK'|'CELEBRATE'|'ELEVATE' | grantedCustomTierId?: string,   (exactly one)
+       tenantIds?: string[], toAllTenants?: boolean, allTenantsUntil?: ISO date-time }
+     → 201 EventGrantView
+GET  /api/admin/event-grants, /:id            → EventGrantView(s)
+POST /api/admin/event-grants/:id/recipients { tenantIds } → EventGrantView
+EventGrantView = { id, sourceEventId, sourceEventName, name, firstDate, grantedTier,
+  grantedCustomTier: { id, name } | null, toAllTenants, allTenantsUntil, createdByUserId,
+  createdAt, recipients: [{ tenantId, tenantName, status: 'PENDING'|'DELIVERED'|'FAILED',
+  eventId, failureReason, deliveredAt }] }
+```
+
+Each recipient gets its own copy through the duplicate service (see
+"Duplicating an event", for a grant): a DRAFT with the grant's feature set,
+**not counted against the event limit** (`countActive` leaves out
+`eventGrantId`, and restoring one is never refused for the limit), and an
+email to the organisation's address that it's ready. **Once per tenant**:
+one `EventGrantRecipient` per grant and tenant (unique), claimed before the
+copy and marked DELIVERED in the copy's own transaction; a failed copy is
+FAILED with its reason, retried only when the super admin chooses the
+tenant again; a crash's PENDING is taken again after 15 minutes. Chosen
+tenants are delivered in the request, one at a time (at most 200 a
+request). **A grant to all** reaches every tenant created before
+`allTenantsUntil` (existing ones and sign-ups until then, never the
+internal organisation or an archived one), delivered by the 5-minute sweep
+(`eventGrantService.sweep`, `startEventGrantSweeps`), so a sign-up has it
+within minutes. Refused: a template not in the internal organisation (404
+`EVENT_GRANT_TEMPLATE_NOT_FOUND`), a paid one (422
+`EVENT_GRANT_TEMPLATE_PAID`), no or two feature sets (422
+`EVENT_GRANT_PLAN_REQUIRED`), no recipients or no future date for a grant to
+all (422 `EVENT_GRANT_RECIPIENTS_REQUIRED`), an unknown tenant (422
+`EVENT_GRANT_TENANT_UNKNOWN`), a first date that has passed (422
+`EVENT_GRANT_DATE_INVALID`). A granted event shows `eventGrantId`,
+`grantedTier` and `grantedCustomTierId` on the event's own responses.
+
+### Super admin audit log
+
+Every super admin action that changes a tenant's account, or the platform's
+tiers, is recorded (`AdminAuditEntry`, module `src/modules/admin-audit/`):
+who (`actorUserId`, `actorEmail`), which tenant (`tenantId`, null for a
+platform-wide change), what (`action`), when, and the details. Never
+edited or deleted; no foreign keys, so an entry outlives what it names.
+
+- **The service that acts records it** (`adminAuditService.record`), in its
+  own transaction where it has one, with the details only it knows:
+  `TENANT_SUSPENDED`/`TENANT_REACTIVATED`, `CUSTOM_TIER_ASSIGNED`/`REMOVED`
+  (with any subscription confirmed cancelled), `EVENT_RESTORED`,
+  `EVENT_MEDIA_PURGED`, `EVENT_GRANTED` (per tenant) and
+  `EVENT_GRANT_CREATED`, `EVENT_TEMPLATE_CREATED`,
+  `CUSTOM_TIER_REQUEST_UPDATED`, and platform-wide `CUSTOM_TIER_CREATED`/
+  `UPDATED`, `TIER_CONFIG_CREATED`/`UPDATED`, `TIER_AVAILABILITY_CHANGED`.
+  A new super admin write records its own entry the same way.
+- **Every other super admin write** is recorded by the catch-all
+  (`admin-audit.middleware.ts`, on `/api` before every router): a
+  SUPER_ADMIN's request that isn't a read and succeeds (2xx), unless its
+  service already recorded one, as `API_WRITE` with the method, path,
+  status and the body's field NAMES (never values), against the tenant its
+  path names (an event, a tenant, a user, a guest, a vendor space), else
+  none. Not recorded: `/api/auth`, `/api/terms`, refusals. Written after the
+  response; a failure is reported, never fails the request.
+
+```
+GET /api/admin/tenants/:tenantId/audit-log[?limit=100&before=<createdAt>]
+GET /api/admin/audit-log[?scope=platform&limit&before]
+  → [{ id, actorUserId, actorEmail, tenantId, action, details, createdAt }]   newest first; limit at most 500
+```
 
 ### Reminders
 
@@ -4121,7 +4368,14 @@ eventId })` for a restart) scoped to its own event, since the test
 database holds every test file's queue. `runOnce({ now })` steps past a
 retry's backoff or a lease. The scheduled-reminder worker is the same
 (`reminderScheduleWorker.runOnce({ eventId, now })`), and queues only: a
-test then runs the email-send worker to send.
+test then runs the email-send worker to send. The custom tiers sweeps are
+too, scoped to the test's own tenants: `customTierEndingService.sweep(now,
+{ tenantIds })` and `eventGrantService.sweep({ now, tenantIds })` (a grant
+to all would otherwise reach every tenant in the test database). Tests that
+make custom tiers, grants, requests or audit entries remove them
+(`tests/custom-tiers/custom-tier-fixtures.ts`); a super admin's write
+leaves an audit entry, which has no foreign key, so a test that deletes its
+super admin deletes that user's entries too.
 
 **Every fixture user has accepted the current Terms of Service** unless the
 test says otherwise: the user helpers (`createTestTenantAndUser`,
@@ -4781,6 +5035,26 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   upload refusing a file over `maxDocumentBytes` before sending it and
   showing `DOCUMENT_STORAGE_FULL`; the two plan settings on the super
   admin's tier screen. Remove this entry once built.
+- **Custom tiers need their frontend half** (backend
+  `feature/custom-tiers`): the super admin's custom tier screens (list,
+  create, edit, retire), assigning one on a tenant (with the end date and
+  the subscription confirmation on 409 `CUSTOM_TIER_ACTIVE_SUBSCRIPTION`),
+  the requests list and reply, templates and grants, and the per-tenant
+  audit log; the tenant's request form; `customTier` on `/me` and
+  `/api/subscriptions` shown as the plan (name, limits, end date, no
+  payment) on the Subscriptions page and wherever a plan is named;
+  `guestLimit.planName`; a granted event's badge (`eventGrantId`). Remove
+  this entry once built.
+- **Grants to chosen tenants are delivered in the request**, one copy at a
+  time (at most 200 tenants a request). Fine at pilot scale; a large list
+  could outlast the hosting's request timeout (the copies already made
+  stay, and choosing the rest again delivers only those).
+- **Existing super admin writes through organiser routes are recorded as
+  `API_WRITE`** (method, path, field names), not as named actions with
+  before and after: a later change can give any of them its own entry.
+- **A template's date is fixed.** A grant to all whose first date has
+  passed records FAILED for each later sign-up rather than moving the date;
+  make a new grant with a later date.
 - A deferred technical debt register tracks tenant-isolation and
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —

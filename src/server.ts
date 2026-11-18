@@ -12,6 +12,8 @@ import { startStorageSweeps } from './modules/storage/storage-deletion.worker.js
 import { startStorageRetentionSweeps } from './modules/storage-retention/storage-retention.service.js';
 import { startEmailSendWorker } from './modules/email-send/email-send.worker.js';
 import { startReminderScheduleWorker } from './modules/reminder-schedule/reminder-schedule.worker.js';
+import { startCustomTierSweeps } from './modules/custom-tier/custom-tier-ending.service.js';
+import { startEventGrantSweeps } from './modules/event-grant/event-grant.service.js';
 import { assertStorageEnvValid } from './modules/upload/upload-folders.js';
 
 // ─────────────────────────────────────────
@@ -31,7 +33,10 @@ const PORT = process.env.PORT ?? 5000;
 //     storage sweep (storage-deletion.worker.ts) and the email-send
 //     worker (email-send.worker.ts: queued invitations and reminders,
 //     first whatever a restart left behind) and the scheduled-reminder
-//     worker (reminder-schedule.worker.ts: due schedules into that queue) —
+//     worker (reminder-schedule.worker.ts: due schedules into that queue)
+//     and the custom tiers sweeps (custom-tier-ending.service.ts: the
+//     "your plan ends in 7 days" email; event-grant.service.ts: grants to
+//     every tenant) —
 //     here, not in app.ts, so nothing that imports the app (the tests)
 //     starts a timer
 // ─────────────────────────────────────────
@@ -57,6 +62,8 @@ const start = async (): Promise<void> => {
     startStorageRetentionSweeps();
     startEmailSendWorker();
     startReminderScheduleWorker();
+    startCustomTierSweeps();
+    startEventGrantSweeps();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

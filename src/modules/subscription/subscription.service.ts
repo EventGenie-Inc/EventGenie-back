@@ -8,6 +8,7 @@ import { describePaystackFailure, type PaystackFailureDescription } from '../../
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { subscriptionRepository } from './subscription.repository.js';
 import { resolveEffectiveTier } from './effective-tier.util.js';
+import { resolveTenantPlan } from '../subscription-tier-config/effective-plan.util.js';
 import {
   getPlanCode,
   resolveTierAndPeriodFromPlanCode,
@@ -41,6 +42,24 @@ const toSubscriptionHttpError = (failure: PaystackFailureDescription, fallbackMe
 
 const TIER_RANK: Record<SubscriptionTier, number> = { SPARK: 0, CELEBRATE: 1, ELEVATE: 2 };
 const PERIOD_RANK: Record<SubscriptionPeriod, number> = { MONTHLY: 0, ANNUAL: 1 };
+
+// Only a paid standard tier can be bought: Celebrate or Elevate, monthly or
+// annual. Anything else (Spark, a custom tier's id or name, a typo) is 422
+// SUBSCRIPTION_PLAN_UNKNOWN before anything is saved or Paystack is called:
+// custom tiers are invoiced outside the app and never sold here. Until custom
+// tiers, an unknown tier reached the price lookup and was a 500.
+export const SUBSCRIPTION_PLAN_UNKNOWN = 'SUBSCRIPTION_PLAN_UNKNOWN';
+const PAID_PERIODS: readonly SubscriptionPeriod[] = ['MONTHLY', 'ANNUAL'];
+
+export const parsePlanChoice = (body: unknown): SubscribeDto => {
+  const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const tier = b['tier'];
+  const period = b['period'];
+  if (typeof tier !== 'string' || !isPaidTier(tier as SubscriptionTier) || typeof period !== 'string' || !PAID_PERIODS.includes(period as SubscriptionPeriod)) {
+    throw new HttpError(422, 'Choose Celebrate or Elevate, monthly or annual.', SUBSCRIPTION_PLAN_UNKNOWN);
+  }
+  return { tier: tier as PaidSubscriptionTier, period: period as SubscriptionPeriod };
+};
 
 // ─────────────────────────────────────────
 //  SUBSCRIPTION SERVICE
@@ -79,8 +98,12 @@ export const subscriptionService = {
     const graceDeadline = tenant.subscriptionGraceStartedAt
       ? new Date(tenant.subscriptionGraceStartedAt.getTime() + 5 * 24 * 60 * 60 * 1000)
       : null;
+    // A custom tier while current: its name, description and end date, shown
+    // instead of a plan to pay for (it's invoiced outside the app).
+    const plan = await resolveTenantPlan(tenant);
 
     return {
+      customTier: plan.customTier,
       tier: effectiveTier,
       storedTier: tenant.subscriptionTier,
       period: tenant.subscriptionPeriod,
@@ -117,7 +140,8 @@ export const subscriptionService = {
   // unmatchable. The router does not accept an email param for this
   // reason — there is exactly one correct value, and this function
   // reads it itself.
-  subscribe: async (tenantId: string, dto: SubscribeDto, callbackUrl: string): Promise<CheckoutResult> => {
+  subscribe: async (tenantId: string, body: SubscribeDto, callbackUrl: string): Promise<CheckoutResult> => {
+    const dto = parsePlanChoice(body);
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
@@ -218,7 +242,8 @@ export const subscriptionService = {
   //     boundary is not automatic — it needs the tenant's own
   //     resubscription, since this codebase has no scheduler and
   //     Paystack has no documented future-dated subscription start.
-  changeTier: async (tenantId: string, dto: ChangeTierDto): Promise<ChangeTierResult> => {
+  changeTier: async (tenantId: string, body: ChangeTierDto): Promise<ChangeTierResult> => {
+    const dto: ChangeTierDto = parsePlanChoice(body);
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 

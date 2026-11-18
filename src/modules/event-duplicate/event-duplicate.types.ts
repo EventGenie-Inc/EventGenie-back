@@ -43,4 +43,7 @@ export const DUPLICATE_ERROR_CODES = {
   // copyGuests on a public event: a public event's guests registered
   // themselves, and nobody is registered for the copy on their behalf. 422.
   GUESTS_PUBLIC_EVENT: 'DUPLICATE_EVENT_GUESTS_PUBLIC_EVENT',
+  // A granted event (custom tiers) carries no guests and sells no tickets:
+  // the template must be free. 422.
+  GRANT_NOT_COPYABLE: 'GRANTED_EVENT_TEMPLATE_NOT_COPYABLE',
 } as const;

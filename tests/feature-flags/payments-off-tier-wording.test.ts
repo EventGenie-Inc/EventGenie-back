@@ -92,6 +92,8 @@ const eventFor = (overrides: Partial<{ eventPass: { passTier: 'SMALL' } | null }
   tenantId,
   eventPass: null,
   eventDays: [],
+  grantedTier: null,
+  grantedCustomTierId: null,
   ...overrides,
 });
 
