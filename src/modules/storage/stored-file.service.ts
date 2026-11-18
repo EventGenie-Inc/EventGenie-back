@@ -1,9 +1,9 @@
 import crypto from 'crypto';
-import { type Prisma, type StoredFile, type StoredFileKind, type StoredFileResourceType } from '@prisma/client';
+import { type Prisma, type StoredFile, type StoredFileKind, type StoredFileResourceType, type StoredFileStatus } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { signCloudinaryParams } from '../../shared/cloudinary/cloudinary-signature.util.js';
-import { explicitResource, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
+import { copyAssetFromUrl, explicitResource, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
 import {
   EVENT_COVER_ALLOWED_FORMATS,
   EVENT_COVER_MAX_BYTES,
@@ -138,6 +138,27 @@ export interface AcceptedUpload {
   bytes: number;
 }
 
+export interface CopyFileInput {
+  // The file to copy: its public id, type and (when it has a row) the row's
+  // status. A legacy file with no row passes status null.
+  source: { publicId: string; resourceType: StoredFileResourceType; status: StoredFileStatus | null };
+  kind: 'COVER' | 'INVITATION_DESIGN';
+  tenantId: string;
+  // The event the copy will belong to: names its folder.
+  eventId: string;
+  uploadedByUserId: string;
+}
+
+export interface CopiedFile {
+  fileId: string;
+  publicId: string;
+  secureUrl: string;
+  bytes: number;
+}
+
+const fileCopyFailed = (): HttpError =>
+  new HttpError(503, "We couldn't copy this event's images just now, so nothing was created. Please try again in a moment.", STORAGE_ERROR_CODES.FILE_COPY_FAILED);
+
 const belongsTo = (file: StoredFile, input: AcceptUploadInput): boolean => {
   if (file.kind !== input.kind || file.tenantId !== input.tenantId || file.resourceType !== input.resourceType) return false;
   const usable = file.status === 'SIGNED' || file.status === 'UPLOADED' || (file.status === 'ATTACHED' && !!input.draftId && file.draftId === input.draftId);
@@ -260,6 +281,53 @@ export const storedFileService = {
   // Its size, as Cloudinary confirmed it.
   recordMeasured: (db: Db, id: string, bytes: number, format: string | null, now: Date = new Date()): Promise<void> =>
     storedFileRepository.recordMeasured(id, bytes, format, now, db),
+
+  // ── Copying (a duplicated event's cover and design) ──
+
+  // A new, independent file with the same contents as `source`, in the
+  // copy's own event folder, with its own row: written (SIGNED) before
+  // Cloudinary is asked, then UPLOADED with Cloudinary's size. Its eventId
+  // stays null until the caller attaches it inside the write that creates
+  // the event (the event doesn't exist yet; the folder already names it).
+  //
+  // null, with nothing written, when the source is gone: its row deleted or
+  // requested for deletion (an archived event's purge), or Cloudinary no
+  // longer has it. Cloudinary unreachable or refusing: 503
+  // FILE_COPY_FAILED, the new row (if any) requested for deletion.
+  copyFile: async (input: CopyFileInput, now: Date = new Date()): Promise<CopiedFile | null> => {
+    const { source } = input;
+    if (source.status === 'DELETE_REQUESTED' || source.status === 'DELETED') return null;
+    const resourceType = RESOURCE_TYPE[source.resourceType];
+    if (resourceType === 'raw') throw new Error('Only image and video files are copied');
+
+    const found = await explicitResource(source.publicId, resourceType, 'upload');
+    if (!found.ok && found.notFound) return null;
+    if (!found.ok || !found.secureUrl) {
+      console.error(`[storage] couldn't read a file to copy: ${found.ok ? 'no delivery URL' : found.reason}`);
+      throw fileCopyFailed();
+    }
+
+    const publicId = `${eventFileFolder(input.tenantId, input.eventId, input.kind)}/${crypto.randomUUID()}`;
+    const row = await storedFileRepository.create({
+      publicId,
+      resourceType: source.resourceType,
+      deliveryType: 'UPLOAD',
+      kind: input.kind,
+      tenantId: input.tenantId,
+      eventId: null,
+      uploadedByUserId: input.uploadedByUserId,
+    });
+    const copied = await copyAssetFromUrl(found.secureUrl, publicId, resourceType);
+    if (!copied.ok) {
+      // Cloudinary may have stored it before the answer was lost: the row
+      // makes sure it is deleted either way.
+      await storedFileRepository.requestDeletion({ id: row.id }, now);
+      console.error(`[storage] couldn't copy file ${row.id}: ${copied.reason}`);
+      throw fileCopyFailed();
+    }
+    await storedFileRepository.recordMeasured(row.id, copied.bytes, copied.format, now);
+    return { fileId: row.id, publicId, secureUrl: copied.secureUrl, bytes: copied.bytes };
+  },
 
   // ── Deleting ────────────────────────────
 

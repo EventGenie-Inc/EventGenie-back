@@ -7,7 +7,7 @@ import { eventAssignmentRepository } from '../event-assignment/event-assignment.
 import { HttpError } from '../../shared/errors/http-error.js';
 import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
-import { assertEventCreatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertEventCreatable, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
 import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
 import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions, resolveFieldDescription, assertChoiceOptions } from '../rsvp-field/rsvp-field-validation.util.js';
@@ -231,6 +231,10 @@ export const eventDraftService = {
     const assignCreator = await isCreatorLocked(userId);
 
     const result = await prisma.$transaction(async (tx) => {
+      // Counted again under the tenant's event-creation lock, so two
+      // creations at once can't both pass the plan's event limit.
+      await eventRepository.lockEventCreation(tx, tenantId);
+      await assertWithinEventLimit(tenantId, tx);
       const event = await tx.event.create({
         data: {
           tenantId,

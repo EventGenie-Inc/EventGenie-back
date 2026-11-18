@@ -42,6 +42,8 @@ export const fakeCloudinary = {
   // An upload is stored, then answered with a 500, as when a response is
   // lost after Cloudinary kept the file (a timeout).
   failUploadAfterStoring: false,
+  // Every upload from a URL (copying a file) fails with a 500 while true.
+  failCopy: false,
 
   put(publicId: string, asset: Partial<FakeAsset> & { bytes: number }): void {
     this.assets.set(publicId, {
@@ -67,6 +69,7 @@ export const fakeCloudinary = {
     this.failDestroy.clear();
     this.failExplicit = false;
     this.failUploadAfterStoring = false;
+    this.failCopy = false;
   },
 };
 
@@ -136,6 +139,24 @@ const handle = async (url: URL, init: RequestInit | undefined): Promise<Response
   if (action === 'destroy') {
     if (fakeCloudinary.failDestroy.has(publicId)) return json(500, { error: { message: 'fake destroy failure' } });
     return json(200, { result: fakeCloudinary.assets.delete(publicId) ? 'ok' : 'not found' });
+  }
+  if (action === 'upload' && /^https:\/\//.test(params['file'] ?? '')) {
+    // Upload from a URL (a duplicated event's files): a copy of the asset
+    // that URL delivers, which must still be here (a deleted one is
+    // Cloudinary's "Error in loading"). Refused while failCopy is set.
+    if (fakeCloudinary.failCopy) return json(500, { error: { message: 'fake copy failure' } });
+    const source = /\/(?:image|video)\/upload\/(?:v\d+\/)?(.+)\.[a-z0-9]+$/.exec(params['file']!)?.[1] ?? '';
+    const asset = fakeCloudinary.assets.get(source);
+    if (!asset) return json(400, { error: { message: `Error in loading ${params['file']} - 404 Not Found` } });
+    if (params['overwrite'] === 'false' && fakeCloudinary.assets.has(publicId)) return json(400, { error: { message: 'already exists' } });
+    fakeCloudinary.put(publicId, { ...asset, createdAt: new Date().toISOString() });
+    const cloud = url.pathname.split('/').filter(Boolean)[1];
+    return json(200, {
+      public_id: publicId,
+      bytes: asset.bytes,
+      format: asset.format,
+      secure_url: `https://res.cloudinary.com/${cloud}/${asset.resourceType}/upload/v1700000001/${publicId}.${asset.format}`,
+    });
   }
   if (action === 'upload') {
     const size = Number((params['file'] ?? '').match(/<file:(\d+)>/)?.[1] ?? 0);

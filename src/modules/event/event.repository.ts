@@ -144,8 +144,20 @@ export const eventRepository = {
   // this is permanent rather than re-counting the moment a pass expires
   // (a retroactive maxEvents penalty the "expiry grandfathers, it does
   // not break" principle argues against).
-  countActive: (tenantId: string) =>
-    prisma.event.count({ where: { tenantId, isArchived: false, eventPass: null } }),
+  countActive: (tenantId: string, db: Tx | typeof prisma = prisma) =>
+    db.event.count({ where: { tenantId, isArchived: false, eventPass: null } }),
+
+  // THE EVENT-CREATION LOCK — one per tenant, held until the transaction
+  // ends. Every path that creates an event (create below, the wizard's
+  // materialize, duplicating an event) takes it and then counts the plan's
+  // active events (assertWithinEventLimit with the tx), so two creations at
+  // once queue, and the second counts the first. A transaction-scoped
+  // advisory lock, not the Tenant row: nothing that updates the tenant
+  // (billing, team changes) waits on an event being created.
+  // $executeRaw: pg_advisory_xact_lock returns void, which $queryRaw can't read.
+  lockEventCreation: async (tx: Tx, tenantId: string): Promise<void> => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`event-creation:${tenantId}`}, 0))`;
+  },
 
   // Public self-registration entry point (G2) — resolves an event from
   // its unguessable shareToken alone, no tenant/session context
@@ -227,9 +239,14 @@ export const eventRepository = {
     data: CreateEventDto,
     assignCreator = false,
     coverFileId: string | null = null,
-    afterCreate?: (tx: Tx, eventId: string) => Promise<void>
+    afterCreate?: (tx: Tx, eventId: string) => Promise<void>,
+    // Under the tenant's event-creation lock, before the event is written:
+    // the service's plan-limit check (assertWithinEventLimit with the tx).
+    beforeCreate?: (tx: Tx) => Promise<void>
   ) =>
     prisma.$transaction(async (tx) => {
+      await eventRepository.lockEventCreation(tx, tenantId);
+      if (beforeCreate) await beforeCreate(tx);
       const event = await tx.event.create({
         data: {
           tenantId,

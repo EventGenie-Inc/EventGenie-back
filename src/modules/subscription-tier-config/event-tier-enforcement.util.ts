@@ -1,4 +1,4 @@
-import { type EventVisibility, type EventTicketing, type SubscriptionTier } from '@prisma/client';
+import { type EventVisibility, type EventTicketing, type SubscriptionTier, type Prisma } from '@prisma/client';
 import { tenantRepository } from '../tenant/tenant.repository.js';
 import { subscriptionTierConfigRepository } from './subscription-tier-config.repository.js';
 import { eventRepository } from '../event/event.repository.js';
@@ -63,13 +63,27 @@ export const assertEventCreatable = async (tenantId: string, input: EventTierChe
 
   const effectiveTier = resolveEffectiveTier(tenant);
   await assertCapabilityGates(effectiveTier, input);
+  await assertWithinEventLimit(tenantId);
+};
 
-  // maxEvents is read from SubscriptionTierConfig for every tier (including
-  // SPARK) rather than hardcoded, so a Super Admin changing the config
-  // takes effect immediately without a code change.
+// The plan's active-event limit alone, against the tenant's current
+// effective tier: 403 EVENT_LIMIT_REACHED. assertEventCreatable runs it
+// first, with every other refusal; each create path (POST /api/events, the
+// wizard's materialize, duplicating an event) runs it AGAIN inside its
+// write, with `tx`, after taking the tenant's event-creation lock
+// (eventRepository.lockEventCreation), so two creations at once can't both
+// pass a limit only one of them fits.
+//
+// maxEvents is read from SubscriptionTierConfig for every tier (including
+// SPARK) rather than hardcoded, so a Super Admin changing the config
+// takes effect immediately without a code change.
+export const assertWithinEventLimit = async (tenantId: string, tx?: Prisma.TransactionClient): Promise<void> => {
+  const tenant = await tenantRepository.findById(tenantId);
+  if (!tenant) throw new HttpError(404, 'Tenant not found');
+  const effectiveTier = resolveEffectiveTier(tenant);
   const config = await subscriptionTierConfigRepository.findByTier(effectiveTier);
   if (config?.maxEvents != null) {
-    const activeCount = await eventRepository.countActive(tenantId);
+    const activeCount = await eventRepository.countActive(tenantId, tx);
     if (activeCount >= config.maxEvents) {
       throw new HttpError(
         403,

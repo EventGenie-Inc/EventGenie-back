@@ -218,6 +218,55 @@ export const explicitResource = async (
 };
 
 // ─────────────────────────────────────────
+//  COPYING AN ASSET — a duplicated event's cover and design
+//  (storedFileService.copyFile)
+//
+//  A signed Upload API call whose `file` is the source's delivery URL:
+//  Cloudinary fetches it and stores an independent asset at `publicId`
+//  (the full path, folder included). `overwrite: false`, so a copy can
+//  never replace an existing asset. Never throws.
+// ─────────────────────────────────────────
+export type CopyAssetResult =
+  | { ok: true; publicId: string; bytes: number; format: string | null; secureUrl: string }
+  | { ok: false; reason: string };
+
+export const copyAssetFromUrl = async (
+  sourceUrl: string,
+  publicId: string,
+  resourceType: 'image' | 'video'
+): Promise<CopyAssetResult> => {
+  let config: CloudinaryConfig;
+  try {
+    config = requireCloudinaryConfig();
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : 'Cloudinary is not configured' };
+  }
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signed: Record<string, string | number> = { overwrite: 'false', public_id: publicId, timestamp };
+  const body = new URLSearchParams({
+    file: sourceUrl,
+    ...Object.fromEntries(Object.entries(signed).map(([k, v]) => [k, String(v)])),
+    api_key: config.apiKey,
+    signature: signCloudinaryParams(signed, config.apiSecret),
+  });
+  try {
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${config.cloudName}/${resourceType}/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(UPLOAD_API_TIMEOUT_MS),
+    });
+    const json = (await res.json().catch(() => ({}))) as { public_id?: string; bytes?: number; format?: string; secure_url?: string; error?: { message?: string } };
+    if (!res.ok || json.public_id !== publicId || typeof json.bytes !== 'number' || typeof json.secure_url !== 'string') {
+      return { ok: false, reason: json.error?.message ?? `HTTP ${res.status}` };
+    }
+    return { ok: true, publicId, bytes: json.bytes, format: json.format ?? null, secureUrl: json.secure_url };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : 'Unknown error' };
+  }
+};
+
+// ─────────────────────────────────────────
 //  LISTING — the weekly reconciliation only (storage-reconciliation.service.ts)
 //
 //  Admin API, GET, read-only: one page (up to 500) of the assets of one

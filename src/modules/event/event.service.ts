@@ -4,7 +4,7 @@ import { eventRepository } from './event.repository.js';
 import { type CreateEventDto, type UpdateEventDto } from './event.types.js';
 import { type PlatformRole, type EventStatus, type EventTicketing, type EventVisibility } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { assertEventCreatable, assertEventRestorable, assertEventUpdatable } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { assertEventCreatable, assertEventRestorable, assertEventUpdatable, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { withMediaRetention } from './event-media-retention.util.js';
 import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
@@ -314,7 +314,9 @@ export const eventService = {
       data,
       await isCreatorLocked(userId),
       coverFileId,
-      coverFileId ? (tx, eventId) => storedFileService.attach(tx, coverFileId, { eventId }) : undefined
+      coverFileId ? (tx, eventId) => storedFileService.attach(tx, coverFileId, { eventId }) : undefined,
+      // Counted again under the tenant's event-creation lock.
+      (tx) => assertWithinEventLimit(tenantId, tx)
     );
   },
 

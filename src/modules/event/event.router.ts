@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { eventService } from './event.service.js';
 import { announcementService } from '../announcement/announcement.service.js';
+import { eventDuplicateService } from '../event-duplicate/event-duplicate.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin, requireEventAdminOrVendor, requireSuperAdmin } from '../../shared/middleware/role.middleware.js';
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
@@ -62,6 +63,17 @@ router.post('/', authenticate, requireEventAdmin, async (req: Request, res: Resp
       return;
     }
     const event = await eventService.create(tenantId, auth.user.id, req.body);
+    res.status(201).json({ status: 'ok', data: event });
+  } catch (err) { next(err); }
+});
+
+// Duplicate: a new unpublished draft with this event's setup (STEERING
+// "Duplicating an event"). Body { name, firstDate, copyGuests? }. Live,
+// finished, cancelled and archived events can all be duplicated.
+router.post('/:id/duplicate', authenticate, requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const event = await eventDuplicateService.duplicate(req.params['id'] as string, auth.user.id, auth.user.role, auth.user.tenantId, req.body);
     res.status(201).json({ status: 'ok', data: event });
   } catch (err) { next(err); }
 });

@@ -274,8 +274,9 @@ assignment moves them from a few resources to all of them, so it is 409
 `ASSIGNMENT_LOCK_RELEASE` unless the request carries `confirmWidening:
 true` (`assertReleaseConfirmed`). A row for an archived resource still
 counts as an assignment, so archiving someone's last event never widens
-them either. A locked member who creates an event (direct create or the
-wizard's materialize) is assigned to it in the same transaction.
+them either. A locked member who creates an event (direct create, the
+wizard's materialize, or duplicating one) is assigned to it in the same
+transaction.
 
 ### Guest-facing responses
 
@@ -625,6 +626,16 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   (`20261105090000_stored_files`) for every file a record referenced, so
   they are deleted properly from now on. Nothing was deleted by it. Files no
   record references are left alone.
+- **Copying a file** (a duplicated event's cover and uploaded design,
+  `storedFileService.copyFile`) makes a new, independent file in the new
+  owner's own folder, never a shared one: its row is written (SIGNED)
+  before Cloudinary is asked, Cloudinary copies the source by its delivery
+  URL (`copyAssetFromUrl`, `overwrite: false`), and the row becomes UPLOADED
+  with Cloudinary's size, then ATTACHED inside the write that creates its
+  owner. A source already gone (its row DELETE_REQUESTED or DELETED, or
+  Cloudinary no longer has it) gives no copy and no error. Cloudinary
+  failing is 503 `FILE_COPY_FAILED`, the started copy requested for
+  deletion. Deleting or replacing either file never touches the other.
 - **The weekly reconciliation** (`storage-reconciliation.service.ts`,
   claimed once per ISO week) lists this environment's prefix in Cloudinary
   (Admin API, read-only) against `StoredFile`: orphans (no row, or a row
@@ -1574,10 +1585,18 @@ Memory Hub download (`POST /api/events/:eventId/memory-hub/download`): 422
 `MEMORY_HUB_DOWNLOAD_RATE_LIMIT`.
 
 The plan's active-event limit: 403 `EVENT_LIMIT_REACHED`, on creating an
-event (`POST /api/events`, the wizard's materialize) and on restoring an
-archived one (`POST /api/events/:id/reactivate`, "Archive another of its
-events, then restore this one."), told apart from the other tier 403s. It
-was uncoded until 2026-10. Archived-event media (see "Archived events:
+event (`POST /api/events`, the wizard's materialize, duplicating an event)
+and on restoring an archived one (`POST /api/events/:id/reactivate`,
+"Archive another of its events, then restore this one."), told apart from
+the other tier 403s. It was uncoded until 2026-10. Every create path counts
+it a second time inside its write, after taking the tenant's
+**event-creation lock** (`eventRepository.lockEventCreation`, a
+transaction-scoped advisory lock per tenant, not the Tenant row), so two
+creations at once can't both pass a limit only one fits
+(`assertWithinEventLimit` with the transaction). Until 2026-11 nothing
+locked it. Duplicating an event (see "Duplicating an event"): 422
+`DUPLICATE_EVENT_DATE_INVALID`, 422 `DUPLICATE_EVENT_GUESTS_PUBLIC_EVENT`,
+503 `FILE_COPY_FAILED` (Cloudinary couldn't copy a file; nothing created). Archived-event media (see "Archived events:
 Memory Hub retention"), `POST /api/admin/events/:eventId/media-purge`: 409
 `EVENT_NOT_ARCHIVED` (a live event's media is never purged) and 409
 `MEDIA_PURGE_ALREADY_STARTED` (this archiving's purge has begun or
@@ -3064,6 +3083,82 @@ The body, every key optional (a key left out leaves that part alone):
   and items, Memory Hub and Event Pass, effective status, plus
   `acceptedGuestCount` and `guestLimit`), so the wizard can re-baseline
   from it.
+
+### Duplicating an event
+
+`POST /api/events/:id/duplicate`, organiser only (`requireEventAdmin`),
+the source scoped like every event lookup (`eventService.getById`, tenant
+and assignment lock; another tenant's or an unassigned event is 404).
+Live, finished, cancelled and archived events can all be duplicated; the
+source is only read. The engine is `eventDuplicateService.copyEvent`
+(`src/modules/event-duplicate/`), callable without a request for a caller
+that has already decided the source may be copied (later: plans granting
+events); the route's `duplicate` scopes the source and calls it.
+
+```
+{ name: string, firstDate: 'YYYY-MM-DD', copyGuests?: boolean }   // copyGuests off by default
+→ 201 { status: 'ok', data: <GET /api/events/:id's data for the copy> & {
+        duplication: { sourceEventId, shiftDays, coverCopied, designCopied,
+                       coverMissing, designMissing, guestsCopied,
+                       clearedDates: ('rsvpDeadline' | 'registrationClosesAt')[] } } }
+```
+
+- **The copy** is a new DRAFT (unpublished, never archived or cancelled) in
+  the source's organisation, created by the caller. Nothing is sent.
+- **Dates**: the first live day moves to `firstDate`, and every other date
+  moves by the same whole number of days (`shiftDays`): later days (keeping
+  their spacing), day start and end times, program items, the RSVP
+  deadline, the registration closing date and the Memory Hub's opening.
+  `firstDate` follows the day rule (422 `EVENT_DAY_DATE_IN_PAST`); missing
+  or not a date, 422 `DUPLICATE_EVENT_DATE_INVALID`. A deadline or closing
+  date the shift leaves in the past is left empty instead (listed in
+  `clearedDates`). An event with no days keeps its dates as they were.
+- **Copied**: name (the new one), description, host name, capacity,
+  visibility, ticketing, tickets-refundable, the live days (label, venue and
+  coordinates, VENUE/ONLINE and online link, open for registration), the
+  live program (title, shown to guests or not, items with their days;
+  an item on a removed day isn't copied), the live questions with every
+  setting (type, required, options, description, order; document
+  questions included), registration settings (email domains, cap, closing
+  date, plus-ones, auto-approve), Memory Hub settings (title, description,
+  opening; a public hub gets its own new share link), the invitation
+  design (a template as it is; an upload as a copied file), the cover (an
+  upload as a copied file, an external link as it is).
+- **Files** are new files in the copy's own folder with their own
+  StoredFile rows (see "Storage"), copied before the transaction. One
+  already gone (purged after archiving, say) means the copy has none:
+  `coverMissing`/`designMissing`, no error.
+- **Guests, only with `copyGuests: true`**: live guests who aren't
+  plus-ones and aren't awaiting approval (removed and declined ones are
+  archived, so never copied), with names, email, phone and plus-ones
+  allowed, and their days mapped to the copy's (a guest whose every day was
+  removed from the source gets every day of the copy). Each gets a fresh,
+  unsent PENDING invitation, because that is where a guest's days are
+  recorded (as for any guest an organiser adds). Never their replies,
+  statuses, documents, check-ins, short codes, tokens or self-registration
+  marker. A public event's guests registered themselves: `copyGuests` on a
+  public event is 422 `DUPLICATE_EVENT_GUESTS_PUBLIC_EVENT`. The plan's
+  guest limit applies (the existing 403), before anything is copied.
+- **Never copied**: invitations as sent, RSVP answers and per-day replies,
+  check-ins, Memory Hub photos and videos, guests' documents, tickets and
+  sales, Event Passes and SMS bundles, reminder schedules and reminder
+  logs, announcements, email sends, short links, the event's share token
+  (the copy makes its own when asked), organiser feedback and consent
+  records, retention and purge claims, and the source's team assignments.
+- **Assignment**: the copy follows the create rule: a locked member who
+  duplicates is assigned to the copy, in the same transaction; anyone else
+  isn't, and the source's other assignments are not carried over.
+- **The plan**: the same rules as creating an event: the active-event limit
+  (403 `EVENT_LIMIT_REACHED`, re-counted under the creation lock, see
+  "Errors"), and the creation gates for what the copy carries (public,
+  paid with its payout account, additional fields, document questions while
+  `documentFields` is off). A source that was public or had additional
+  fields thanks to an Event Pass is refused on a plan without them; the
+  pass isn't copied.
+- **All or nothing**: files are copied first, then everything else in one
+  transaction. Any failure after a file was copied requests every copied
+  file for deletion and deletes it at once where possible (the unsaved
+  sweep is the backstop).
 
 ### Reminders
 

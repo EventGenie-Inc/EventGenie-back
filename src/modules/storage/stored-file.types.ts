@@ -7,4 +7,7 @@ export const STORAGE_ERROR_CODES = {
   UPLOAD_ALREADY_USED: 'UPLOAD_ALREADY_USED',
   // Cloudinary couldn't be asked the file's size just now. 503.
   UPLOAD_NOT_READY: 'UPLOAD_NOT_READY',
+  // A file couldn't be copied just now (Cloudinary unreachable or refused):
+  // a duplicated event's cover or design. Nothing was created. 503.
+  FILE_COPY_FAILED: 'FILE_COPY_FAILED',
 } as const;
