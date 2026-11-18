@@ -47,4 +47,8 @@ export interface EmailSendProgress {
   finishedAt: string | null;
   failures: EmailSendGuest[];
   skippedGuests: EmailSendGuest[];
+  // Texts that went but whose delivery report said they didn't arrive
+  // (sms.undelivered of them), shaped like failures: channel 'SMS',
+  // contact the number, reason the report's in words.
+  undeliveredTexts: EmailSendGuest[];
 }

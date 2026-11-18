@@ -202,6 +202,18 @@ export const emailSendRepository = {
       },
     }),
 
+  // This send's texts that went but whose delivery report said they never
+  // arrived (counted in sms.undelivered), with who they were for.
+  findUndeliveredTexts: (sendId: string) =>
+    prisma.emailSendItem.findMany({
+      where: { sendId, channel: 'SMS', status: 'SENT', deliveryStatus: 'FAILED' },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        deliveryError: true,
+        invite: { select: { guestId: true, guest: { select: { firstName: true, surname: true, email: true, phoneNumber: true } } } },
+      },
+    }),
+
   // This send's texts that went, by where they got to (SENT, then
   // DELIVERED or FAILED from their delivery reports).
   countSmsByDelivery: (sendId: string) =>

@@ -131,6 +131,23 @@ describe('a signed delivery report', () => {
     expect((await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).smsStatus).toBe('DELIVERED');
   }, 60000);
 
+  it('lists an undelivered text on the send’s progress by name, number and reason, like failures', async () => {
+    const { tenant, event, invite, sendId } = await sentText();
+    const before = await emailSendService.getProgress(event.id, sendId, 'TENANT_ADMIN', tenant.id);
+    expect(before.undeliveredTexts).toEqual([]);
+
+    expect((await post({ eventId: 777001, status: 'UNDELIV' })).status).toBe(200);
+    const progress = await emailSendService.getProgress(event.id, sendId, 'TENANT_ADMIN', tenant.id);
+    expect(progress.sms).toEqual({ sent: 1, delivered: 0, undelivered: 1, awaitingReport: 0 });
+    const reason = (await prisma.invite.findUniqueOrThrow({ where: { id: invite.id } })).smsStatusReason;
+    expect(reason).toBeTruthy();
+    expect(progress.undeliveredTexts).toEqual([
+      { guestId: invite.guestId, name: 'Phone Guest', contact: '+27825550401', channel: 'SMS', reason },
+    ]);
+    // Went, so not a failure.
+    expect(progress.failures).toEqual([]);
+  }, 60000);
+
   it('confirms a text that ended unconfirmed: SENT after all, its parts counted once', async () => {
     const { invite, item } = await sentText({ status: 'UNKNOWN', reason: 'timeout' });
     expect(item).toMatchObject({ status: 'FAILED', lastError: UNCONFIRMED_SMS });

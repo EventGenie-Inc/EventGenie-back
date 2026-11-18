@@ -788,12 +788,18 @@ limit counts the emails only; texts are counted by the SMS quota or bundle.
   otherwise) answers `{ id, kind: 'INVITATION' | 'REMINDER', createdAt,
   total, queued, sent, failed, skipped, sms: { sent, delivered,
   undelivered, awaitingReport }, done, finishedAt, failures,
-  skippedGuests }`. The counts cover emails and texts together; `sms`
-  breaks down the texts that went by their delivery reports. `queued`
-  counts waiting and in flight; `done` is `queued === 0`; `failures` and
-  `skippedGuests` are `{ guestId, name, contact, channel: 'EMAIL' | 'SMS',
-  reason }` (`contact` the email, or the phone for a text), the reason in
-  words.
+  skippedGuests, undeliveredTexts }`. The counts cover emails and texts
+  together; `sms` breaks down the texts that went by their delivery
+  reports. `queued` counts waiting and in flight; `done` is `queued ===
+  0`; `failures`, `skippedGuests` and `undeliveredTexts` are `{ guestId,
+  name, contact, channel: 'EMAIL' | 'SMS', reason }` (`contact` the
+  email, or the phone for a text), the reason in words.
+  `undeliveredTexts` are the `sms.undelivered` texts: they went (counted in
+  `sent`, never in `failures`) but their delivery report said they didn't
+  arrive; `channel` is always `'SMS'` and `reason` the report's in words
+  (the item's `deliveryError`, the same words as the guest's
+  `smsStatusReason`). It fills as reports come in, so it can grow after
+  `done`.
 - **What the buttons answer.** `POST /invites/send`: `{ totalSelected,
   sendId, queued, sent, failed, failures, skipped, skippedGuests }`:
   `sendId` the new send (null if nothing was queued), `queued` its emails
@@ -1353,8 +1359,9 @@ failed send) returns the same generic 200.
 
 One trio: `CONTACT_PHONE_INVALID`, `CONTACT_PHONE_COUNTRY_INVALID` and
 `CONTACT_LAST_REMOVED` (`POST /api/rsvp/submit`, all 422) tell the RSVP
-form which contact field to mark: a number that isn't a real one ("Use the
-format +27 82 123 4567" when written with a country code, "'082555' is not
+form which contact field to mark: a number that isn't a real one ("Enter a
+valid phone number" when written with a country code, country-neutral; "Use
+the format +27 82 123 4567" until 2026-11; "'082555' is not
 a valid phone number" without one, "… for GB" with another country
 selected), a `phoneCountry` that isn't a country code we know ("Choose a
 country for this phone number from the list."), and a guest removing their
@@ -1404,7 +1411,10 @@ Answers to the event's own questions, at RSVP submit and at registration
 alike (`rsvp-answers.util.ts`, one helper for both): `RSVP_ANSWER_REQUIRED`
 (422, a required question left blank by someone attending: "Please answer
 'Dietary needs'. The organiser needs this to plan for you."),
-`RSVP_ANSWER_INVALID` (422, not its question's type: EMAIL, PHONE, NUMBER,
+`RSVP_ANSWER_INVALID` (422, not its question's type: EMAIL, PHONE ("Enter
+a valid phone number for 'Emergency contact'.", or "Choose a country for
+the phone number in 'Emergency contact' from the list." for an unknown
+`phoneCountry`; see "Phone numbers" under "Guest contact"), NUMBER,
 a DROPDOWN answer that isn't one of its options, "Choose one of the
 options for 'T-shirt size'.", or a CHECKBOX answer other than exactly
 "true" or "false", "Tick the box for 'Need parking', or leave it
@@ -2798,9 +2808,26 @@ organiser create and edit, RSVP, self-registration and spreadsheet import.
   import with the row's `code`), `CONTACT_PHONE_COUNTRY_INVALID` for an
   unknown `phoneCountry`. The full metadata (`libphonenumber-js/max`) is
   used, and a South African number must have 9 digits after `+27`: the
-  library's ZA data also calls `+2782555` "valid".
+  library's ZA data also calls `+2782555` "valid". A number written with a
+  country code that isn't real says "Enter a valid phone number"
+  (`PHONE_FORMAT_MESSAGE`, country-neutral; "Use the format +27 82 123
+  4567" until 2026-11).
 - Until 2026-11 a number without a country code was refused
   ("missing a country code", `CONTACT_PHONE_NOT_INTERNATIONAL`).
+- **Answers to PHONE questions follow the same rule** (the event's own
+  questions, RSVP submit and self-registration; `rsvp-answers.util.ts`'s
+  `phoneAnswer`): with a country code, that country; without one, the
+  answer's own optional `phoneCountry` (`rsvpResponses: [{ rsvpFieldId,
+  value: '07911 123456', phoneCountry: 'GB' }]`), South Africa when none
+  is sent. **Stored in international form** (`+447911123456`), and answered
+  back so (the submit response, `/rsvp/validate`, the organiser's guest
+  details, the export read the stored value). `phoneCountry` is read on a
+  PHONE answer only, and is never stored. Refused as `RSVP_ANSWER_INVALID`
+  (422, see "Machine-readable codes"), never a `CONTACT_*` code: the form
+  marks the question, not the contact field. A `phoneCountry` that isn't
+  text is a malformed answer (400). Until 2026-11 a PHONE answer had to be
+  written with a country code and was stored as typed; answers stored then
+  are left as they are.
 
 Whether a saved number can be **texted** is a separate, narrower check
 (South African mobiles only; see "SMS (SMSPortal)").
@@ -4085,13 +4112,16 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **Scheduled reminders are email only**, whatever `sms` says (a text
   costs quota nobody was there to approve); an SMS-only guest is counted in
   `skippedOther`.
-- **The frontend doesn't follow the 2026-11 SMS and phone changes yet**:
-  **no `/r/:code` route, so a text's short link opens nothing until it is
-  built** (see "Short links"); no country selector beside phone fields
-  (`phoneCountry`), its phone rule
-  still refuses a local number with "missing a country code"; nothing
-  shows a guest's `smsStatus`/`smsStatusReason` or a send's `sms` counts;
-  `failures[].code` and the resend's FAILED `code` aren't read.
+- **The frontend follows the 2026-11 SMS and phone changes** (frontend
+  `feature/sms-smsportal`): the `/r/:code` route, the country selector
+  beside contact phone fields (`phoneCountry`), `smsStatus` and the send's
+  `sms` counts, and the failure codes. **Not yet the later phone
+  changes** (backend `fix/phone-rules`): its own PHONE-question rule
+  (`shared/forms/phone-validation.ts`, the RSVP form) still refuses a
+  number without a country code, so the form refuses what the server now
+  accepts; there is no `phoneCountry` per answer; its
+  `PHONE_FORMAT_MESSAGE` still says "Use the format +27 82 123 4567"; and
+  the send's `undeliveredTexts` aren't shown.
 - **Announcements are email only and sent in the request.** A guest
   without an email can't be reached (they are listed to the organiser).
   Every guest send still finishes before the response returns: batched,
@@ -4242,8 +4272,9 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     frontend's form rules on the server (`frontend-rule-parity.test.ts`):
     whole-number durations, ticket quantities and tier limits, day end
     after start, an item's day on a multi-day event, SMS credits 1–5000,
-    host name length, typed custom answers, and the international phone
-    message and code. The host name required on create, edit, the full
+    host name length, typed custom answers, and the phone number's
+    message and code. PHONE answers read like a contact number
+    (`tests/rsvp/phone-answers.test.ts`, RSVP and registration). The host name required on create, edit, the full
     update and materialize (`host-name-required.test.ts`), including an
     older event with none.
   - **Wizard draft conversion** (`tests/event-draft/`): `hostName`

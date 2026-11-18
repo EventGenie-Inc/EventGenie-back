@@ -55,9 +55,10 @@ export const CONTACT_ERROR_CODES = {
 
 export const CONTACT_EMAIL_UNAVAILABLE_MESSAGE = "That email address can't be used for this invitation. Please use another one.";
 
-// The frontend phone rule's own words for a number written with a country
-// code that still isn't a real number.
-export const PHONE_FORMAT_MESSAGE = 'Use the format +27 82 123 4567';
+// The words for a number written with a country code that still isn't a
+// real number. Country-neutral: it may be any country's number (until
+// 2026-11 it was "Use the format +27 82 123 4567").
+export const PHONE_FORMAT_MESSAGE = 'Enter a valid phone number';
 
 // The country a phone number without a country code belongs to: the
 // client's `phoneCountry` (the country selected beside the phone field, an
@@ -114,13 +115,6 @@ export const normalizePhoneToE164 = (raw: string, country: CountryCode = DEFAULT
   );
 };
 
-// A custom RSVP question of type PHONE: a number written in international
-// form ("+27 82 123 4567"), the same test normalizePhoneToE164 applies to
-// a contact number. Answers are stored as typed, so this only checks.
-export const isInternationalPhoneNumber = (raw: string): boolean => {
-  const trimmed = raw.trim();
-  return trimmed.startsWith('+') && parsePhoneNumberFromString(trimmed)?.isValid() === true;
-};
 
 // Product rule: a guest holds exactly one contact method at CREATION —
 // the second field is filled in later, at RSVP time. Prisma cannot express

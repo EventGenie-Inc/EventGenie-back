@@ -260,8 +260,8 @@ describe('custom question answers by type', () => {
 
     const cases: [string, string, string][] = [
       [email.id, 'not-an-email', "Enter an email address like name@example.com for 'Work email'."],
-      [phone.id, '0821234567', "Use the format +27 82 123 4567 for 'Emergency contact'."],
-      [phone.id, '+27 12', "Use the format +27 82 123 4567 for 'Emergency contact'."],
+      [phone.id, '082 12', "Enter a valid phone number for 'Emergency contact'."],
+      [phone.id, '+27 12', "Enter a valid phone number for 'Emergency contact'."],
       [number.id, 'eight', "Enter a number for 'Shoe size'."],
       [number.id, '0x1f', "Enter a number for 'Shoe size'."],
     ];
@@ -276,6 +276,7 @@ describe('custom question answers by type', () => {
     for (const [fieldId, value] of [
       [email.id, 'thandi@example.com'],
       [phone.id, '+27 82 123 4567'],
+      [phone.id, '0821234567'],
       [number.id, '-7.5'],
       [number.id, '   '],
       [text.id, 'anything at all'],
@@ -286,16 +287,16 @@ describe('custom question answers by type', () => {
 });
 
 describe('an invalid international phone number', () => {
-  it('says "Use the format +27 82 123 4567" with CONTACT_PHONE_INVALID, on RSVP and on guest create', async () => {
+  it('says "Enter a valid phone number" with CONTACT_PHONE_INVALID, on RSVP and on guest create', async () => {
     const { guest, invite } = await createTestGuestWithInvite(eventId, owner.id, [dayId]);
     guestIds.push(guest.id);
     const rsvp = await request(app).post('/api/rsvp/submit').send({ token: invite.token, attending: false, phoneNumber: '+27 12' });
     expect(rsvp.status).toBe(422);
-    expect(rsvp.body).toMatchObject({ message: 'Use the format +27 82 123 4567', code: 'CONTACT_PHONE_INVALID' });
+    expect(rsvp.body).toMatchObject({ message: 'Enter a valid phone number', code: 'CONTACT_PHONE_INVALID' });
 
     // Guest create keeps its long-standing 400 (see the report); same words and code.
     const created = await post('/guests', { phoneNumber: '+27 12', eventDayIds: [dayId], firstName: `G ${randomUUID()}` });
     expect(created.status).toBe(400);
-    expect(created.body).toMatchObject({ message: 'Use the format +27 82 123 4567', code: 'CONTACT_PHONE_INVALID' });
+    expect(created.body).toMatchObject({ message: 'Enter a valid phone number', code: 'CONTACT_PHONE_INVALID' });
   }, 60000);
 });

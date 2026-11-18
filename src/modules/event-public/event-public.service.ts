@@ -348,15 +348,16 @@ export const eventPublicService = {
 
     // The event's questions, refused exactly as at RSVP (same messages and
     // codes; a registrant is attending, so required ones must be answered).
-    assertAnswersValid(event.rsvpFields, input.answers, true);
-    assertAnswersKnown(event.rsvpFields, input.answers, UNKNOWN_QUESTION_MESSAGE);
+    // As stored: a PHONE answer in international form.
+    const answers = assertAnswersValid(event.rsvpFields, input.answers, true);
+    assertAnswersKnown(event.rsvpFields, answers, UNKNOWN_QUESTION_MESSAGE);
     // A DOCUMENT answer names an unclaimed upload made on this page for that
     // question (guest-document.service.ts). Checked before the lock and the
     // same way whether or not the email is already a guest; attached only
     // when a registrant is created (a repeat registration stores no second
     // answers, so its upload is left for the sweep).
     const documents = isFeatureEnabled('documentFields')
-      ? await guestDocumentService.checkReferences(undefined, event.id, event.rsvpFields, input.answers, { inviteId: null })
+      ? await guestDocumentService.checkReferences(undefined, event.id, event.rsvpFields, answers, { inviteId: null })
       : { referenced: [], toAttach: [] };
 
     const { limit } = await resolveGuestLimit(event);
@@ -395,7 +396,7 @@ export const eventPublicService = {
           invitedDayIds: openDayIds,
           attendingDayIds,
           plusOneNames: input.plusOneNames,
-          answers: input.answers,
+          answers,
           // Auto-approve off: saved (holding its seats) but awaiting the
           // organiser, and nothing is emailed (registration-approval.service.ts).
           pendingApproval: !event.registrationAutoApprove,

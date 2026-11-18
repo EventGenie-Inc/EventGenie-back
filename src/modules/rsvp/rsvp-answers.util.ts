@@ -1,6 +1,6 @@
 import { type RsvpFieldType } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { isValidEmail, isInternationalPhoneNumber, PHONE_FORMAT_MESSAGE } from '../guest/guest-validation.util.js';
+import { isValidEmail, normalizePhoneToE164, resolvePhoneCountry, PHONE_FORMAT_MESSAGE } from '../guest/guest-validation.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { DOCUMENT_ERROR_CODES } from '../guest-document/guest-document.types.js';
 
@@ -43,9 +43,14 @@ export const answerableFields = <T extends { fieldType: RsvpFieldType }>(fields:
 // An answer as a guest sends it: text for every type, except MULTI_SELECT,
 // whose answer is the list of chosen options (empty: none chosen). Stored
 // as text either way (answerRows); read back with answerValue.
+// `phoneCountry`, optional, is for a PHONE answer only: the country
+// selected beside it (ISO 3166, any case), in which a number written
+// without a country code is read; South Africa when none is sent, as for a
+// contact number (guest-validation.util.ts). Ignored on any other type.
 export interface RsvpAnswer {
   rsvpFieldId: string;
   value: string | string[];
+  phoneCountry?: string | null;
 }
 
 export interface AnswerableField {
@@ -58,10 +63,11 @@ export interface AnswerableField {
 
 export const isValidRsvpResponseShape = (value: unknown): value is RsvpAnswer => {
   if (typeof value !== 'object' || value === null) return false;
-  const { rsvpFieldId, value: answer } = value as Record<string, unknown>;
+  const { rsvpFieldId, value: answer, phoneCountry } = value as Record<string, unknown>;
   return (
     typeof rsvpFieldId === 'string' &&
     rsvpFieldId.length > 0 &&
+    (phoneCountry === undefined || phoneCountry === null || typeof phoneCountry === 'string') &&
     (typeof answer === 'string' || (Array.isArray(answer) && answer.every((choice) => typeof choice === 'string')))
   );
 };
@@ -88,12 +94,30 @@ const choicesOf = (options: string | null): string[] => {
   }
 };
 
+// A PHONE answer follows the contact number's rule (normalizePhoneToE164):
+// written with a country code, that country; without one, the answer's
+// `phoneCountry`, South Africa by default. Its international form (E.164)
+// is what is stored, or the guest-facing words refusing it.
+const phoneAnswer = (label: string, value: string, phoneCountry: string | null | undefined): { e164: string } | { problem: string } => {
+  let country;
+  try {
+    country = resolvePhoneCountry(phoneCountry);
+  } catch {
+    return { problem: `Choose a country for the phone number in '${label}' from the list.` };
+  }
+  try {
+    return { e164: normalizePhoneToE164(value, country) };
+  } catch {
+    return { problem: `${PHONE_FORMAT_MESSAGE} for '${label}'.` };
+  }
+};
+
 // The message for an answer that isn't its question's type, or null.
 // EMAIL, PHONE and NUMBER have a format, a DROPDOWN answer must be one of
 // its choices (the form sends the choice as written), and a CHECKBOX is
 // exactly "true" or "false", as stored (the RSVP page and the export read
 // anything but "true" as No); every other type takes any text.
-const customAnswerProblem = (field: AnswerableField, value: string): string | null => {
+const customAnswerProblem = (field: AnswerableField, value: string, phoneCountry: string | null | undefined): string | null => {
   const { fieldType, label } = field;
   const answer = value.trim();
   if (!answer) return null;
@@ -104,8 +128,10 @@ const customAnswerProblem = (field: AnswerableField, value: string): string | nu
       return choicesOf(field.options).includes(answer) ? null : `Choose one of the options for '${label}'.`;
     case 'EMAIL':
       return isValidEmail(answer) ? null : `Enter an email address like name@example.com for '${label}'.`;
-    case 'PHONE':
-      return isInternationalPhoneNumber(answer) ? null : `${PHONE_FORMAT_MESSAGE} for '${label}'.`;
+    case 'PHONE': {
+      const phone = phoneAnswer(label, answer, phoneCountry);
+      return 'problem' in phone ? phone.problem : null;
+    }
     case 'NUMBER':
       return PLAIN_NUMBER.test(answer) ? null : `Enter a number for '${label}'.`;
     default:
@@ -117,7 +143,7 @@ const customAnswerProblem = (field: AnswerableField, value: string): string | nu
 // of the question's options (RSVP_ANSWER_UNKNOWN_OPTION), none twice. Any
 // other type's answer is text (a list is not its shape). Both shape
 // refusals, and a choice given twice, are RSVP_ANSWER_INVALID.
-const answerProblem = (field: AnswerableField, value: string | string[]): { message: string; code: string } | null => {
+const answerProblem = (field: AnswerableField, { value, phoneCountry }: RsvpAnswer): { message: string; code: string } | null => {
   const { fieldType, label } = field;
   const invalid = (message: string) => ({ message, code: RSVP_ANSWER_ERROR_CODES.INVALID });
   if (fieldType === 'MULTI_SELECT') {
@@ -131,15 +157,16 @@ const answerProblem = (field: AnswerableField, value: string | string[]): { mess
     return null;
   }
   if (Array.isArray(value)) return invalid(`Give one answer for '${label}'.`);
-  const message = customAnswerProblem(field, value);
+  const message = customAnswerProblem(field, value, phoneCountry);
   return message ? invalid(message) : null;
 };
 
 // One answer per question. Then custom questions the organiser marked
 // required must be answered when attending (a decline needs no answers:
 // nothing to cater for). Then an answer to a typed question must be that
-// type: EMAIL an email address (guest import's pattern), PHONE an
-// international number, NUMBER a number, DROPDOWN one of its choices,
+// type: EMAIL an email address (guest import's pattern), PHONE a phone
+// number (read as a contact number is, phoneAnswer), NUMBER a number,
+// DROPDOWN one of its choices,
 // CHECKBOX "true" or "false", MULTI_SELECT a list of its choices
 // (answerProblem). A required MULTI_SELECT with nothing chosen has its own
 // code, after the other unanswered questions and before a missing file.
@@ -147,7 +174,11 @@ const answerProblem = (field: AnswerableField, value: string | string[]): { mess
 // answer is no answer, and required-ness is checked before type. Unknown
 // field ids are assertAnswersKnown's (RSVP checks them later, inside its
 // write).
-export const assertAnswersValid = (fields: AnswerableField[], answers: RsvpAnswer[], attending: boolean): void => {
+//
+// Returns the answers as they are stored: a PHONE answer in international
+// form (E.164, "+27821234567"), every answer without its phoneCountry.
+// Callers store and return these, never the answers as sent.
+export const assertAnswersValid = (fields: AnswerableField[], answers: RsvpAnswer[], attending: boolean): RsvpAnswer[] => {
   // First: two answers to one question can't both be stored, and which one
   // the guest meant is unknowable (a stale page or a tampered request).
   const seen = new Set<string>();
@@ -196,9 +227,18 @@ export const assertAnswersValid = (fields: AnswerableField[], answers: RsvpAnswe
 
   for (const answer of answers) {
     const field = visible.find((f) => f.id === answer.rsvpFieldId);
-    const problem = field ? answerProblem(field, answer.value) : null;
+    const problem = field ? answerProblem(field, answer) : null;
     if (problem) throw new HttpError(422, problem.message, problem.code);
   }
+
+  return answers.map(({ rsvpFieldId, value, phoneCountry }) => {
+    const field = visible.find((f) => f.id === rsvpFieldId);
+    if (field?.fieldType === 'PHONE' && typeof value === 'string' && value.trim()) {
+      const phone = phoneAnswer(field.label, value.trim(), phoneCountry);
+      if ('e164' in phone) return { rsvpFieldId, value: phone.e164 };
+    }
+    return { rsvpFieldId, value };
+  });
 };
 
 // 400 — a well-shaped but non-existent/wrong-event rsvpFieldId is a

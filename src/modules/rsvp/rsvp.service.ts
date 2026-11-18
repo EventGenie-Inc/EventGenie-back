@@ -614,7 +614,8 @@ export const rsvpService = {
 
       // Required questions (when attending), then each answer's type;
       // unknown field ids are checked further down (rsvp-answers.util.ts).
-      assertAnswersValid(invite.event.rsvpFields, data.rsvpResponses ?? [], data.attending);
+      // As stored: a PHONE answer in international form.
+      const validAnswers = assertAnswersValid(invite.event.rsvpFields, data.rsvpResponses ?? [], data.attending);
 
       // A self-registered guest on an event with a registration cap can't
       // take more seats than are left: someone who registered alone and
@@ -831,7 +832,7 @@ export const rsvpService = {
       }
 
       const rsvpResponses = [];
-      const submittedResponses = data.rsvpResponses ?? [];
+      const submittedResponses = validAnswers;
       if (submittedResponses.length > 0) {
         assertAnswersKnown(
           invite.event.rsvpFields,

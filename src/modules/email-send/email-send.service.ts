@@ -120,11 +120,12 @@ export const emailSendService = {
     const send = await emailSendRepository.findSendForEvent(sendId, eventId);
     if (!send) throw new HttpError(404, 'Send not found');
 
-    const [counts, unsent, latest, smsDelivery] = await Promise.all([
+    const [counts, unsent, latest, smsDelivery, undelivered] = await Promise.all([
       emailSendRepository.countByStatus(sendId),
       emailSendRepository.findUnsent(sendId),
       emailSendRepository.latestFinishedAt(sendId),
       emailSendRepository.countSmsByDelivery(sendId),
+      emailSendRepository.findUndeliveredTexts(sendId),
     ]);
     const count = (...statuses: string[]) => counts.filter((c) => statuses.includes(c.status)).reduce((n, c) => n + c._count._all, 0);
     const delivery = (status: string) => smsDelivery.find((c) => c.deliveryStatus === status)?._count._all ?? 0;
@@ -158,6 +159,13 @@ export const emailSendService = {
       finishedAt: queued === 0 && last ? last.toISOString() : null,
       failures: unsent.filter((r) => r.status === 'FAILED').map(toGuest),
       skippedGuests: unsent.filter((r) => r.status === 'SKIPPED').map(toGuest),
+      undeliveredTexts: undelivered.map((row) => ({
+        guestId: row.invite.guestId,
+        name: guestName(row.invite.guest),
+        contact: row.invite.guest.phoneNumber ?? '',
+        channel: 'SMS' as const,
+        reason: row.deliveryError ?? '',
+      })),
     };
   },
 };
