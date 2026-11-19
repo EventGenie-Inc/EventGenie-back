@@ -1,0 +1,20 @@
+import prisma from '../../shared/prisma/prisma.client.js';
+import { HttpError } from '../../shared/errors/http-error.js';
+
+// ─────────────────────────────────────────
+//  THE INTERNAL E-VELOPE ORGANISATION (Tenant.isInternal; STEERING "Custom
+//  tiers") holds event templates and nothing a tenant could see. Its
+//  templates stay invisible because no tenant's user is in it, and nothing
+//  of its own is cross-tenant: so a super admin can't add a user to it, or
+//  give it a vendor space (vendor discovery shows every tenant's spaces).
+// ─────────────────────────────────────────
+
+export const TENANT_INTERNAL = 'TENANT_INTERNAL';
+
+export const assertNotInternalTenant = async (tenantId: string | null | undefined): Promise<void> => {
+  if (!tenantId) return;
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { isInternal: true } });
+  if (tenant?.isInternal) {
+    throw new HttpError(422, "The e-velope organisation holds event templates only: it can't have users or vendor spaces.", TENANT_INTERNAL);
+  }
+};

@@ -1815,8 +1815,11 @@ left out, not sent as false. Whether to show, lock or badge a feature comes
 from these; `subscriptionTier` and `customTier` (the custom tier's name and
 end date, else null) are for display (the plan's name on a billing screen)
 and are never compared in code. They are the tenant's plan: an event's own
-numbers, which an Event Pass or a grant can raise, come with the event (its
-`guestLimit`, with `planName`).
+settings, which an Event Pass or a grant can raise, come with the event
+(`GET /api/events/:id`'s `plan`, see "Custom tiers", and its
+`guestLimit`, with `planName`). Whether to show, lock or badge an
+event-scoped feature on an event comes from its `plan.settings`, never
+from `/me`'s.
 
 **Every tier check goes through the effective plan**
 (`subscription-tier-config/effective-plan.util.ts`): `resolveTenantPlan` for
@@ -3247,8 +3250,8 @@ reads the effective plan; vendor discovery's priority placement takes the
 standard and custom tiers with `vendorPriorityPlacement`
 (`plansWithCapability`, `isPriorityPlan`); `/me`'s `planSettings` and
 `customTier`; `/api/subscriptions`' `customTier`; the event detail's
-`guestLimit.planName` (`tenantTier` null on a custom tier); the super admin
-tenant list's `customTier`. Not touched, on purpose: the standard tier
+`guestLimit.planName` (`tenantTier` null on a custom tier) and `plan`
+(below); the super admin tenant list's `customTier`. Not touched, on purpose: the standard tier
 admin (`/api/subscription-tiers`, standard tiers only), subscription
 pricing and `TIER_RANK` in billing (paid standard tiers only), Event Pass
 ranks (`EVENT_PASS_TIER_RANK`, passes only), the pass's tier mapping, and
@@ -3333,8 +3336,28 @@ The super admin builds a template in **the internal e-velope organisation**
 (`Tenant.isInternal`, `evelope_internal`, made by the migration, stored on
 Elevate, never billed): created with `POST /api/admin/event-templates`
 (`POST /api/events`' body), then edited through the ordinary event routes
-(a super admin may edit any event). No tenant can see it: tenant scoping,
-since no tenant's user is in that organisation. Then grants it:
+(a super admin may edit any event): days, program, questions, its cover and
+its invitation design, uploads included, **with the same `StoredFile`
+records and paths as any event** (`<env>/t/evelope_internal/e/<eventId>/…`).
+A super admin's cover signature with no `eventId` (a new template's cover,
+`POST /api/uploads/signature { purpose: 'EVENT_COVER' }`) is signed into
+the internal organisation's cover folder (`<env>/t/evelope_internal/cover`),
+so only a template can take it; with `customTiers` off it is still 400
+(`eventId` required). No tenant can see a template: tenant scoping, since no
+tenant's user is in that organisation, so it stays empty of anything a
+tenant could reach:
+
+- **Never in the super admin's tenant list** (`GET /api/tenants`, so not a
+  grant or assignment choice either); reached through
+  `/api/admin/event-templates/organisation`. `GET /api/tenants/:id` still
+  opens it, with `isInternal: true`.
+- **No users and no vendor spaces**: `POST /api/users` or
+  `POST /api/vendors` naming it is 422 `TENANT_INTERNAL`
+  (`tenant/internal-tenant.util.ts`), since a user there would see every
+  template and vendor discovery is cross-tenant. Not assignable a custom
+  tier (`CUSTOM_TIER_INTERNAL_TENANT`), never a grant's recipient.
+
+Then grants it:
 
 ```
 GET  /api/admin/event-templates/organisation → { id, name }
@@ -3375,6 +3398,33 @@ all (422 `EVENT_GRANT_RECIPIENTS_REQUIRED`), an unknown tenant (422
 `EVENT_GRANT_DATE_INVALID`). A granted event shows `eventGrantId`,
 `grantedTier` and `grantedCustomTierId` on the event's own responses.
 
+**The event's resolved plan.** `GET /api/events/:id` carries `plan`: what
+applies to that event once the custom tier, Event Pass and grant rules have
+run (`resolveEventPlan`, the resolution every event-scoped check enforces;
+`subscription-tier-config/event-plan-view.util.ts`), so the frontend never
+works out what a granted event includes:
+
+```
+plan: {
+  name,               // the plan the settings come from, display only: the tenant's
+                      // plan, or a standard tier's Event Pass tier ('ELEVATE')
+  tenantTier,         // the tenant's standard tier; null on a custom tier
+  customTier: { id, name, description, endsAt } | null,   // the tenant's, while current
+  grantedTier: 'SPARK'|'CELEBRATE'|'ELEVATE' | null,
+  grantedCustomTier: { id, name } | null,
+  passTier, passActive,
+  smsFrom?: 'MONTHLY_ALLOWANCE' | 'EVENT_PASS_BUNDLE',     // while sms is on
+  settings,           // /me's planSettings for this event, without maxEvents
+}
+```
+
+`settings` is `planSettingsFromValues`'s shape (a switched-off feature's
+settings left out) with two numbers set to what is enforced:
+`maxGuestsPerEvent` is the event's guest limit (= `guestLimit.limit`: a
+pass's own guest number stands beside the plan's), and `maxSmsPerMonth` is
+left out while a pass is active (its SMS come from the event's bundle).
+`maxEvents` is the tenant's, on `/me` only.
+
 ### Super admin audit log
 
 Every super admin action that changes a tenant's account, or the platform's
@@ -3402,10 +3452,18 @@ edited or deleted; no foreign keys, so an entry outlives what it names.
   response; a failure is reported, never fails the request.
 
 ```
-GET /api/admin/tenants/:tenantId/audit-log[?limit=100&before=<createdAt>]
-GET /api/admin/audit-log[?scope=platform&limit&before]
+GET /api/admin/tenants/:tenantId/audit-log[?limit=100&before=<createdAt>&beforeId=<id>]
+GET /api/admin/audit-log[?scope=platform&limit&before&beforeId]
   → [{ id, actorUserId, actorEmail, tenantId, action, details, createdAt }]   newest first; limit at most 500
 ```
+
+**Paging is a stable cursor**: newest first by `createdAt`, then `id`, and
+the next page is `before` and `beforeId`, the last entry's `createdAt`
+and `id`: every entry after it in that order, so entries sharing a
+timestamp (a grant to many tenants) are never skipped or repeated.
+`beforeId` without `before`, or empty, is 400. `before` alone still
+works (every entry older than that time) but can skip entries sharing the
+last one's timestamp: the frontend sends both.
 
 ### Reminders
 
@@ -5043,8 +5101,11 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   audit log; the tenant's request form; `customTier` on `/me` and
   `/api/subscriptions` shown as the plan (name, limits, end date, no
   payment) on the Subscriptions page and wherever a plan is named;
-  `guestLimit.planName`; a granted event's badge (`eventGrantId`). Remove
-  this entry once built.
+  `guestLimit.planName`; a granted event's badge (`eventGrantId`); an
+  event's features shown and locked from its `plan.settings` (not `/me`'s);
+  the audit log's next page sent with `beforeId`; a new template's cover
+  through the ordinary uploader (no `eventId`). Remove this entry once
+  built.
 - **Grants to chosen tenants are delivered in the request**, one copy at a
   time (at most 200 tenants a request). Fine at pilot scale; a large list
   could outlast the hosting's request timeout (the copies already made
@@ -5052,6 +5113,10 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **Existing super admin writes through organiser routes are recorded as
   `API_WRITE`** (method, path, field names), not as named actions with
   before and after: a later change can give any of them its own entry.
+- **A template's own share links work like any event's.** A super admin who
+  makes a template public and copies its share link (or its Memory Hub's)
+  can show it to anyone with that link; nothing lists it. Not refused, on
+  purpose: previewing a template is the super admin's choice.
 - **A template's date is fixed.** A grant to all whose first date has
   passed records FAILED for each later sign-up rather than moving the date;
   make a new grant with a later date.

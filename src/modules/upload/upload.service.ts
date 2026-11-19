@@ -1,6 +1,8 @@
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService } from '../event/event.service.js';
+import { tenantRepository } from '../tenant/tenant.repository.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { assertMemoryHubAccessible, assertMemoryHubQuotaAvailable } from '../memory-hub/memory-hub-tier-enforcement.util.js';
 import { assertMemoryItemMediaTypeAvailable } from '../memory-hub/memory-item-limits.util.js';
 import { storedFileService, type UploadedBy } from '../storage/stored-file.service.js';
@@ -51,13 +53,20 @@ export const uploadService = {
     let tenantId: string;
     if (requestingRole === 'SUPER_ADMIN') {
       // A Super Admin has no tenantId of their own (same situation as
-      // event.service.ts's tier checks) — eventId is the only way to
-      // know which tenant's folder to scope this upload into.
-      if (!data.eventId) {
-        throw new HttpError(400, 'eventId is required for a Super Admin upload, to determine which tenant owns the folder.');
+      // event.service.ts's tier checks): an existing event's cover goes in
+      // that event's tenant's folder. The only new event a super admin
+      // makes is a template (POST /api/admin/event-templates, behind
+      // customTiers), so a cover with no event is signed into the internal
+      // e-velope organisation's cover folder, and accepted only there.
+      if (data.eventId) {
+        tenantId = (await eventService.getById(data.eventId, 'SUPER_ADMIN', null)).tenantId;
+      } else {
+        const internal = isFeatureEnabled('customTiers') ? await tenantRepository.findInternal() : null;
+        if (!internal) {
+          throw new HttpError(400, 'eventId is required for a Super Admin upload, to determine which tenant owns the folder.');
+        }
+        tenantId = internal.id;
       }
-      const event = await eventService.getById(data.eventId, 'SUPER_ADMIN', null);
-      tenantId = event.tenantId;
     } else {
       if (!requestingTenantId) {
         throw new HttpError(400, 'User has no associated tenant');

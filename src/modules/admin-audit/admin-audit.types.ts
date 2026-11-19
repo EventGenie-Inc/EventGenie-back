@@ -55,5 +55,11 @@ export interface AdminAuditEntryView {
   createdAt: Date;
 }
 
+// The paging cursor: the last entry seen (its createdAt, and its id).
+export interface AuditCursor {
+  createdAt: Date;
+  id: string | null;
+}
+
 export const AUDIT_LOG_DEFAULT_LIMIT = 100;
 export const AUDIT_LOG_MAX_LIMIT = 500;

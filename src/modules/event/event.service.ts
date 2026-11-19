@@ -18,6 +18,7 @@ import { acceptCover, applyCoverChange, planCoverChange, type CoverChange } from
 import prisma from '../../shared/prisma/prisma.client.js';
 import { storedFileService } from '../storage/stored-file.service.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
+import { resolveEventPlanView } from '../subscription-tier-config/event-plan-view.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
@@ -265,8 +266,13 @@ export const eventService = {
     const guestLimitInfo = await resolveGuestLimit(event);
     const currentGuestCount = await guestRepository.countForEvent(id);
     const documentStorage = isFeatureEnabled('documentFields') ? await resolveEventDocumentStorage(event) : undefined;
+    // What applies to this event after the custom tier, Event Pass and grant
+    // rules (event-plan-view.util.ts): the frontend reads these, never
+    // working out a granted event's features itself.
+    const plan = await resolveEventPlanView(event, guestLimitInfo);
     return {
       ...event,
+      plan,
       ...(documentStorage && { documentStorage }),
       acceptedGuestCount,
       // Registrations awaiting approval, never in acceptedGuestCount:

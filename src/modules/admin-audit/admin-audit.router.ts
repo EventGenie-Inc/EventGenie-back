@@ -8,8 +8,9 @@ import { adminAuditService } from './admin-audit.service.js';
 //  /api/admin/tenants/:tenantId/audit-log  GET — one tenant's entries
 //  /api/admin/audit-log                    GET — every entry (?scope=platform:
 //                                                the platform-wide ones)
-//  Both newest first, ?limit (default 100, at most 500) and ?before (an
-//  entry's createdAt, for the next page).
+//  Both newest first (createdAt, then id), ?limit (default 100, at most
+//  500), and ?before&beforeId (the last entry's createdAt and id: the next
+//  page, never skipping entries that share a timestamp).
 // ─────────────────────────────────────────
 
 export const tenantAuditLogRouter = Router({ mergeParams: true });

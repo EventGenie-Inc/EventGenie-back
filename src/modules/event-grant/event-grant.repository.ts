@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
+import { tenantRepository } from '../tenant/tenant.repository.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -14,8 +15,7 @@ const GRANT_INCLUDE = {
 } as const satisfies Prisma.EventGrantInclude;
 
 export const eventGrantRepository = {
-  findInternalTenant: () =>
-    prisma.tenant.findFirst({ where: { isInternal: true }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true } }),
+  findInternalTenant: () => tenantRepository.findInternal(),
 
   // A template: one of the internal organisation's events (archived too, so
   // a grant's template stays readable).

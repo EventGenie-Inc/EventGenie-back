@@ -8,6 +8,7 @@ import {
   AUDIT_LOG_MAX_LIMIT,
   type AdminAuditEntryView,
   type AdminAuditInput,
+  type AuditCursor,
 } from './admin-audit.types.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -23,11 +24,20 @@ const parseLimit = (raw: unknown): number => {
   return Math.min(n, AUDIT_LOG_MAX_LIMIT);
 };
 
-const parseBefore = (raw: unknown): Date | null => {
-  if (raw === undefined) return null;
-  const d = typeof raw === 'string' ? new Date(raw) : null;
+// ?before=<the last entry's createdAt>&beforeId=<its id>: the next page.
+// beforeId is what keeps entries sharing a timestamp from being skipped;
+// before alone still works (every entry older than that time).
+const parseCursor = (query: { before?: unknown; beforeId?: unknown }): AuditCursor | null => {
+  if (query.beforeId !== undefined && (typeof query.beforeId !== 'string' || !query.beforeId)) {
+    throw new HttpError(400, "beforeId must be the last entry's id.");
+  }
+  if (query.before === undefined) {
+    if (query.beforeId !== undefined) throw new HttpError(400, "beforeId needs before (the last entry's createdAt).");
+    return null;
+  }
+  const d = typeof query.before === 'string' ? new Date(query.before) : null;
   if (!d || Number.isNaN(d.getTime())) throw new HttpError(400, 'before must be a date and time.');
-  return d;
+  return { createdAt: d, id: (query.beforeId as string | undefined) ?? null };
 };
 
 export const adminAuditService = {
@@ -43,17 +53,17 @@ export const adminAuditService = {
   },
 
   // GET /api/admin/tenants/:tenantId/audit-log: one tenant's entries, newest
-  // first, `limit` at a time (default 100, at most 500), `before` an entry's
-  // createdAt for the next page.
-  listForTenant: async (tenantId: string, query: { limit?: unknown; before?: unknown }): Promise<AdminAuditEntryView[]> => {
+  // first, `limit` at a time (default 100, at most 500), `before` and
+  // `beforeId` the last entry's createdAt and id for the next page.
+  listForTenant: async (tenantId: string, query: { limit?: unknown; before?: unknown; beforeId?: unknown }): Promise<AdminAuditEntryView[]> => {
     if (!(await adminAuditRepository.tenantExists(tenantId))) throw new HttpError(404, 'Tenant not found');
-    return adminAuditRepository.list({ tenantId }, parseLimit(query.limit), parseBefore(query.before));
+    return adminAuditRepository.list({ tenantId }, parseLimit(query.limit), parseCursor(query));
   },
 
   // GET /api/admin/audit-log: every entry (scope=platform: only the
   // platform-wide ones, no tenant).
-  list: async (query: { limit?: unknown; before?: unknown; scope?: unknown }): Promise<AdminAuditEntryView[]> => {
+  list: async (query: { limit?: unknown; before?: unknown; beforeId?: unknown; scope?: unknown }): Promise<AdminAuditEntryView[]> => {
     if (query.scope !== undefined && query.scope !== 'platform') throw new HttpError(400, 'scope must be platform, or left out.');
-    return adminAuditRepository.list(query.scope === 'platform' ? { tenantId: null } : {}, parseLimit(query.limit), parseBefore(query.before));
+    return adminAuditRepository.list(query.scope === 'platform' ? { tenantId: null } : {}, parseLimit(query.limit), parseCursor(query));
   },
 };

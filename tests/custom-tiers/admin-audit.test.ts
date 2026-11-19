@@ -151,3 +151,45 @@ describe('the super admin views the log per tenant', () => {
     expect((await request(app).get(`/api/admin/tenants/${tenantId}/audit-log`).set(headersFor(tenantAdmin))).status).toBe(404);
   });
 });
+
+describe('the log pages with a stable cursor: createdAt, then id', () => {
+  // Five entries written in the same millisecond (a grant to many tenants,
+  // a bulk change): paging two at a time by createdAt alone used to skip the
+  // ones sharing the last entry's timestamp.
+  it('never skips or repeats entries that share a timestamp, per tenant and across the platform', async () => {
+    const tenant = await createTenant();
+    tenantIds.push(tenant.id);
+    const at = new Date('2001-02-03T04:05:06.789Z');
+    const written = await Promise.all(
+      [1, 2, 3, 4, 5].map((n) => prisma.adminAuditEntry.create({
+        data: { actorUserId: superAdmin.id, actorEmail: superAdmin.email, tenantId: tenant.id, action: 'API_WRITE', details: { n }, createdAt: at },
+      }))
+    );
+    const expected = written.map((e) => e.id).sort().reverse();
+
+    const pageThrough = async (path: string, first: string) => {
+      const seen: string[] = [];
+      let query = first;
+      for (let i = 0; i < 10; i += 1) {
+        const res = await request(app).get(`${path}?limit=2${query}`).set(asSuper());
+        expect(res.status).toBe(200);
+        const rows = (res.body.data as { id: string; createdAt: string }[]).filter((r) => r.createdAt === at.toISOString());
+        seen.push(...rows.map((r) => r.id));
+        const last = res.body.data.at(-1) as { id: string; createdAt: string } | undefined;
+        if (!last || new Date(last.createdAt) < at) break;
+        query = `&before=${encodeURIComponent(last.createdAt)}&beforeId=${last.id}`;
+      }
+      return seen;
+    };
+
+    // The tenant's log: from the newest.
+    expect(await pageThrough(`/api/admin/tenants/${tenant.id}/audit-log`, '')).toEqual(expected);
+    // The whole log: from just after the shared timestamp.
+    expect(await pageThrough('/api/admin/audit-log', `&before=${encodeURIComponent(new Date(at.getTime() + 1).toISOString())}`)).toEqual(expected);
+  });
+
+  it('beforeId needs before, and is an entry id', async () => {
+    expect((await request(app).get(`/api/admin/tenants/${tenantId}/audit-log?beforeId=abc`).set(asSuper())).status).toBe(400);
+    expect((await request(app).get(`/api/admin/audit-log?before=2001-01-01T00:00:00.000Z&beforeId=`).set(asSuper())).status).toBe(400);
+  });
+});

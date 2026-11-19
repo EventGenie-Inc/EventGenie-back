@@ -15,6 +15,7 @@ import { eventAssignmentRepository } from '../event-assignment/event-assignment.
 import { eventAssignmentLock } from '../event-assignment/event-assignment-lock.util.js';
 import { userInviteRepository } from './user-invite.repository.js';
 import { type SetAssignmentsDto } from './user.types.js';
+import { assertNotInternalTenant } from '../tenant/internal-tenant.util.js';
 
 // One email, one account, platform-wide. Thrown by POST /api/users and by
 // team invitations (create, resend, accept), both from the pre-check and
@@ -209,6 +210,9 @@ export const userService = {
     if (ROLES_REQUIRING_TENANT.includes(data.role) && !resolvedTenantId) {
       throw new HttpError(422, `A ${data.role} must belong to a tenant. Choose one for them.`);
     }
+    // No user in the internal organisation: its templates are invisible to
+    // tenants because nobody but a super admin can open them.
+    await assertNotInternalTenant(resolvedTenantId);
 
     // With the vendors feature off there is nothing for a vendor to sign
     // in to, so the role can't be created. Existing vendor users are left

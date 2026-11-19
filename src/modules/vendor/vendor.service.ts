@@ -14,6 +14,7 @@ import {
 import { type PlatformRole } from '@prisma/client';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { plansWithCapability } from '../subscription-tier-config/effective-plan.util.js';
+import { assertNotInternalTenant } from '../tenant/internal-tenant.util.js';
 
 // The tiers whose vendor spaces rank first in discovery: a tier setting
 // (vendorPriorityPlacement), read once per search.
@@ -196,6 +197,8 @@ export const vendorService = {
     }
     const resolvedTenantId = requestingRole === 'SUPER_ADMIN' ? (data.tenantId ?? null) : requestingTenantId;
 
+    // Never the internal organisation's: discovery would show it to tenants.
+    await assertNotInternalTenant(resolvedTenantId);
     await assertVendorSpaceCreatable(resolvedTenantId);
 
     return vendorRepository.createSpace(userId, { ...data, ...(resolvedTenantId !== null && { tenantId: resolvedTenantId }) });

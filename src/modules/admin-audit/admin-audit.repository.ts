@@ -1,6 +1,6 @@
 import { type Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
-import { type AdminAuditEntryView } from './admin-audit.types.js';
+import { type AdminAuditEntryView, type AuditCursor } from './admin-audit.types.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -13,12 +13,17 @@ export const adminAuditRepository = {
   findActorEmail: async (userId: string, db: Db = prisma): Promise<string> =>
     (await db.user.findUnique({ where: { id: userId }, select: { email: true } }))?.email ?? '',
 
-  // Newest first. `before`: entries older than this (the next page).
-  list: (where: { tenantId?: string | null }, limit: number, before: Date | null): Promise<AdminAuditEntryView[]> =>
+  // Newest first (createdAt, then id). `before`: the next page's cursor,
+  // the last entry seen: entries after it in that order. With an id, an
+  // entry sharing its timestamp is never skipped; without one (a createdAt
+  // alone), every entry older than that time.
+  list: (where: { tenantId?: string | null }, limit: number, before: AuditCursor | null): Promise<AdminAuditEntryView[]> =>
     prisma.adminAuditEntry.findMany({
       where: {
         ...(where.tenantId !== undefined && { tenantId: where.tenantId }),
-        ...(before && { createdAt: { lt: before } }),
+        ...(before && (before.id
+          ? { OR: [{ createdAt: { lt: before.createdAt } }, { createdAt: before.createdAt, id: { lt: before.id } }] }
+          : { createdAt: { lt: before.createdAt } })),
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit,
