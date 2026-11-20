@@ -2,6 +2,7 @@ import { vi, beforeEach } from 'vitest';
 import dotenv from 'dotenv';
 import { fakeCloudinary, installFakeCloudinary } from './helpers/fake-cloudinary.js';
 import { fakeSms } from './helpers/fake-sms.js';
+import { fakePaystack, installFakePaystack } from './helpers/fake-paystack.js';
 import { setSmsProviderForTests } from '../src/shared/messaging/sms-provider.js';
 
 // ─────────────────────────────────────────
@@ -69,6 +70,16 @@ process.env.SMS_SENDS_PER_SECOND = '1000';
 process.env.STORAGE_ENV = 'dev';
 process.env.STORAGE_NOTIFICATION_URL = '';
 installFakeCloudinary();
+
+// ─────────────────────────────────────────
+//  PAYSTACK — no test ever reaches Paystack, test mode included: every
+//  request to api.paystack.co goes to the in-memory fake
+//  (tests/helpers/fake-paystack.ts), reset before every test. Retries wait
+//  1 ms instead of half a second, before dotenv, so .env can't slow them.
+//  A test file that vi.mocks paystack.client.js keeps doing so.
+// ─────────────────────────────────────────
+process.env.PAYSTACK_RETRY_DELAY_MS = '1';
+installFakePaystack();
 
 // ─────────────────────────────────────────
 //  A STALLED DATABASE QUERY FAILS, IT DOESN'T WAIT.
@@ -162,6 +173,7 @@ vi.mock('resend', () => ({
 
 beforeEach(() => {
   fakeCloudinary.reset();
+  fakePaystack.reset();
   fakeSms.reset();
   setSmsProviderForTests(fakeSms.provider);
   mockVerifyIdToken.mockReset();

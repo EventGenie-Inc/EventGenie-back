@@ -16,10 +16,14 @@ dotenv.config();
 //
 //  Safe to re-run: it checks for an existing plan with the same
 //  name before creating one, so accidentally running it twice does not
-//  mint duplicate plans. The names below are the e-velope brand; plans
-//  created before the rebrand were named "EventGenie …". Rename those
-//  in the Paystack dashboard to exactly these names BEFORE re-running,
-//  or this check won't recognise them and four new plans are created.
+//  mint duplicate plans. The names below are the ones customers see on
+//  Paystack's checkout and receipts: "e-velope Elevate (Annual)" (payments
+//  release 1; before it they read "e-velope Elevate — Annual", and before
+//  the rebrand "EventGenie …"). In TEST mode, rename existing plans in the
+//  Paystack dashboard to exactly these names before re-running, or this
+//  check won't recognise them and four new plans are created (and the
+//  printed codes change). In LIVE mode there are none yet: run it once with
+//  the live key and set the four printed codes on production.
 //
 //    npx tsx prisma/create-subscription-plans.ts
 // ═══════════════════════════════════════════════════════════
@@ -34,10 +38,10 @@ interface PlanToCreate {
 }
 
 const PLANS: PlanToCreate[] = [
-  { envVar: 'PAYSTACK_PLAN_CELEBRATE_MONTHLY', name: 'e-velope Celebrate — Monthly', amountCents: SUBSCRIPTION_PRICES_CENTS.CELEBRATE.MONTHLY, interval: 'monthly' },
-  { envVar: 'PAYSTACK_PLAN_CELEBRATE_ANNUAL', name: 'e-velope Celebrate — Annual', amountCents: SUBSCRIPTION_PRICES_CENTS.CELEBRATE.ANNUAL, interval: 'annually' },
-  { envVar: 'PAYSTACK_PLAN_ELEVATE_MONTHLY', name: 'e-velope Elevate — Monthly', amountCents: SUBSCRIPTION_PRICES_CENTS.ELEVATE.MONTHLY, interval: 'monthly' },
-  { envVar: 'PAYSTACK_PLAN_ELEVATE_ANNUAL', name: 'e-velope Elevate — Annual', amountCents: SUBSCRIPTION_PRICES_CENTS.ELEVATE.ANNUAL, interval: 'annually' },
+  { envVar: 'PAYSTACK_PLAN_CELEBRATE_MONTHLY', name: 'e-velope Celebrate (Monthly)', amountCents: SUBSCRIPTION_PRICES_CENTS.CELEBRATE.MONTHLY, interval: 'monthly' },
+  { envVar: 'PAYSTACK_PLAN_CELEBRATE_ANNUAL', name: 'e-velope Celebrate (Annual)', amountCents: SUBSCRIPTION_PRICES_CENTS.CELEBRATE.ANNUAL, interval: 'annually' },
+  { envVar: 'PAYSTACK_PLAN_ELEVATE_MONTHLY', name: 'e-velope Elevate (Monthly)', amountCents: SUBSCRIPTION_PRICES_CENTS.ELEVATE.MONTHLY, interval: 'monthly' },
+  { envVar: 'PAYSTACK_PLAN_ELEVATE_ANNUAL', name: 'e-velope Elevate (Annual)', amountCents: SUBSCRIPTION_PRICES_CENTS.ELEVATE.ANNUAL, interval: 'annually' },
 ];
 
 const main = async (): Promise<void> => {

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import prisma from '../../src/shared/prisma/prisma.client.js';
 import { subscriptionService } from '../../src/modules/subscription/subscription.service.js';
+import { withPaymentContext } from '../../src/modules/payment-webhook/payment-context.util.js';
 
 // ─────────────────────────────────────────
 //  Tenant emails (Team Members follow-ups): Paystack's subscription
@@ -16,22 +17,36 @@ import { subscriptionService } from '../../src/modules/subscription/subscription
 const createdTenantIds: string[] = [];
 
 afterAll(async () => {
+  await prisma.paymentLedgerEntry.deleteMany({ where: { tenantId: { in: createdTenantIds } } });
   await prisma.tenant.deleteMany({ where: { id: { in: createdTenantIds } } });
 }, 60000);
 
 const createTenant = async (email: string) => {
   const suffix = randomUUID();
   const tenant = await prisma.tenant.create({
-    data: { name: `Lookup ${suffix}`, slug: `lookup-${suffix}`, email, subscriptionTier: 'CELEBRATE', subscriptionStatus: 'ACTIVE' },
+    data: { name: `Lookup ${suffix}`, slug: `lookup-${suffix}`, email, subscriptionTier: 'SPARK', subscriptionStatus: 'ACTIVE' },
   });
   createdTenantIds.push(tenant.id);
   return tenant;
 };
 
-// subscription.disable: the simplest webhook that finds its tenant by
-// customer email and records something on it.
-const disableFor = (email: string) =>
-  prisma.$transaction((tx) => subscriptionService.handleSubscriptionDisableWithinTransaction(tx, { customer: { email } }));
+// subscription.create: the webhook that finds its tenant by customer email
+// (payments release 1: subscription.disable and not_renew now match the
+// tenant's current subscription code instead, so a stale one can't cancel a
+// newer subscription). A match activates the plan.
+const PLAN_CODE = 'PLN_lookup_celebrate_monthly';
+const disableFor = (email: string) => {
+  vi.stubEnv('PAYSTACK_PLAN_CELEBRATE_MONTHLY', PLAN_CODE);
+  const data = {
+    subscription_code: `SUB_lookup_${randomUUID()}`,
+    email_token: 'tok',
+    next_payment_date: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    customer: { email, customer_code: `CUS_lookup_${randomUUID()}` },
+    plan: { plan_code: PLAN_CODE },
+  };
+  return withPaymentContext('subscription.create', data, (ctx) => subscriptionService.handleSubscriptionCreateWithinTransaction(ctx));
+};
+const activated = async (id: string) => (await prisma.tenant.findUniqueOrThrow({ where: { id } })).subscriptionTier === 'CELEBRATE';
 
 describe('Paystack subscription lookup by customer email', () => {
   it('a mixed-case, padded Paystack email still finds its (lowercase) tenant', async () => {
@@ -40,7 +55,7 @@ describe('Paystack subscription lookup by customer email', () => {
 
     const result = await disableFor(`  Billing-${tag}@ACME.Test `);
     expect(result).toEqual({ claimed: true });
-    expect((await prisma.tenant.findUniqueOrThrow({ where: { id: tenant.id } })).subscriptionCancelAtPeriodEnd).toBe(true);
+    expect(await activated(tenant.id)).toBe(true);
   }, 60000);
 
   it('a stored mixed-case, padded email (from before the rule) still matches a lowercase Paystack email', async () => {
@@ -48,7 +63,7 @@ describe('Paystack subscription lookup by customer email', () => {
     const tenant = await createTenant(`  Legacy-${tag}@Acme.test `);
 
     expect(await disableFor(`legacy-${tag}@acme.test`)).toEqual({ claimed: true });
-    expect((await prisma.tenant.findUniqueOrThrow({ where: { id: tenant.id } })).subscriptionCancelAtPeriodEnd).toBe(true);
+    expect(await activated(tenant.id)).toBe(true);
   }, 60000);
 
   it('two tenants sharing an address once normalised: neither is matched', async () => {
@@ -59,8 +74,9 @@ describe('Paystack subscription lookup by customer email', () => {
 
     expect(await disableFor(`shared-${tag}@acme.test`)).toEqual({ claimed: false });
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     for (const id of [a.id, b.id]) {
-      expect((await prisma.tenant.findUniqueOrThrow({ where: { id } })).subscriptionCancelAtPeriodEnd).toBe(false);
+      expect(await activated(id)).toBe(false);
     }
   }, 60000);
 });

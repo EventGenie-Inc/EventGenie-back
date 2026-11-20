@@ -191,7 +191,10 @@ const TIER_CONFIGS = [
     tier: 'ELEVATE' as const,
     maxEvents: null,
     maxGuestsPerEvent: null,
-    maxSmsPerMonth: null,
+    // 1,000 texts a month (payments release 1; was unlimited). The seed
+    // never overwrites an existing row: production's is set on the super
+    // admin's tier screen.
+    maxSmsPerMonth: 1000,
     maxVendorSpaces: null,
     maxMemoryHubBytesPerEvent: null,
     maxDocumentBytesPerEvent: 500 * 1024 * 1024,

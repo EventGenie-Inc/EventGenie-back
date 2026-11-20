@@ -22,6 +22,8 @@ export interface RecordLedgerEntryInput {
   tenantId?: string | null;
   eventId?: string | null;
   paystackReference?: string | null;
+  // Paystack's own transaction id (payments release 1).
+  paystackTransactionId?: string | null;
   relatedType?: string | null;
   relatedId?: string | null;
   // The verbatim provider payload — stored as-is for the day something

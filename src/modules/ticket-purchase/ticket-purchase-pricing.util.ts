@@ -38,7 +38,7 @@ export interface TicketChargeBreakdown {
   // What the organiser receives — always exactly the ticket's own
   // price × quantity, untouched by any of the arithmetic below.
   ticketPriceCents: number;
-  // EventGenie's target commission — 2.5% (or whatever
+  // EventGenie's target commission — 2% (or whatever
   // PLATFORM_COMMISSION_PERCENT currently is) of ticketPriceCents.
   commissionCents: number;
   // What the GUEST is actually charged — this is the `amount` sent to
@@ -73,7 +73,7 @@ export interface TicketChargeBreakdown {
 //  depending on a choice the guest hasn't made yet. Card's rate
 //  (2.9%+R1, VAT-inclusive) is higher than EFT's (2%, no flat fee), so
 //  pricing off it guarantees the platform is never short — an EFT
-//  payment nets EventGenie a little MORE than the target 2.5%, never
+//  payment nets EventGenie a little MORE than the target 2%, never
 //  less. That asymmetry is deliberate: per the payments foundation's own
 //  rule, undercollecting a fee is an unrecoverable loss on every ticket,
 //  while a small, consistent surplus on EFT payments is not a problem

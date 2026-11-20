@@ -45,6 +45,7 @@ import geocodingRouter from './modules/geocoding/geocoding.router.js';
 import uploadRouter from './modules/upload/upload.router.js';
 import paymentAccountRouter from './modules/payment-account/payment-account.router.js';
 import paymentWebhookRouter from './modules/payment-webhook/payment-webhook.router.js';
+import paymentReconciliationRouter from './modules/payment-reconciliation/payment-reconciliation.router.js';
 import subscriptionRouter from './modules/subscription/subscription.router.js';
 import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.js';
 import eventPassRouter from './modules/event-pass/event-pass.router.js';
@@ -330,7 +331,9 @@ app.use('/api/storage', storageRouter);
 //  /api/billing-history             — tenant admin read-only view of their subscription ledger entries
 //  /api/events/:eventId/pass        — one-off Event Pass + per-event SMS bundle purchase/status (Event Pass batch)
 //  /api/event-passes/signal         — tenant-wide repeat-purchase signal (Event Pass batch)
+//  /api/admin/payments              — SUPER_ADMIN: ledger, mismatches, reconciliation runs (payments release 1)
 // ─────────────────────────────────────────
+app.use('/api/admin/payments', paymentReconciliationRouter);
 app.use('/api/payments/subaccount', paymentAccountRouter);
 app.use('/api/payments/webhook', paymentWebhookRouter);
 // SMSPortal's delivery reports — public, signed (sms-delivery.service.ts)

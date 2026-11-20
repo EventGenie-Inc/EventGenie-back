@@ -73,7 +73,8 @@ afterAll(async () => {
   // in the product; these rows never existed from the product's view.
   const refs = (await prisma.eventPassPurchase.findMany({ where: { eventId }, select: { paymentRef: true } })).flatMap((p) => (p.paymentRef ? [p.paymentRef] : []));
   await prisma.paymentLedgerEntry.deleteMany({ where: { OR: [{ eventId }, { paystackReference: { in: refs } }] } });
-  await prisma.paystackWebhookEvent.deleteMany({ where: { dedupeKey: { in: refs.map((r) => `charge.success:${r}`) } } });
+  // Dedupe keys are `${event}:${id ?? reference}:${sha256(body)}` (payments release 1).
+  await prisma.paystackWebhookEvent.deleteMany({ where: { OR: refs.map((r) => ({ dedupeKey: { startsWith: `charge.success:${r}:` } })) } });
   await prisma.eventPassPurchase.deleteMany({ where: { eventId } });
   await prisma.eventPass.deleteMany({ where: { eventId } });
   await deleteTestEvent(eventId);

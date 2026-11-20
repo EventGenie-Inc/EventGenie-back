@@ -231,6 +231,31 @@ export const uploadSignatureLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITER — PAYMENT VERIFY / RECONCILE (payments release 1)
+//
+//  Each call may make a server-to-server call to Paystack's verify
+//  endpoint, and a callback page left open polls it. 30 in 5 minutes per
+//  signed-in user covers a callback page polling every 10 seconds plus a
+//  few manual retries, and keeps a stuck page from spending Paystack's own
+//  rate limit for everyone. Keyed by user id (the routes need
+//  `authenticate`).
+// ─────────────────────────────────────────
+export const PAYMENT_VERIFIES_PER_USER_PER_5_MIN = 30;
+
+export const paymentVerifyLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: PAYMENT_VERIFIES_PER_USER_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `payment-verify:${req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    code: 'PAYMENT_VERIFY_RATE_LIMITED',
+    message: "We're still checking this payment. Please wait a minute and look again.",
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — RELEASING AN UNSAVED UPLOAD (POST /api/storage/files/release)
 //
 //  Its own budget, not the signature limiter's: a release grants nothing

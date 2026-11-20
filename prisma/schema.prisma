@@ -175,6 +175,15 @@ enum PaymentAttemptStatus {
   PENDING
   PAID
   FAILED
+  // Payments release 1. REFUNDED: a refund Paystack processed (issued by
+  // the super admin from Paystack's dashboard). REVERSED: a chargeback the
+  // bank decided against us. Either way what was bought is taken back
+  // (payment-adjustment.service.ts). UNDER_REVIEW: Paystack reported a
+  // success whose amount or currency isn't what this purchase expected;
+  // nothing was granted and the super admin was alerted.
+  REFUNDED
+  REVERSED
+  UNDER_REVIEW
 }
 
 // Which of the two, deliberately never-pooled SMS accounting systems a
@@ -278,9 +287,38 @@ enum LedgerEntryType {
   // derived, not evented (see Tenant.subscriptionGraceStartedAt's
   // comment for why grace expiry has no entry of its own either).
   SUBSCRIPTION_CANCELLED
+  // A refund Paystack processed (refund.processed), against the original
+  // payment's reference. Payload says what it took back.
   REFUND_ISSUED
   WEBHOOK_EVENT_UNHANDLED
   WEBHOOK_EVENT_DUPLICATE
+  // ── Payments release 1 ──
+  // refund.pending / refund.processing: noted, nothing changes yet.
+  REFUND_PENDING
+  // refund.failed: the refund didn't go through; nothing was taken back.
+  REFUND_FAILED
+  // Chargebacks (charge.dispute.*). Opened and reminders change nothing;
+  // lost takes back what was bought, like a refund; won changes nothing.
+  DISPUTE_OPENED
+  DISPUTE_REMINDER
+  DISPUTE_WON
+  DISPUTE_LOST
+  // Paystack reported a success whose amount or currency differs from
+  // what was expected. Nothing granted; a PaymentMismatch row is written.
+  PAYMENT_AMOUNT_MISMATCH
+  // A plan change whose Paystack call got no clear answer: never FAILED,
+  // re-checked by the subscription sync.
+  SUBSCRIPTION_CHARGE_UNCERTAIN
+  // A subscription.create for a tenant that already holds a different
+  // live subscription it didn't ask to replace.
+  SUBSCRIPTION_DUPLICATE_DETECTED
+  // The subscription sync found Paystack and this tenant disagreeing and
+  // corrected the tenant. Payload: before and after.
+  SUBSCRIPTION_SYNC_CORRECTED
+  // A webhook that is understood but deliberately not acted on: about a
+  // subscription that is no longer the tenant's current one, or purely
+  // informational (invoice.create, subscription.expiring_cards).
+  WEBHOOK_EVENT_IGNORED
 }
 
 // ─────────────────────────────────────────
@@ -386,6 +424,21 @@ model Tenant {
   subscriptionPendingReference String?             @unique
   subscriptionPendingTier      SubscriptionTier?
   subscriptionPendingPeriod    SubscriptionPeriod?
+  // Payments release 1. The pending attempt's checkout link and when it
+  // started: a second subscribe for the same plan within the reuse window
+  // gets this same link back instead of a second checkout (two checkouts
+  // could become two Paystack subscriptions). Older than the window, the
+  // attempt is stale: the hourly sweep checks it with Paystack and clears
+  // it.
+  subscriptionPendingAuthorizationUrl String?
+  subscriptionPendingStartedAt        DateTime?
+  // Set when this tenant's billing state must be re-read from Paystack: a
+  // renewal whose new period end couldn't be fetched, a plan change with
+  // no clear answer, a refunded subscription still to be disabled. The
+  // hourly sync handles these first; while set, the period-end hard stop
+  // (effective-tier.util.ts) waits for it.
+  subscriptionNeedsSync               Boolean             @default(false)
+  subscriptionLastSyncedAt            DateTime?
 
   // ── Custom tiers ──
   // A super admin's own tier (CustomTier), invoiced outside the app. While
@@ -1995,6 +2048,11 @@ model EventPassPurchase {
   amountPaidCents Int
   currency        String               @default("ZAR")
   paymentRef      String?              @unique
+  // Payments release 1: Paystack's own transaction id once paid (refund
+  // and reconciliation matching), and the checkout link a second purchase
+  // of the same pass within the reuse window is handed back.
+  paystackTransactionId String?
+  authorizationUrl      String?
   status          PaymentAttemptStatus @default(PENDING)
   confirmedAt     DateTime?
   purchasedAt     DateTime             @default(now())
@@ -2030,6 +2088,9 @@ model EventSmsBundlePurchase {
   amountPaidCents Int
   currency        String               @default("ZAR")
   paymentRef      String?              @unique
+  // Payments release 1 — same two columns as EventPassPurchase.
+  paystackTransactionId String?
+  authorizationUrl      String?
   status          PaymentAttemptStatus @default(PENDING)
   confirmedAt     DateTime?
   purchasedAt     DateTime             @default(now())
@@ -2093,6 +2154,11 @@ model PaymentLedgerEntry {
   // entry alongside the payment it was taken from).
   paystackReference String?
 
+  // Payments release 1: Paystack's own transaction id (data.id) on a
+  // success, refund or dispute — the second key reconciliation and refund
+  // matching use, since a renewal's reference is Paystack's, not ours.
+  paystackTransactionId String?
+
   // What business record this money movement is ultimately about —
   // e.g. relatedType: "TicketPurchase", relatedId: <id> — once ticketing
   // exists to populate it. Generic on purpose: this table predates
@@ -2119,7 +2185,68 @@ model PaymentLedgerEntry {
   @@index([tenantId, occurredAt])
   @@index([eventId, occurredAt])
   @@index([paystackReference])
+  @@index([paystackTransactionId])
   @@index([type, occurredAt])
+}
+
+// ─────────────────────────────────────────
+//  PAYMENT RECONCILIATION (payments release 1)
+//
+//  One run per UTC day compares the ledger with Paystack's own records for
+//  that day (payment-reconciliation.service.ts). runDate is unique: the
+//  insert is the claim, so two server instances never run the same day.
+//  A record of what happened, never edited after it finishes (same family
+//  as the ledger: no soft delete).
+// ─────────────────────────────────────────
+
+model PaymentReconciliationRun {
+  id            String    @id @default(cuid())
+  // "YYYY-MM-DD", the UTC day compared.
+  runDate       String    @unique
+  startedAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  // RUNNING, DONE or FAILED.
+  status        String    @default("RUNNING")
+  mismatchCount Int       @default(0)
+  // Counts compared, settlement totals, and a failure's message.
+  summary       Json?
+
+  mismatches PaymentMismatch[]
+}
+
+// ─────────────────────────────────────────
+//  PAYMENT MISMATCH (payments release 1)
+//
+//  Something about money that doesn't add up, for the super admin to look
+//  at: from the daily reconciliation (a payment Paystack has and the
+//  ledger doesn't, or the other way round, or the amounts differ), or from
+//  a webhook (a success for an amount or currency other than expected).
+//  A record, never deleted; resolvedAt is for a later "mark resolved".
+// ─────────────────────────────────────────
+
+model PaymentMismatch {
+  id                    String    @id @default(cuid())
+  runId                 String?
+  // RECONCILIATION or WEBHOOK.
+  source                String
+  // PAYSTACK_ONLY, LEDGER_ONLY, AMOUNT_DIFFERS, CURRENCY_DIFFERS,
+  // REFUND_NOT_RECORDED, UNEXPECTED_AMOUNT.
+  kind                  String
+  paystackReference     String?
+  paystackTransactionId String?
+  tenantId              String?
+  eventId               String?
+  expectedAmountCents   Int?
+  actualAmountCents     Int?
+  currency              String?
+  details               Json?
+  createdAt             DateTime  @default(now())
+  resolvedAt            DateTime?
+
+  run PaymentReconciliationRun? @relation(fields: [runId], references: [id])
+
+  @@index([resolvedAt, createdAt])
+  @@index([paystackReference])
 }
 
 // ─────────────────────────────────────────
@@ -2134,8 +2261,13 @@ model PaymentLedgerEntry {
 //  isDayLabelUniqueViolation pattern. Paystack does not document a
 //  single canonical delivery-id field the way Stripe's `evt_...` does,
 //  so dedupeKey is synthesised in payment-webhook.service.ts from
-//  `${event}:${data.id ?? data.reference}` — stable across retries of
-//  the SAME delivery, since Paystack resends the identical payload.
+//  `${event}:${data.id ?? data.reference ?? 'none'}:<sha256 of the raw
+//  body>` — stable across retries of the SAME delivery (Paystack resends
+//  the identical payload), while two different deliveries about one
+//  object (invoice.update failed, then paid; an id-less event) never
+//  collide. Every handler is idempotent on its own too, so a retry whose
+//  bytes differ is still harmless. (Payments release 1; before it the key
+//  was `${event}:${data.id ?? data.reference}`.)
 //
 //  No tenant/amount/currency here on purpose — this table answers "have
 //  we seen this before", not "what happened financially". That's the

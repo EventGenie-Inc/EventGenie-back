@@ -30,11 +30,11 @@ router.post('/', async (req: Request, res: Response) => {
     // Only now, with the signature confirmed genuine, is the payload
     // (already parsed into req.body by express.json() while it captured
     // the same raw bytes checked above) treated as trustworthy.
-    const outcome = await paymentWebhookService.process(req.body as PaystackWebhookPayload);
-    // Fast, minimal synchronous work only (two indexed inserts in one
-    // transaction) — Paystack treats a slow or failing response as a
-    // delivery failure and retries harder, so this returns as soon as
-    // that work is done rather than deferring it.
+    const outcome = await paymentWebhookService.process(req.body as PaystackWebhookPayload, rawBody);
+    // Small, transactional work, then post-commit work (an alert email, a
+    // Paystack call) that is bounded by PAYSTACK_TIMEOUT_MS and never fails
+    // the delivery. Paystack treats a slow or failing response as a
+    // delivery failure and retries, which the dedupe key absorbs.
     res.status(200).json({ status: 'ok', outcome });
   } catch (err) {
     // An unexpected failure AFTER the signature was confirmed genuine

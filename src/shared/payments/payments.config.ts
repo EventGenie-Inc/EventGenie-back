@@ -13,12 +13,12 @@
 // ─────────────────────────────────────────
 
 // Matches a plain non-negative number with at most 2 decimal places —
-// e.g. "2.5", "2.55", "10". Anything else (empty, "2.5%", "abc") is
+// e.g. "2", "2.5", "10". Anything else (empty, "2%", "abc") is
 // rejected rather than passed to parseFloat, which would silently
-// accept garbage like "2.5abc" as 2.5.
+// accept garbage like "2abc" as 2.
 const COMMISSION_PERCENT_PATTERN = /^\d+(\.\d{1,2})?$/;
 
-// Commission rate, expressed as integer basis points (2.5% -> 250) so
+// Commission rate (2% since the pilot), expressed as integer basis points (2% -> 200) so
 // money.util.ts's applyBasisPoints never has to multiply a cents amount
 // by a float percentage. Parsed via string splitting, not
 // parseFloat(...) * 100 — the same reasoning as money.util.ts's
@@ -31,7 +31,7 @@ export const getPlatformCommissionBasisPoints = (): number => {
   if (!raw || !COMMISSION_PERCENT_PATTERN.test(raw)) {
     throw new Error(
       `PLATFORM_COMMISSION_PERCENT is missing or invalid in .env (got ${JSON.stringify(raw ?? null)}) — ` +
-      'expected a plain non-negative number with at most 2 decimal places, e.g. "2.5".'
+      'expected a plain non-negative number with at most 2 decimal places, e.g. "2".'
     );
   }
 

@@ -15,6 +15,8 @@ import { startReminderScheduleWorker } from './modules/reminder-schedule/reminde
 import { startCustomTierSweeps } from './modules/custom-tier/custom-tier-ending.service.js';
 import { startEventGrantSweeps } from './modules/event-grant/event-grant.service.js';
 import { assertStorageEnvValid } from './modules/upload/upload-folders.js';
+import { assertPaystackKeyMode } from './shared/payments/paystack.client.js';
+import { startPaymentMaintenance } from './modules/payment-reconciliation/payment-maintenance.service.js';
 
 // ─────────────────────────────────────────
 //  PORT
@@ -43,6 +45,8 @@ const PORT = process.env.PORT ?? 5000;
 const start = async (): Promise<void> => {
   try {
     assertStorageEnvValid();
+    // Live keys in production (STORAGE_ENV=prod), test keys everywhere else.
+    assertPaystackKeyMode();
 
     // Verify Prisma can reach the database
     // before accepting any traffic.
@@ -64,6 +68,7 @@ const start = async (): Promise<void> => {
     startReminderScheduleWorker();
     startCustomTierSweeps();
     startEventGrantSweeps();
+    startPaymentMaintenance();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

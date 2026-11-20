@@ -60,6 +60,11 @@ export interface TenantSubscriptionState {
   subscriptionCancelAtPeriodEnd: boolean;
   subscriptionCurrentPeriodEnd: Date | null;
   subscriptionGraceStartedAt: Date | null;
+  // Payments release 1: true while this tenant's state is waiting to be
+  // re-read from Paystack (a renewal whose new period end couldn't be
+  // fetched). The period-end hard stop below waits for it. Optional so a
+  // caller that doesn't select it keeps working (treated as false).
+  subscriptionNeedsSync?: boolean;
 }
 
 export const resolveEffectiveTier = (tenant: TenantSubscriptionState, now: Date = new Date()): SubscriptionTier => {
@@ -85,6 +90,23 @@ export const resolveEffectiveTier = (tenant: TenantSubscriptionState, now: Date 
   if (tenant.subscriptionGraceStartedAt) {
     const graceDeadline = tenant.subscriptionGraceStartedAt.getTime() + GRACE_PERIOD_MS;
     if (now.getTime() < graceDeadline) return tenant.subscriptionTier;
+    return 'SPARK';
+  }
+
+  // Payments release 1 — THE HARD STOP. A paid period that ended more than
+  // the grace window ago with no renewal recorded is over, whatever else we
+  // did or didn't hear: a renewal failure Paystack reported in a way we
+  // missed, a webhook that never arrived. A successful renewal always moves
+  // subscriptionCurrentPeriodEnd forward (charge.success, invoice.update or
+  // the sync), so a paying tenant never reaches this. The one exception is a
+  // tenant waiting for the sync to fetch its new period end
+  // (subscriptionNeedsSync, set only after a successful charge): it keeps
+  // access until the sync has run.
+  if (
+    tenant.subscriptionCurrentPeriodEnd &&
+    !tenant.subscriptionNeedsSync &&
+    now.getTime() >= tenant.subscriptionCurrentPeriodEnd.getTime() + GRACE_PERIOD_MS
+  ) {
     return 'SPARK';
   }
 

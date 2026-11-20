@@ -5,6 +5,7 @@ import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { paymentVerifyLimiter } from '../../shared/middleware/rate-limit.middleware.js';
 
 const router = Router();
 
@@ -54,6 +55,20 @@ router.post('/subscribe', requireFeature('payments'), requireTenantAdmin, async 
     const callbackUrl = frontendUrl('/billing/callback');
     const result = await subscriptionService.subscribe(tenantId, req.body, callbackUrl);
     res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/subscriptions/verify — the billing callback page's fallback
+// (payments release 1): asks Paystack directly about the caller's pending
+// checkout or plan change instead of waiting for the webhook, applies what
+// Paystack confirms (through the same handlers as the webhook), and answers
+// with the current status (the same shape as GET /). Rate limited.
+router.post('/verify', requireFeature('payments'), requireTenantAdmin, paymentVerifyLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = requireOwnTenantId(req, res);
+    if (!tenantId) return;
+    const status = await subscriptionService.verify(tenantId);
+    res.status(200).json({ status: 'ok', data: status });
   } catch (err) { next(err); }
 });
 

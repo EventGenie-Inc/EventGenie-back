@@ -5,6 +5,7 @@ import { requireEventAdmin, requireTenantAdmin } from '../../shared/middleware/r
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
+import { paymentVerifyLimiter } from '../../shared/middleware/rate-limit.middleware.js';
 
 // Nested under /api/events/:eventId/pass (app.ts) — mergeParams is set
 // there, same as every other event-child router (event-day, guest,
@@ -48,7 +49,7 @@ router.post('/purchase', requireFeature('payments'), requireTenantAdmin, async (
   } catch (err) { next(err); }
 });
 
-router.post('/purchases/:purchaseId/reconcile', requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/purchases/:purchaseId/reconcile', requireFeature('payments'), requireTenantAdmin, paymentVerifyLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const result = await eventPassService.reconcilePassPurchase(
@@ -71,7 +72,7 @@ router.post('/sms-bundle/purchase', requireFeature('sms'), requireFeature('payme
   } catch (err) { next(err); }
 });
 
-router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireFeature('sms'), requireFeature('payments'), requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/sms-bundle/purchases/:purchaseId/reconcile', requireFeature('sms'), requireFeature('payments'), requireTenantAdmin, paymentVerifyLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const result = await eventPassService.reconcileSmsBundlePurchase(

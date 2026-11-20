@@ -1217,7 +1217,14 @@ Seven documented exceptions:
 - `PaymentLedgerEntry` (Payments Foundation) — an append-only money ledger,
   never soft-deleted OR edited: no `isArchived`, no `updatedAt`, and
   deliberately no update/delete method anywhere in
-  `payment-ledger.repository.ts`.
+  `payment-ledger.repository.ts`. Its payments-release-1 neighbours are
+  records too, never archived: `PaystackWebhookEvent` (the dedupe guard),
+  `PaymentReconciliationRun` (written once a day, finished once) and
+  `PaymentMismatch` (kept; `resolvedAt` is for a later "mark resolved").
+  An `EventPass` is the one payment row that is deleted: when a refund or a
+  lost chargeback takes it back, the event falls back to its tenant's plan
+  and its purchases (with their REFUNDED/REVERSED status) and ledger rows
+  stay (see "Payments").
 - The append-only send logs `SmsSendLog`, `InviteReminderLog`,
   `Announcement`, `AnnouncementDelivery`, `EventEmailClaim`,
   `FeedbackRequestClaim` and `MediaPurgeReminderClaim` — a message was sent, or failed to be, recorded
@@ -3425,6 +3432,193 @@ pass's own guest number stands beside the plan's), and `maxSmsPerMonth` is
 left out while a pass is active (its SMS come from the event's bundle).
 `maxEvents` is the tenant's, on `/me` only.
 
+### Payments
+
+Paystack, for subscriptions, Event Passes, SMS bundles and (later)
+tickets. Release 1 (2026-11, `feature/payments-release-1`) made
+subscriptions, passes and bundles ready for live money; tickets keep their
+own rules until their release (see "Known gaps"). The audit it closes is
+`documentation-generator/docs/paystack-production-readiness.md`.
+
+**Nothing is granted on a redirect.** A purchase is confirmed only by a
+signed webhook or by asking Paystack directly (verify), never by the
+browser coming back. Every confirmation goes through one function per
+product, inside one transaction, whichever source arrives first; the row is
+locked, so two sources confirm it once.
+
+**Every confirmation checks the money.** Paystack's `amount` and
+`currency` must equal what the purchase asked for (`checkAmount`,
+`shared/payments/paystack-payload.util.ts`); a missing amount fails. A
+mismatch grants nothing: the purchase goes `UNDER_REVIEW` (passes, bundles),
+a `PAYMENT_AMOUNT_MISMATCH` ledger row and a `PaymentMismatch` row are
+written, and the super admin is alerted. A subscription's first charge is
+checked against the pending plan's price, a renewal against the plan it
+names (else the tenant's current or pending plan), `subscription.create`
+against our price for its plan. The ledger's success row carries Paystack's
+transaction id (`paystackTransactionId`) and `occurredAt` from `paid_at`.
+
+**Statuses.** `PaymentAttemptStatus` (passes, bundles): `PENDING`, `PAID`,
+`FAILED`, `REFUNDED` (a processed refund), `REVERSED` (a lost chargeback),
+`UNDER_REVIEW` (wrong amount). `PENDING` or `FAILED` may become `PAID` (a
+success after a failed attempt on the same checkout, or after the stale
+sweep); nothing leaves `REFUNDED`, `REVERSED` or `UNDER_REVIEW` on its own,
+and a charge.failed never touches a `PAID` row.
+
+**One pending checkout at a time** (`shared/payments/pending-checkout.util.ts`).
+Buying the same thing again within 30 minutes (same pass tier, same SMS
+count, same plan) hands back the same checkout link (`reused: true`);
+something different is 409 `PAYMENT_ALREADY_PENDING`; a second request while
+the first is still being set up is 409 `PAYMENT_IN_PROGRESS`. Per event (a
+pass, a bundle) the check and the insert run under one advisory lock;
+a subscribe attempt is claimed with one conditional update
+(`claimPendingAttempt`). **An Event Pass only rises**: a cheaper purchase
+paid after a dearer one is recorded as paid, keeps the event on the dearer
+pass (`tierKept`), and alerts (the tenant paid for nothing).
+
+**Subscription webhooks act only on the tenant's current subscription.**
+`subscription.disable`, `subscription.not_renew` and the invoice events are
+matched by `subscription_code` against `Tenant.paystackSubscriptionCode`;
+any other (the old subscription after an upgrade or a resubscribe, arriving
+late) is recorded as `WEBHOOK_EVENT_IGNORED` and changes nothing.
+`subscription.create` still finds its tenant by billing email; for a tenant
+that already holds a different live subscription it didn't ask to replace
+(no pending attempt for that plan), it is a duplicate:
+`SUBSCRIPTION_DUPLICATE_DETECTED`, the extra subscription disabled at
+Paystack after commit, an alert (its first charge needs a refund). A plan
+change records the plan it expects first (a pending attempt with an `upg_`
+marker), so its own `subscription.create` is recognised.
+
+**Renewals and grace.** A renewal failure (`invoice.payment_failed`, or
+`invoice.update` with status `failed`, or `charge.failed` for a known
+customer) starts the 5-day grace once; `invoice.update` paid, or the
+renewal's `charge.success`, clears it and moves the period end.
+**The hard stop** (`resolveEffectiveTier`): a paid period that ended more
+than 5 days ago with no renewal recorded is Spark, whatever we did or didn't
+hear, unless the tenant is waiting for the sync (`subscriptionNeedsSync`, set
+only after a successful charge).
+
+**Uncertain outcomes are never failures.** A Paystack write with no clear
+answer (timeout, network, 5xx: `isUncertainPaystackFailure`) may have
+happened. A checkout that fails to start is still marked failed (without
+its link nobody can pay it, and a later success is still granted). A plan
+change whose new subscription got no clear answer is
+`SUBSCRIPTION_CHARGE_UNCERTAIN`, the answer is `{ outcome:
+'pending_confirmation' }`, and the sync adopts the subscription if Paystack
+made it.
+
+**Refunds, reversals and chargebacks** (`payment-adjustment` module). The
+super admin refunds from Paystack's dashboard; the app reacts to
+`refund.processed` (takes back), `refund.pending`/`refund.processing`
+(`REFUND_PENDING`, noted), `refund.failed` (`REFUND_FAILED`, alerted),
+`charge.dispute.create` (`DISPUTE_OPENED`, alerted, access stays),
+`charge.dispute.remind` (`DISPUTE_REMINDER`) and `charge.dispute.resolve`
+(lost: taken back like a refund, status `REVERSED`, `DISPUTE_LOST`; won:
+`DISPUTE_WON`, nothing changes; an outcome we don't know: nothing changes,
+alerted). Each is matched to the original payment by our reference or
+Paystack's transaction id. Taking back, per product:
+- **Subscription** (the tenant's latest subscription charge only): Spark at
+  once, every event and guest kept, the Paystack subscription disabled after
+  commit (or by the sync, if that fails). A refund of an older charge is
+  recorded and alerted.
+- **Event Pass**: the purchase `REFUNDED`; the pass recomputed from what is
+  still `PAID`: no paid fresh purchase left, the `EventPass` row is removed
+  and the event falls back to its tenant's plan; otherwise the highest paid
+  tier.
+- **SMS bundle**: `REFUNDED`, so its credits stop counting: what was left of
+  them is gone, what was sent stays sent.
+- **Ticket**: recorded only, alerted (tickets are a later release).
+- **A partial refund** (less than was paid): recorded and alerted, nothing
+  taken back.
+
+[Paystack's own pages refused automated reads; the event names are
+confirmed by several sources, the payload fields are read defensively
+(`originalPaymentOf`: `transaction_reference`, `transaction.reference`,
+`transaction.id`, a bare `transaction`; a dispute's `resolution`:
+`merchant-accepted` lost, `declined` won). **Check the real payloads in
+test mode on dev before going live**: refund a test-mode payment from
+Paystack's dashboard (Transactions → the payment → Refund) and read the
+`refund.*` rows' `payload` in the ledger; for disputes, if test mode can't
+raise one, check the first live one by hand.]
+
+**The webhook** (`payment-webhook` module). The dedupe key is
+`${event}:${data.id ?? data.reference ?? 'none'}:${sha256(raw body)}`: a
+retry is a duplicate, two different deliveries about one object (or with no
+id at all) never collide, and every handler is idempotent anyway. Handlers
+get a context (`WebhookContext`) whose `after` queues work for after commit
+(a Paystack call, an alert email); that work never fails the webhook. A
+database failure is a 500 with the delivery not marked seen, so Paystack's
+retry is processed. Anything nothing claims is `WEBHOOK_EVENT_UNHANDLED`
+and alerted; `invoice.create` and `subscription.expiring_cards` are
+recorded quietly (`WEBHOOK_EVENT_IGNORED`).
+
+**The Paystack client** (`shared/payments/paystack.client.ts`): every call
+times out after `PAYSTACK_TIMEOUT_MS` (20 s); a read (GET) is retried twice
+on a timeout, network error, 429 or 5xx (`PAYSTACK_RETRY_DELAY_MS`, 500 ms
+then three times that; a 429's Retry-After up to 5 s); a write is never
+retried. Failures carry a `kind`: `rejected`, `rate_limited`, `server`,
+`timeout`, `network`. **Users never see Paystack's text**
+(`toPaymentHttpError`): 503 `PAYMENT_PROVIDER_UNAVAILABLE` (try again
+shortly), 422 `PAYMENT_REJECTED`, or a 500 when Paystack was never reached
+(our configuration). The raw text stays in the log and the ledger payload.
+Ticketing's guest wording doesn't use this yet.
+
+**Keys.** `assertPaystackKeyMode` (server.ts, at startup):
+`STORAGE_ENV=prod` needs `sk_live_`/`pk_live_`; dev and staging need
+`sk_test_`/`pk_test_`. A wrong key stops the deploy.
+
+**The sync and the sweep** (`payment-maintenance.service.ts`, started by
+server.ts, hourly, first run 5 minutes after start). Hourly: pending
+purchases and subscribe attempts older than a day are checked with Paystack
+(paid: confirmed through the webhook's own path; failed, abandoned or
+unknown: `FAILED` / cleared; no answer: next hour), and every flagged tenant
+is synced (`subscription-sync.service.ts`: adopts a subscription we never
+heard of if it is the plan asked for, disables a refunded one still live,
+"active" sets the period end and clears grace, "attention" starts grace,
+"non-renewing"/"cancelled"/"completed" ends it at the period end; each
+correction is a `SUBSCRIPTION_SYNC_CORRECTED` row with before and after).
+The first run of each UTC day also reconciles the day before and syncs
+every tenant with a subscription. Tests call `runHourly`, `runDaily`,
+`sweepStalePending({ tenantIds })`, `syncMany({ tenantIds })` and
+`reconcileDay(date, { tenantIds })` scoped to their own tenants.
+
+**Reconciliation** (`payment-reconciliation.service.ts`), one run per UTC
+day, claimed once across instances (`PaymentReconciliationRun.runDate` is
+unique): every successful Paystack transaction must have a ledger success
+for the same amount and currency (`PAYSTACK_ONLY`, `AMOUNT_DIFFERS`,
+`CURRENCY_DIFFERS`); every ledger success of the day must verify as a
+success at Paystack (`LEDGER_ONLY`); every processed refund must have a
+`REFUND_ISSUED` (`REFUND_NOT_RECORDED`). Settlements are counted and
+totalled in the run's summary (no fees in the ledger to match them
+against). Mismatches are `PaymentMismatch` rows and one alert per run.
+Nothing is corrected automatically.
+
+**Alerts** (`payment-alert` module) go by email to `PAYMENTS_ALERT_EMAIL`
+(default `admin@e-velope.co.za`), after commit, never failing what they
+describe: chargebacks (opened, lost, won, unknown), wrong amounts,
+unhandled webhooks, reconciliation mismatches, a duplicate subscription, a
+refund that failed, matched nothing, was partial or needs a decision, a paid
+pass that changed nothing, a cancelled subscription still active at
+Paystack. Ids, references and amounts only, never contact details.
+
+**Super admin routes**, `SUPER_ADMIN` only (everyone else the global 404),
+read-only, no flag: `GET /api/admin/payments/ledger?tenantId=&eventId=&type=A,B&reference=&from=&to=&cursor=&limit=`,
+`GET /api/admin/payments/mismatches?status=open|resolved|all&cursor=&limit=`,
+`GET /api/admin/payments/reconciliation-runs?limit=`. Pages are
+`{ items, nextCursor }`, newest first, `limit` 1–200 (default 50).
+
+**Verify routes are rate limited** (`paymentVerifyLimiter`, 30 per user per
+5 minutes, 429 `PAYMENT_VERIFY_RATE_LIMITED`): the two pass/bundle
+reconciles and `POST /api/subscriptions/verify`, the billing callback's
+fallback (applies what Paystack confirms, answers with the status).
+
+**Plans.** The four Paystack plans are named `e-velope Celebrate (Monthly)`,
+`e-velope Celebrate (Annual)`, `e-velope Elevate (Monthly)`, `e-velope
+Elevate (Annual)` (`prisma/create-subscription-plans.ts`, run once per
+Paystack mode). Ticket commission is `PLATFORM_COMMISSION_PERCENT` (2).
+Elevate's seeded SMS limit is 1,000 a month (production's row is set on
+the super admin's tier screen; the seed never overwrites). The live cutover's
+SQL (a read-only check, then a reset a person runs) is in `scripts/sql/`.
+
 ### Super admin audit log
 
 Every super admin action that changes a tenant's account, or the platform's
@@ -4397,6 +4591,18 @@ private upload, can be made to fail, and records every call. A test
 signature and StoredFile, then the file in the fake at the size Cloudinary
 would report. `STORAGE_ENV` is `dev` in tests whatever `.env` says.
 
+**Paystack is never reached by a test**, test mode included.
+`tests/setup.ts` puts every request to `api.paystack.co` through an
+in-memory fake (`tests/helpers/fake-paystack.ts`, reset before each test):
+it starts checkouts, and a test completes one with `pay(reference)` (which
+returns the `charge.success` data, and makes the subscription for a plan
+checkout), fails one with `fail`, adds renewals and subscriptions, makes the
+next matching call time out, lose the network or answer a status with
+`failNext`, and reads `calls`. Webhooks are sent signed, through the real
+route (`tests/helpers/paystack-webhook.ts`'s `sendWebhook`). Retries wait
+1 ms (`PAYSTACK_RETRY_DELAY_MS`). A test file that `vi.mock`s
+`paystack.client.js` keeps doing so; the fake sits underneath, at fetch.
+
 **Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
 only** — a local Postgres database (`localhost:5432`), never the shared
 dev/prod one. The
@@ -4535,8 +4741,22 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   300 guests are three Resend calls rather than 300, but there is no queue
   behind it. A crash mid-send leaves fewer delivery rows than the
   announcement's recipient count.
-- **Refunds are not built.** Cancelling a paid event will need a refund
-  pipeline once payments exist.
+- **Ticket payments are not release-1 ready** (see "Payments"): a ticket
+  refund or chargeback is recorded and alerted but doesn't change the
+  purchase; a retry overwrites the purchase's reference, so a late success
+  on the old one isn't matched; the server doesn't require a ticket to
+  accept a paid event, and check-in and the QR code ignore payment; payout
+  bank details have no server-side confirmation; the gross-up is priced at
+  Paystack's local card rate; ticket confirmation doesn't check the amount;
+  the guest's checkout errors still pass Paystack's text through. All for
+  the ticketing release (audit A2, A6, A7, B1). Cancelling a paid event
+  still has no refund pipeline: refunds are issued by hand from Paystack's
+  dashboard.
+- **Paystack's refund and dispute payloads are unverified** against its
+  own documentation (its pages refused automated reads): the fields are read
+  defensively, and an outcome we don't recognise changes nothing and alerts.
+  Check a real test-mode refund's payload before going live (see
+  "Payments").
 - **The frontend doesn't follow the 2026-10 deadline and registration
   changes yet** (backend `hotfix/rsvp-deadline`). The wizard's own check
   (`event-wizard.form.ts`'s `rsvpDeadlineProblem`) still refuses a deadline
@@ -4694,10 +4914,30 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   - **The global error handler** (`tests/errors/`): no raw Prisma text
     in a response; a duplicate user email is 409 `USER_EMAIL_TAKEN`, not
     a 500.
-  - **Tenant emails** (`tests/subscription/`): Paystack's subscription
-    lookup finds a tenant whatever case and padding either side has,
-    matches neither of two colliding tenants, and the tenant email
-    migration skips collisions.
+  - **Tenant emails** (`tests/subscription/`): Paystack's
+    `subscription.create` lookup finds a tenant whatever case and padding
+    either side has, matches neither of two colliding tenants, and the
+    tenant email migration skips collisions.
+  - **Payments** (`tests/payments/`, payments release 1, against the fake
+    Paystack with signed webhooks): money conversion, commission and the
+    gross-up; the client's timeouts, retries (reads only), failure kinds,
+    neutral messages and key mode; Event Passes and SMS bundles (granted
+    only by Paystack, wrong amount and currency, FAILED → PAID, duplicate
+    deliveries, a bad signature, one pending checkout and concurrent
+    requests, a pass only rising, a Paystack timeout and rejection, the
+    browser closed after paying with the webhook arriving later, the stale
+    sweep, reconcile scoping and its rate limit, refunds full, of an
+    upgrade, partial, pending and failed, chargebacks opened, lost, won
+    and unknown); subscriptions (both webhook orders, checkout reuse, a
+    stale disable after a resubscribe and both orders of an upgrade's
+    webhooks, a duplicate subscription, invoice failure and payment, the
+    hard stop, renewals for the right and wrong amount, a period end
+    fetched later by the sync, an uncertain plan change adopted by the sync,
+    refunds of the latest and an earlier charge, a disable retried by the
+    sync, a lost chargeback, the verify fallback); the webhook (unhandled
+    and informational events, id-less deliveries, a database failure then
+    a retry, concurrent deliveries); the reconciliation (every mismatch
+    kind, the once-a-day claim and its alert); the super admin routes.
   - **Team members** (`tests/team/`): the assignment lock (an unlocked
     member sees every event; a locked one gets 404 on an unassigned event,
     its guests, invites, check-in, `/api/guests/:id` and RSVP responses,

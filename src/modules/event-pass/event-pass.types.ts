@@ -8,7 +8,10 @@ export interface PurchaseSmsBundleDto {
   smsCount: number;
 }
 
-export type PassCheckoutResult = { authorizationUrl: string };
+// Payments release 1: `purchaseId` (for the callback page's reconcile) and
+// `reused` (true when a pending checkout for the same choice was handed
+// back instead of a new one being started).
+export type PassCheckoutResult = { authorizationUrl: string; purchaseId: string; reused: boolean };
 
 export interface EventPassStatusDto {
   pass: { passTier: EventPassTier; grantedTier: string; purchasedAt: Date } | null;

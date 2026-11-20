@@ -28,6 +28,10 @@ const SUBSCRIPTION_FIELDS = {
   subscriptionPendingReference: true,
   subscriptionPendingTier: true,
   subscriptionPendingPeriod: true,
+  subscriptionPendingAuthorizationUrl: true,
+  subscriptionPendingStartedAt: true,
+  subscriptionNeedsSync: true,
+  subscriptionLastSyncedAt: true,
   // Custom tiers: the plan shown by getStatus may be a custom tier.
   customTierId: true,
   customTierEndsAt: true,
@@ -78,29 +82,59 @@ export const subscriptionRepository = {
   findByPendingReference: (reference: string, db: Db = prisma) =>
     db.tenant.findFirst({ where: { subscriptionPendingReference: reference }, select: SUBSCRIPTION_FIELDS }),
 
-  savePendingAttempt: (
+  // Payments release 1: the pending attempt is CLAIMED, not overwritten. It
+  // takes only when no attempt is pending or the pending one is older than
+  // the reuse window (pending-checkout.util.ts), in one conditional UPDATE,
+  // so two clicks can't both start a checkout. false: an attempt is already
+  // pending; the caller reads it and reuses its link or refuses.
+  claimPendingAttempt: async (
     tenantId: string,
     data: { reference: string; tier: SubscriptionTier; period: SubscriptionPeriod },
+    reuseCutoff: Date,
     db: Db = prisma
-  ) =>
-    db.tenant.update({
-      where: { id: tenantId },
+  ): Promise<boolean> => {
+    const result = await db.tenant.updateMany({
+      where: {
+        id: tenantId,
+        OR: [
+          { subscriptionPendingReference: null },
+          { subscriptionPendingStartedAt: null },
+          { subscriptionPendingStartedAt: { lt: reuseCutoff } },
+        ],
+      },
       data: {
         subscriptionPendingReference: data.reference,
         subscriptionPendingTier: data.tier,
         subscriptionPendingPeriod: data.period,
+        subscriptionPendingStartedAt: new Date(),
+        subscriptionPendingAuthorizationUrl: null,
       },
+    });
+    return result.count === 1;
+  },
+
+  savePendingAuthorizationUrl: (tenantId: string, reference: string, authorizationUrl: string, db: Db = prisma) =>
+    db.tenant.updateMany({
+      where: { id: tenantId, subscriptionPendingReference: reference },
+      data: { subscriptionPendingAuthorizationUrl: authorizationUrl },
     }),
 
-  clearPendingAttempt: (tenantId: string, db: Db = prisma) =>
-    db.tenant.update({
-      where: { id: tenantId },
+  // Clears the pending attempt. With a reference, only if it is still that
+  // attempt (a newer one is left alone).
+  clearPendingAttempt: (tenantId: string, db: Db = prisma, reference?: string) =>
+    db.tenant.updateMany({
+      where: { id: tenantId, ...(reference !== undefined && { subscriptionPendingReference: reference }) },
       data: {
         subscriptionPendingReference: null,
         subscriptionPendingTier: null,
         subscriptionPendingPeriod: null,
+        subscriptionPendingAuthorizationUrl: null,
+        subscriptionPendingStartedAt: null,
       },
     }),
+
+  findBySubscriptionCode: (subscriptionCode: string, db: Db = prisma) =>
+    db.tenant.findFirst({ where: { paystackSubscriptionCode: subscriptionCode }, select: SUBSCRIPTION_FIELDS }),
 
   // Records that a charge succeeded WITHOUT necessarily flipping tier —
   // used for the initial-subscribe charge.success (tier flip waits for
@@ -146,6 +180,10 @@ export const subscriptionRepository = {
         subscriptionPendingReference: null,
         subscriptionPendingTier: null,
         subscriptionPendingPeriod: null,
+        subscriptionPendingAuthorizationUrl: null,
+        subscriptionPendingStartedAt: null,
+        subscriptionNeedsSync: false,
+        subscriptionLastSyncedAt: new Date(),
         // A paid subscription takes the tenant off any custom tier: what
         // they now pay for is their plan (a trial converting, say).
         customTierId: null,
@@ -166,8 +204,83 @@ export const subscriptionRepository = {
   // period end should NOT happen — Paystack was told to disable it —
   // but if it somehow did, leaving cancelAtPeriodEnd alone is the safe
   // choice: it still stands for whatever the NEXT period end is now).
+  // Also marks the tenant in step with Paystack (payments release 1).
   updateCurrentPeriodEnd: (tenantId: string, currentPeriodEnd: Date, db: Db = prisma) =>
-    db.tenant.update({ where: { id: tenantId }, data: { subscriptionCurrentPeriodEnd: currentPeriodEnd } }),
+    db.tenant.update({
+      where: { id: tenantId },
+      data: { subscriptionCurrentPeriodEnd: currentPeriodEnd, subscriptionNeedsSync: false, subscriptionLastSyncedAt: new Date() },
+    }),
+
+  // ── Payments release 1 ──
+
+  markNeedsSync: (tenantId: string, db: Db = prisma) =>
+    db.tenant.update({ where: { id: tenantId }, data: { subscriptionNeedsSync: true } }),
+
+  markSynced: (tenantId: string, db: Db = prisma) =>
+    db.tenant.update({ where: { id: tenantId }, data: { subscriptionNeedsSync: false, subscriptionLastSyncedAt: new Date() } }),
+
+  clearGrace: (tenantId: string, db: Db = prisma) =>
+    db.tenant.update({ where: { id: tenantId }, data: { subscriptionGraceStartedAt: null } }),
+
+  setCancelAtPeriodEnd: (tenantId: string, db: Db = prisma) =>
+    db.tenant.update({ where: { id: tenantId }, data: { subscriptionCancelAtPeriodEnd: true } }),
+
+  // A refunded (or charged-back) subscription: access ends now. The tenant
+  // is on Spark at once; everything it made is kept. Its Paystack codes are
+  // kept until the subscription is disabled at Paystack (post-commit, or
+  // the sync: subscriptionNeedsSync), then cleared by clearSubscriptionCodes.
+  endSubscriptionNow: (tenantId: string, db: Db = prisma) =>
+    db.tenant.update({
+      where: { id: tenantId },
+      data: {
+        subscriptionTier: 'SPARK',
+        subscriptionPeriod: null,
+        subscriptionCurrentPeriodEnd: null,
+        subscriptionCancelAtPeriodEnd: false,
+        subscriptionPendingTierAfterPeriodEnd: null,
+        subscriptionGraceStartedAt: null,
+        subscriptionNeedsSync: true,
+      },
+    }),
+
+  // After the subscription has been disabled at Paystack.
+  clearSubscriptionCodes: (tenantId: string, subscriptionCode: string, db: Db = prisma) =>
+    db.tenant.updateMany({
+      where: { id: tenantId, paystackSubscriptionCode: subscriptionCode },
+      data: {
+        paystackSubscriptionCode: null,
+        paystackSubscriptionEmailToken: null,
+        subscriptionNeedsSync: false,
+        subscriptionLastSyncedAt: new Date(),
+      },
+    }),
+
+  // The sync's work list: tenants flagged first, then (full run) every
+  // tenant holding a Paystack subscription. tenantIds scopes a test's run to
+  // its own tenants.
+  findForSync: (options: { onlyFlagged: boolean; tenantIds?: string[]; limit: number }) =>
+    prisma.tenant.findMany({
+      where: {
+        ...(options.tenantIds && { id: { in: options.tenantIds } }),
+        ...(options.onlyFlagged
+          ? { subscriptionNeedsSync: true }
+          : { OR: [{ subscriptionNeedsSync: true }, { paystackSubscriptionCode: { not: null } }] }),
+      },
+      select: SUBSCRIPTION_FIELDS,
+      orderBy: [{ subscriptionNeedsSync: 'desc' }, { subscriptionLastSyncedAt: { sort: 'asc', nulls: 'first' } }],
+      take: options.limit,
+    }),
+
+  findStalePendingAttempts: (before: Date, tenantIds?: string[]) =>
+    prisma.tenant.findMany({
+      where: {
+        subscriptionPendingReference: { not: null },
+        OR: [{ subscriptionPendingStartedAt: null }, { subscriptionPendingStartedAt: { lt: before } }],
+        ...(tenantIds && { id: { in: tenantIds } }),
+      },
+      select: SUBSCRIPTION_FIELDS,
+      take: 200,
+    }),
 
   // First failure starts the grace clock; a SECOND failure while
   // already in (or past) grace must NOT push the deadline forward — see

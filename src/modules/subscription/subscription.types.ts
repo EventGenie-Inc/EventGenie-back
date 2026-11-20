@@ -38,6 +38,10 @@ export interface SubscriptionStatusDto {
   pendingTierAfterPeriodEnd: SubscriptionTier | null;
   inGrace: boolean;
   graceDeadline: Date | null;
+  // Payments release 1: a checkout or plan change started and not yet
+  // confirmed by Paystack (null when none). The billing callback page polls
+  // GET /api/subscriptions, or calls POST /api/subscriptions/verify.
+  pendingChange: { tier: SubscriptionTier; period: SubscriptionPeriod; startedAt: Date | null } | null;
   card: {
     brand: string | null;
     last4: string | null;
@@ -65,8 +69,11 @@ export interface ActivateSubscriptionInput {
 // a server misconfiguration like a missing plan code) so the caller
 // gets a real status code instead of a 200 carrying bad news. See
 // subscription.service.ts's subscribe().
+// reused: a pending checkout for the same plan was handed back instead of
+// a new one being started (payments release 1).
 export interface CheckoutResult {
   authorizationUrl: string;
+  reused: boolean;
 }
 
 // changeTier's upgrade path charges an already-saved card directly —
@@ -76,4 +83,10 @@ export interface CheckoutResult {
 // "Paystack took the request", not "the tenant is on the new plan yet".
 // Same as CheckoutResult above: a failed upgrade is a thrown HttpError,
 // not an `{outcome: 'failed'}` value.
-export type ChangeTierResult = { outcome: 'accepted' } | { outcome: 'scheduled'; effectiveAt: Date | null };
+// pending_confirmation (payments release 1): Paystack gave no clear answer
+// to the new subscription; it may have started. Recorded as uncertain and
+// re-checked by the subscription sync; never reported as failed.
+export type ChangeTierResult =
+  | { outcome: 'accepted' }
+  | { outcome: 'pending_confirmation' }
+  | { outcome: 'scheduled'; effectiveAt: Date | null };

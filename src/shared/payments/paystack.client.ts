@@ -43,9 +43,23 @@ const SECRET_KEY: string = PAYSTACK_SECRET_KEY;
 //  transaction/subaccount error shapes: a non-2xx response, or a 2xx
 //  with `status: false`, both carry a human-readable `message`.
 // ─────────────────────────────────────────
+// What kind of failure, decided once here so every caller treats it the
+// same way (payments release 1):
+//   rejected     — Paystack answered with a 4xx (other than 429) or a 2xx
+//                  with status:false: it refused this request. Retrying the
+//                  same request won't help.
+//   rate_limited — 429. Safe to retry later.
+//   server       — 5xx. Paystack's own trouble; for a write, the outcome is
+//                  uncertain.
+//   timeout      — no answer within PAYSTACK_TIMEOUT_MS. For a write, the
+//                  outcome is uncertain: Paystack may have acted anyway.
+//   network      — couldn't reach Paystack at all, or the connection broke.
+export type PaystackFailureKind = 'rejected' | 'rate_limited' | 'server' | 'timeout' | 'network';
+
 export class PaystackApiError extends Error {
   paystackMessage: string;
   httpStatus: number;
+  kind: PaystackFailureKind;
   // The exact response body Paystack (or a description of a network/
   // parse failure when there wasn't one) returned — never rebuilt or
   // paraphrased. Callers that write a PaymentLedgerEntry for a failed
@@ -56,26 +70,69 @@ export class PaystackApiError extends Error {
   // through rather than hand-rolling this extraction again.
   raw: unknown;
 
-  constructor(paystackMessage: string, httpStatus: number, raw: unknown) {
+  constructor(paystackMessage: string, httpStatus: number, raw: unknown, kind?: PaystackFailureKind) {
     super(`Paystack request failed (${httpStatus}): ${paystackMessage}`);
     this.name = 'PaystackApiError';
     this.paystackMessage = paystackMessage;
     this.httpStatus = httpStatus;
     this.raw = raw;
+    this.kind = kind ?? kindForStatus(httpStatus);
   }
 }
+
+const kindForStatus = (httpStatus: number): PaystackFailureKind => {
+  if (httpStatus === 429) return 'rate_limited';
+  if (httpStatus >= 500) return 'server';
+  if (httpStatus === 0) return 'network';
+  return 'rejected';
+};
+
+// True when a WRITE that failed this way may still have happened at
+// Paystack: it got the request (or may have) but we never saw a clear
+// answer. A rejection or a rate limit means it didn't act.
+export const isUncertainPaystackFailure = (err: unknown): boolean =>
+  err instanceof PaystackApiError && (err.kind === 'timeout' || err.kind === 'server' || err.kind === 'network');
 
 interface PaystackEnvelope<T> {
   status: boolean;
   message: string;
   data: T;
+  meta?: { total?: number; page?: number; pageCount?: number; perPage?: number };
 }
 
-const paystackRequest = async <T>(
+// ─────────────────────────────────────────
+//  TIMEOUT AND RETRIES (payments release 1)
+//
+//  Every call gives up after PAYSTACK_TIMEOUT_MS (default 20 seconds):
+//  Node's own fetch has no overall limit, so a stalled Paystack used to hold
+//  a request open for minutes. A READ (GET) that times out, hits a network
+//  error, a 429 or a 5xx is retried, twice, after PAYSTACK_RETRY_DELAY_MS
+//  and three times that (a 429's Retry-After is honoured, up to 5 seconds):
+//  reading twice can't charge anyone. A WRITE is never retried here: a
+//  retried initialize could be refused as a duplicate reference, and a
+//  retried create-subscription could charge twice. Its caller decides what
+//  an uncertain outcome means (isUncertainPaystackFailure).
+// ─────────────────────────────────────────
+const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_RETRY_DELAY_MS = 500;
+const MAX_RETRY_AFTER_MS = 5_000;
+const READ_RETRIES = 2;
+
+const positiveIntFromEnv = (name: string, fallback: number): number => {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTimeoutError = (err: unknown): boolean =>
+  err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+
+const paystackRequestOnce = async <T>(
   method: 'GET' | 'POST' | 'PUT',
   path: string,
   body?: Record<string, unknown>
-): Promise<T> => {
+): Promise<{ data: T; meta?: PaystackEnvelope<T>['meta'] }> => {
   let response: Response;
   try {
     response = await fetch(`${PAYSTACK_BASE_URL}${path}`, {
@@ -84,11 +141,15 @@ const paystackRequest = async <T>(
         Authorization: `Bearer ${SECRET_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(positiveIntFromEnv('PAYSTACK_TIMEOUT_MS', DEFAULT_TIMEOUT_MS)),
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
   } catch (networkError) {
     const reason = networkError instanceof Error ? networkError.message : 'Unknown network error';
-    throw new PaystackApiError(`Could not reach Paystack: ${reason}`, 0, { networkError: reason });
+    if (isTimeoutError(networkError)) {
+      throw new PaystackApiError(`Paystack did not answer in time: ${reason}`, 0, { timeout: reason }, 'timeout');
+    }
+    throw new PaystackApiError(`Could not reach Paystack: ${reason}`, 0, { networkError: reason }, 'network');
   }
 
   // Read as text FIRST, not response.json() directly — a body can only
@@ -96,7 +157,13 @@ const paystackRequest = async <T>(
   // still have its raw text preserved on the thrown error rather than
   // being reduced to a made-up string, for the exact same "store what
   // actually came back" reason as the parsed-JSON case below.
-  const rawText = await response.text();
+  let rawText: string;
+  try {
+    rawText = await response.text();
+  } catch (readError) {
+    const reason = readError instanceof Error ? readError.message : 'Unknown read error';
+    throw new PaystackApiError(`Paystack's answer was cut off: ${reason}`, response.status, { readError: reason }, isTimeoutError(readError) ? 'timeout' : 'network');
+  }
   let json: PaystackEnvelope<T> | null = null;
   try {
     json = JSON.parse(rawText) as PaystackEnvelope<T>;
@@ -105,15 +172,47 @@ const paystackRequest = async <T>(
   }
 
   if (!response.ok || !json || !json.status) {
-    throw new PaystackApiError(
+    const error = new PaystackApiError(
       json?.message || 'Unknown Paystack error',
       response.status,
       json ?? { nonJsonBody: rawText }
     );
+    const retryAfter = Number(response.headers.get('retry-after'));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      (error as PaystackApiError & { retryAfterMs?: number }).retryAfterMs = Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS);
+    }
+    throw error;
   }
 
-  return json.data;
+  return { data: json.data, ...(json.meta !== undefined && { meta: json.meta }) };
 };
+
+const isRetryableRead = (err: unknown): boolean =>
+  err instanceof PaystackApiError && err.kind !== 'rejected';
+
+const paystackRequestWithMeta = async <T>(
+  method: 'GET' | 'POST' | 'PUT',
+  path: string,
+  body?: Record<string, unknown>
+): Promise<{ data: T; meta?: PaystackEnvelope<T>['meta'] }> => {
+  const retries = method === 'GET' ? READ_RETRIES : 0;
+  const baseDelay = positiveIntFromEnv('PAYSTACK_RETRY_DELAY_MS', DEFAULT_RETRY_DELAY_MS);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await paystackRequestOnce<T>(method, path, body);
+    } catch (err) {
+      if (attempt >= retries || !isRetryableRead(err)) throw err;
+      const retryAfterMs = (err as { retryAfterMs?: number }).retryAfterMs;
+      await sleep(retryAfterMs ?? baseDelay * (attempt === 0 ? 1 : 3));
+    }
+  }
+};
+
+const paystackRequest = async <T>(
+  method: 'GET' | 'POST' | 'PUT',
+  path: string,
+  body?: Record<string, unknown>
+): Promise<T> => (await paystackRequestWithMeta<T>(method, path, body)).data;
 
 // Turns whatever a paystackClient.* call threw into one shape for
 // logging and for a PaymentLedgerEntry.payload — every subscription
@@ -127,6 +226,11 @@ const paystackRequest = async <T>(
 // treat it as a 500, not a 422: no tenant input or retry fixes it.
 export interface PaystackFailureDescription {
   isPaystackRejection: boolean;
+  // Payments release 1: what kind of failure (see PaystackFailureKind),
+  // or 'config' when Paystack was never reached (a missing plan code).
+  // `isPaystackRejection` stays true for every PaystackApiError, as
+  // before, so ticketing's callers read it unchanged.
+  kind: PaystackFailureKind | 'config';
   // Paystack's own message (or the JS error's message) — short enough
   // to log inline and, when isPaystackRejection is true, usually safe
   // enough to surface to the tenant too (same paystackMessage
@@ -143,13 +247,15 @@ export const describePaystackFailure = (err: unknown): PaystackFailureDescriptio
   if (err instanceof PaystackApiError) {
     return {
       isPaystackRejection: true,
+      kind: err.kind,
       summary: err.paystackMessage,
-      raw: { httpStatus: err.httpStatus, body: err.raw },
+      raw: { httpStatus: err.httpStatus, kind: err.kind, body: err.raw },
     };
   }
   const summary = err instanceof Error ? err.message : String(err);
   return {
     isPaystackRejection: false,
+    kind: 'config',
     summary,
     raw: { message: summary, stack: err instanceof Error ? err.stack : undefined },
   };
@@ -240,6 +346,8 @@ interface PaystackTransactionVerifyData {
 }
 
 export interface VerifyTransactionResult {
+  // Paystack's own transaction id (payments release 1), as a string.
+  id: string | null;
   reference: string;
   status: string;
   amountCents: number;
@@ -261,6 +369,7 @@ export const verifyTransaction = async (reference: string): Promise<VerifyTransa
   );
 
   return {
+    id: data['id'] !== undefined && data['id'] !== null ? String(data['id']) : null,
     reference: data.reference,
     status: data.status,
     amountCents: data.amount,
@@ -643,4 +752,183 @@ export const generateSubscriptionManageLink = async (subscriptionCode: string): 
     `/subscription/${encodeURIComponent(subscriptionCode)}/manage/link`
   );
   return data.link;
+};
+
+// ─────────────────────────────────────────
+//  CUSTOMER'S SUBSCRIPTIONS (payments release 1)
+//
+//  Fetch Customer returns the customer's subscriptions alongside it. Used by
+//  the subscription sync and the verify fallback to find a subscription
+//  whose subscription.create webhook never arrived (a plan change with no
+//  clear answer, a delayed webhook). Each entry's plan is read whichever
+//  shape it comes in (object, code or bare id), like toSubscription above;
+//  a caller that needs a definite plan code reads the subscription itself.
+// ─────────────────────────────────────────
+interface PaystackCustomerData {
+  customer_code: string;
+  email: string;
+  subscriptions?: PaystackSubscriptionData[];
+  [key: string]: unknown;
+}
+
+export interface PaystackCustomerSubscriptions {
+  customerCode: string;
+  email: string;
+  subscriptions: PaystackSubscription[];
+}
+
+export const getCustomerSubscriptions = async (customerCode: string): Promise<PaystackCustomerSubscriptions> => {
+  const data = await paystackRequest<PaystackCustomerData>('GET', `/customer/${encodeURIComponent(customerCode)}`);
+  return {
+    customerCode: data.customer_code,
+    email: data.email,
+    subscriptions: (data.subscriptions ?? []).map(toSubscription),
+  };
+};
+
+// ─────────────────────────────────────────
+//  LISTS FOR RECONCILIATION (payments release 1)
+//
+//  Read-only, paged. `from`/`to` are ISO instants. Every page is read until
+//  Paystack says there are no more (meta.pageCount), with a hard ceiling so
+//  a misbehaving answer can't loop forever.
+// ─────────────────────────────────────────
+const MAX_PAGES = 50;
+const PER_PAGE = 100;
+
+const listAllPages = async <T>(path: string, params: Record<string, string>): Promise<T[]> => {
+  const all: T[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const query = new URLSearchParams({ ...params, perPage: String(PER_PAGE), page: String(page) });
+    const { data, meta } = await paystackRequestWithMeta<T[]>('GET', `${path}?${query.toString()}`);
+    all.push(...(data ?? []));
+    const pageCount = meta?.pageCount;
+    if (!data || data.length < PER_PAGE || (pageCount !== undefined && page >= pageCount)) break;
+  }
+  return all;
+};
+
+export interface PaystackListedTransaction {
+  id: string;
+  reference: string;
+  status: string;
+  amountCents: number;
+  currency: string;
+  paidAt: string | null;
+  createdAt: string | null;
+}
+
+interface PaystackListedTransactionData {
+  id: number | string;
+  reference: string;
+  status: string;
+  amount: number;
+  currency: string;
+  paid_at?: string | null;
+  paidAt?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
+}
+
+export const listTransactions = async (params: { from: string; to: string }): Promise<PaystackListedTransaction[]> => {
+  const rows = await listAllPages<PaystackListedTransactionData>('/transaction', { from: params.from, to: params.to });
+  return rows.map((row) => ({
+    id: String(row.id),
+    reference: row.reference,
+    status: row.status,
+    amountCents: row.amount,
+    currency: row.currency,
+    paidAt: row.paid_at ?? row.paidAt ?? null,
+    createdAt: row.created_at ?? row.createdAt ?? null,
+  }));
+};
+
+export interface PaystackListedRefund {
+  id: string;
+  transactionReference: string | null;
+  transactionId: string | null;
+  status: string;
+  amountCents: number;
+  currency: string;
+}
+
+interface PaystackListedRefundData {
+  id: number | string;
+  transaction?: number | string | { id?: number | string; reference?: string };
+  transaction_reference?: string;
+  status: string;
+  amount: number;
+  currency: string;
+}
+
+export const listRefunds = async (params: { from: string; to: string }): Promise<PaystackListedRefund[]> => {
+  const rows = await listAllPages<PaystackListedRefundData>('/refund', { from: params.from, to: params.to });
+  return rows.map((row) => {
+    const transaction = row.transaction;
+    const transactionObject = transaction && typeof transaction === 'object' ? transaction : null;
+    return {
+      id: String(row.id),
+      transactionReference: row.transaction_reference ?? transactionObject?.reference ?? null,
+      transactionId:
+        transactionObject?.id !== undefined
+          ? String(transactionObject.id)
+          : typeof transaction === 'number' || typeof transaction === 'string'
+            ? String(transaction)
+            : null,
+      status: row.status,
+      amountCents: row.amount,
+      currency: row.currency,
+    };
+  });
+};
+
+export interface PaystackListedSettlement {
+  id: string;
+  status: string;
+  totalAmountCents: number;
+  settledAt: string | null;
+}
+
+interface PaystackListedSettlementData {
+  id: number | string;
+  status: string;
+  total_amount?: number;
+  effective_amount?: number;
+  settlement_date?: string | null;
+  settled_by?: string | null;
+}
+
+export const listSettlements = async (params: { from: string; to: string }): Promise<PaystackListedSettlement[]> => {
+  const rows = await listAllPages<PaystackListedSettlementData>('/settlement', { from: params.from, to: params.to });
+  return rows.map((row) => ({
+    id: String(row.id),
+    status: row.status,
+    totalAmountCents: row.total_amount ?? row.effective_amount ?? 0,
+    settledAt: row.settlement_date ?? null,
+  }));
+};
+
+// ─────────────────────────────────────────
+//  KEY MODE (payments release 1)
+//
+//  Production must take real money and nothing else may: STORAGE_ENV=prod
+//  (the one environment name every server must already have, see
+//  upload-folders.ts) requires live keys (sk_live_, pk_live_); dev and
+//  staging require test keys (sk_test_, pk_test_). Called by server.ts at
+//  startup, beside assertStorageEnvValid, so a wrong key stops the deploy
+//  before it binds a port. Never logs a key.
+// ─────────────────────────────────────────
+export const assertPaystackKeyMode = (
+  env: { STORAGE_ENV?: string; PAYSTACK_SECRET_KEY?: string; PAYSTACK_PUBLIC_KEY?: string } = process.env
+): void => {
+  const live = env.STORAGE_ENV === 'prod';
+  const secretPrefix = live ? 'sk_live_' : 'sk_test_';
+  const publicPrefix = live ? 'pk_live_' : 'pk_test_';
+  const where = live ? 'production (STORAGE_ENV=prod)' : `a non-production environment (STORAGE_ENV=${env.STORAGE_ENV ?? 'unset'})`;
+  if (!env.PAYSTACK_SECRET_KEY?.startsWith(secretPrefix)) {
+    throw new Error(`PAYSTACK_SECRET_KEY must be a ${live ? 'live' : 'test'} key (${secretPrefix}…) in ${where}.`);
+  }
+  if (env.PAYSTACK_PUBLIC_KEY && !env.PAYSTACK_PUBLIC_KEY.startsWith(publicPrefix)) {
+    throw new Error(`PAYSTACK_PUBLIC_KEY must be a ${live ? 'live' : 'test'} key (${publicPrefix}…) in ${where}.`);
+  }
 };
