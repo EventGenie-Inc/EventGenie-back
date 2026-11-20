@@ -384,9 +384,13 @@ describe('the verify fallback', () => {
     expect((await ledgerTypes(t)).filter((x) => x === 'SUBSCRIPTION_CHARGE_SUCCEEDED')).toHaveLength(1);
   }, 60000);
 
-  it('not paid yet: pending, nothing changes', async () => {
+  it('not paid yet (Paystack still processing it): pending, nothing changes', async () => {
     const res = await api(t).subscribe('CELEBRATE', 'MONTHLY');
-    trackedReferences.push(referenceOf(res.body.data.authorizationUrl));
+    const reference = referenceOf(res.body.data.authorizationUrl);
+    trackedReferences.push(reference);
+    // Not settled either way. (Abandoned or failed, the payer has left: the
+    // attempt ends; tests/payments/subscription-state.test.ts.)
+    fakePaystack.transactions.get(reference)!.status = 'ongoing';
     const verified = await api(t).verify();
     expect(verified.body.data).toMatchObject({ tier: 'SPARK', pendingChange: { tier: 'CELEBRATE', period: 'MONTHLY' } });
   }, 60000);

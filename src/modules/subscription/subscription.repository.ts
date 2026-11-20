@@ -243,6 +243,55 @@ export const subscriptionRepository = {
       },
     }),
 
+  // The tenant's row, locked until the transaction ends: a decision on its
+  // billing state, then the write, without another writer in between.
+  lockTenant: (tenantId: string, tx: Prisma.TransactionClient) =>
+    tx.$queryRaw`SELECT id FROM "Tenant" WHERE id = ${tenantId} FOR UPDATE`,
+
+  // On Spark with no live subscription (subscription-state.util.ts's
+  // needsSettlingOnSpark decides): every field that described one cleared,
+  // the cancelling and pending-downgrade markers and the stale subscription
+  // code included. The customer code and saved card stay (a later charge is
+  // still matched by them); a pending checkout stays (the tenant's own next
+  // purchase).
+  settleOnSpark: (tenantId: string, db: Db = prisma) =>
+    db.tenant.update({
+      where: { id: tenantId },
+      data: {
+        subscriptionTier: 'SPARK',
+        subscriptionPeriod: null,
+        subscriptionCurrentPeriodEnd: null,
+        subscriptionCancelAtPeriodEnd: false,
+        subscriptionPendingTierAfterPeriodEnd: null,
+        subscriptionGraceStartedAt: null,
+        paystackSubscriptionCode: null,
+        paystackSubscriptionEmailToken: null,
+      },
+    }),
+
+  // Tenants that may need settling (the hourly sweep): anything but a clean
+  // Spark row or a paid one inside its period. needsSettlingOnSpark makes
+  // the decision; this only narrows the list.
+  findSettleCandidates: (now: Date, limit: number, tenantIds?: string[]) =>
+    prisma.tenant.findMany({
+      where: {
+        ...(tenantIds && { id: { in: tenantIds } }),
+        OR: [
+          { subscriptionCancelAtPeriodEnd: true },
+          { subscriptionPendingTierAfterPeriodEnd: { not: null } },
+          { subscriptionGraceStartedAt: { not: null } },
+          { subscriptionCurrentPeriodEnd: { lte: now } },
+          { subscriptionTier: { not: 'SPARK' }, paystackSubscriptionCode: null },
+          {
+            subscriptionTier: 'SPARK',
+            OR: [{ subscriptionPeriod: { not: null } }, { subscriptionCurrentPeriodEnd: { not: null } }, { paystackSubscriptionCode: { not: null } }],
+          },
+        ],
+      },
+      select: SUBSCRIPTION_FIELDS,
+      take: limit,
+    }),
+
   // After the subscription has been disabled at Paystack.
   clearSubscriptionCodes: (tenantId: string, subscriptionCode: string, db: Db = prisma) =>
     db.tenant.updateMany({

@@ -19,6 +19,7 @@ import {
 } from '../../shared/payments/payment-errors.util.js';
 import { checkAmount, paidAtOf, transactionIdOf, amountCentsOf, currencyOf, type AmountCheck } from '../../shared/payments/paystack-payload.util.js';
 import { reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
+import { checkoutCancelUrl } from '../../shared/payments/checkout-cancel.util.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { paymentAlertService } from '../payment-alert/payment-alert.service.js';
@@ -27,7 +28,9 @@ import { withPaymentContext } from '../payment-webhook/payment-context.util.js';
 import { type WebhookContext, type HandlerResult } from '../payment-webhook/payment-webhook.types.js';
 import { subscriptionRepository } from './subscription.repository.js';
 import { resolveEffectiveTier } from './effective-tier.util.js';
-import { resolveLatestSubscriptionPayment } from './latest-subscription-payment.util.js';
+import { resolveLatestSubscriptionPayment, pickLatestSubscriptionPaymentRow } from './latest-subscription-payment.util.js';
+import { needsSettlingOnSpark, subscribeAvailability } from './subscription-state.util.js';
+import prisma from '../../shared/prisma/prisma.client.js';
 import { resolveTenantPlan } from '../subscription-tier-config/effective-plan.util.js';
 import {
   getPlanCode,
@@ -62,6 +65,9 @@ const PERIOD_LABEL: Record<SubscriptionPeriod, string> = { MONTHLY: 'monthly', A
 // SUBSCRIPTION_PLAN_UNKNOWN before anything is saved or Paystack is called:
 // custom tiers are invoiced outside the app and never sold here.
 export const SUBSCRIPTION_PLAN_UNKNOWN = 'SUBSCRIPTION_PLAN_UNKNOWN';
+// Subscribe refused: an active subscription (details.reason, the status's
+// cannotSubscribeReason).
+export const SUBSCRIPTION_NOT_AVAILABLE = 'SUBSCRIPTION_NOT_AVAILABLE';
 const PAID_PERIODS: readonly SubscriptionPeriod[] = ['MONTHLY', 'ANNUAL'];
 
 export const parsePlanChoice = (body: unknown): SubscribeDto => {
@@ -148,7 +154,62 @@ const pendingSubscriptionDetails = (tenant: BillingTenant | null): PendingPurcha
 //   - A plan change with no clear answer from Paystack is UNCERTAIN, never
 //     FAILED, and re-checked by the sync (subscription-sync.service.ts).
 // ─────────────────────────────────────────
+// What a settle changed, for its ledger row.
+const billingSnapshot = (t: BillingTenant) => ({
+  tier: t.subscriptionTier,
+  period: t.subscriptionPeriod,
+  currentPeriodEnd: t.subscriptionCurrentPeriodEnd,
+  cancelAtPeriodEnd: t.subscriptionCancelAtPeriodEnd,
+  pendingTierAfterPeriodEnd: t.subscriptionPendingTierAfterPeriodEnd,
+  graceStartedAt: t.subscriptionGraceStartedAt,
+  subscriptionCode: t.paystackSubscriptionCode,
+});
+
+// Why a settle happened (the ledger row's payload).
+export type SettleReason = 'ENDED' | 'SUBSCRIPTION_DISABLED' | 'SYNC' | 'CUSTOM_TIER_REMOVED';
+
+const settleWithin = async (tx: Prisma.TransactionClient, tenantId: string, reason: SettleReason, now: Date): Promise<boolean> => {
+  await subscriptionRepository.lockTenant(tenantId, tx);
+  const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId, tx);
+  if (!tenant || !needsSettlingOnSpark(tenant, now)) return false;
+  await subscriptionRepository.settleOnSpark(tenantId, tx);
+  await paymentLedgerService.record(
+    {
+      type: 'SUBSCRIPTION_SYNC_CORRECTED',
+      amountCents: 0,
+      currency: 'ZAR',
+      tenantId,
+      paystackReference: tenant.paystackSubscriptionCode,
+      relatedType: 'Tenant',
+      relatedId: tenantId,
+      payload: { changes: ['SETTLED_ON_SPARK'], reason, before: billingSnapshot(tenant) } as unknown as Prisma.InputJsonValue,
+    },
+    tx
+  );
+  return true;
+};
+
 export const subscriptionService = {
+  // ── SETTLE ON SPARK — a tenant on Spark with no live subscription whose
+  // billing fields still describe one (a cancelled plan past its end, one
+  // disabled, a custom tier taken off over stale fields) has them cleared,
+  // once, with a SUBSCRIPTION_SYNC_CORRECTED row (SETTLED_ON_SPARK, the
+  // reason, before). subscription-state.util.ts decides. In `tx` when the
+  // caller has one (a webhook, a custom tier's removal), else its own.
+  settleIfEnded: async (tenantId: string, reason: SettleReason, now: Date = new Date(), tx?: Prisma.TransactionClient): Promise<boolean> =>
+    tx ? settleWithin(tx, tenantId, reason, now) : prisma.$transaction((t) => settleWithin(t, tenantId, reason, now)),
+
+  // The hourly sweep (payment-maintenance.service.ts): a cancelled plan
+  // reaches its end with no event to say so, so this is what settles it.
+  settleEnded: async ({ now = new Date(), tenantIds }: { now?: Date; tenantIds?: string[] } = {}): Promise<{ settled: number }> => {
+    let settled = 0;
+    for (const tenant of await subscriptionRepository.findSettleCandidates(now, 500, tenantIds)) {
+      if (!needsSettlingOnSpark(tenant, now)) continue;
+      if (await subscriptionService.settleIfEnded(tenant.id, 'ENDED', now)) settled++;
+    }
+    return { settled };
+  },
+
   // Read-only mirror of SUBSCRIPTION_PRICES_CENTS (the frontend reads the
   // four prices from here, never its own copy).
   getPricing: (): SubscriptionPricingDto => ({
@@ -156,38 +217,61 @@ export const subscriptionService = {
     prices: SUBSCRIPTION_PRICES_CENTS,
   }),
 
-  getStatus: async (tenantId: string): Promise<SubscriptionStatusDto> => {
+  getStatus: async (tenantId: string, now: Date = new Date()): Promise<SubscriptionStatusDto> => {
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-    const effectiveTier = resolveEffectiveTier(tenant);
-    const graceDeadline = tenant.subscriptionGraceStartedAt
+    const effectiveTier = resolveEffectiveTier(tenant, now);
+    const onPaidPlan = effectiveTier !== 'SPARK';
+    const graceDeadline = onPaidPlan && tenant.subscriptionGraceStartedAt
       ? new Date(tenant.subscriptionGraceStartedAt.getTime() + 5 * 24 * 60 * 60 * 1000)
       : null;
     // A custom tier while current: its name, description and end date, shown
     // instead of a plan to pay for (it's invoiced outside the app).
-    const plan = await resolveTenantPlan(tenant);
+    const plan = await resolveTenantPlan(tenant, now);
+    const availability = subscribeAvailability(tenant, now);
 
     // The latest subscription payment's outcome (latest-subscription-payment.util.ts).
-    const latestRow = await paymentLedgerRepository.findLatestSubscriptionPaymentRow(tenantId);
+    const ownReferences = await paymentLedgerRepository.findOwnSubscribeReferences(tenantId);
+    const latestRow = pickLatestSubscriptionPaymentRow(
+      await paymentLedgerRepository.findLatestSubscriptionPaymentRow(tenantId),
+      await paymentLedgerRepository.findUnclaimedCharges({ references: ownReferences, customerCode: tenant.paystackCustomerCode }),
+      ownReferences
+    );
     const takeBacks =
       latestRow && ['SUBSCRIPTION_CHARGE_SUCCEEDED', 'PAYMENT_DUPLICATE', 'PAYMENT_AMOUNT_MISMATCH'].includes(latestRow.type)
         ? await paymentLedgerRepository.findTakeBacksFor({ reference: latestRow.paystackReference, transactionId: latestRow.paystackTransactionId })
         : [];
 
+    // A plan "ends" only while the tenant is on a paid tier with a date it
+    // ends on, still ahead. On Spark (a plan already over, however the
+    // stored fields read until the sweep settles them) there is no period,
+    // no end and nothing pending after it.
+    const ending = onPaidPlan && tenant.subscriptionCancelAtPeriodEnd && tenant.subscriptionCurrentPeriodEnd !== null && tenant.subscriptionCurrentPeriodEnd > now;
+
     return {
       customTier: plan.customTier,
       tier: effectiveTier,
       storedTier: tenant.subscriptionTier,
-      period: tenant.subscriptionPeriod,
-      currentPeriodEnd: tenant.subscriptionCurrentPeriodEnd,
-      cancelAtPeriodEnd: tenant.subscriptionCancelAtPeriodEnd,
-      pendingTierAfterPeriodEnd: tenant.subscriptionPendingTierAfterPeriodEnd,
-      inGrace: effectiveTier !== 'SPARK' && tenant.subscriptionGraceStartedAt !== null,
+      period: onPaidPlan ? tenant.subscriptionPeriod : null,
+      currentPeriodEnd: onPaidPlan ? tenant.subscriptionCurrentPeriodEnd : null,
+      cancelAtPeriodEnd: ending,
+      pendingTierAfterPeriodEnd: ending ? tenant.subscriptionPendingTierAfterPeriodEnd : null,
+      inGrace: onPaidPlan && tenant.subscriptionGraceStartedAt !== null,
       graceDeadline,
+      canSubscribe: availability.canSubscribe,
+      cannotSubscribeReason: availability.reason,
       pendingChange:
         tenant.subscriptionPendingReference && tenant.subscriptionPendingTier && tenant.subscriptionPendingPeriod
-          ? { tier: tenant.subscriptionPendingTier, period: tenant.subscriptionPendingPeriod, startedAt: tenant.subscriptionPendingStartedAt }
+          ? {
+              tier: tenant.subscriptionPendingTier,
+              period: tenant.subscriptionPendingPeriod,
+              startedAt: tenant.subscriptionPendingStartedAt,
+              isPlanChange: isUpgradeMarker(tenant.subscriptionPendingReference),
+              // The checkout to continue (null for a plan change, charged to
+              // the saved card, and while it is still being set up).
+              authorizationUrl: isUpgradeMarker(tenant.subscriptionPendingReference) ? null : tenant.subscriptionPendingAuthorizationUrl,
+            }
           : null,
       latestPayment: resolveLatestSubscriptionPayment(latestRow, takeBacks, tenant),
       card: tenant.paystackCardLast4
@@ -217,9 +301,18 @@ export const subscriptionService = {
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
     if (!tenant) throw new HttpError(404, 'Tenant not found');
 
-    const hasActiveSubscription = tenant.paystackSubscriptionCode && !tenant.subscriptionCancelAtPeriodEnd && tenant.subscriptionTier !== 'SPARK';
-    if (hasActiveSubscription) {
-      throw new HttpError(409, 'This tenant already has an active subscription. Use the change-tier endpoint to switch plans instead.');
+    // The same rule as the status's canSubscribe (subscription-state.util.ts).
+    // A pending checkout isn't refused here: the same plan hands back its
+    // link, another is 409 PAYMENT_ALREADY_PENDING (below). A custom tier
+    // isn't refused: a trial converts by subscribing.
+    const availability = subscribeAvailability(tenant);
+    if (availability.reason === 'SUBSCRIPTION_ACTIVE') {
+      throw new HttpError(
+        409,
+        'This tenant already has an active subscription. Use the change-tier endpoint to switch plans instead.',
+        SUBSCRIPTION_NOT_AVAILABLE,
+        { reason: availability.reason }
+      );
     }
 
     const amountCents = SUBSCRIPTION_PRICES_CENTS[dto.tier][dto.period];
@@ -266,6 +359,9 @@ export const subscriptionService = {
         // Card only — instant EFT cannot do unattended recurring charges.
         channels: ['card'],
         plan: getPlanCode(dto.tier, dto.period),
+        // Cancel on Paystack's page comes back to the callback, marked
+        // cancelled; the page then verifies, which ends this attempt.
+        metadata: { cancel_action: checkoutCancelUrl(callbackUrl, reference) },
       });
       await subscriptionRepository.savePendingAuthorizationUrl(tenantId, reference, result.authorizationUrl);
       return { authorizationUrl: result.authorizationUrl, reused: false };
@@ -491,7 +587,15 @@ export const subscriptionService = {
     try {
       const reference = tenant.subscriptionPendingReference;
       if (reference && !isUpgradeMarker(reference)) {
-        await subscriptionService.checkPendingCheckout(tenant, reference);
+        const outcome = await subscriptionService.checkPendingCheckout(tenant, reference);
+        // Cancelled on Paystack's page, or declined and left: Paystack calls
+        // it abandoned or failed. The attempt ends now, so the next click
+        // starts a new checkout instead of waiting out the reuse window. (If
+        // that checkout is paid after all, its charge is still recorded: by
+        // our reference's INITIATED row, in the charge handler.)
+        if (outcome === 'not_paid' || outcome === 'unknown_reference') {
+          await subscriptionRepository.clearPendingAttempt(tenantId, undefined, reference);
+        }
       }
       const fresh = await subscriptionRepository.findBillingStateByTenantId(tenantId);
       if (fresh && (fresh.subscriptionNeedsSync || isUpgradeMarker(fresh.subscriptionPendingReference))) {
@@ -513,10 +617,12 @@ export const subscriptionService = {
   // A first-subscribe checkout, checked with Paystack: paid is recorded
   // (Path A of the charge handler) and the subscription Paystack made for
   // it is looked up and activated, if its subscription.create hasn't come.
-  // Not paid: left alone (the stale sweep clears it after a day). Used by
-  // verify and by the stale sweep. Throws PaystackApiError when Paystack
-  // can't be asked.
-  checkPendingCheckout: async (tenant: BillingTenant, reference: string): Promise<'paid' | 'not_paid' | 'unknown_reference'> => {
+  // not_paid: Paystack says failed, abandoned (left, or cancelled) or
+  // reversed; not_settled: anything else (ongoing, pending, processing,
+  // queued). Used by verify (which ends a not_paid attempt) and by the
+  // stale sweep (which clears any unpaid one after a day). Throws
+  // PaystackApiError when Paystack can't be asked.
+  checkPendingCheckout: async (tenant: BillingTenant, reference: string): Promise<'paid' | 'not_paid' | 'not_settled' | 'unknown_reference'> => {
     let verified: paystackClient.VerifyTransactionResult;
     try {
       verified = await paystackClient.verifyTransaction(reference);
@@ -524,7 +630,7 @@ export const subscriptionService = {
       if (err instanceof PaystackApiError && err.kind === 'rejected') return 'unknown_reference';
       throw err;
     }
-    if (verified.status !== 'success') return 'not_paid';
+    if (verified.status !== 'success') return ['failed', 'abandoned', 'reversed'].includes(verified.status) ? 'not_paid' : 'not_settled';
 
     await withPaymentContext('verify', verified.raw, (ctx) => subscriptionService.handleChargeSuccessWithinTransaction(ctx));
     const customerCode = customerOf(verified.raw)?.customer_code;
@@ -601,9 +707,16 @@ export const subscriptionService = {
       }
     }
 
-    // Path B — an ongoing subscription's renewal, or an upgrade's charge.
+    // Path B — an ongoing subscription's renewal, or an upgrade's charge; or
+    // one of OUR subscribe checkouts whose attempt has ended (cancelled and
+    // verified, or cleared by the sweep) and was paid after all: found by its
+    // own INITIATED row, so a first subscribe's charge is recorded even
+    // before the tenant has a customer code (it used to be unhandled).
     if (customer?.customer_code) {
-      const tenant = await subscriptionRepository.findByCustomerCode(customer.customer_code, tx);
+      const ourCheckout = reference ? await paymentLedgerRepository.findSubscribeInitiated(reference, tx) : null;
+      const tenant =
+        (await subscriptionRepository.findByCustomerCode(customer.customer_code, tx)) ??
+        (ourCheckout?.tenantId ? await subscriptionRepository.findBillingStateByTenantId(ourCheckout.tenantId, tx) : null);
       if (tenant) {
         if (await paymentLedgerRepository.existsFor('SUBSCRIPTION_CHARGE_SUCCEEDED', { reference, transactionId }, tx)) {
           return { claimed: true };
@@ -971,13 +1084,13 @@ export const subscriptionService = {
     if (tenant.subscriptionTier === 'SPARK') {
       // Refunded (or otherwise ended): Paystack has now disabled it.
       await subscriptionRepository.clearSubscriptionCodes(tenant.id, tenant.paystackSubscriptionCode as string, tx);
-      return { claimed: true };
-    }
-
-    if (!tenant.subscriptionCancelAtPeriodEnd) {
+    } else if (!tenant.subscriptionCancelAtPeriodEnd) {
       await subscriptionRepository.scheduleEndOfPeriodChange(tenant.id, tenant.subscriptionPendingTierAfterPeriodEnd, tx);
     }
 
+    // Disabled after its period already ended (or with none): nothing is
+    // left of it, so nothing stays saying it "ends".
+    await subscriptionService.settleIfEnded(tenant.id, 'SUBSCRIPTION_DISABLED', new Date(), tx);
     return { claimed: true };
   },
 

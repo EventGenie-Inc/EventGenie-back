@@ -123,6 +123,32 @@ export const paymentLedgerRepository = {
   // The tenant's most recent subscription payment attempt of any outcome
   // (GET /api/subscriptions' latestPayment): started, paid, failed,
   // uncertain, or paid the wrong amount. Newest recorded first.
+  // This tenant's own subscribe checkouts' references (our sub_ ones, from
+  // their INITIATED rows).
+  findOwnSubscribeReferences: async (tenantId: string, db: Db = prisma): Promise<string[]> =>
+    (
+      await db.paymentLedgerEntry.findMany({
+        where: { tenantId, type: 'SUBSCRIPTION_CHARGE_INITIATED', paystackReference: { startsWith: 'sub_' } },
+        select: { paystackReference: true },
+      })
+    ).map((r) => r.paystackReference as string),
+
+  // charge.success deliveries nothing claimed (WEBHOOK_EVENT_UNHANDLED, no
+  // tenant) by one of these references, or naming this customer code.
+  // Newest first. latest-subscription-payment.util.ts decides which are
+  // safely the tenant's.
+  findUnclaimedCharges: (keys: { references: string[]; customerCode: string | null }, db: Db = prisma) => {
+    const or: Prisma.PaymentLedgerEntryWhereInput[] = [];
+    if (keys.references.length) or.push({ paystackReference: { in: keys.references } });
+    if (keys.customerCode) or.push({ payload: { path: ['data', 'customer', 'customer_code'], equals: keys.customerCode } });
+    if (or.length === 0) return Promise.resolve([]);
+    return db.paymentLedgerEntry.findMany({
+      where: { type: 'WEBHOOK_EVENT_UNHANDLED', relatedId: 'charge.success', tenantId: null, OR: or },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 20,
+    });
+  },
+
   findLatestSubscriptionPaymentRow: (tenantId: string, db: Db = prisma) =>
     db.paymentLedgerEntry.findFirst({
       where: {

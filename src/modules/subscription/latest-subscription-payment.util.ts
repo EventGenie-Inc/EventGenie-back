@@ -42,6 +42,32 @@ type Row = Pick<PaymentLedgerEntry, 'type' | 'amountCents' | 'currency' | 'occur
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 
+// A subscription charge that reached us before it could be matched to anyone
+// (WEBHOOK_EVENT_UNHANDLED charge.success, no tenant: a first subscribe paid
+// after its attempt was overwritten or cleared, before the tenant had a
+// customer code). It counts as the tenant's latest payment only when that is
+// certain: its reference is one of the tenant's own subscribe checkouts (our
+// sub_ reference), or it names the tenant's customer code (unique to it) and
+// is a plan charge. It is read as a paid charge (SUBSCRIPTION_CHARGE_SUCCEEDED),
+// and only when newer than the latest recorded row; the ledger itself is
+// never changed. A charge tied to the tenant by email alone is not certain
+// (an address can change hands, and the old subscription.disable bug matched
+// that way), and is left to the reconciliation.
+export const pickLatestSubscriptionPaymentRow = <R extends Row & { createdAt: Date; paystackReference: string | null }>(
+  recorded: R | null,
+  unclaimed: R[],
+  ownReferences: string[]
+): R | null => {
+  const safe = unclaimed.find((row) => {
+    const data = asRecord(asRecord(row.payload)['data']);
+    if (data['status'] !== 'success') return false;
+    const ours = row.paystackReference !== null && ownReferences.includes(row.paystackReference);
+    return ours || !!data['plan'];
+  });
+  if (!safe || (recorded && recorded.createdAt >= safe.createdAt)) return recorded;
+  return { ...safe, type: 'SUBSCRIPTION_CHARGE_SUCCEEDED' };
+};
+
 export const resolveLatestSubscriptionPayment = (
   row: Row | null,
   takeBacks: Row[],

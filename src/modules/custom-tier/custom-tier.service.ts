@@ -8,6 +8,7 @@ import { isCustomTierCurrent, PLAN_LIMIT_KEYS, PLAN_SWITCH_KEYS } from '../subsc
 import { adminAuditService } from '../admin-audit/admin-audit.service.js';
 import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
 import { customTierRepository } from './custom-tier.repository.js';
+import { subscriptionService } from '../subscription/subscription.service.js';
 import {
   CUSTOM_TIER_ERROR_CODES as CODES,
   type AssignCustomTierInput,
@@ -245,6 +246,10 @@ export const customTierService = {
       if (!tenant.customTierId) return { tenantId, customTier: null };
 
       await customTierRepository.unassign(tenantId, tx);
+      // Back on what its billing gives: Spark, normally. Billing fields left
+      // over from a subscription that has ended are cleared, so nothing
+      // claims a plan "ends" (subscription-state.util.ts).
+      await subscriptionService.settleIfEnded(tenantId, 'CUSTOM_TIER_REMOVED', now, tx);
       await adminAuditService.record(
         {
           actorUserId,

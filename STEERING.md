@@ -3297,7 +3297,11 @@ period, dates), recorded in the audit entry. The internal organisation
 can't be assigned (422 `CUSTOM_TIER_INTERNAL_TENANT`). Taking a tenant off
 puts it on what its billing gives (Spark, normally). **A paid subscription
 landing** (Paystack's `subscription.create`) takes the tenant off its custom
-tier: what it now pays for is its plan (a trial converting).
+tier: what it now pays for is its plan. **A trial converts by subscribing**:
+a tenant on a custom tier may subscribe in the app like any other
+(`canSubscribe` is true unless another reason applies, "A subscription's
+state"), and the subscription's `subscription.create` takes it off the
+custom tier.
 
 **Seven days before the end date** the organisation's address
 (`Tenant.email`) is emailed once ("Your <tier> plan ends on <date>"),
@@ -3643,6 +3647,79 @@ is still granted, FAILED → PAID); anything else (`ongoing`, `pending`,
 `processing`, `queued`: an EFT clearing) leaves it `PENDING`. Paystack
 calls an initialised checkout nobody has paid `abandoned`, so the callback
 page should reconcile only after the payer has come back from Paystack.
+**`POST /api/subscriptions/verify` does the same for a subscribe
+checkout**: `failed`, `abandoned` or `reversed` (or a reference Paystack
+doesn't know) ends the pending attempt (cleared, no row of its own:
+`latestPayment` then reads `FAILED`); anything else leaves it pending.
+
+**A cancelled checkout** (`shared/payments/checkout-cancel.util.ts`). Every
+subscription, Event Pass and SMS bundle checkout is started with Paystack's
+cancel action, `metadata.cancel_action`: the URL Paystack sends the payer to
+when they press Cancel on its page. It is the product's own callback page
+(`/billing/callback`, `/billing/event-pass/callback`,
+`/billing/event-pass/sms-bundle/callback`) with `cancelled=true` and our
+`reference` (the parameter Paystack adds on a normal return), so the page
+knows the payer is back and that they cancelled. The redirect ends nothing
+by itself: the page calls verify (a subscription) or the reconcile (a pass,
+a bundle), which asks Paystack and ends a cancelled or declined attempt, so
+the next click starts a new checkout at once (or, within the 30 minutes, the
+same plan still reuses a pending one). A checkout ended this way and paid
+after all (another tab) is still recorded: the charge handler finds the
+tenant by the checkout's own `SUBSCRIPTION_CHARGE_INITIATED` row when no
+attempt is pending and the customer code isn't known yet (it used to be
+`WEBHOOK_EVENT_UNHANDLED`), and its `subscription.create` activates it.
+
+**A subscription's state** (`subscription/subscription-state.util.ts`).
+**On Spark with no live subscription, nothing describes one.** A tenant
+whose effective tier is Spark, with no subscription Paystack may still
+charge, has every leftover field cleared (`settleOnSpark`): tier `SPARK`,
+no period, no period end, not cancelling, no pending downgrade, no grace,
+no subscription code or token; the customer code, saved card and any
+pending checkout stay. Each settle is one `SUBSCRIPTION_SYNC_CORRECTED`
+row (`changes: ['SETTLED_ON_SPARK']`, `reason`, `before`; not in billing
+history). It happens when a cancelled plan's period is over (the hourly
+run, `subscriptionService.settleEnded`: nothing else says so), on a
+`subscription.disable` for the current subscription once its period has
+passed (`SUBSCRIPTION_DISABLED`), in the sync (`SYNC`), and when a custom
+tier is taken off (`CUSTOM_TIER_REMOVED`). A refund or lost chargeback
+already clears the markers at once (`endSubscriptionNow`) and the code once
+Paystack has disabled it. **Left alone**: a live subscription (a code, not
+cancelled, a paid tier) past its grace or hard stop (Paystack may still
+renew it; the sync decides), a cancelled plan still inside its period, and
+a refund waiting to be disabled at Paystack (Spark, a code, not
+cancelling). The migration `20261121100000_settle_ended_subscriptions`
+repaired the rows already in that state with the same rule
+(`scripts/sql/subscription-state-check.sql` counts them, read-only).
+
+**The status never says a plan "ends" without a paid tier and a date.** On
+`GET /api/subscriptions` (and verify): `period` and `currentPeriodEnd` are
+null on Spark; `cancelAtPeriodEnd` is true only on a paid tier whose
+`currentPeriodEnd` is still ahead; `pendingTierAfterPeriodEnd` only then;
+`inGrace`/`graceDeadline` only on a paid tier. `storedTier` is still the raw
+column.
+
+**Whether the tenant can subscribe** is stated, never inferred:
+`canSubscribe` and `cannotSubscribeReason` (`subscribeAvailability`), the
+same rule subscribe enforces. Not now: `SUBSCRIPTION_ACTIVE` (a code, not
+cancelled, a paid tier: change plan with change-tier, fix a card with the
+update-card link; subscribe is 409 `SUBSCRIPTION_NOT_AVAILABLE`, `details:
+{ reason }`), `CHECKOUT_PENDING` (a checkout started within 30 minutes:
+`pendingChange.authorizationUrl` continues it, and subscribe to the same
+plan hands it back), `PLAN_CHANGE_PENDING` (a plan change being confirmed).
+A tenant on Spark with only ended or cancelled subscriptions can always
+subscribe; so can one whose cancelled plan is still in its period (it
+replaces it), and one on a custom tier (a trial converting: the paid
+plan's `subscription.create` takes it off the custom tier). The frontend
+offers plans exactly when `canSubscribe`.
+
+```
+GET /api/subscriptions → { customTier, tier, storedTier, period, currentPeriodEnd,
+  cancelAtPeriodEnd, pendingTierAfterPeriodEnd, inGrace, graceDeadline,
+  canSubscribe: boolean,
+  cannotSubscribeReason: 'SUBSCRIPTION_ACTIVE'|'CHECKOUT_PENDING'|'PLAN_CHANGE_PENDING' | null,
+  pendingChange: { tier, period, startedAt, isPlanChange, authorizationUrl } | null,
+  latestPayment, card }
+```
 
 **The latest subscription payment** (`latestPayment` on `GET
 /api/subscriptions` and `POST /api/subscriptions/verify`,
@@ -3653,7 +3730,17 @@ first. `PENDING` (started, or a plan change not yet confirmed), `PAID`,
 `FAILED` (refused, a renewal failure, or left unpaid and cleared),
 `REFUNDED` (refunded in full), `REVERSED` (a chargeback lost),
 `UNDER_REVIEW` (the wrong amount). A partial refund leaves it `PAID`. The
-billing callback says what happened from this, not from the tier.
+billing callback says what happened from this, not from the tier. **A
+charge nothing claimed** (`WEBHOOK_EVENT_UNHANDLED` `charge.success`, from
+before the charge handler's fallback above) counts, as `PAID`, when it is
+certainly the tenant's: its reference is one of the tenant's own subscribe
+checkouts, or it names the tenant's customer code and is a plan charge; and
+only when newer than the latest recorded row (`pickLatestSubscriptionPaymentRow`;
+the ledger is never changed). One tied to a tenant by email alone is not
+certain and is left to the reconciliation. A payment Paystack holds that
+never reached this environment at all (no webhook, no ledger row) can't
+appear: the daily reconciliation lists it as `PAYSTACK_ONLY` only for the
+day it reconciles.
 
 **Billing history** (`GET /api/billing-history`) rows are `{ id, kind,
 product, description, outcome, amountCents, currency, occurredAt, event }`,

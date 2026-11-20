@@ -115,6 +115,7 @@ export const paymentMaintenanceService = {
       const reference = tenant.subscriptionPendingReference;
       if (!reference || reference.startsWith('upg_')) continue;
       try {
+        // A day old and not paid (not_paid, not_settled, unknown): cleared.
         const outcome = await subscriptionService.checkPendingCheckout(tenant, reference);
         if (outcome === 'paid') {
           confirmed++;
@@ -133,7 +134,10 @@ export const paymentMaintenanceService = {
   runHourly: async (options: { now?: Date; tenantIds?: string[] } = {}) => {
     const sweep = await paymentMaintenanceService.sweepStalePending(options);
     const sync = await subscriptionSyncService.syncMany({ onlyFlagged: true, ...options });
-    return { sweep, sync };
+    // Cancelled plans that have reached their end (nothing else says so),
+    // and any other tenant left on Spark over stale billing fields.
+    const settle = await subscriptionService.settleEnded(options);
+    return { sweep, sync, settle };
   },
 
   // Yesterday (UTC), once: runForDate's claim makes every later call that

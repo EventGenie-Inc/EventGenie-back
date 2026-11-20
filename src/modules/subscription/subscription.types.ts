@@ -2,6 +2,7 @@ import { type SubscriptionTier, type SubscriptionPeriod } from '@prisma/client';
 import { type PaidSubscriptionTier } from './subscription-plans.config.js';
 import { type TenantCustomTierView } from '../custom-tier/custom-tier.types.js';
 import { type LatestSubscriptionPaymentDto } from './latest-subscription-payment.util.js';
+import { type CannotSubscribeReason } from './subscription-state.util.js';
 
 // The single source of truth for what each tier+period costs, exposed
 // read-only — see subscription.service.ts's getPricing for why this
@@ -33,16 +34,32 @@ export interface SubscriptionStatusDto {
   // effective-tier.util.ts, never the raw stored value.
   tier: SubscriptionTier;
   storedTier: SubscriptionTier;
+  // The paid plan's period and when it ends or renews: null on Spark.
   period: SubscriptionPeriod | null;
   currentPeriodEnd: Date | null;
+  // True only while the tenant is on a paid tier that ends at
+  // currentPeriodEnd, a date still ahead (never on Spark, never without a
+  // date); pendingTierAfterPeriodEnd only then.
   cancelAtPeriodEnd: boolean;
   pendingTierAfterPeriodEnd: SubscriptionTier | null;
   inGrace: boolean;
   graceDeadline: Date | null;
+  // Whether the tenant can start a subscription now (POST
+  // /api/subscriptions/subscribe), and why not (subscription-state.util.ts).
+  // The frontend offers plans to subscribe to exactly when canSubscribe.
+  canSubscribe: boolean;
+  cannotSubscribeReason: CannotSubscribeReason | null;
   // Payments release 1: a checkout or plan change started and not yet
   // confirmed by Paystack (null when none). The billing callback page polls
   // GET /api/subscriptions, or calls POST /api/subscriptions/verify.
-  pendingChange: { tier: SubscriptionTier; period: SubscriptionPeriod; startedAt: Date | null } | null;
+  // authorizationUrl: the checkout to continue (null for a plan change).
+  pendingChange: {
+    tier: SubscriptionTier;
+    period: SubscriptionPeriod;
+    startedAt: Date | null;
+    isPlanChange: boolean;
+    authorizationUrl: string | null;
+  } | null;
   // The outcome of the latest subscription payment (null when there has
   // never been one): PENDING, PAID, FAILED, REFUNDED, REVERSED or
   // UNDER_REVIEW (latest-subscription-payment.util.ts). The billing callback

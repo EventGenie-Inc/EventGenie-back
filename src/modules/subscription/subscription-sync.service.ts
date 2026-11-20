@@ -163,6 +163,11 @@ export const subscriptionSyncService = {
       }
     }
 
+    // On Spark with nothing live left (a subscription Paystack ended, a
+    // cancelled one past its period): its stale fields cleared, in its own
+    // ledger row (subscriptionService.settleIfEnded).
+    if (await subscriptionService.settleIfEnded(tenant.id, 'SYNC', now)) changes.push('SETTLED_ON_SPARK');
+
     // In step now, unless a refunded subscription is still live at Paystack
     // (its disable failed above, or it had no token): stays flagged.
     const after = await subscriptionRepository.findBillingStateByTenantId(tenant.id);

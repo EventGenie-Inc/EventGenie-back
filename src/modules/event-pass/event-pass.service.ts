@@ -14,6 +14,7 @@ import {
 } from '../../shared/payments/payment-errors.util.js';
 import { checkAmount, paidAtOf, transactionIdOf } from '../../shared/payments/paystack-payload.util.js';
 import { lockPaymentScope, reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
+import { checkoutCancelUrl } from '../../shared/payments/checkout-cancel.util.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { eventService } from '../event/event.service.js';
 import { tenantRepository } from '../tenant/tenant.repository.js';
@@ -287,6 +288,9 @@ export const eventPassService = {
         reference,
         callbackUrl,
         channels: ['card', 'eft'],
+        // Cancel on Paystack's page comes back to the callback, marked
+        // cancelled; its reconcile then marks an abandoned checkout FAILED.
+        metadata: { cancel_action: checkoutCancelUrl(callbackUrl, reference) },
       });
       await eventPassRepository.saveAuthorizationUrl(purchase.id, result.authorizationUrl);
       return { authorizationUrl: result.authorizationUrl, purchaseId: purchase.id, reused: false };
@@ -410,6 +414,7 @@ export const eventPassService = {
         reference,
         callbackUrl,
         channels: ['card', 'eft'],
+        metadata: { cancel_action: checkoutCancelUrl(callbackUrl, reference) },
       });
       await eventPassRepository.saveSmsBundleAuthorizationUrl(purchase.id, result.authorizationUrl);
       return { authorizationUrl: result.authorizationUrl, purchaseId: purchase.id, reused: false };
