@@ -409,7 +409,8 @@ describe('the repair migration (scoped to these tenants)', () => {
 
     // The migration's one statement, scoped to these tenants (STEERING §6:
     // never over whole tables in a test).
-    const sql = fs.readFileSync(path.resolve('prisma/migrations/20261121100000_settle_ended_subscriptions/migration.sql'), 'utf8');
+    // Line endings normalised: a Windows checkout (core.autocrlf) has CRLF.
+    const sql = fs.readFileSync(path.resolve('prisma/migrations/20261121100000_settle_ended_subscriptions/migration.sql'), 'utf8').replace(/\r\n/g, '\n');
     const anchor = '  FROM "Tenant"\n  WHERE ';
     expect(sql.split(anchor)).toHaveLength(2);
     const scoped = sql.replace(anchor, `  FROM "Tenant"\n  WHERE "id" IN (${ids.map((id) => `'${id}'`).join(', ')}) AND `);

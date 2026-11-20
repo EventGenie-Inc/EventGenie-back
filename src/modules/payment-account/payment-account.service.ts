@@ -3,6 +3,7 @@ import * as paystackClient from '../../shared/payments/paystack.client.js';
 import { PaystackApiError } from '../../shared/payments/paystack.client.js';
 import { paymentAccountRepository } from './payment-account.repository.js';
 import { type SubmitSubaccountDto, type UpdateSubaccountDto, type SubaccountStatusDto } from './payment-account.types.js';
+import { ORGANISATION_NOT_FOUND_MESSAGE } from '../../shared/payments/payment-errors.util.js';
 
 // ─────────────────────────────────────────
 //  PAYMENT ACCOUNT SERVICE
@@ -47,7 +48,7 @@ const toStatusDto = (tenant: {
 export const paymentAccountService = {
   getStatus: async (tenantId: string): Promise<SubaccountStatusDto> => {
     let tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     // The Paystack create/update response contains the account number,
     // so new entries always populate last-four locally. For a pre-column
@@ -63,7 +64,7 @@ export const paymentAccountService = {
           accountNumberLast4: live.accountNumber.slice(-4),
         });
         tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
-        if (!tenant) throw new HttpError(404, 'Tenant not found');
+        if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
       } catch (err) {
         // The cached metadata below is still safe to return. It is
         // better to show "not available yet" than to conceal the full
@@ -77,7 +78,7 @@ export const paymentAccountService = {
     // `tenant` can only become null in the defensive re-read above if a
     // concurrent archive/removal occurred; keep the public contract a
     // normal 404 rather than dereferencing a nullable row.
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     return toStatusDto(tenant);
   },
@@ -86,12 +87,12 @@ export const paymentAccountService = {
 
   submit: async (tenantId: string, data: SubmitSubaccountDto): Promise<SubaccountStatusDto> => {
     const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     if (tenant.paystackSubaccountCode) {
       throw new HttpError(
         409,
-        'A payout account has already been submitted for this tenant. Use the update endpoint to change it.'
+        'Your payout account has already been submitted. Edit its details to change it.'
       );
     }
 
@@ -146,10 +147,10 @@ export const paymentAccountService = {
 
   update: async (tenantId: string, data: UpdateSubaccountDto): Promise<SubaccountStatusDto> => {
     const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     if (!tenant.paystackSubaccountCode) {
-      throw new HttpError(422, 'No payout account has been submitted yet for this tenant. Submit your details first.');
+      throw new HttpError(422, "You haven't submitted a payout account yet. Add your bank details first.");
     }
 
     let result;

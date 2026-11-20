@@ -1907,13 +1907,15 @@ Whether a feature is locked at all is read from `/me`'s `planSettings`
 Exception: registration-time tier selection is not an upsell surface —
 nobody is upgrading before they have an account.
 
-**A tenant on a custom tier is never sold a plan.** Its refusals use the
-contact wording with its plan named ("... isn't available on your Free
-trial plan. Contact us at admin@e-velope.co.za if you need it.",
-`tierRefusalMessage` with the plan), payments on or off, and its Pricing,
-Subscriptions and upgrade surfaces show the custom tier's name, limits and
-end date with no payment asked (`customTier` on `/me` and
-`/api/subscriptions`). See "Custom tiers".
+**A custom tier asks for no payment.** A tenant on one is never asked to
+pay for the custom tier, and its refusals use the contact wording with its
+plan named ("... isn't available on your Free trial plan. Contact us at
+admin@e-velope.co.za if you need it.", `tierRefusalMessage` with the plan),
+payments on or off. Its Pricing, Subscriptions and upgrade surfaces show the
+custom tier's name, limits and end date (`customTier` on `/me` and
+`/api/subscriptions`). It pays only if it chooses to subscribe to a standard
+plan (`canSubscribe` is true on a custom tier unless another reason applies):
+a trial converting, which takes it off the custom tier. See "Custom tiers".
 
 ### Feature flags
 
@@ -3315,8 +3317,10 @@ standard prices only), and subscribe and change-tier take only Celebrate
 or Elevate, monthly or annual (422 `SUBSCRIPTION_PLAN_UNKNOWN` before
 anything is saved or Paystack is called; an unknown tier used to be a 500).
 A tenant on one sees its name, limits and end date (`customTier`,
-`planSettings`), no payment asked, and its refusals carry the contact
-wording ("Tier enforcement").
+`planSettings`), and its refusals carry the contact wording ("Tier
+enforcement"). It is asked for no payment unless it chooses to subscribe
+to a standard plan, which it may (a trial converting; see "A paid
+subscription landing" above).
 
 The super admin's routes (global 404 for anyone else):
 
@@ -3589,7 +3593,14 @@ retried. Failures carry a `kind`: `rejected`, `rate_limited`, `server`,
 (`toPaymentHttpError`): 503 `PAYMENT_PROVIDER_UNAVAILABLE` (try again
 shortly), 422 `PAYMENT_REJECTED`, or a 500 when Paystack was never reached
 (our configuration). The raw text stays in the log and the ledger payload.
-Ticketing's guest wording doesn't use this yet.
+Ticketing's guest wording doesn't use this yet. **Every payments message a
+customer can see is in their words**: "you", "your organisation", "a plan",
+never "tenant", an endpoint or route name, or a tier's code (`STANDARD`: its
+label, "Standard"). A refused subscribe: "You're already subscribed. Choose a
+plan below to switch to it."; a missing organisation and an account with
+none share `ORGANISATION_NOT_FOUND_MESSAGE` and `NO_ORGANISATION_MESSAGE`
+(`payment-errors.util.ts`). The super admin's own payments routes keep
+their terms.
 
 **Keys.** `assertPaystackKeyMode` (server.ts, at startup):
 `STORAGE_ENV=prod` needs `sk_live_`/`pk_live_`; dev and staging need

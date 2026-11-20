@@ -11,6 +11,7 @@ import {
   PAYMENT_IN_PROGRESS_MESSAGE,
   PAYMENT_PROVIDER_UNAVAILABLE,
   PAYMENT_PROVIDER_UNAVAILABLE_MESSAGE,
+  ORGANISATION_NOT_FOUND_MESSAGE,
 } from '../../shared/payments/payment-errors.util.js';
 import { checkAmount, paidAtOf, transactionIdOf } from '../../shared/payments/paystack-payload.util.js';
 import { lockPaymentScope, reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
@@ -207,7 +208,7 @@ export const eventPassService = {
     const passTier = parsePassTier(dto);
     const event = await eventService.getById(eventId, role, tenantId); // 404s cross-tenant
     const tenant = await tenantRepository.findById(event.tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     const currentlyActive = isEventPassActive(event);
     let isUpgrade = false;
@@ -218,7 +219,7 @@ export const eventPassService = {
       if (EVENT_PASS_TIER_RANK[passTier] <= EVENT_PASS_TIER_RANK[currentTier]) {
         throw new HttpError(
           409,
-          `This event already has a ${currentTier} pass. Choose a higher tier to upgrade.`
+          `This event already has the ${TIER_LABEL[currentTier]} pass. Choose a bigger pass to upgrade.`
         );
       }
       isUpgrade = true;
@@ -350,7 +351,7 @@ export const eventPassService = {
       );
     }
     const tenant = await tenantRepository.findById(event.tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     const smsCount = dto.smsCount;
     const amountCents = smsCount * SMS_BUNDLE_UNIT_PRICE_CENTS;
@@ -718,7 +719,7 @@ export const eventPassService = {
   ): Promise<{ status: PaymentAttemptStatus }> => {
     await eventService.getById(eventId, role, tenantId);
     const purchase = await eventPassRepository.findPurchaseForEvent(purchaseId, eventId);
-    if (!purchase) throw new HttpError(404, 'Event pass purchase not found');
+    if (!purchase) throw new HttpError(404, "We couldn't find that Event Pass payment.");
     if (!CONFIRMABLE_STATUSES.includes(purchase.status) || !purchase.paymentRef) {
       return { status: purchase.status };
     }
@@ -750,7 +751,7 @@ export const eventPassService = {
   ): Promise<{ status: PaymentAttemptStatus }> => {
     await eventService.getById(eventId, role, tenantId);
     const purchase = await eventPassRepository.findSmsBundlePurchaseForEvent(purchaseId, eventId);
-    if (!purchase) throw new HttpError(404, 'SMS bundle purchase not found');
+    if (!purchase) throw new HttpError(404, "We couldn't find that SMS bundle payment.");
     if (!CONFIRMABLE_STATUSES.includes(purchase.status) || !purchase.paymentRef) {
       return { status: purchase.status };
     }

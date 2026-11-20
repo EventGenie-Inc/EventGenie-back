@@ -16,6 +16,7 @@ import {
   PAYMENT_IN_PROGRESS_MESSAGE,
   PAYMENT_PROVIDER_UNAVAILABLE,
   PAYMENT_PROVIDER_UNAVAILABLE_MESSAGE,
+  ORGANISATION_NOT_FOUND_MESSAGE,
 } from '../../shared/payments/payment-errors.util.js';
 import { checkAmount, paidAtOf, transactionIdOf, amountCentsOf, currencyOf, type AmountCheck } from '../../shared/payments/paystack-payload.util.js';
 import { reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
@@ -219,7 +220,7 @@ export const subscriptionService = {
 
   getStatus: async (tenantId: string, now: Date = new Date()): Promise<SubscriptionStatusDto> => {
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     const effectiveTier = resolveEffectiveTier(tenant, now);
     const onPaidPlan = effectiveTier !== 'SPARK';
@@ -299,7 +300,7 @@ export const subscriptionService = {
   subscribe: async (tenantId: string, body: SubscribeDto, callbackUrl: string): Promise<CheckoutResult> => {
     const dto = parsePlanChoice(body);
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     // The same rule as the status's canSubscribe (subscription-state.util.ts).
     // A pending checkout isn't refused here: the same plan hands back its
@@ -309,7 +310,7 @@ export const subscriptionService = {
     if (availability.reason === 'SUBSCRIPTION_ACTIVE') {
       throw new HttpError(
         409,
-        'This tenant already has an active subscription. Use the change-tier endpoint to switch plans instead.',
+        "You're already subscribed. Choose a plan below to switch to it.",
         SUBSCRIPTION_NOT_AVAILABLE,
         { reason: availability.reason }
       );
@@ -402,13 +403,13 @@ export const subscriptionService = {
   changeTier: async (tenantId: string, body: ChangeTierDto): Promise<ChangeTierResult> => {
     const dto: ChangeTierDto = parsePlanChoice(body);
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     if (!tenant.paystackSubscriptionCode || !tenant.paystackSubscriptionEmailToken || !tenant.paystackCustomerCode) {
-      throw new HttpError(422, 'This tenant has no active subscription to change. Use the subscribe endpoint first.');
+      throw new HttpError(422, "You don't have a subscription to change yet. Choose a plan to subscribe.");
     }
     if (tenant.subscriptionCancelAtPeriodEnd) {
-      throw new HttpError(409, 'This subscription is already scheduled to end at the current period. Subscribe again to pick a new plan.');
+      throw new HttpError(409, 'Your subscription is already set to end at the end of this billing period. To keep a paid plan, subscribe again and choose it.');
     }
 
     const currentRank = TIER_RANK[tenant.subscriptionTier] * 10 + (tenant.subscriptionPeriod ? PERIOD_RANK[tenant.subscriptionPeriod] : 0);
@@ -522,10 +523,10 @@ export const subscriptionService = {
   // on the current subscription.
   getUpdateCardLink: async (tenantId: string): Promise<{ link: string }> => {
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     if (!tenant.paystackSubscriptionCode) {
-      throw new HttpError(422, 'This tenant has no subscription to update a card for.');
+      throw new HttpError(422, "You don't have a subscription to update a card for.");
     }
 
     try {
@@ -541,10 +542,10 @@ export const subscriptionService = {
   // ── CANCEL — same mechanism as a downgrade, target tier SPARK.
   cancel: async (tenantId: string): Promise<{ effectiveAt: Date | null }> => {
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     if (!tenant.paystackSubscriptionCode || !tenant.paystackSubscriptionEmailToken) {
-      throw new HttpError(422, 'This tenant has no active subscription to cancel.');
+      throw new HttpError(422, "You don't have an active subscription to cancel.");
     }
     if (tenant.subscriptionCancelAtPeriodEnd) {
       return { effectiveAt: tenant.subscriptionCurrentPeriodEnd };
@@ -582,7 +583,7 @@ export const subscriptionService = {
   // through the same handlers. Then answers with the current status.
   verify: async (tenantId: string): Promise<SubscriptionStatusDto> => {
     const tenant = await subscriptionRepository.findBillingStateByTenantId(tenantId);
-    if (!tenant) throw new HttpError(404, 'Tenant not found');
+    if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
     try {
       const reference = tenant.subscriptionPendingReference;

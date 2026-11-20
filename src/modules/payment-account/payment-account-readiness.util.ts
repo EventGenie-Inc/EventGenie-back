@@ -5,6 +5,7 @@ import { paymentAccountRepository } from './payment-account.repository.js';
 import { resolveEventPlan, resolveTenantPlan } from '../subscription-tier-config/effective-plan.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { paidTicketingRefusal } from '../subscription-tier-config/event-tier-enforcement.util.js';
+import { ORGANISATION_NOT_FOUND_MESSAGE } from '../../shared/payments/payment-errors.util.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -29,7 +30,7 @@ type Db = Prisma.TransactionClient | typeof prisma;
 // ─────────────────────────────────────────
 export const assertTenantReadyToSellTickets = async (tenantId: string, db: Db = prisma): Promise<{ subaccountCode: string }> => {
   const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId, db);
-  if (!tenant) throw new HttpError(404, 'Tenant not found');
+  if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
   const plan = await resolveTenantPlan(tenant);
   if (!plan.values.paidTicketingEnabled) {
@@ -65,7 +66,7 @@ export const assertTenantReadyToSellTickets = async (tenantId: string, db: Db = 
 // ─────────────────────────────────────────
 export const assertEventReadyToSellTickets = async (event: EntitlementDerivableEvent, db: Db = prisma): Promise<{ subaccountCode: string }> => {
   const tenant = await paymentAccountRepository.findStatusByTenantId(event.tenantId, db);
-  if (!tenant) throw new HttpError(404, 'Tenant not found');
+  if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
   const plan = await resolveEventPlan(tenant, event);
   if (!plan.values.paidTicketingEnabled) {
@@ -106,7 +107,7 @@ export const assertEventReadyToSellTickets = async (event: EntitlementDerivableE
 // ─────────────────────────────────────────
 export const assertSubaccountReadyForPurchase = async (tenantId: string, db: Db = prisma): Promise<{ subaccountCode: string }> => {
   const tenant = await paymentAccountRepository.findStatusByTenantId(tenantId, db);
-  if (!tenant) throw new HttpError(404, 'Tenant not found');
+  if (!tenant) throw new HttpError(404, ORGANISATION_NOT_FOUND_MESSAGE);
 
   if (tenant.paystackSubaccountStatus !== 'ACTIVE' || !tenant.paystackSubaccountCode) {
     throw new HttpError(

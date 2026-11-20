@@ -31,6 +31,12 @@ export const PAYMENT_REJECTED_MESSAGE =
 export const PAYMENT_IN_PROGRESS_MESSAGE =
   'This payment is still being set up. Please wait a moment and try again.';
 
+// The billing routes' own refusals, in a customer's words (never "tenant").
+// The signed-in account's organisation is missing (404), or the account
+// belongs to none (400: a super admin on an organisation's billing route).
+export const ORGANISATION_NOT_FOUND_MESSAGE = "We couldn't find your organisation. Please sign in again.";
+export const NO_ORGANISATION_MESSAGE = "Your account isn't part of an organisation, so it has no billing.";
+
 // ─────────────────────────────────────────
 //  409 PAYMENT_ALREADY_PENDING carries the purchase it is about (follow-ups
 //  to payments release 1), as `details.pending`, so the page can say what

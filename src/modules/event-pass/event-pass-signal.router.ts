@@ -3,6 +3,7 @@ import { eventPassService } from './event-pass.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
+import { NO_ORGANISATION_MESSAGE } from '../../shared/payments/payment-errors.util.js';
 
 // Top-level, tenant-wide (not event-scoped) — mounted at
 // /api/event-passes (app.ts). Every route operates on the CALLER's own
@@ -15,7 +16,7 @@ router.use(authenticate, requireTenantAdmin);
 const requireOwnTenantId = (req: Request, res: Response): string | undefined => {
   const auth = req as AuthenticatedRequest;
   if (!auth.user.tenantId) {
-    res.status(400).json({ status: 'error', message: 'User has no associated tenant' });
+    res.status(400).json({ status: 'error', message: NO_ORGANISATION_MESSAGE });
     return undefined;
   }
   return auth.user.tenantId;

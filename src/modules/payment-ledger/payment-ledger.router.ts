@@ -3,6 +3,7 @@ import { paymentLedgerService } from './payment-ledger.service.js';
 import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireTenantAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
+import { NO_ORGANISATION_MESSAGE } from '../../shared/payments/payment-errors.util.js';
 
 const router = Router();
 
@@ -16,7 +17,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     if (!auth.user.tenantId) {
-      res.status(400).json({ status: 'error', message: 'User has no associated tenant' });
+      res.status(400).json({ status: 'error', message: NO_ORGANISATION_MESSAGE });
       return;
     }
     const history = await paymentLedgerService.listBillingHistoryForTenant(auth.user.tenantId);
