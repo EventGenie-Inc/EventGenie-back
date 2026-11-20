@@ -1,18 +1,25 @@
 import { type LedgerEntryType, type Prisma } from '@prisma/client';
-import { type BillingHistoryOutcome } from './billing-history-presenter.util.js';
+import { type BillingHistoryOutcome, type BillingHistoryKind, type BillingHistoryProduct } from './billing-history-presenter.util.js';
 
 // Display-shaped row for the tenant-facing Billing History screen —
 // deliberately NOT the raw PaymentLedgerEntry: never sends `payload`
 // (a raw provider webhook body, or internal bookkeeping fields) to the
 // browser, only what a tenant admin needs. See
 // payment-ledger.service.ts's listBillingHistoryForTenant.
+// `kind` and `product` are what the frontend branches on; `description` is
+// for people and may be reworded.
 export interface BillingHistoryEntryDto {
   id: string;
+  kind: BillingHistoryKind;
+  product: BillingHistoryProduct | null;
   description: string;
   outcome: BillingHistoryOutcome;
   amountCents: number;
   currency: string;
   occurredAt: Date;
+  // The event an Event Pass or SMS bundle payment (or its refund) was for;
+  // null for the subscription.
+  event: { id: string; name: string | null } | null;
 }
 
 export interface RecordLedgerEntryInput {

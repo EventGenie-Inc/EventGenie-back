@@ -26,7 +26,19 @@ router.get('/', requireEventAdmin, async (req: Request, res: Response, next: Nex
   } catch (err) { next(err); }
 });
 
-router.get('/sms-bundle', requireFeature('sms'), requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+// Every pass and SMS bundle purchase of the event (the event's payments
+// list): no feature flag and no pass needed, a refunded pass's purchases
+// included. Same access as GET / above.
+router.get('/purchases', requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const eventId = req.params['eventId'] as string;
+    const purchases = await eventPassService.getPurchasesForEvent(eventId, auth.user.role, auth.user.tenantId);
+    res.status(200).json({ status: 'ok', data: purchases });
+  } catch (err) { next(err); }
+});
+
+router.get('/sms-bundle', requireFeature('sms'),requireEventAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
     const eventId = req.params['eventId'] as string;

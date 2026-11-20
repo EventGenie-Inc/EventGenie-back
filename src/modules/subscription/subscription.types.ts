@@ -1,6 +1,7 @@
 import { type SubscriptionTier, type SubscriptionPeriod } from '@prisma/client';
 import { type PaidSubscriptionTier } from './subscription-plans.config.js';
 import { type TenantCustomTierView } from '../custom-tier/custom-tier.types.js';
+import { type LatestSubscriptionPaymentDto } from './latest-subscription-payment.util.js';
 
 // The single source of truth for what each tier+period costs, exposed
 // read-only — see subscription.service.ts's getPricing for why this
@@ -42,6 +43,11 @@ export interface SubscriptionStatusDto {
   // confirmed by Paystack (null when none). The billing callback page polls
   // GET /api/subscriptions, or calls POST /api/subscriptions/verify.
   pendingChange: { tier: SubscriptionTier; period: SubscriptionPeriod; startedAt: Date | null } | null;
+  // The outcome of the latest subscription payment (null when there has
+  // never been one): PENDING, PAID, FAILED, REFUNDED, REVERSED or
+  // UNDER_REVIEW (latest-subscription-payment.util.ts). The billing callback
+  // says what happened from this, not from the tier.
+  latestPayment: LatestSubscriptionPaymentDto | null;
   card: {
     brand: string | null;
     last4: string | null;

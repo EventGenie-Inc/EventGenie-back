@@ -10,22 +10,24 @@ import {
 } from '../../shared/payments/paystack.client.js';
 import {
   toPaymentHttpError,
-  PAYMENT_ALREADY_PENDING,
+  alreadyPendingError,
+  type PendingPurchaseDetails,
   PAYMENT_IN_PROGRESS,
   PAYMENT_IN_PROGRESS_MESSAGE,
   PAYMENT_PROVIDER_UNAVAILABLE,
   PAYMENT_PROVIDER_UNAVAILABLE_MESSAGE,
 } from '../../shared/payments/payment-errors.util.js';
 import { checkAmount, paidAtOf, transactionIdOf, amountCentsOf, currencyOf, type AmountCheck } from '../../shared/payments/paystack-payload.util.js';
-import { reuseCutoff, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
+import { reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { paymentAlertService } from '../payment-alert/payment-alert.service.js';
-import { recordAmountMismatch, formatRand } from '../payment-reconciliation/payment-mismatch.util.js';
+import { recordAmountMismatch, recordDuplicatePayment, formatRand } from '../payment-reconciliation/payment-mismatch.util.js';
 import { withPaymentContext } from '../payment-webhook/payment-context.util.js';
 import { type WebhookContext, type HandlerResult } from '../payment-webhook/payment-webhook.types.js';
 import { subscriptionRepository } from './subscription.repository.js';
 import { resolveEffectiveTier } from './effective-tier.util.js';
+import { resolveLatestSubscriptionPayment } from './latest-subscription-payment.util.js';
 import { resolveTenantPlan } from '../subscription-tier-config/effective-plan.util.js';
 import {
   getPlanCode,
@@ -94,6 +96,28 @@ type BillingTenant = NonNullable<Awaited<ReturnType<typeof subscriptionRepositor
 
 const reuseMinutes = Math.round(PENDING_CHECKOUT_REUSE_MS / 60_000);
 
+// 409 PAYMENT_ALREADY_PENDING's details for the tenant's pending subscribe
+// checkout or plan change (payment-errors.util.ts). A plan change is charged
+// to the saved card: no checkout link.
+const pendingSubscriptionDetails = (tenant: BillingTenant | null): PendingPurchaseDetails => {
+  const tier = tenant?.subscriptionPendingTier ?? null;
+  const period = tenant?.subscriptionPendingPeriod ?? null;
+  const startedAt = tenant?.subscriptionPendingStartedAt ?? null;
+  const isPlanChange = isUpgradeMarker(tenant?.subscriptionPendingReference ?? null);
+  return {
+    product: 'SUBSCRIPTION',
+    purchaseId: null,
+    passTier: null,
+    smsCount: null,
+    plan: tier && period ? { tier, period } : null,
+    isPlanChange,
+    amountCents: priceOf(tier, period),
+    startedAt,
+    canStartAnotherAt: reuseEndsAt(startedAt),
+    authorizationUrl: isPlanChange ? null : tenant?.subscriptionPendingAuthorizationUrl ?? null,
+  };
+};
+
 // ─────────────────────────────────────────
 //  SUBSCRIPTION SERVICE
 //
@@ -144,6 +168,13 @@ export const subscriptionService = {
     // instead of a plan to pay for (it's invoiced outside the app).
     const plan = await resolveTenantPlan(tenant);
 
+    // The latest subscription payment's outcome (latest-subscription-payment.util.ts).
+    const latestRow = await paymentLedgerRepository.findLatestSubscriptionPaymentRow(tenantId);
+    const takeBacks =
+      latestRow && ['SUBSCRIPTION_CHARGE_SUCCEEDED', 'PAYMENT_DUPLICATE', 'PAYMENT_AMOUNT_MISMATCH'].includes(latestRow.type)
+        ? await paymentLedgerRepository.findTakeBacksFor({ reference: latestRow.paystackReference, transactionId: latestRow.paystackTransactionId })
+        : [];
+
     return {
       customTier: plan.customTier,
       tier: effectiveTier,
@@ -158,6 +189,7 @@ export const subscriptionService = {
         tenant.subscriptionPendingReference && tenant.subscriptionPendingTier && tenant.subscriptionPendingPeriod
           ? { tier: tenant.subscriptionPendingTier, period: tenant.subscriptionPendingPeriod, startedAt: tenant.subscriptionPendingStartedAt }
           : null,
+      latestPayment: resolveLatestSubscriptionPayment(latestRow, takeBacks, tenant),
       card: tenant.paystackCardLast4
         ? {
             brand: tenant.paystackCardBrand,
@@ -207,10 +239,9 @@ export const subscriptionService = {
       const pendingLabel = current?.subscriptionPendingTier && current.subscriptionPendingPeriod
         ? `${TIER_LABEL[current.subscriptionPendingTier]} (${PERIOD_LABEL[current.subscriptionPendingPeriod]})`
         : 'another plan';
-      throw new HttpError(
-        409,
+      throw alreadyPendingError(
         `You've already started paying for ${pendingLabel}. Finish that payment, or choose again after ${reuseMinutes} minutes.`,
-        PAYMENT_ALREADY_PENDING
+        pendingSubscriptionDetails(current)
       );
     }
 
@@ -292,10 +323,9 @@ export const subscriptionService = {
       const marker = generateUpgradeMarker();
       const claimed = await subscriptionRepository.claimPendingAttempt(tenantId, { reference: marker, tier: dto.tier, period: dto.period }, reuseCutoff());
       if (!claimed) {
-        throw new HttpError(
-          409,
+        throw alreadyPendingError(
           `A plan change is already being confirmed. Please wait a few minutes, then check your plan before trying again.`,
-          PAYMENT_ALREADY_PENDING
+          pendingSubscriptionDetails(await subscriptionRepository.findBillingStateByTenantId(tenantId))
         );
       }
 
@@ -578,6 +608,41 @@ export const subscriptionService = {
         if (await paymentLedgerRepository.existsFor('SUBSCRIPTION_CHARGE_SUCCEEDED', { reference, transactionId }, tx)) {
           return { claimed: true };
         }
+
+        // A second payment on one subscription period (follow-ups to
+        // payments release 1): one of OUR subscribe checkouts, no longer the
+        // pending one, paid after a newer payment was recorded while the
+        // tenant is on a paid plan (an abandoned checkout paid late). Nothing
+        // is granted, grace and the period end are left alone; recorded and
+        // alerted for a refund. (A checkout whose subscription.create came
+        // before its charge has no payment recorded after it: not this.)
+        if (reference && tenant.paystackSubscriptionCode && tenant.subscriptionTier !== 'SPARK') {
+          const initiated = await paymentLedgerRepository.findSubscribeInitiated(reference, tx);
+          const newer = initiated ? await paymentLedgerRepository.findSubscriptionSuccessSince(tenant.id, initiated.createdAt, tx) : null;
+          if (initiated && newer) {
+            if (!(await paymentLedgerRepository.existsFor('PAYMENT_DUPLICATE', { reference, transactionId }, tx))) {
+              await recordDuplicatePayment(ctx, {
+                product: 'SUBSCRIPTION',
+                reference,
+                transactionId,
+                tenantId: tenant.id,
+                eventId: null,
+                relatedType: 'Tenant',
+                relatedId: tenant.id,
+                amountCents,
+                currency: currencyOf(data) ?? 'ZAR',
+                ...(occurredAt && { occurredAt }),
+                duplicates: {
+                  reference: newer.paystackReference,
+                  relatedId: newer.id,
+                  description: `the ${TIER_LABEL[tenant.subscriptionTier]} subscription's current period`,
+                },
+              });
+            }
+            return { claimed: true };
+          }
+        }
+
         const planCode = planCodeOf(data);
         const planned = planCode ? resolveTierAndPeriodFromPlanCode(planCode) : null;
         const candidates = planned

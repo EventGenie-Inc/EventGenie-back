@@ -4,6 +4,7 @@ export type PaymentAlertKind =
   | 'UNHANDLED_WEBHOOK'
   | 'RECONCILIATION'
   | 'DUPLICATE_SUBSCRIPTION'
+  | 'DUPLICATE_PAYMENT'
   | 'REFUND'
   | 'SYNC';
 

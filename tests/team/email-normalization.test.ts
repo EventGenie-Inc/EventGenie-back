@@ -89,18 +89,35 @@ describe('the lowercase_emails migration', () => {
     const { event: otherEvent } = await createEventWithDay(tenantId, admin.id);
     const mkUser = (email: string) =>
       prisma.user.create({ data: { firebaseUid: `mig-${randomUUID()}`, email, username: 'mig', role: 'EVENT_ADMIN', tenantId } });
-    const mkGuest = (eventId: string, email: string) => prisma.guest.create({ data: { eventId, email } });
+    const mkGuest = (eventId: string, email: string, isArchived = false) => prisma.guest.create({ data: { eventId, email, isArchived } });
 
     const plain = await mkUser(` Plain-${tag}@X.TEST `);
     const dupUpper = await mkUser(`Dup-${tag}@x.test`);
     const dupLower = await mkUser(`dup-${tag}@x.test`);
     const guestPlain = await mkGuest(event.id, `Guest-${tag}@X.test`);
     const guestDupA = await mkGuest(event.id, `Same-${tag}@x.test`);
-    const guestDupB = await mkGuest(event.id, `SAME-${tag}@x.test`);
+    // Archived: since 20261009091000_guest_email_unique, two LIVE guests on
+    // one event can't differ only by case (Guest_eventId_email_live_key is
+    // on lower(email)), so this create failed and with it the whole test.
+    // The migration still counts archived rows ("a restored guest must
+    // match too"), so the pair still collides and both are skipped.
+    const guestDupB = await mkGuest(event.id, `SAME-${tag}@x.test`, true);
     // The same address on a DIFFERENT event is not a collision.
     const guestOtherEvent = await mkGuest(otherEvent.id, `SAME-${tag}@X.TEST`);
 
-    const sql = readFileSync('prisma/migrations/20261006091000_lowercase_emails/migration.sql', 'utf8');
+    // The migration verbatim, except that it reads only THIS test's rows:
+    // over whole tables it would rewrite every other test file's users and
+    // guests (running alongside it, or left in the test database) and fail
+    // on any of their collisions. Each scope is applied exactly once.
+    const scope = (text: string, from: string, to: string) => {
+      expect(text.split(from)).toHaveLength(2);
+      return text.replace(from, to);
+    };
+    const userIds = [plain.id, dupUpper.id, dupLower.id].map((id) => `'${id}'`).join(', ');
+    const eventIds = [event.id, otherEvent.id].map((id) => `'${id}'`).join(', ');
+    let sql = readFileSync('prisma/migrations/20261006091000_lowercase_emails/migration.sql', 'utf8').replace(/\r\n/g, '\n');
+    sql = scope(sql, '    FROM "User"\n),', `    FROM "User"\n    WHERE "id" IN (${userIds})\n),`);
+    sql = scope(sql, '    FROM "Guest"\n    WHERE "email" IS NOT NULL', `    FROM "Guest"\n    WHERE "email" IS NOT NULL AND "eventId" IN (${eventIds})`);
     const statements = sql
       .split('\n')
       .filter((line) => !line.trim().startsWith('--'))

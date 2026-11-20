@@ -24,6 +24,8 @@
 //  so; this sits underneath, at fetch.
 // ─────────────────────────────────────────
 
+import crypto from 'crypto';
+
 export interface FakeTransaction {
   id: number;
   reference: string;
@@ -61,7 +63,12 @@ type Failure = 'timeout' | 'network' | { status: number; body?: unknown };
 
 const API = 'https://api.paystack.co';
 
-let nextId = 5_000_000;
+// Ids (and the SUB_/tok_/T references made from them) start at a random
+// point per process: the test database outlives a run, and a run that
+// stopped before its cleanup leaves tenants holding SUB_ codes and ledger
+// rows holding transaction ids that a fixed start would hand out again
+// (Tenant_paystackSubscriptionCode_key; a "redelivery" that isn't one).
+let nextId = 5_000_000 + crypto.randomInt(0, 2_000_000_000);
 const newId = (): number => ++nextId;
 
 export const fakePaystack = {
@@ -94,7 +101,10 @@ export const fakePaystack = {
   },
 
   customerCodeFor(email: string): string {
-    return `CUS_${Buffer.from(email.toLowerCase()).toString('hex').slice(0, 20)}`;
+    // A hash of the whole address: the first bytes alone ("billing-…" for
+    // every payments tenant) gave two tenants the same customer once in a
+    // few hundred, and a charge went to whichever findByCustomerCode found.
+    return `CUS_${crypto.createHash('sha256').update(email.toLowerCase()).digest('hex').slice(0, 20)}`;
   },
 
   // The payer completes the checkout for `reference`. Returns the webhook

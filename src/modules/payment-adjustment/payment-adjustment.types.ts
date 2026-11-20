@@ -15,6 +15,9 @@ export interface OriginalPayment {
   currency: string;
   // The SUBSCRIPTION_CHARGE_SUCCEEDED ledger row, for a subscription.
   ledgerEntryId: string | null;
+  // A subscription payment that granted nothing (PAYMENT_DUPLICATE or
+  // PAYMENT_AMOUNT_MISMATCH): taking it back changes nothing.
+  grantedNothing?: boolean;
 }
 
 // What taking a payment back did (REFUND_ISSUED / DISPUTE_LOST payload).

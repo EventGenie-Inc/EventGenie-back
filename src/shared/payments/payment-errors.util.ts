@@ -31,7 +31,42 @@ export const PAYMENT_REJECTED_MESSAGE =
 export const PAYMENT_IN_PROGRESS_MESSAGE =
   'This payment is still being set up. Please wait a moment and try again.';
 
-export const toPaymentHttpError = (failure: PaystackFailureDescription, configMessage: string): HttpError => {
+// ─────────────────────────────────────────
+//  409 PAYMENT_ALREADY_PENDING carries the purchase it is about (follow-ups
+//  to payments release 1), as `details.pending`, so the page can say what
+//  was started, offer its checkout link, and say when another choice can be
+//  made, without reading the message:
+//    product            EVENT_PASS | SMS_BUNDLE | SUBSCRIPTION
+//    purchaseId         the pass or bundle purchase (null for a subscription)
+//    passTier           EVENT_PASS only, else null
+//    smsCount           SMS_BUNDLE only, else null
+//    plan               SUBSCRIPTION only: { tier, period }, else null
+//    isPlanChange       SUBSCRIPTION only: a plan change charged to the saved
+//                       card (no checkout link), else false
+//    amountCents        what it costs
+//    startedAt          when it was started
+//    canStartAnotherAt  when a different choice is allowed (startedAt + the
+//                       reuse window, pending-checkout.util.ts)
+//    authorizationUrl   its Paystack checkout, to finish paying (null while
+//                       it is still being set up, and for a plan change)
+// ─────────────────────────────────────────
+export interface PendingPurchaseDetails {
+  product: 'EVENT_PASS' | 'SMS_BUNDLE' | 'SUBSCRIPTION';
+  purchaseId: string | null;
+  passTier: string | null;
+  smsCount: number | null;
+  plan: { tier: string; period: string } | null;
+  isPlanChange: boolean;
+  amountCents: number | null;
+  startedAt: Date | null;
+  canStartAnotherAt: Date | null;
+  authorizationUrl: string | null;
+}
+
+export const alreadyPendingError = (message: string, pending: PendingPurchaseDetails): HttpError =>
+  new HttpError(409, message, PAYMENT_ALREADY_PENDING, { pending });
+
+export const toPaymentHttpError =(failure: PaystackFailureDescription, configMessage: string): HttpError => {
   if (failure.kind === 'config') return new HttpError(500, configMessage);
   if (failure.kind === 'rejected') return new HttpError(422, PAYMENT_REJECTED_MESSAGE, PAYMENT_REJECTED);
   return new HttpError(503, PAYMENT_PROVIDER_UNAVAILABLE_MESSAGE, PAYMENT_PROVIDER_UNAVAILABLE);

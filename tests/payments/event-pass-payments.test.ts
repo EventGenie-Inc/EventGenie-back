@@ -267,9 +267,12 @@ describe('the browser closed after paying, and a delayed webhook', () => {
     expect(succeeded).toHaveLength(1);
   }, 60000);
 
-  it('reconcile on an unpaid checkout leaves it pending; Paystack down is a neutral 503', async () => {
+  it('reconcile on a checkout still in progress leaves it pending; Paystack down is a neutral 503', async () => {
     const res = await buy(t, 'SMALL');
     const url = `/api/events/${t.eventId}/pass/purchases/${res.body.data.purchaseId}/reconcile`;
+    // Not yet paid and not abandoned (an EFT clearing). An abandoned or
+    // failed one is FAILED: payments-followups.test.ts.
+    fakePaystack.transactions.get(referenceOf(res.body.data.authorizationUrl))!.status = 'ongoing';
     expect((await request(app).post(url).set(headersFor(t.admin))).body.data.status).toBe('PENDING');
     fakePaystack.failNext('GET /transaction/verify', { status: 503 }, 3);
     const down = await request(app).post(url).set(headersFor(t.admin));

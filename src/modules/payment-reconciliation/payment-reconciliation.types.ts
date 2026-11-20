@@ -10,7 +10,10 @@ export type MismatchKind =
   // Paystack processed a refund the ledger has no REFUND_ISSUED for.
   | 'REFUND_NOT_RECORDED'
   // A webhook's success for an amount or currency other than expected.
-  | 'UNEXPECTED_AMOUNT';
+  | 'UNEXPECTED_AMOUNT'
+  // A second payment for something already paid for: nothing extra
+  // granted, to be refunded (payment-mismatch.util.ts's recordDuplicatePayment).
+  | 'DUPLICATE_PAYMENT';
 
 export interface CreateMismatchInput {
   runId?: string | null;

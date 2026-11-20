@@ -115,7 +115,20 @@ export const eventPassRepository = {
     return { passId: pass.id, passTier: pass.passTier, kept };
   },
 
-  markPurchaseUnderReview: (id: string, paid: PaidDetails, tx: Prisma.TransactionClient) =>
+  // A double payment (follow-ups to payments release 1): another PAID
+  // purchase of the same tier for the same event. The caller only counts it
+  // while the event's pass is active (a pass bought again after expiry is a
+  // new purchase, not a duplicate).
+  findPaidSameTierPurchase: (purchase: { id: string; eventId: string; passTier: EventPassTier }, tx: Prisma.TransactionClient) =>
+    tx.eventPassPurchase.findFirst({
+      where: { eventId: purchase.eventId, passTier: purchase.passTier, status: 'PAID', id: { not: purchase.id } },
+      orderBy: { confirmedAt: 'asc' },
+    }),
+
+  findEventDaysForPass: (eventId: string, tx: Prisma.TransactionClient) =>
+    tx.eventDay.findMany({ where: { eventId, isArchived: false }, select: { date: true, endTime: true } }),
+
+  markPurchaseUnderReview:(id: string, paid: PaidDetails, tx: Prisma.TransactionClient) =>
     tx.eventPassPurchase.update({ where: { id }, data: { status: 'UNDER_REVIEW', paystackTransactionId: paid.paystackTransactionId } }),
 
   // Refund (REFUNDED) or lost chargeback (REVERSED): the purchase is taken
@@ -204,7 +217,25 @@ export const eventPassRepository = {
       data: { status: 'PAID', confirmedAt: new Date(), paystackTransactionId: paid.paystackTransactionId },
     }),
 
-  markSmsBundleUnderReview: (id: string, paid: PaidDetails, tx: Prisma.TransactionClient) =>
+  // A double payment: a PAID bundle of the same size for the same event,
+  // started AFTER this one (the caller only asks for a purchase that was
+  // already FAILED, i.e. abandoned and replaced by that newer one).
+  findPaidNewerSameBundle: (
+    purchase: { id: string; eventId: string; smsCount: number; purchasedAt: Date },
+    tx: Prisma.TransactionClient
+  ) =>
+    tx.eventSmsBundlePurchase.findFirst({
+      where: {
+        eventId: purchase.eventId,
+        smsCount: purchase.smsCount,
+        status: 'PAID',
+        id: { not: purchase.id },
+        purchasedAt: { gt: purchase.purchasedAt },
+      },
+      orderBy: { purchasedAt: 'asc' },
+    }),
+
+  markSmsBundleUnderReview:(id: string, paid: PaidDetails, tx: Prisma.TransactionClient) =>
     tx.eventSmsBundlePurchase.update({ where: { id }, data: { status: 'UNDER_REVIEW', paystackTransactionId: paid.paystackTransactionId } }),
 
   // A refunded or reversed bundle stops counting towards the event's

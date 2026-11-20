@@ -4,6 +4,17 @@ import { eventPassRepository } from '../event-pass/event-pass.repository.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { type OriginalPayment } from './payment-adjustment.types.js';
 
+const findNothingGrantedSubscriptionPayment = (keys: OriginalPaymentKeys, tx: Prisma.TransactionClient) => {
+  const or: Prisma.PaymentLedgerEntryWhereInput[] = [];
+  if (keys.reference) or.push({ paystackReference: keys.reference });
+  if (keys.transactionId) or.push({ paystackTransactionId: keys.transactionId });
+  if (or.length === 0) return Promise.resolve(null);
+  return tx.paymentLedgerEntry.findFirst({
+    where: { type: { in: ['PAYMENT_DUPLICATE', 'PAYMENT_AMOUNT_MISMATCH'] }, relatedType: 'Tenant', OR: or },
+    orderBy: { createdAt: 'asc' },
+  });
+};
+
 export const paymentAdjustmentRepository = {
   // Which payment a refund or dispute is about: an Event Pass purchase, an
   // SMS bundle purchase, else the ledger's success row (a subscription
@@ -52,6 +63,24 @@ export const paymentAdjustmentRepository = {
         paidCents: success.amountCents,
         currency: success.currency,
         ledgerEntryId: success.id,
+      };
+    }
+    // A subscription payment that granted nothing (a duplicate, or the
+    // wrong amount): a refund of it is matched and takes nothing back.
+    const nothingGranted = await findNothingGrantedSubscriptionPayment(keys, tx);
+    if (nothingGranted) {
+      return {
+        product: 'SUBSCRIPTION',
+        tenantId: nothingGranted.tenantId,
+        eventId: null,
+        relatedType: 'Tenant',
+        relatedId: nothingGranted.relatedId ?? nothingGranted.id,
+        reference: nothingGranted.paystackReference,
+        transactionId: nothingGranted.paystackTransactionId ?? keys.transactionId,
+        paidCents: nothingGranted.amountCents,
+        currency: nothingGranted.currency,
+        ledgerEntryId: nothingGranted.id,
+        grantedNothing: true,
       };
     }
     return null;

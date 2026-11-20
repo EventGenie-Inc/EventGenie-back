@@ -96,3 +96,85 @@ export const recordAmountMismatch = async (
     });
   });
 };
+
+// ─────────────────────────────────────────
+//  A SECOND PAYMENT FOR SOMETHING ALREADY PAID FOR (follow-ups to payments
+//  release 1)
+//
+//  Typically an abandoned checkout paid after a newer one for the same thing
+//  was paid. Nothing extra is granted. Recorded three ways, like a wrong
+//  amount: a PAYMENT_DUPLICATE ledger row (with Paystack's payload and the
+//  payment it duplicates), a DUPLICATE_PAYMENT PaymentMismatch row, and one
+//  alert after commit asking for a refund. The caller marks its own
+//  purchase UNDER_REVIEW (passes, bundles), which is what makes a
+//  redelivery a no-op; a subscription's caller checks existsFor first.
+// ─────────────────────────────────────────
+export const recordDuplicatePayment = async (
+  ctx: Pick<WebhookContext, 'tx' | 'payload' | 'after'>,
+  input: {
+    product: PaymentProduct;
+    reference: string | null;
+    transactionId: string | null;
+    tenantId: string | null;
+    eventId: string | null;
+    relatedType: string;
+    relatedId: string;
+    amountCents: number;
+    currency: string;
+    occurredAt?: Date;
+    // The earlier payment this one duplicates.
+    duplicates: { reference: string | null; relatedId: string | null; description: string };
+  }
+): Promise<void> => {
+  await paymentLedgerRepository.create(
+    {
+      type: 'PAYMENT_DUPLICATE',
+      amountCents: input.amountCents,
+      currency: input.currency,
+      tenantId: input.tenantId,
+      eventId: input.eventId,
+      paystackReference: input.reference,
+      paystackTransactionId: input.transactionId,
+      relatedType: input.relatedType,
+      relatedId: input.relatedId,
+      ...(input.occurredAt && { occurredAt: input.occurredAt }),
+      payload: {
+        product: input.product,
+        duplicates: input.duplicates,
+        provider: ctx.payload,
+      } as unknown as Prisma.InputJsonValue,
+    },
+    ctx.tx
+  );
+  await paymentReconciliationRepository.createMismatch(
+    {
+      source: 'WEBHOOK',
+      kind: 'DUPLICATE_PAYMENT',
+      paystackReference: input.reference,
+      paystackTransactionId: input.transactionId,
+      tenantId: input.tenantId,
+      eventId: input.eventId,
+      actualAmountCents: input.amountCents,
+      currency: input.currency,
+      details: { product: input.product, relatedType: input.relatedType, relatedId: input.relatedId, duplicates: input.duplicates },
+    },
+    ctx.tx
+  );
+  ctx.after(async () => {
+    await paymentAlertService.send({
+      kind: 'DUPLICATE_PAYMENT',
+      subject: `Duplicate payment: the ${PRODUCT_LABEL[input.product]} was paid for twice`,
+      lines: [
+        `This payment duplicates one already paid (${input.duplicates.description}), so nothing extra was granted.`,
+        "Refund it from Paystack's dashboard (Transactions → the payment → Refund).",
+      ],
+      facts: [
+        `Reference: ${input.reference ?? 'none'}`,
+        `Duplicates: ${input.duplicates.reference ?? input.duplicates.relatedId ?? 'unknown'}`,
+        `Amount: ${formatRand(input.amountCents, input.currency)}`,
+        `Tenant: ${input.tenantId ?? 'unknown'}`,
+        ...(input.eventId ? [`Event: ${input.eventId}`] : []),
+      ],
+    });
+  });
+};

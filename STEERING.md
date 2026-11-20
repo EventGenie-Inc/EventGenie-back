@@ -3459,7 +3459,8 @@ transaction id (`paystackTransactionId`) and `occurredAt` from `paid_at`.
 
 **Statuses.** `PaymentAttemptStatus` (passes, bundles): `PENDING`, `PAID`,
 `FAILED`, `REFUNDED` (a processed refund), `REVERSED` (a lost chargeback),
-`UNDER_REVIEW` (wrong amount). `PENDING` or `FAILED` may become `PAID` (a
+`UNDER_REVIEW` (wrong amount, or paid twice: see "A double payment").
+`PENDING` or `FAILED` may become `PAID` (a
 success after a failed attempt on the same checkout, or after the stale
 sweep); nothing leaves `REFUNDED`, `REVERSED` or `UNDER_REVIEW` on its own,
 and a charge.failed never touches a `PAID` row.
@@ -3467,7 +3468,16 @@ and a charge.failed never touches a `PAID` row.
 **One pending checkout at a time** (`shared/payments/pending-checkout.util.ts`).
 Buying the same thing again within 30 minutes (same pass tier, same SMS
 count, same plan) hands back the same checkout link (`reused: true`);
-something different is 409 `PAYMENT_ALREADY_PENDING`; a second request while
+something different is 409 `PAYMENT_ALREADY_PENDING`, whose body carries
+the pending purchase as `details.pending` (`alreadyPendingError`,
+`shared/payments/payment-errors.util.ts`): `product` (`EVENT_PASS`,
+`SMS_BUNDLE`, `SUBSCRIPTION`), `purchaseId` (null for a subscription),
+`passTier`, `smsCount`, `plan` (`{ tier, period }`), `isPlanChange`,
+`amountCents`, `startedAt`, `canStartAnotherAt` (`startedAt` + 30 minutes)
+and `authorizationUrl` (null while still being set up, and for a plan
+change, which is charged to the saved card). `HttpError` takes an optional
+`details` object for this; the error handler sends it as the body's
+`details`, never a provider's text. A second request while
 the first is still being set up is 409 `PAYMENT_IN_PROGRESS`. Per event (a
 pass, a bundle) the check and the insert run under one advisory lock;
 a subscribe attempt is claimed with one conditional update
@@ -3610,6 +3620,77 @@ read-only, no flag: `GET /api/admin/payments/ledger?tenantId=&eventId=&type=A,B&
 5 minutes, 429 `PAYMENT_VERIFY_RATE_LIMITED`): the two pass/bundle
 reconciles and `POST /api/subscriptions/verify`, the billing callback's
 fallback (applies what Paystack confirms, answers with the status).
+**A pass or bundle reconcile records what Paystack says**: `success` goes
+through the confirmation; `failed` or `abandoned` through the same handler
+as the webhook's `charge.failed` (a `PENDING` purchase becomes `FAILED`,
+with a `*_PURCHASE_FAILED` row, once; a later success on the same checkout
+is still granted, FAILED → PAID); anything else (`ongoing`, `pending`,
+`processing`, `queued`: an EFT clearing) leaves it `PENDING`. Paystack
+calls an initialised checkout nobody has paid `abandoned`, so the callback
+page should reconcile only after the payer has come back from Paystack.
+
+**The latest subscription payment** (`latestPayment` on `GET
+/api/subscriptions` and `POST /api/subscriptions/verify`,
+`subscription/latest-subscription-payment.util.ts`): `{ status,
+amountCents, currency, occurredAt, takenBackAt }` or null, read from the
+ledger (a subscription has no purchase row), newest recorded attempt
+first. `PENDING` (started, or a plan change not yet confirmed), `PAID`,
+`FAILED` (refused, a renewal failure, or left unpaid and cleared),
+`REFUNDED` (refunded in full), `REVERSED` (a chargeback lost),
+`UNDER_REVIEW` (the wrong amount). A partial refund leaves it `PAID`. The
+billing callback says what happened from this, not from the tier.
+
+**Billing history** (`GET /api/billing-history`) rows are `{ id, kind,
+product, description, outcome, amountCents, currency, occurredAt, event }`,
+newest first (`occurredAt`, then when recorded). The frontend branches on
+`kind` (`CHARGE`, `REFUND`, `REVERSAL`, `PLAN_CHANGE`, `CANCELLATION`,
+`OTHER`), `product` (`SUBSCRIPTION`, `EVENT_PASS`, `SMS_BUNDLE`, or null)
+and `outcome` (`SUCCESS`, `FAILED`, `INFO`, `UNDER_REVIEW`), never on
+`description`, which is for people ("Refund: Event Pass", "Payment
+reversed: Subscription", "Paid twice: Event Pass (to be refunded)").
+`event` is `{ id, name }` for a pass or bundle row, null for the
+subscription. It lists the subscription's charges, changes and
+cancellation; every Event Pass and SMS bundle payment, paid or failed; and
+the refunds, lost chargebacks, double payments and wrong amounts of
+anything the tenant paid for (`UNDER_REVIEW` for the last two).
+
+**A double payment grants nothing extra.** When a confirmation (webhook,
+reconcile or the sweep) finds the tenant already paid for the same thing,
+the later payment is recorded, not granted: a `PAYMENT_DUPLICATE` ledger
+row (its payload names the payment it duplicates), a `DUPLICATE_PAYMENT`
+`PaymentMismatch` row, and one alert ("Duplicate payment: … was paid for
+twice") asking the super admin to refund it (`recordDuplicatePayment`,
+`payment-reconciliation/payment-mismatch.util.ts`). The same thing is:
+- **Event Pass**: another `PAID` purchase of the same tier for the same
+  event while its pass is active (the purchase goes `UNDER_REVIEW`; a pass
+  bought again after the last one expired is a new purchase);
+- **SMS bundle**: only when the purchase being confirmed was already
+  `FAILED` (abandoned) and a newer bundle of the same size for the same
+  event, started after it, is already `PAID` (the purchase goes
+  `UNDER_REVIEW`, no credits). A deliberate second purchase of the same
+  size is always granted, whenever it happens, and so is an older checkout
+  still `PENDING` (an EFT clearing) paid after a newer one;
+- **Subscription**: a charge for one of our own subscribe checkouts that
+  is no longer pending, paid after a newer subscription payment was
+  recorded, while the tenant is on a paid plan (an abandoned checkout paid
+  late). Grace and the period end are left alone; `latestPayment` is
+  `UNDER_REVIEW`. A checkout whose `subscription.create` came before its
+  charge has no payment after it, so it is not one.
+
+The typical cause is a checkout the reconcile marked `FAILED` (abandoned),
+another started and paid, then the first paid after all. Each is recorded
+and alerted once (the `UNDER_REVIEW` status, or `existsFor` for a
+subscription, makes a redelivery a no-op). Refunding it takes nothing back
+(`NOTHING_WAS_GRANTED`; a subscription's duplicate and wrong-amount
+payments are matched by their own ledger rows), and `latestPayment` then
+reads `REFUNDED`. Reconciliation still lists such a payment as
+`PAYSTACK_ONLY` (no success row) until it is refunded.
+
+**The event's purchases** (`GET /api/events/:eventId/pass/purchases`, any
+`EVENT_ADMIN`+ of the tenant): `{ passPurchases, smsBundlePurchases }`,
+every status, newest first, whether or not a pass is active (a refunded or
+reversed pass's purchases included: they stay when its `EventPass` row is
+removed) and whatever the `sms` flag says.
 
 **Plans.** The four Paystack plans are named `e-velope Celebrate (Monthly)`,
 `e-velope Celebrate (Annual)`, `e-velope Elevate (Monthly)`, `e-velope
@@ -4602,6 +4683,17 @@ next matching call time out, lose the network or answer a status with
 route (`tests/helpers/paystack-webhook.ts`'s `sendWebhook`). Retries wait
 1 ms (`PAYSTACK_RETRY_DELAY_MS`). A test file that `vi.mock`s
 `paystack.client.js` keeps doing so; the fake sits underneath, at fetch.
+Its ids (transaction ids, `SUB_`, `tok_` and `T` references) start at a
+random point per process, and a customer code is a hash of the whole email:
+the test database outlives a run, and a run stopped before its cleanup
+must not hand the next run a subscription code or transaction id a
+leftover row already holds.
+
+**A test never runs a migration's SQL over whole tables**: other test
+files' rows, and rows left in the test database, are there too. Scope it
+to the test's own rows (`tests/team/email-normalization.test.ts` adds a
+`WHERE` to each statement of the `lowercase_emails` migration and asserts
+each was added once).
 
 **Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
 only** — a local Postgres database (`localhost:5432`), never the shared
@@ -4919,7 +5011,10 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     either side has, matches neither of two colliding tenants, and the
     tenant email migration skips collisions.
   - **Payments** (`tests/payments/`, payments release 1, against the fake
-    Paystack with signed webhooks): money conversion, commission and the
+    Paystack with signed webhooks; `payments-followups.test.ts` for billing
+    history's kind, product, event and pass and bundle rows, a reconcile
+    recording a failed or abandoned payment, `latestPayment`, the 409's
+    pending purchase, the event's purchase list and double payments): money conversion, commission and the
     gross-up; the client's timeouts, retries (reads only), failure kinds,
     neutral messages and key mode; Event Passes and SMS bundles (granted
     only by Paystack, wrong amount and currency, FAILED → PAID, duplicate

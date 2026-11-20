@@ -319,6 +319,11 @@ enum LedgerEntryType {
   // subscription that is no longer the tenant's current one, or purely
   // informational (invoice.create, subscription.expiring_cards).
   WEBHOOK_EVENT_IGNORED
+  // A second payment for something the tenant had already paid for (the
+  // same event's pass tier, the same SMS bundle within the pending window,
+  // a stale subscribe checkout paid while the subscription is live).
+  // Nothing extra granted; a PaymentMismatch row and an alert to refund it.
+  PAYMENT_DUPLICATE
 }
 
 // ─────────────────────────────────────────
@@ -2230,7 +2235,7 @@ model PaymentMismatch {
   // RECONCILIATION or WEBHOOK.
   source                String
   // PAYSTACK_ONLY, LEDGER_ONLY, AMOUNT_DIFFERS, CURRENCY_DIFFERS,
-  // REFUND_NOT_RECORDED, UNEXPECTED_AMOUNT.
+  // REFUND_NOT_RECORDED, UNEXPECTED_AMOUNT, DUPLICATE_PAYMENT.
   kind                  String
   paystackReference     String?
   paystackTransactionId String?

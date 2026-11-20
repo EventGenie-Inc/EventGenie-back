@@ -6,14 +6,14 @@ import * as paystackClient from '../../shared/payments/paystack.client.js';
 import { describePaystackFailure, PaystackApiError } from '../../shared/payments/paystack.client.js';
 import {
   toPaymentHttpError,
-  PAYMENT_ALREADY_PENDING,
+  alreadyPendingError,
   PAYMENT_IN_PROGRESS,
   PAYMENT_IN_PROGRESS_MESSAGE,
   PAYMENT_PROVIDER_UNAVAILABLE,
   PAYMENT_PROVIDER_UNAVAILABLE_MESSAGE,
 } from '../../shared/payments/payment-errors.util.js';
 import { checkAmount, paidAtOf, transactionIdOf } from '../../shared/payments/paystack-payload.util.js';
-import { lockPaymentScope, reuseCutoff, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
+import { lockPaymentScope, reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { eventService } from '../event/event.service.js';
 import { tenantRepository } from '../tenant/tenant.repository.js';
@@ -22,7 +22,7 @@ import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js
 import { isEventPassActive, resolveEventPassExpiry } from './event-entitlement.util.js';
 import { withPaymentContext, PAYMENT_TRANSACTION_OPTIONS } from '../payment-webhook/payment-context.util.js';
 import { type WebhookContext } from '../payment-webhook/payment-webhook.types.js';
-import { recordAmountMismatch, formatRand } from '../payment-reconciliation/payment-mismatch.util.js';
+import { recordAmountMismatch, recordDuplicatePayment, formatRand } from '../payment-reconciliation/payment-mismatch.util.js';
 import { paymentAlertService } from '../payment-alert/payment-alert.service.js';
 import {
   EVENT_PASS_PRICES_CENTS,
@@ -38,6 +38,7 @@ import {
   type PassCheckoutResult,
   type EventPassStatusDto,
   type SmsBundleStatusDto,
+  type EventPurchasesDto,
   type EventPassPurchaseSignalDto,
 } from './event-pass.types.js';
 
@@ -75,7 +76,15 @@ const verifyOrUnavailable = async (reference: string) => {
   }
 };
 
-export type ConfirmOutcome = 'confirmed' | 'already_handled' | 'not_found' | 'under_review';
+// What Paystack's verify says when a checkout was not paid: the reconcile
+// records it (follow-ups to payments release 1). Anything else that isn't a
+// success (ongoing, pending, processing, queued: an EFT still clearing)
+// leaves the purchase PENDING.
+const VERIFY_NOT_PAID_STATUSES = new Set(['failed', 'abandoned']);
+
+// duplicate: paid, but the tenant had already paid for the same thing
+// (UNDER_REVIEW, PAYMENT_DUPLICATE, alerted for a refund).
+export type ConfirmOutcome = 'confirmed' | 'already_handled' | 'not_found' | 'under_review' | 'duplicate';
 
 export const eventPassService = {
   // ── STATUS ────────────────────────────────────────────────────────
@@ -131,7 +140,41 @@ export const eventPassService = {
     };
   },
 
-  getTenantPurchaseSignal: async (tenantId: string): Promise<EventPassPurchaseSignalDto> => {
+  // Every pass and SMS bundle purchase the event has, of every status,
+  // newest first (follow-ups to payments release 1): whether or not a pass
+  // is active now, a refunded or reversed pass's purchases included (they
+  // stay when its EventPass row is removed), and whatever the `sms` flag
+  // says (a bundle bought is a payment the tenant made).
+  getPurchasesForEvent: async (eventId: string, role: PlatformRole, tenantId: string | null): Promise<EventPurchasesDto> => {
+    await eventService.getById(eventId, role, tenantId); // 404s cross-tenant
+    const [passes, bundles] = await Promise.all([
+      eventPassRepository.findPurchasesForEvent(eventId),
+      eventPassRepository.findSmsBundlePurchasesForEvent(eventId),
+    ]);
+    return {
+      passPurchases: passes.map((p) => ({
+        id: p.id,
+        passTier: p.passTier,
+        isUpgrade: p.isUpgrade,
+        amountPaidCents: p.amountPaidCents,
+        currency: p.currency,
+        status: p.status,
+        purchasedAt: p.purchasedAt,
+        confirmedAt: p.confirmedAt,
+      })),
+      smsBundlePurchases: bundles.map((p) => ({
+        id: p.id,
+        smsCount: p.smsCount,
+        amountPaidCents: p.amountPaidCents,
+        currency: p.currency,
+        status: p.status,
+        purchasedAt: p.purchasedAt,
+        confirmedAt: p.confirmedAt,
+      })),
+    };
+  },
+
+  getTenantPurchaseSignal: async(tenantId: string): Promise<EventPassPurchaseSignalDto> => {
     const passedEventCount = await eventPassRepository.countDistinctPassedEventsForTenant(tenantId);
     return { passedEventCount, isRepeatBuyer: passedEventCount >= 2 };
   },
@@ -211,10 +254,20 @@ export const eventPassService = {
     if (claim.kind === 'existing') {
       const { pending } = claim;
       if (pending.passTier !== passTier) {
-        throw new HttpError(
-          409,
+        throw alreadyPendingError(
           `You've already started buying the ${TIER_LABEL[pending.passTier]} pass for this event. Finish that payment, or choose again after ${reuseMinutes} minutes.`,
-          PAYMENT_ALREADY_PENDING
+          {
+            product: 'EVENT_PASS',
+            purchaseId: pending.id,
+            passTier: pending.passTier,
+            smsCount: null,
+            plan: null,
+            isPlanChange: false,
+            amountCents: pending.amountPaidCents,
+            startedAt: pending.purchasedAt,
+            canStartAnotherAt: reuseEndsAt(pending.purchasedAt),
+            authorizationUrl: pending.authorizationUrl,
+          }
         );
       }
       if (!pending.authorizationUrl) throw new HttpError(409, PAYMENT_IN_PROGRESS_MESSAGE, PAYMENT_IN_PROGRESS);
@@ -328,10 +381,20 @@ export const eventPassService = {
     if (claim.kind === 'existing') {
       const { pending } = claim;
       if (pending.smsCount !== smsCount) {
-        throw new HttpError(
-          409,
+        throw alreadyPendingError(
           `You've already started buying ${pending.smsCount} SMS credits for this event. Finish that payment, or choose again after ${reuseMinutes} minutes.`,
-          PAYMENT_ALREADY_PENDING
+          {
+            product: 'SMS_BUNDLE',
+            purchaseId: pending.id,
+            passTier: null,
+            smsCount: pending.smsCount,
+            plan: null,
+            isPlanChange: false,
+            amountCents: pending.amountPaidCents,
+            startedAt: pending.purchasedAt,
+            canStartAnotherAt: reuseEndsAt(pending.purchasedAt),
+            authorizationUrl: pending.authorizationUrl,
+          }
         );
       }
       if (!pending.authorizationUrl) throw new HttpError(409, PAYMENT_IN_PROGRESS_MESSAGE, PAYMENT_IN_PROGRESS);
@@ -408,6 +471,39 @@ export const eventPassService = {
         check,
       });
       return { outcome: 'under_review' };
+    }
+
+    // A double payment (follow-ups to payments release 1): the event's
+    // active pass already has a PAID purchase of this tier, typically an
+    // abandoned checkout paid after a newer one. Nothing extra is granted.
+    const occurredAtPaid = paidAtOf(ctx.data);
+    const sameTier = await eventPassRepository.findPaidSameTierPurchase(purchase, tx);
+    if (sameTier) {
+      const pass = await eventPassRepository.findByEventId(purchase.eventId, tx);
+      const days = await eventPassRepository.findEventDaysForPass(purchase.eventId, tx);
+      const expiry = resolveEventPassExpiry(days);
+      const passActive = pass !== null && (expiry === null || new Date() < expiry);
+      if (passActive) {
+        await eventPassRepository.markPurchaseUnderReview(purchase.id, { paystackTransactionId: transactionId }, tx);
+        await recordDuplicatePayment(ctx, {
+          product: 'EVENT_PASS',
+          reference: paymentRef,
+          transactionId,
+          tenantId: purchase.tenantId,
+          eventId: purchase.eventId,
+          relatedType: 'EventPassPurchase',
+          relatedId: purchase.id,
+          amountCents: purchase.amountPaidCents,
+          currency: purchase.currency,
+          ...(occurredAtPaid && { occurredAt: occurredAtPaid }),
+          duplicates: {
+            reference: sameTier.paymentRef,
+            relatedId: sameTier.id,
+            description: `the ${TIER_LABEL[purchase.passTier]} pass for this event`,
+          },
+        });
+        return { outcome: 'duplicate' };
+      }
     }
 
     const result = await eventPassRepository.confirmPurchase(
@@ -521,6 +617,36 @@ export const eventPassService = {
       return { outcome: 'under_review' };
     }
 
+    // A double payment: this checkout was abandoned (FAILED) and a newer
+    // bundle of the same size, started after it, is already PAID: the
+    // tenant replaced it, so this late payment adds no credits. A
+    // deliberate second purchase of the same size (its own checkout, never
+    // FAILED) is always granted, whenever it happens.
+    const sameBundle =
+      purchase.status === 'FAILED' ? await eventPassRepository.findPaidNewerSameBundle(purchase, tx) : null;
+    if (sameBundle) {
+      const paidAt = paidAtOf(ctx.data);
+      await eventPassRepository.markSmsBundleUnderReview(purchase.id, { paystackTransactionId: transactionId }, tx);
+      await recordDuplicatePayment(ctx, {
+        product: 'SMS_BUNDLE',
+        reference: paymentRef,
+        transactionId,
+        tenantId: purchase.tenantId,
+        eventId: purchase.eventId,
+        relatedType: 'EventSmsBundlePurchase',
+        relatedId: purchase.id,
+        amountCents: purchase.amountPaidCents,
+        currency: purchase.currency,
+        ...(paidAt && { occurredAt: paidAt }),
+        duplicates: {
+          reference: sameBundle.paymentRef,
+          relatedId: sameBundle.id,
+          description: `${purchase.smsCount} SMS credits for this event`,
+        },
+      });
+      return { outcome: 'duplicate' };
+    }
+
     await eventPassRepository.confirmSmsBundlePurchase(purchase.id, { paystackTransactionId: transactionId }, tx);
 
     const occurredAt = paidAtOf(ctx.data);
@@ -597,10 +723,18 @@ export const eventPassService = {
       await withPaymentContext('verify', verified.raw, (ctx) =>
         eventPassService.confirmPassPurchaseWithinTransaction(ctx, purchase.paymentRef!)
       );
-      const after = await eventPassRepository.findPurchaseForEvent(purchaseId, eventId);
-      return { status: after?.status ?? purchase.status };
+    } else if (VERIFY_NOT_PAID_STATUSES.has(verified.status)) {
+      // Recorded as the webhook's charge.failed would be: a PENDING attempt
+      // becomes FAILED with an EVENT_PASS_PURCHASE_FAILED row (a FAILED one
+      // is left as it is). Still paid later, FAILED → PAID grants it.
+      await withPaymentContext('verify', verified.raw, (ctx) =>
+        eventPassService.failPassPurchaseWithinTransaction(ctx, purchase.paymentRef!)
+      );
+    } else {
+      return { status: purchase.status };
     }
-    return { status: purchase.status };
+    const after = await eventPassRepository.findPurchaseForEvent(purchaseId, eventId);
+    return { status: after?.status ?? purchase.status };
   },
 
   reconcileSmsBundlePurchase: async (
@@ -621,9 +755,14 @@ export const eventPassService = {
       await withPaymentContext('verify', verified.raw, (ctx) =>
         eventPassService.confirmSmsBundlePurchaseWithinTransaction(ctx, purchase.paymentRef!)
       );
-      const after = await eventPassRepository.findSmsBundlePurchaseForEvent(purchaseId, eventId);
-      return { status: after?.status ?? purchase.status };
+    } else if (VERIFY_NOT_PAID_STATUSES.has(verified.status)) {
+      await withPaymentContext('verify', verified.raw, (ctx) =>
+        eventPassService.failSmsBundlePurchaseWithinTransaction(ctx, purchase.paymentRef!)
+      );
+    } else {
+      return { status: purchase.status };
     }
-    return { status: purchase.status };
+    const after = await eventPassRepository.findSmsBundlePurchaseForEvent(purchaseId, eventId);
+    return { status: after?.status ?? purchase.status };
   },
 };

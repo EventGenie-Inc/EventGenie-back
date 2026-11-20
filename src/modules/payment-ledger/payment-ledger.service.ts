@@ -24,14 +24,17 @@ export const paymentLedgerService = {
   listBillingHistoryForTenant: async (tenantId: string): Promise<BillingHistoryEntryDto[]> => {
     const entries = await paymentLedgerRepository.findBillingHistoryByTenant(tenantId);
     return entries.map((entry) => {
-      const { description, outcome } = describeBillingHistoryEntry(entry.type, entry.payload);
+      const { description, outcome, kind, product } = describeBillingHistoryEntry(entry.type, entry.payload, entry.relatedType);
       return {
         id: entry.id,
+        kind,
+        product,
         description,
         outcome,
         amountCents: entry.amountCents,
         currency: entry.currency,
         occurredAt: entry.occurredAt,
+        event: entry.eventId ? { id: entry.eventId, name: entry.event?.name ?? null } : null,
       };
     });
   },

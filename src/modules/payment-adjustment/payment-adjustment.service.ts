@@ -128,7 +128,7 @@ const takeBack = async (
   }
 
   if (original.product === 'SUBSCRIPTION') {
-    if (!original.tenantId) return { effect: 'NOTHING_WAS_GRANTED', details: {} };
+    if (!original.tenantId || original.grantedNothing) return { effect: 'NOTHING_WAS_GRANTED', details: {} };
     const latest = await paymentLedgerRepository.findLatestSubscriptionCharge(original.tenantId, tx);
     if (!latest || latest.id !== original.ledgerEntryId) {
       return { effect: 'SUBSCRIPTION_NOT_CURRENT_CHARGE', details: { latestChargeId: latest?.id ?? null } };

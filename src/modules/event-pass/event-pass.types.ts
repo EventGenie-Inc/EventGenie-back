@@ -1,4 +1,4 @@
-import { type EventPassTier } from '@prisma/client';
+import { type EventPassTier, type PaymentAttemptStatus } from '@prisma/client';
 
 export interface PurchaseEventPassDto {
   passTier: EventPassTier;
@@ -37,6 +37,31 @@ export interface SmsBundleStatusDto {
     smsCount: number;
     amountPaidCents: number;
     status: string;
+    purchasedAt: Date;
+    confirmedAt: Date | null;
+  }[];
+}
+
+// GET /api/events/:eventId/pass/purchases: every pass and bundle purchase,
+// every status (PENDING, PAID, FAILED, REFUNDED, REVERSED, UNDER_REVIEW),
+// newest first, whatever the pass or the `sms` flag.
+export interface EventPurchasesDto {
+  passPurchases: {
+    id: string;
+    passTier: EventPassTier;
+    isUpgrade: boolean;
+    amountPaidCents: number;
+    currency: string;
+    status: PaymentAttemptStatus;
+    purchasedAt: Date;
+    confirmedAt: Date | null;
+  }[];
+  smsBundlePurchases: {
+    id: string;
+    smsCount: number;
+    amountPaidCents: number;
+    currency: string;
+    status: PaymentAttemptStatus;
     purchasedAt: Date;
     confirmedAt: Date | null;
   }[];

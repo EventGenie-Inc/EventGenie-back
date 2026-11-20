@@ -34,4 +34,8 @@ export const lockPaymentScope = async (tx: Prisma.TransactionClient, scope: stri
 };
 
 export const reuseCutoff = (now: Date = new Date()): Date => new Date(now.getTime() - PENDING_CHECKOUT_REUSE_MS);
-export const staleCutoff = (now: Date = new Date()): Date => new Date(now.getTime() - STALE_PENDING_MS);
+// When a different choice may be started, for a pending attempt started at
+// `startedAt` (409 PAYMENT_ALREADY_PENDING's details).
+export const reuseEndsAt = (startedAt: Date | null): Date | null =>
+  startedAt ? new Date(startedAt.getTime() + PENDING_CHECKOUT_REUSE_MS) : null;
+export const staleCutoff =(now: Date = new Date()): Date => new Date(now.getTime() - STALE_PENDING_MS);

@@ -28,6 +28,7 @@ const KIND_EYEBROW: Record<PaymentAlertKind, string> = {
   UNHANDLED_WEBHOOK: 'Unhandled webhook',
   RECONCILIATION: 'Reconciliation',
   DUPLICATE_SUBSCRIPTION: 'Duplicate subscription',
+  DUPLICATE_PAYMENT: 'Paid twice',
   REFUND: 'Refund',
   SYNC: 'Subscription sync',
 };

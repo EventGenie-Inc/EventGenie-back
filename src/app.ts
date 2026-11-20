@@ -429,6 +429,7 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
       status: 'error',
       message: err.message,
       ...(err.code !== undefined && { code: err.code }),
+      ...(err.details !== undefined && { details: err.details }),
     });
     return;
   }
