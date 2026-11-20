@@ -119,6 +119,9 @@ export interface GrantedCopy {
   targetTenantId: string;
   grantedTier: SubscriptionTier | null;
   grantedCustomTierId: string | null;
+  // The copy's host name: the receiving organisation's name, never the
+  // template's (hostNameFromOrganisation; null when it can't be one).
+  hostName: string | null;
   withinTransaction: (tx: Prisma.TransactionClient, eventId: string) => Promise<void>;
 }
 
@@ -310,7 +313,7 @@ export const eventDuplicateService = {
           status: 'DRAFT',
           visibility: source.visibility,
           ticketing: source.ticketing,
-          hostName: source.hostName,
+          hostName: grant ? grant.hostName : source.hostName,
           rsvpDeadline,
           capacity: source.capacity,
           registrationEmailDomains: source.registrationEmailDomains,

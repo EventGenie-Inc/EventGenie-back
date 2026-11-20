@@ -95,8 +95,10 @@ export const eventGrantRepository = {
     return rows[0]?.id ?? null;
   },
 
-  markDelivered: (tx: Prisma.TransactionClient, recipientId: string, eventId: string, now: Date) =>
-    tx.eventGrantRecipient.update({ where: { id: recipientId }, data: { status: 'DELIVERED', eventId, deliveredAt: now, failureReason: null } }),
+  // `notice`: what the super admin should know about a delivered copy (its
+  // host name couldn't be the organisation's name), or null.
+  markDelivered: (tx: Prisma.TransactionClient, recipientId: string, eventId: string, now: Date, notice: string | null = null) =>
+    tx.eventGrantRecipient.update({ where: { id: recipientId }, data: { status: 'DELIVERED', eventId, deliveredAt: now, failureReason: null, notice } }),
 
   markFailed: (recipientId: string, reason: string, db: Db = prisma) =>
     db.eventGrantRecipient.update({ where: { id: recipientId }, data: { status: 'FAILED', failureReason: reason.slice(0, 500) } }),

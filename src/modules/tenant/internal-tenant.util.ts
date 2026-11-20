@@ -18,3 +18,11 @@ export const assertNotInternalTenant = async (tenantId: string | null | undefine
     throw new HttpError(422, "The e-velope organisation holds event templates only: it can't have users or vendor spaces.", TENANT_INTERNAL);
   }
 };
+
+// Is this the internal organisation? Its events are templates, which need no
+// host name (STEERING "Host name"): a granted copy takes the receiving
+// organisation's name instead.
+export const isInternalTenant = async (tenantId: string): Promise<boolean> => {
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { isInternal: true } });
+  return tenant?.isInternal === true;
+};

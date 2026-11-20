@@ -211,3 +211,23 @@ export const resolveEventPlan = async (
   if (granted) values = mostGenerousPlanValues(values, granted);
   return { ...tenantPlan, values };
 };
+
+// The name resolveEventPlan gives an event, worked out without reading any
+// plan's settings: for a list of many events at once (the super admin's
+// events list, admin-console.service.ts). `customTierName` is the tenant's
+// custom tier's name, read with the tenant (null when it has none). Display
+// only, like ResolvedPlan.name. Kept to resolveEventPlan's rules: a custom
+// tier, or a granted event, is named by the tenant's plan; a standard tier
+// with only an active Event Pass by the pass rule's tier.
+export const resolveEventPlanName = (
+  tenant: TenantPlanState,
+  customTierName: string | null,
+  event: EntitlementDerivableEvent,
+  now: Date = new Date()
+): string => {
+  const identity = resolvePlanIdentity(tenant, now);
+  if (identity.kind === 'CUSTOM' && customTierName !== null) return customTierName;
+  const granted = event.grantedTier !== null || event.grantedCustomTierId !== null;
+  if (!granted && isEventPassActive(event, now)) return resolveEventEntitlement(tenant, event, now);
+  return resolveEffectiveTier(tenant, now);
+};

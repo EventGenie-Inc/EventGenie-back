@@ -28,6 +28,10 @@ export const ADMIN_AUDIT_ACTIONS = {
   TIER_CONFIG_CREATED: 'TIER_CONFIG_CREATED',
   TIER_CONFIG_UPDATED: 'TIER_CONFIG_UPDATED',
   TIER_AVAILABILITY_CHANGED: 'TIER_AVAILABILITY_CHANGED',
+  // A read, recorded because it shows guests' personal information: the
+  // super admin console's guest list for one event (admin-console.service.ts),
+  // one entry per view, against the event's tenant.
+  EVENT_GUEST_LIST_VIEWED: 'EVENT_GUEST_LIST_VIEWED',
   // Any other super admin write, recorded by admin-audit.middleware.ts from
   // the request itself (method, path, which fields were sent).
   API_WRITE: 'API_WRITE',

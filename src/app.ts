@@ -62,6 +62,7 @@ import storageAdminRouter from './modules/storage/storage-admin.router.js';
 import guestDocumentRouter from './modules/guest-document/guest-document.router.js';
 import smsDeliveryRouter from './modules/sms-delivery/sms-delivery.router.js';
 import { recordSuperAdminWrites } from './modules/admin-audit/admin-audit.middleware.js';
+import adminConsoleRouter from './modules/admin-console/admin-console.router.js';
 import { auditLogRouter, tenantAuditLogRouter } from './modules/admin-audit/admin-audit.router.js';
 import { customTierRouter, tenantCustomTierRouter } from './modules/custom-tier/custom-tier.router.js';
 import { customTierRequestRouter, adminCustomTierRequestRouter } from './modules/custom-tier/custom-tier-request.router.js';
@@ -359,6 +360,15 @@ app.use('/api/admin/system', systemHealthRouter);
 //  /api/admin/feedback — every event's feedback, shareable photos, CSV
 // ─────────────────────────────────────────
 app.use('/api/admin/feedback', feedbackAdminRouter);
+
+// ─────────────────────────────────────────
+//  THE SUPER ADMIN CONSOLE (read only; super admin only, anyone else gets
+//  the global 404). STEERING "Super admin console".
+//  /api/admin/stats, /api/admin/users, /api/admin/events,
+//  /api/admin/events/:eventId, /api/admin/events/:eventId/guests
+//  Guards are per route, so other /api/admin/* paths pass through.
+// ─────────────────────────────────────────
+app.use('/api/admin', adminConsoleRouter);
 
 // ─────────────────────────────────────────
 //  ARCHIVED-EVENT MEDIA (super admin only; anyone else gets the global 404)

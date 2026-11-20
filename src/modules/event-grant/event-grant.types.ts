@@ -31,6 +31,10 @@ export interface EventGrantRecipientView {
   status: EventGrantDeliveryStatus;
   eventId: string | null;
   failureReason: string | null;
+  // A DELIVERED copy's caveat, for the super admin: its host name couldn't be
+  // the organisation's name (blank, or too long), so it has none yet. Null
+  // otherwise.
+  notice: string | null;
   deliveredAt: Date | null;
 }
 

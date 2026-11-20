@@ -1957,6 +1957,10 @@ model EventGrantRecipient {
   event         Event?                   @relation(fields: [eventId], references: [id], onDelete: SetNull)
   status        EventGrantDeliveryStatus @default(PENDING)
   failureReason String?
+  // A DELIVERED copy's caveat for the super admin: its host name couldn't be
+  // the organisation's name (blank, or longer than a host name may be), so
+  // the copy has none yet. Null otherwise.
+  notice        String?
   // When the delivery was last claimed: a PENDING row older than the claim
   // lease was left by a crash and is taken again by the sweep.
   claimedAt     DateTime                 @default(now())

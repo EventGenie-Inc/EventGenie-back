@@ -13,6 +13,7 @@ import { customTierService } from '../custom-tier/custom-tier.service.js';
 import { adminAuditService } from '../admin-audit/admin-audit.service.js';
 import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
 import { type CreateEventDto } from '../event/event.types.js';
+import { hostNameFromOrganisation } from '../event/event-host-name.util.js';
 import { eventGrantRepository } from './event-grant.repository.js';
 import { buildGrantedEventEmail } from './event-grant-email.util.js';
 import {
@@ -100,6 +101,7 @@ const toView = (grant: GrantRow): EventGrantView => ({
     status: r.status,
     eventId: r.eventId,
     failureReason: r.failureReason,
+    notice: r.notice,
     deliveredAt: r.deliveredAt,
   })),
 });
@@ -138,7 +140,7 @@ export const eventGrantService = {
   // program, questions, design, cover).
   createTemplate: async (body: CreateEventDto, actorUserId: string) => {
     const tenant = await internalTenant();
-    const event = await eventService.create(tenant.id, actorUserId, body);
+    const event = await eventService.create(tenant.id, actorUserId, body, { template: true });
     await adminAuditService.record({
       actorUserId,
       tenantId: tenant.id,
@@ -262,6 +264,11 @@ export const eventGrantService = {
         throw new HttpError(422, "The event's first date has passed, so it wasn't copied.");
       }
 
+      // The copy's host name is the organisation's own name; one that can't
+      // be a host name leaves the copy without, and the reason is kept on
+      // the recipient for the super admin.
+      const host = hostNameFromOrganisation(tenant.name);
+
       const { eventId } = await eventDuplicateService.copyEvent(
         grant.sourceEventId,
         {
@@ -274,8 +281,9 @@ export const eventGrantService = {
             targetTenantId: tenantId,
             grantedTier: grant.grantedTier,
             grantedCustomTierId: grant.grantedCustomTierId,
+            hostName: host.hostName,
             withinTransaction: async (tx, newEventId) => {
-              await eventGrantRepository.markDelivered(tx, recipientId, newEventId, now);
+              await eventGrantRepository.markDelivered(tx, recipientId, newEventId, now, host.notice);
               await adminAuditService.record(
                 {
                   actorUserId: actorUserId ?? grant.createdByUserId,

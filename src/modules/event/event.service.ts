@@ -14,6 +14,7 @@ import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.
 import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
 import { assertValidHostName, assertHostNamePresent, assertHostNamePresentAfterEdit } from './event-host-name.util.js';
+import { isInternalTenant } from '../tenant/internal-tenant.util.js';
 import { acceptCover, applyCoverChange, planCoverChange, type CoverChange } from './event-cover-image.util.js';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { storedFileService } from '../storage/stored-file.service.js';
@@ -294,7 +295,10 @@ export const eventService = {
     };
   },
 
-  create: async (tenantId: string, userId: string, data: CreateEventDto) => {
+  // `template`: a super admin's template in the internal organisation
+  // (event-grant.service.ts), which needs no host name: each granted copy
+  // takes its receiving organisation's name (STEERING "Host name").
+  create: async (tenantId: string, userId: string, data: CreateEventDto, { template = false }: { template?: boolean } = {}) => {
     assertEventName(data.name);
     assertValidCapacity(data.capacity);
     assertValidHostName(data.hostName);
@@ -318,7 +322,7 @@ export const eventService = {
       await assertTenantReadyToSellTickets(tenantId);
     }
     // Last, so every other refusal (and its code) comes first.
-    assertHostNamePresent(data.hostName);
+    if (!template) assertHostNamePresent(data.hostName);
     return eventRepository.create(
       tenantId,
       userId,
@@ -340,8 +344,9 @@ export const eventService = {
     const event = await eventService.getById(id, requestingRole, tenantId);
     const coverChange = await assertEventUpdateAllowed(event, data, event.eventDays);
     // Last, as in the full update: an older event with no host name gets
-    // one on its next edit.
-    assertHostNamePresentAfterEdit(event.hostName, data.hostName);
+    // one on its next edit. A template (the internal organisation's) needs
+    // none.
+    if (!(await isInternalTenant(event.tenantId))) assertHostNamePresentAfterEdit(event.hostName, data.hostName);
     // The save, the new cover attached and the replaced one requested for
     // deletion, together.
     await prisma.$transaction(async (tx) => {

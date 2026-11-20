@@ -31,3 +31,22 @@ export const assertHostNamePresent = (hostName: unknown): void => {
 // own when it sends one (null and '' included), else the stored one.
 export const assertHostNamePresentAfterEdit = (stored: string | null, incoming: string | null | undefined): void =>
   assertHostNamePresent(incoming !== undefined ? incoming : stored);
+
+// A granted copy's host name: the receiving organisation's name (STEERING
+// "Custom tiers", granted events), editable by them afterwards. A name that
+// can't be one (blank, or longer than a host name may be) leaves the copy
+// without one, and says why: the copy is still made, and its next edit asks
+// for a host name as any older event's does.
+export const hostNameFromOrganisation = (organisationName: string | null | undefined): { hostName: string | null; notice: string | null } => {
+  const name = typeof organisationName === 'string' ? organisationName.trim() : '';
+  if (!name) {
+    return { hostName: null, notice: "The organisation has no name, so the event has no host name yet. They'll be asked for one when they next edit it." };
+  }
+  if ([...name].length > HOST_NAME_MAX_CHARS) {
+    return {
+      hostName: null,
+      notice: `The organisation's name is longer than a host name may be (${HOST_NAME_MAX_CHARS} characters), so the event has no host name yet. They'll be asked for one when they next edit it.`,
+    };
+  }
+  return { hostName: name, notice: null };
+};

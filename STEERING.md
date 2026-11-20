@@ -2922,6 +2922,18 @@ is fine on an event that has one, and refused on one that hasn't, even a
 full update touching only a day. The column stays nullable for those older
 rows.
 
+**Templates need none** (the internal organisation's events, see "Custom
+tiers"): `POST /api/admin/event-templates` takes a template without one
+(`eventService.create`'s `template` option), and its edits (`PUT
+/api/events/:id`, the full update) don't ask for one (the event's tenant
+`isInternal`). A sent host name is kept as usual. **A granted copy takes the
+receiving organisation's name** as its host name (trimmed), never the
+template's, and the organisation may change it like any event's. A name that
+can't be a host name (blank, or longer than 200 characters) leaves the copy
+without one: it is still made and DELIVERED, with the reason on the
+recipient (`notice`, `hostNameFromOrganisation`), and its next edit asks for
+a host name as an older event's does.
+
 ### Venue
 
 **The venue belongs to the event day, not the event.** Every `EventDay`
@@ -3342,7 +3354,7 @@ re-raised as 422, as at registration); nothing is saved or emailed.
 The super admin builds a template in **the internal e-velope organisation**
 (`Tenant.isInternal`, `evelope_internal`, made by the migration, stored on
 Elevate, never billed): created with `POST /api/admin/event-templates`
-(`POST /api/events`' body), then edited through the ordinary event routes
+(`POST /api/events`' body, **no host name needed**: see "Host name"), then edited through the ordinary event routes
 (a super admin may edit any event): days, program, questions, its cover and
 its invitation design, uploads included, **with the same `StoredFile`
 records and paths as any event** (`<env>/t/evelope_internal/e/<eventId>/…`).
@@ -3379,11 +3391,14 @@ POST /api/admin/event-grants/:id/recipients { tenantIds } → EventGrantView
 EventGrantView = { id, sourceEventId, sourceEventName, name, firstDate, grantedTier,
   grantedCustomTier: { id, name } | null, toAllTenants, allTenantsUntil, createdByUserId,
   createdAt, recipients: [{ tenantId, tenantName, status: 'PENDING'|'DELIVERED'|'FAILED',
-  eventId, failureReason, deliveredAt }] }
+  eventId, failureReason, notice, deliveredAt }] }
+     notice: a DELIVERED copy's caveat (its host name couldn't be the organisation's
+     name, so it has none yet), else null
 ```
 
 Each recipient gets its own copy through the duplicate service (see
 "Duplicating an event", for a grant): a DRAFT with the grant's feature set,
+the organisation's name as its host name (see "Host name"),
 **not counted against the event limit** (`countActive` leaves out
 `eventGrantId`, and restoring one is never refused for the limit), and an
 email to the organisation's address that it's ready. **Once per tenant**:
@@ -3725,6 +3740,13 @@ edited or deleted; no foreign keys, so an entry outlives what it names.
   path names (an event, a tenant, a user, a guest, a vendor space), else
   none. Not recorded: `/api/auth`, `/api/terms`, refusals. Written after the
   response; a failure is reported, never fails the request.
+- **One read is recorded too**, because it shows guests' personal
+  information: opening an event's guest list in the super admin console
+  (`EVENT_GUEST_LIST_VIEWED`, against the event's tenant, details `{ eventId,
+  eventName, page, pageSize, searched }`: whether a search was made, never
+  its words). One entry per view, written before the guests are read, so a
+  view that can't be recorded fails rather than being shown unrecorded. No
+  other read is recorded.
 
 ```
 GET /api/admin/tenants/:tenantId/audit-log[?limit=100&before=<createdAt>&beforeId=<id>]
@@ -3739,6 +3761,68 @@ timestamp (a grant to many tenants) are never skipped or repeated.
 `beforeId` without `before`, or empty, is 400. `before` alone still
 works (every entry older than that time) but can skip entries sharing the
 last one's timestamp: the frontend sends both.
+
+### Super admin console
+
+Platform-wide, **read-only** views for the super admin (module
+`src/modules/admin-console/`): the dashboard's numbers, every user, every
+event, and one event's detail and guest list. GETs only; the one thing
+written is the guest list's audit entry ("Super admin audit log"). Anyone
+else gets the global 404 on every route. **The internal e-velope
+organisation is never in them**: not its templates, its users or its
+guests. The per-tenant admin routes (`/api/tenants/:id/…`) are unchanged.
+
+```
+GET /api/admin/stats
+  → { tenants: { total },
+      events: { total, draft, live, finished, cancelled, archived },
+      guests: { total } }
+GET /api/admin/users[?search&tenantId&role&page&pageSize]
+  → Page<{ id, username, email, role, status: 'ACTIVE'|'SUSPENDED'|'ARCHIVED',
+           tenant: { id, name } | null, createdAt, lastSignInAt: ISO | null }>
+GET /api/admin/events[?search&tenantId&status&from&to&page&pageSize]
+  → Page<ConsoleEvent>
+GET /api/admin/events/:eventId
+  → ConsoleEvent without counts, plus { description, hostName, ticketing, coverImageUrl,
+      rsvpDeadline, capacity, updatedAt, eventGrantId,
+      days: [{ id, label, date, startTime, endTime, locationType, location, address, onlineUrl }],
+      stats: { invited, accepted, declined, pending, checkedIn, pendingApproval } }
+GET /api/admin/events/:eventId/guests[?search&page&pageSize]      (audit-logged, each view)
+  → Page<{ id, firstName, surname, email, phoneNumber, hostGuestId, pendingApproval,
+           rsvpStatus: 'PENDING'|'ACCEPTED'|'DECLINED' | null, checkedIn,
+           checkIns: [{ eventDayId, checkedInAt }], createdAt }>
+Page<T>      = { items: T[], page, pageSize, total }      page from 1; pageSize 25, at most 100
+ConsoleEvent = { id, name, status: 'DRAFT'|'LIVE'|'FINISHED'|'CANCELLED'|'ARCHIVED',
+  tenant: { id, name }, firstDate, lastDate, visibility, planName, createdAt, archivedAt,
+  counts: { invited, accepted, declined, checkedIn } }
+```
+
+- **Status**: ARCHIVED is any deleted event, whatever it was; the others are
+  live events by their effective status (`resolveEffectiveStatus`): LIVE is
+  published and not yet ended (or without days), FINISHED published with
+  every day ended. The filter is the same rule as a query
+  (`consoleStatusWhere`), judged at the same moment as the response.
+  `status` is any case; an unknown one is 400.
+- **Stats**: tenants are the tenant list's (not internal, not archived);
+  events every tenant's event, archived included (the split adds up to the
+  total); guests every live guest (not archived) of those events, plus-ones
+  and registrations awaiting approval included.
+- **Counts** are in invitations (a plus-one is one): live invitations of live
+  guests, registrations awaiting approval left out; `invited` = accepted +
+  declined + pending; `checkedIn` = checked in on at least one day.
+- **Search** is by words, each matching a field in any case (events: the
+  name; users: name or email; guests: first name, surname, email, phone).
+  `from`/`to` (YYYY-MM-DD) keep events with a live day in that range; `from`
+  after `to` is 400. Newest first (`createdAt`, then `id`).
+- **Last sign-in** is worked out, not stored: the latest of a sign-in code
+  used (verify-otp, `OtpRecord.usedAt`) and a trusted device starting a
+  session (the session exchange, `DeviceToken.lastUsedAt`). A session
+  refresh isn't a sign-in.
+- **planName** is `resolveEventPlan`'s name (`resolveEventPlanName`, the
+  same rules without reading settings, for a page of events at once).
+- **An event's detail and guest list** open an archived event too; a
+  template, or an unknown id, is 404 (and a guest list 404 records nothing).
+  Archived guests are never listed.
 
 ### Reminders
 
