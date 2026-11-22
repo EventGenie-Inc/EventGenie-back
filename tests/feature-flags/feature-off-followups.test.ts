@@ -198,10 +198,9 @@ describe('ticketing off — publish, the wizard, and RSVP submit', () => {
     expect(after.status).toBe('PENDING');
     expect(await prisma.ticketPurchase.count({ where: { inviteId: invite.id } })).toBe(0);
 
-    // On, the same request reaches ticket handling (and is refused there
-    // for its own reason: the ticket doesn't exist).
+    // On: buying through an invitation is retired (ticket sales Round B).
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(submit()).rejects.toMatchObject({ statusCode: 409 });
+    await expect(submit()).rejects.toMatchObject({ statusCode: 410, code: 'TICKET_PURCHASE_RETIRED' });
   }, 60000);
 });
 

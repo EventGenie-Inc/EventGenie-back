@@ -8,6 +8,7 @@ import { tierRefusalMessage, launchUnavailableMessage } from '../subscription-ti
 import { SA_TIME_ZONE } from '../reminder-schedule/reminder-schedule-time.util.js';
 import { checkInPassRepository, type PassRow } from './check-in-pass.repository.js';
 import { PASS_KIND_RULES, type PassHolder } from './check-in-pass-kinds.js';
+import { recordTicketArrival, type TicketForCheckIn } from '../check-in/ticket-check-in.js';
 import { verifyPassPayload } from './check-in-pass-token.util.js';
 import { isInvitationLink } from './invitation-link.util.js';
 import { type ScanInput, type ScanRefusalReason, type ScanResult } from './check-in-pass.types.js';
@@ -44,6 +45,7 @@ const MESSAGES: Record<ScanRefusalReason, string> = {
   WRONG_DAY: 'This code is for another day.',
   EVENT_CANCELLED: 'This event has been cancelled, so nobody can be checked in.',
   NOT_ALLOWED: "You don't have access to check guests in for this event.",
+  TICKET_CANCELLED: 'This ticket has been cancelled.',
 };
 
 const red = (reason: ScanRefusalReason, extra: Partial<ScanResult> = {}): ScanResult => ({
@@ -68,7 +70,76 @@ const personView = (holder: PassHolder) => ({
   name: holder.name,
   isPlusOne: holder.isPlusOne,
   guestOf: holder.guestOfName,
+  detail: null,
+  ticketId: null,
+  ticketNumber: null,
 });
+
+// A ticket's holder (ticket sales Round B): the buyer, never a guest row.
+const ticketPersonView = (ticket: TicketForCheckIn) => {
+  const holder = PASS_KIND_RULES.TICKET.holder(ticket);
+  return { guestId: null, name: holder.name, isPlusOne: false, guestOf: null, detail: holder.detail, ticketId: ticket.id, ticketNumber: ticket.number };
+};
+
+// A ticket's QR (EVT1.<issuedTicketId>): valid once on each venue day its
+// type admitted, while the ticket is VALID and its order confirmed. The
+// same colours and reasons as a guest's pass; TICKET_CANCELLED for a ticket
+// cancelled, refunded or charged back.
+const scanTicket = async (
+  ticketId: string,
+  eventId: string,
+  day: { id: string; label: string; date: Date; locationType: string | null },
+  eventDays: { id: string; label: string; date: Date; locationType: string | null }[],
+  userId: string
+): Promise<ScanResult> => {
+  const rules = PASS_KIND_RULES.TICKET;
+  const ticket = await rules.resolveTicket(ticketId);
+  if (!ticket) return red('INVALID');
+  if (ticket.eventId !== eventId) return red('WRONG_EVENT');
+  if (ticket.status !== 'VALID') return red('TICKET_CANCELLED');
+  // Unpaid, expired or under review for a payment mismatch: never issued
+  // a ticket; anything else not confirmed admits nobody.
+  if (!rules.admits(ticket)) return red('TICKET_CANCELLED');
+
+  const person = ticketPersonView(ticket);
+  // Venue days only: an online day has no door.
+  const venueDays = eventDays.filter((d) => d.locationType !== 'ONLINE' && rules.admitsDay(ticket, d.id));
+  if (day.locationType === 'ONLINE' || !rules.admitsDay(ticket, day.id)) {
+    const names = venueDays.map((d) => d.label);
+    return red('WRONG_DAY', {
+      message: names.length ? `This ticket is for ${names.join(', ')}.` : MESSAGES.WRONG_DAY,
+      person,
+      day: venueDays[0] ? { id: venueDays[0].id, label: venueDays[0].label, date: venueDays[0].date } : null,
+    });
+  }
+
+  const recorded = await recordTicketArrival(ticket.id, day.id, userId);
+  const dayView = { id: day.id, label: day.label, date: day.date };
+  const who = `${person.name} (${person.detail})`;
+  if (recorded.created) {
+    return {
+      result: 'GREEN',
+      reason: null,
+      message: `Checked in: ${who}`,
+      person,
+      day: dayView,
+      table: null,
+      checkedInAt: recorded.checkInAt.toISOString(),
+      checkedInBy: null,
+    };
+  }
+  const by = (await checkInPassRepository.findUserName(recorded.checkedBy))?.username ?? null;
+  return {
+    result: 'AMBER',
+    reason: null,
+    message: `Already checked in at ${clock(recorded.checkInAt)}${by ? ` by ${by}` : ''}: ${who}`,
+    person,
+    day: dayView,
+    table: null,
+    checkedInAt: recorded.checkInAt.toISOString(),
+    checkedInBy: by,
+  };
+};
 
 const isNotFound = (err: unknown): boolean => err instanceof HttpError && err.statusCode === 404;
 
@@ -149,12 +220,15 @@ export const checkInScanService = {
     // Not a check-in code. The invitation's own QR (its link) gets its own
     // answer, decided by the link's shape alone (invitation-link.util.ts).
     if (!verified) return red(isInvitationLink(input.payload) ? 'INVITATION_LINK' : 'INVALID');
+    if (verified.kind === 'TICKET') return scanTicket(verified.passId, eventId, day, event.eventDays, userId);
     const pass = await checkInPassRepository.findById(verified.passId);
     if (!pass || pass.kind !== verified.kind) return red('INVALID');
     if (pass.eventId !== eventId) return red('WRONG_EVENT');
     if (pass.status !== 'ACTIVE') return replacedOrRevoked(pass);
 
-    const holder = await PASS_KIND_RULES[pass.kind].resolveHolder(pass);
+    // An RSVP pass (a TICKET code never names a CheckInPass row).
+    if (pass.kind !== 'RSVP') return red('INVALID');
+    const holder = await PASS_KIND_RULES.RSVP.resolveHolder(pass);
     if (!holder) {
       // Out of date (an RSVP changed and its reconcile hasn't run, or
       // failed): retired now, so it answers the same next time.

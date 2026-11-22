@@ -846,6 +846,8 @@ export interface PaystackListedTransaction {
   currency: string;
   paidAt: string | null;
   createdAt: string | null;
+  // Paystack's fee on it, in cents, when listed (ticket sales: e-velope's net).
+  feesCents: number | null;
 }
 
 interface PaystackListedTransactionData {
@@ -858,6 +860,7 @@ interface PaystackListedTransactionData {
   paidAt?: string | null;
   created_at?: string | null;
   createdAt?: string | null;
+  fees?: number | null;
 }
 
 export const listTransactions = async (params: { from: string; to: string }): Promise<PaystackListedTransaction[]> => {
@@ -870,6 +873,7 @@ export const listTransactions = async (params: { from: string; to: string }): Pr
     currency: row.currency,
     paidAt: row.paid_at ?? row.paidAt ?? null,
     createdAt: row.created_at ?? row.createdAt ?? null,
+    feesCents: typeof row.fees === 'number' ? row.fees : null,
   }));
 };
 

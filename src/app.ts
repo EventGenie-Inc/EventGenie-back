@@ -36,6 +36,7 @@ import eventProgramRouter from './modules/event-program/event-program.router.js'
 import programItemRouter from './modules/program-item/program-item.router.js';
 import ticketRouter from './modules/ticket/ticket.router.js';
 import ticketSalesRouter from './modules/ticket-sales/ticket-sales.router.js';
+import ticketOrderRouter from './modules/ticket-order/ticket-order.router.js';
 import ticketPurchaseRouter from './modules/ticket-purchase/ticket-purchase.router.js';
 import rsvpRouter from './modules/rsvp/rsvp.router.js';
 import eventPublicRouter from './modules/event-public/event-public.router.js';
@@ -264,6 +265,8 @@ app.use('/api/events/:eventId/documents', guestDocumentRouter);
 app.use('/api/event-drafts', eventDraftRouter);
 app.use('/api/invites/:inviteId/rsvp-responses', rsvpResponseRouter);
 app.use('/api/ticket-purchases', ticketPurchaseRouter);
+// Ticket sales Round B: public checkout and orders (no sign-in).
+app.use('/api/ticket-orders', ticketOrderRouter);
 
 // ─────────────────────────────────────────
 //  AUTH ROUTES

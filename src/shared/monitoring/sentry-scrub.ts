@@ -55,8 +55,12 @@ const TOKEN_PATH_RULES: RegExp[] = [
 
 const TEXT_RULES: Array<[RegExp, string]> = [
   // A check-in QR payload (check-in-pass-token.util.ts), whole: its pass id
-  // and signature together are a door code.
-  [/\b[A-Z]{2}\d+\.[a-z0-9]{20,40}\.[A-Za-z0-9_-]{20,}/g, '[checkin-code]'],
+  // and signature together are a door code. EV1 (an RSVP pass) and EVT1 (a
+  // ticket, ticket sales Round B).
+  [/\b[A-Z]{2,4}\d+\.[a-z0-9]{20,40}\.[A-Za-z0-9_-]{20,}/g, '[checkin-code]'],
+  // A ticket order's access token (<orderId>.<signature>): it opens the
+  // order and its tickets.
+  [/\b[a-z0-9]{20,40}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, '[order-token]'],
   // A guest document's Cloudinary public id ends in the file's own name
   // (guest-document.service.ts): the name goes, the folder stays.
   [/(\/documents\/[^/\s"']+\/[0-9a-f-]{36}\/)[^\s"'?#]+/gi, `$1${FILTERED}`],

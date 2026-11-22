@@ -190,7 +190,9 @@ before the pilot merge:
 | `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event; a guest of another event the caller can see is skipped and named, any other id refuses the whole request naming nobody: `sortOutUnsendable`) |
 | `/memory-hub/:id…`, `/memory-hub/:hubId/items…` | **fixed** in the wave 2 follow-ups |
 | `/check-in/days/:dayId`, `…/guests/:guestId` (and an `inviteToken`) | safe (the day from the event's own days; guest and token looked up by event) |
-| `/check-in/scan` (body `eventDayId`, a pass id in the payload) | safe (the day from the event's own days, else 404; a pass of another event is `WRONG_EVENT` and names nothing) |
+| `/check-in/scan` (body `eventDayId`, a pass id in the payload) | safe (the day from the event's own days, else 404; a pass of another event is `WRONG_EVENT` and names nothing; a ticket the same) |
+| `/check-in/days/:dayId/tickets/:ticketId`, body `ticketId` | safe (the ticket's own `eventId` must be the URL's, else 404) |
+| `/ticket-sales/orders/:orderId/cancel` (body `ticketIds`) | safe (the order looked up by id and event; a ticket not the order's is 404) |
 | `/guests` create and import (body `eventDayIds`, the file's days) | safe (the event's own days) |
 | `/announcements` (body `eventDayId`) | safe (one of the event's live days, else 422) |
 | `/registration-settings` (body `openDayIds`) | safe (422 `REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN`) |
@@ -1961,7 +1963,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
     (`/api/payments/subaccount`, its cancel link included) are 404; the
     payout worker switches nothing (changes wait); a paid event is treated as
     free by the public page, registration and check-in passes; the wizard
-    ignores ticket types. (With it on, an event is still only made paid by
+    ignores ticket types. `/api/ticket-orders` (checkout, status, retry) is
+    404 and the ticket order worker does nothing; webhooks for ticket orders
+    still land (the webhook belongs to nothing). (With it on, an event is still only made paid by
     the switch: see "Ticket sales".)
   - `publicEvents` off: no path makes an event `PUBLIC`, the same way.
     The public view, registration, share links and
@@ -3583,7 +3587,11 @@ Paystack's transaction id. Taking back, per product:
   tier.
 - **SMS bundle**: `REFUNDED`, so its credits stop counting: what was left of
   them is gone, what was sent stays sent.
-- **Ticket**: recorded only, alerted (tickets are a later release).
+- **Ticket order** (ticket sales Round B): every valid ticket voided (QR
+  stops, place freed), the order REFUNDED (REVERSED for a lost chargeback),
+  the organisation's admins told. A chargeback opened puts it UNDER_REVIEW
+  with the tickets still valid; won, back to PAID. See "Ticket sales".
+- **Ticket on the retired invitation path**: recorded only, alerted.
 - **A partial refund** (less than was paid): recorded and alerted, nothing
   taken back.
 
@@ -3846,16 +3854,16 @@ SQL (a read-only check, then a reset a person runs) is in `scripts/sql/`.
 
 Round A (2026-11, `feature/ticket-sales-a`): the payout account, ticket
 types, the paid switch, the fee calculator and the public price display.
-Round B adds checkout, confirmation, issuing tickets (a `TICKET` check-in
-pass kind), scanning, cancelling, refund and chargeback webhooks and
-reconciliation. Everything here is behind `ticketing`.
+Round B (`feature/ticket-sales-b`): checkout, confirmation, issued tickets
+(a `TICKET` check-in pass kind), scanning, cancelling, refund and chargeback
+webhooks and reconciliation; the invitation purchase path retired.
+Everything here is behind `ticketing`.
 
 **Only public events sell tickets.** On a paid public event, buying a
 ticket replaces free registration. Private invited events stay free. The
-older invitation purchase path (an RSVP carrying a `ticketId`,
-`/rsvp/ticket-quote`, `TicketPurchase` per invite) keeps working for the
-paid private events made before 2026-11 until Round B removes it;
-`scripts/sql/paid-private-events-check.sql` lists them (read-only).
+older invitation purchase path is retired (Round B, below);
+`scripts/sql/paid-private-events-check.sql` lists paid private events
+(read-only).
 
 **The payout account** (one per organisation, `src/modules/payment-account/`,
 Tenant Admins only, always their own organisation from the session; an
@@ -4156,6 +4164,174 @@ hidden type, the payout account, or how many are sold or exist; `remaining`
 ("only N left") only when 1 to 10 are left and on sale (`ONLY_N_LEFT_THRESHOLD`),
 else null. Sold out counts tickets held by checkouts in progress. A type id
 is in it: the checkout sends it back.
+
+**Buying tickets: checkout** (Round B, `src/modules/ticket-order/`; public,
+no sign-in, behind `ticketing`; `Cache-Control: no-store`):
+
+```
+POST /api/ticket-orders/checkout
+  { shareToken, items: [{ ticketTypeId, quantity }],
+    buyer: { name, email, phone?, phoneCountry? }, termsAccepted: true,
+    idempotencyKey: 16-100 of [A-Za-z0-9_-] }
+  → 201 new | 200 the same checkout again: CheckoutResult
+POST /api/ticket-orders/status { token, refresh?: true } → OrderView
+POST /api/ticket-orders/retry  { token } → 201 new attempt | 200 still pending: CheckoutResult
+CheckoutResult = OrderView & { orderToken: string | null, reused: boolean }
+OrderView = { orderId, status: 'PENDING'|'PAID'|'FAILED'|'EXPIRED'|'UNDER_REVIEW'|'REFUNDED'|'REVERSED',
+  event: { name, hostName }, buyer: { name, email, phone },
+  items: [{ ticketTypeId, typeName, quantity, unitPriceCents }],
+  amounts: { subtotalCents, commissionCents, platformFixedFeeCents, processingFeeCents, feesCents, totalCents, currency },
+  authorizationUrl (PENDING while held, else null), holdExpiresAt,
+  tickets: [{ id, number, typeName, label: 'Ticket 2 of 3', status: 'VALID'|'CANCELLED'|'REFUNDED'|'REVERSED',
+    days: [{ id, label, date, startTime, endTime, locationType, location, address, onlineUrl }],
+    payload: 'EVT1.…' | null }] }      (tickets only once confirmed)
+```
+
+- **Refused, in the buyer's words, each with its code**:
+  `TICKET_ORDER_EVENT_NOT_FOUND` (404: unknown link, private, archived),
+  `TICKET_ORDER_EVENT_CANCELLED` (410), `TICKET_ORDER_NOT_ON_SALE` (409: not
+  paid, a draft), `TICKET_ORDER_EVENT_ENDED` (410: the last day has ended, in
+  South African time, re-checked here even when days moved after a type was
+  saved), `TICKET_ORDER_SALES_PAUSED` (409), `TICKET_ORDER_TYPE_UNAVAILABLE`
+  (409: not ACTIVE, not this event's), `TICKET_ORDER_TYPE_NOT_YET_ON_SALE`
+  and `TICKET_ORDER_TYPE_SALES_ENDED` (409: the type's window, SA time),
+  `TICKET_ORDER_TOO_MANY_OF_TYPE` (422: over `maxPerOrder`),
+  `TICKET_ORDER_TOO_MANY_TICKETS` (422: over 20 in the order),
+  `TICKET_ORDER_NOT_ENOUGH_LEFT` (409, "Only 2 'Saturday' tickets are left." or
+  "… sold out.", `details: { ticketTypeId, remaining }`),
+  `TICKET_ORDER_BUYER_NAME_REQUIRED`, `TICKET_ORDER_BUYER_EMAIL_INVALID`, the
+  phone's contact codes (422), `TICKET_ORDER_TERMS_REQUIRED` (422),
+  `TICKET_ORDER_PAYMENTS_UNAVAILABLE` (409: no active payout account),
+  `TICKET_ORDER_REQUEST_INVALID` (400), `TICKET_ORDER_IN_PROGRESS` (409).
+  **Never the plan**: a paid event keeps selling after a downgrade.
+- **Stock is held for 30 minutes**, one conditional `UPDATE` per type (sold +
+  held + quantity ≤ quantity): two buyers racing for the last ticket get one
+  hold and one refusal. A refusal on any type holds nothing.
+- **The same checkout, never a second hold or charge**: the same
+  `idempotencyKey` (unique per event) returns the order with its token; the
+  same buyer (normalised email), event and items while it is still pending
+  and held returns the checkout **without** the token (`orderToken: null`:
+  anyone knowing someone's email and choices must not get their tickets; the
+  tickets are emailed). Both under an advisory lock per event and buyer.
+- **Everything is snapshotted** on the `TicketOrder`: items, unit prices and
+  admitted days, the fee calculator's breakdown for the whole order, the
+  organisation's live payout subaccount and the Terms version accepted.
+- **Paystack**: our reference (`tko_…`), `metadata { orderId, kind:
+  'TICKET_ORDER', cancel_action }`, `subaccount` = the snapshot's,
+  `transaction_charge` = e-velope's charge, `bearer: 'account'`, callback
+  `<frontend>/tickets/checkout/callback`. **Channels** `card`, `eft`,
+  `capitec_pay` (`PAYSTACK_TICKET_CHANNELS` overrides): those whose fee
+  never exceeds the local card fee the price is grossed up for (EFT and
+  Capitec Pay 2%, no flat fee). International cards share the `card`
+  channel at 3.1% + R1 and can't be excluded per payment: the negative-net
+  alert catches them. Scan to Pay and Apple Pay are left out (their fees
+  aren't confirmed at or below a local card's).
+- **The order token** (`<orderId>.<signature>`, HMAC-SHA256 with
+  `CHECKIN_QR_SECRET` of `order|<orderId>`, `buildOrderToken`) opens the
+  order: never stored, never in a URL path or query (the API takes it in the
+  body; the email's link has it in the fragment,
+  `<frontend>/tickets/order#token=…`), never logged; Sentry masks it
+  (`[order-token]`). A starting checkout that Paystack refuses or doesn't
+  answer is FAILED with its hold given back (a later success still counts),
+  and the buyer sees the neutral payment words.
+- **Retry** (`FAILED` or `EXPIRED`): the stock is held again (refused if
+  gone), a new reference is added, and **every earlier reference is kept**
+  (`TicketOrderPayment`), so a late success on any of them is found.
+- **Status** with `refresh: true` (the callback page, once the payer is
+  back) verifies the order's attempts with Paystack: success confirms it,
+  failed or abandoned records the failure (Paystack calls an unpaid checkout
+  abandoned). Nothing is ever "paid" otherwise.
+- **Limits**: checkout 300 / 15 minutes per IP and 10 an hour per buyer email
+  (its SHA-256); status and retry 60 / 5 minutes per order token, behind 100
+  failed / 5 minutes per IP.
+
+**Confirmation** (`ticket-order-confirm.service.ts`): `charge.success` and the
+status verify, in one transaction with the order's row locked, by reference:
+- A reference already handled: nothing. **The order already paid through
+  another reference**: `PAYMENT_DUPLICATE` (and a `DUPLICATE_PAYMENT`
+  mismatch) for the super admin, who refunds from the dashboard; no tickets.
+- **The amount, currency, subaccount or split not the snapshot's** (`fees_split`
+  read defensively: the subaccount's share must be the subtotal, the
+  transaction charge e-velope's): `UNDER_REVIEW` (`reviewReason
+  PAYMENT_MISMATCH`), alerted, no tickets, its stock freed
+  (`PAYMENT_AMOUNT_MISMATCH` row; a `SPLIT_MISMATCH` mismatch for the split).
+- Otherwise **PAID**: the hold becomes sold stock; **paid after the hold
+  lapsed, sold anyway** (never refuse a paid order), and if that oversells a
+  type the order is `oversold` and the organisation's admins and the super
+  admin are emailed. One `IssuedTicket` per unit, numbered `TK-XXXX-XXXX`
+  (no 0/O/1/I/L). The ledger: `TICKET_PAYMENT_SUCCEEDED` (payload: the
+  breakdown, Paystack's actual fee from `data.fees`, `feeDifferenceCents`
+  from the calculated processing, `netCents` = charge − commission − actual
+  fee) and `COMMISSION_TAKEN`. **A negative net** is a `NEGATIVE_NET`
+  mismatch and an alert. `charge.failed` makes that attempt FAILED (and the
+  order, if it was the latest), its hold given back.
+- **Expiry**: the worker (`ticket-order.worker.ts`, every minute, started by
+  `server.ts`; tests call `ticketOrderWorker.runOnce({ now, eventIds })`)
+  gives back the stock of orders unpaid when their hold ran out (PENDING →
+  EXPIRED) and sends confirmation emails that didn't go.
+- **The buyer's email**, once (claimed on the order, then sent with Resend's
+  idempotency key `ticket-order/<id>`): the event, each admitted day's date,
+  time and venue (an online day's meeting link: the buyer is a confirmed
+  guest), each ticket's number and type, a link to the order, and **one PDF**
+  (`ticket-pdf.util.ts`, pdf-lib) with a page per ticket: the event, the
+  type, each admitted day with its venue or "Online", the QR, the number, the
+  buyer's name and "Ticket 2 of 3". Online-only tickets have no QR.
+
+**Tickets at the door** (see "Check-in"): `EVT1.<issuedTicketId>.<signature>`,
+signed like an RSVP pass (`CheckInPassKind TICKET`, `PASS_KIND_RULES.TICKET`).
+The `IssuedTicket` is its own pass: never a `CheckInPass` row. One QR per
+ticket, valid once on each **venue** day its type admitted at checkout
+(`TicketCheckIn`, one per ticket per day). A ticket admits someone while
+`VALID` and its order confirmed (PAID, or a chargeback still open).
+
+**The organiser's sales view and cancelling** (`/api/events/:eventId/ticket-sales/…`,
+the event's admins: `requireEventAdmin`, tenant scoping and the assignment lock):
+
+```
+GET  …/summary → { types: [{ ticketTypeId, name, status, priceCents, quantity, sold, held,
+                   remaining, revenueCents }], totals: { sold, revenueCents } }
+GET  …/orders[?status&search&page&pageSize] → { page, pageSize, total, items: [{ id, status,
+       reviewReason, disputeStatus, oversold, buyer: { name, email, phone },
+       items: [{ ticketTypeId, typeName, quantity, unitPriceCents }],
+       amounts: { subtotalCents, feesCents, totalCents, currency }, createdAt, paidAt,
+       tickets: [{ id, number, typeName, label, status, cancelReason, voidedAt,
+                   checkIns: [{ eventDayId, checkedInAt }] }] }] }
+POST …/orders/:orderId/cancel { reason, ticketIds? } → { orderId, emailSent,
+       cancelled: [{ ticketId, number, wasCheckedIn, checkedInDays }] }
+```
+
+`revenueCents` is the organiser's: the ticket price of tickets still valid,
+never the fees. Buyers' details are in this view only. **Cancelling** (one
+ticket, some, or the order, a reason required: 422
+`TICKET_CANCEL_REASON_REQUIRED`): the tickets `CANCELLED` (their QR stops at
+once), their places freed, the buyer emailed (which tickets, the reason, and
+that the organiser handles any refund), audited (`TICKETS_CANCELLED`). It
+can't be undone (nothing left: 409 `TICKET_CANCEL_NOTHING_TO_CANCEL`); a
+ticket already checked in can still be cancelled (`wasCheckedIn`). **No money
+moves and Paystack isn't called** (Refunds, version 1).
+
+**Refunds and chargebacks** go through Release 1's handlers
+(`payment-adjustment`, the order matched by any of its references or its
+transaction id): a full `refund.processed` voids every valid ticket
+(`REFUNDED`, places freed, the order `REFUNDED`, `TICKETS_VOIDED`); a partial
+one voids nothing and is alerted for the super admin, who chooses which to
+cancel. A chargeback opened: the order `UNDER_REVIEW` (`DISPUTE`), the
+tickets stay valid; lost: as a full refund (`REVERSED`); won: back to PAID.
+Each tells the organisation's admins (responsible for chargebacks under the
+Terms). e-velope's commission is never returned.
+
+**The invitation purchase path is retired**: `POST /api/rsvp/ticket-quote`,
+an RSVP submit with a `ticketId`, `/api/rsvp/ticket-purchase/retry` and
+`/confirm/:token` answer **410 `TICKET_PURCHASE_RETIRED`**; an invitation
+offers no tickets. `TicketPurchase` rows are kept, readable at
+`/api/ticket-purchases`, and a late success on one is still recorded.
+`scripts/sql/ticket-purchases-check.sql` lists them and every paid private
+event (read-only).
+
+**Reconciliation**: ticket orders' `TICKET_PAYMENT_SUCCEEDED` rows are in the
+daily run like every success; a ticket order whose listed Paystack fee puts
+e-velope's net below zero is a `NEGATIVE_NET` mismatch. The super admin's
+ledger lists them (`relatedType TicketOrder`).
 
 ### Super admin audit log
 
@@ -4810,11 +4986,30 @@ and the list's undo removes either.
 - **The code is a signed string, never a URL**: `EV1.<passId>.<signature>`,
   HMAC-SHA256 with `CHECKIN_QR_SECRET` of the prefix, kind and pass id,
   compared in constant time (`check-in-pass-token.util.ts`). The prefix is
-  the version and kind (a ticket's will have its own). The payload is
+  the version and kind: `EV1` an RSVP pass, `EVT1` a ticket (ticket sales
+  Round B: `EVT1.<issuedTicketId>.<signature>`). The payload is
   never stored, only rebuilt from the id, so the database alone can't make
   one. A deployed server refuses to start without the secret
   (`assertCheckInQrSecretConfigured`, in `server.ts`); each environment has
   its own. Never log a payload; Sentry masks one (`[checkin-code]`).
+- **Tickets** (ticket sales Round B): a ticket's QR is its `IssuedTicket`,
+  never a `CheckInPass` row, valid once on each venue day its type admits.
+  Its check-in is one `TicketCheckIn` per ticket per day, written by the
+  scan and by the guest list alike (`check-in/ticket-check-in.ts`'s
+  `recordTicketArrival`), and undone by `DELETE
+  /api/events/:eventId/check-in/days/:dayId/tickets/:ticketId`. The day's
+  door list (`GET …/check-in/days/:dayId`) carries `tickets: [{ ticketId,
+  ticketNumber, buyerName, typeName, label, checkedIn, checkedInAt }]` and
+  `ticketCounts: { valid, arrived }` beside the guests; `POST
+  …/check-in/days/:dayId { ticketId }` checks one in (`CheckInResult` then
+  has `ticket`, and `guest` null; 422 `TICKET_CANCELLED` or
+  `TICKET_WRONG_DAY`). A scan's `person` for a ticket: `guestId` null, the
+  buyer's name, `detail` "Ticket 2 of 3 · General", `ticketId`,
+  `ticketNumber` (all three null for a guest). A ticket cancelled, refunded
+  or charged back is RED `TICKET_CANCELLED` ("This ticket has been
+  cancelled."); another day, or an online one, `WRONG_DAY` naming its days.
+  The RSVP reconcile only ever revokes RSVP passes. A paid public event
+  issues no RSVP passes, and an old one found there is revoked at its scan.
 - **One active pass per person per day**, by a partial unique index; a pass
   is never edited except to REVOKED (`revokedAt`, `revokeReason`) and never
   deleted. Who a pass admits is decided in one place,
@@ -5451,29 +5646,19 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   hours late. Ticket sales windows were fixed for the same bug (they use the
   scheduled reminders' Africa/Johannesburg helper); the deadline, and
   registration's closing date with it, are a separate ticket.
-- **Ticket sales Round B** (notes, not built):
-  - The pass reconcile (`check-in-pass.service.ts`'s `planReconcile`)
-    treats any pass that isn't `RSVP` as stale and revokes it: it must
-    learn about `TICKET` passes before tickets are issued.
-  - At checkout, a ticket type isn't on sale after the event's last day ends
-    (`lastDayEndsAt`, South African time), even if the event's days were
-    moved earlier after the type was saved (the "sales can't end after the
-    event" rule is only checked when the type is saved).
-  - Checkout never re-checks the plan (see "Ticket sales", "A downgrade
-    never breaks a paid event"): only that sales are on and not paused, the
-    type is on sale, and there is a live payout account to split into.
-- **Ticket payments are not release-1 ready** (see "Payments", "Ticket
-  sales"): Round A (2026-11) built the payout account (a change waits 24
-  hours, emailed with a cancel link: audit A6's confirmation, without
-  Paystack's account validation), ticket types, the paid switch and the fee
-  calculator (A7: split at source with `bearer: "account"`). Still for
-  Round B: checkout and confirmation for public events, issuing tickets, a
-  ticket refund or chargeback changing the purchase, the invitation purchase
-  path's retry overwriting its reference (A2), check-in and the QR code
-  ignoring payment there (B1), ticket confirmation checking the amount, and
-  the guest's checkout errors passing Paystack's text through. Cancelling a
-  paid event still has no refund pipeline: refunds are issued by hand from
-  Paystack's dashboard.
+- **Ticket sales, what is still open** (see "Ticket sales"): Rounds A and B
+  (2026-11) cover the payout account, ticket types, checkout and
+  confirmation with every check, issued tickets and their QR, refunds and
+  chargebacks, and reconciliation; the invitation purchase path is retired
+  (its A2/B1 gaps go with it). Still open: **international cards** share the
+  `card` channel and cost more than the local rate the price assumes (the
+  negative-net alert catches each one; pricing at the international rate is
+  a decision for later); **cancelling a paid event** has no refund pipeline
+  (the organiser refunds, tickets can be cancelled per order); Paystack's
+  `fees_split` and `subaccount` fields on a split charge are read
+  defensively and must be checked on a real test-mode payment before going
+  live (a split payment's `data.subaccount` missing makes confirmation hold
+  the order for review).
 - **Paystack's refund and dispute payloads are unverified** against its
   own documentation (its pages refused automated reads): the fields are read
   defensively, and an outcome we don't recognise changes nothing and alerts.

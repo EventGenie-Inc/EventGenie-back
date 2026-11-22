@@ -41,10 +41,26 @@ export interface DayRosterCounts {
   stillExpected: number;
 }
 
+// A ticket on the door list (ticket sales Round B): found by the buyer's
+// name or the ticket's number, checked in and undone like a guest.
+export interface DayRosterTicketRow {
+  ticketId: string;
+  ticketNumber: string;
+  buyerName: string;
+  typeName: string;
+  // "Ticket 2 of 3"
+  label: string;
+  checkedIn: boolean;
+  checkedInAt: string | null;
+}
+
 export interface DayRoster {
   day: { id: string; label: string; date: Date; locationType: 'VENUE' | 'ONLINE'; location: string | null; address: string | null; onlineUrl: string | null };
   counts: DayRosterCounts;
   guests: DayRosterRow[];
+  // Every valid ticket that admits the day; [] for a free event.
+  tickets: DayRosterTicketRow[];
+  ticketCounts: { valid: number; arrived: number };
 }
 
 // Exactly one of the two. inviteToken is the invitation's own token — what a
@@ -53,13 +69,23 @@ export interface DayRoster {
 export interface CheckInInput {
   guestId?: string;
   inviteToken?: string;
+  // A ticket (ticket sales Round B), from the door list.
+  ticketId?: string;
 }
 
 export interface CheckInResult {
   // false when the guest was already checked in for this day (see the
   // service: a repeat check-in is idempotent, not an error).
   created: boolean;
-  guest: DayRosterRow;
+  // The guest's row; null for a ticket.
+  guest: DayRosterRow | null;
+  // The ticket's row; null for a guest.
+  ticket: DayRosterTicketRow | null;
+}
+
+export interface UndoTicketCheckInResult {
+  removed: boolean;
+  ticket: DayRosterTicketRow | null;
 }
 
 export interface UndoCheckInResult {

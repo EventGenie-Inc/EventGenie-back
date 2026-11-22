@@ -1,6 +1,7 @@
 import { type EventStatus, type PlatformRole } from '@prisma/client';
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { checkInRepository, type RosterInvite } from './check-in.repository.js';
+import { findRosterTickets, findTicket, recordTicketArrival, ticketAdmits, ticketAdmitsDay, undoTicketArrival } from './ticket-check-in.js';
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import {
@@ -11,6 +12,8 @@ import {
   type DayRosterRow,
   type RsvpForDay,
   type UndoCheckInResult,
+  type DayRosterTicketRow,
+  type UndoTicketCheckInResult,
 } from './check-in.types.js';
 
 // ─────────────────────────────────────────
@@ -56,6 +59,16 @@ const assertCheckInOpen = (effectiveStatus: EventStatus): void => {
   const message = CHECK_IN_BLOCKED[effectiveStatus];
   if (message) throw new HttpError(409, message);
 };
+
+const toTicketRow = (t: Awaited<ReturnType<typeof findRosterTickets>>[number]): DayRosterTicketRow => ({
+  ticketId: t.id,
+  ticketNumber: t.number,
+  buyerName: t.order.buyerName,
+  typeName: t.item.typeName,
+  label: `Ticket ${t.indexInOrder} of ${t.order._count.tickets}`,
+  checkedIn: t.checkIns.length > 0,
+  checkedInAt: t.checkIns[0] ? t.checkIns[0].checkedInAt.toISOString() : null,
+});
 
 const rsvpForDay = (invite: RosterInvite): RsvpForDay => {
   if (invite.status === 'PENDING') return 'NO_RESPONSE';
@@ -192,6 +205,7 @@ export const checkInService = {
     const { day } = await loadEventAndDay(eventId, dayId, requestingRole, tenantId);
     const invites = await checkInRepository.findRoster(eventId, dayId);
     const guests = sortForDoor(onePerGuest(invites).map(toRow));
+    const tickets = (await findRosterTickets(eventId, dayId)).map(toTicketRow);
     // The day's own venue — the venue belongs to the day, and a door screen
     // for a multi-venue event should say which door it is.
     return {
@@ -199,6 +213,8 @@ export const checkInService = {
       day: { id: day.id, label: day.label, date: day.date, ...rosterVenue(day) },
       counts: countRows(guests),
       guests,
+      tickets,
+      ticketCounts: { valid: tickets.length, arrived: tickets.filter((t) => t.checkedIn).length },
     };
   },
 
@@ -221,8 +237,23 @@ export const checkInService = {
 
     const hasGuestId = typeof input?.guestId === 'string' && input.guestId.length > 0;
     const hasToken = typeof input?.inviteToken === 'string' && input.inviteToken.length > 0;
-    if (hasGuestId === hasToken) {
-      throw new HttpError(400, 'Provide exactly one of guestId or inviteToken.');
+    const hasTicket = typeof input?.ticketId === 'string' && input.ticketId.length > 0;
+    if (Number(hasGuestId) + Number(hasToken) + Number(hasTicket) !== 1) {
+      throw new HttpError(400, 'Provide exactly one of guestId, inviteToken or ticketId.');
+    }
+
+    // A ticket from the door list (ticket sales Round B): the same row a
+    // scan records, so the two always agree.
+    if (hasTicket) {
+      const ticket = await findTicket(input.ticketId as string);
+      if (!ticket || ticket.eventId !== eventId) throw new HttpError(404, 'Ticket not found');
+      if (!ticketAdmits(ticket)) throw new HttpError(422, 'This ticket has been cancelled.', 'TICKET_CANCELLED');
+      if (!ticketAdmitsDay(ticket.item, dayId)) {
+        throw new HttpError(422, `Ticket ${ticket.number} isn't for ${day.label}, so it can't be checked in for that day.`, 'TICKET_WRONG_DAY');
+      }
+      const recorded = await recordTicketArrival(ticket.id, dayId, userId);
+      const row = (await findRosterTickets(eventId, dayId)).find((t) => t.id === ticket.id)!;
+      return { created: recorded.created, guest: null, ticket: toTicketRow(row) };
     }
 
     let guestId = input.guestId as string;
@@ -238,10 +269,27 @@ export const checkInService = {
       if (!guest) throw new HttpError(404, 'Guest not found');
       throw new HttpError(422, `${displayName(guest)} isn't invited to ${day.label}, so they can't be checked in for that day.`);
     }
-    return { created: recorded.created, guest: toRow(recorded.invite) };
+    return { created: recorded.created, guest: toRow(recorded.invite), ticket: null };
   },
 
   recordArrival,
+
+  // Undo a ticket's check-in for the day (a wrong tap or scan): idempotent.
+  undoTicket: async (
+    eventId: string,
+    dayId: string,
+    ticketId: string,
+    requestingRole: PlatformRole,
+    tenantId: string | null
+  ): Promise<UndoTicketCheckInResult> => {
+    const { event } = await loadEventAndDay(eventId, dayId, requestingRole, tenantId);
+    assertCheckInOpen(event.status);
+    const ticket = await findTicket(ticketId);
+    if (!ticket || ticket.eventId !== eventId) throw new HttpError(404, 'Ticket not found');
+    const removed = await undoTicketArrival(ticketId, dayId);
+    const row = (await findRosterTickets(eventId, dayId)).find((t) => t.id === ticketId);
+    return { removed, ticket: row ? toTicketRow(row) : null };
+  },
 
   // Undo a wrong tap. Attendance-style hard delete: the row is removed
   // outright, there is nothing to restore. Idempotent like check-in —

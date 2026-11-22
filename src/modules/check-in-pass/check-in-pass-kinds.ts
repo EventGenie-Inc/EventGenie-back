@@ -1,4 +1,5 @@
 import { type CheckInPassKind } from '@prisma/client';
+import { findTicket, ticketAdmits, ticketAdmitsDay, ticketDetail, type TicketForCheckIn } from '../check-in/ticket-check-in.js';
 import { checkInPassRepository, type PassRow, type RsvpParty } from './check-in-pass.repository.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
@@ -113,6 +114,28 @@ const rsvpRules: PassKindRules = {
   },
 };
 
-export const PASS_KIND_RULES: Record<CheckInPassKind, PassKindRules> = {
-  RSVP: rsvpRules,
+// TICKET (ticket sales Round B): never a CheckInPass row. The payload names
+// the IssuedTicket itself; it admits its buyer's ticket, once on each venue
+// day its type admitted, while the ticket is VALID and its order confirmed.
+export interface TicketKindRules {
+  // The ticket a payload names (whatever its state), or null if none.
+  resolveTicket(ticketId: string): Promise<TicketForCheckIn | null>;
+  // Whether it admits anyone now (VALID, order confirmed).
+  admits(ticket: TicketForCheckIn): boolean;
+  // Whether it admits someone on this day.
+  admitsDay(ticket: TicketForCheckIn, dayId: string): boolean;
+  // What the door person reads: the buyer, "Ticket 2 of 3 · General".
+  holder(ticket: TicketForCheckIn): { name: string; detail: string };
+}
+
+const ticketRules: TicketKindRules = {
+  resolveTicket: findTicket,
+  admits: ticketAdmits,
+  admitsDay: (ticket, dayId) => ticketAdmitsDay(ticket.item, dayId),
+  holder: (ticket) => ({ name: ticket.order.buyerName, detail: ticketDetail(ticket) }),
 };
+
+export const PASS_KIND_RULES = {
+  RSVP: rsvpRules,
+  TICKET: ticketRules,
+} satisfies Record<CheckInPassKind, PassKindRules | TicketKindRules>;

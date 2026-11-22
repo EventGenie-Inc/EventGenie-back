@@ -165,7 +165,9 @@ describe('ticketing off — guests and event creation', () => {
     vi.stubEnv('FEATURES_DISABLED', '');
     const on = await rsvpService.validate(invite.token);
     expect(on.invite.event.ticketing).toBe('PAID');
-    expect(on.invite.event.tickets).toHaveLength(1);
+    // An invitation offers no tickets since ticket sales Round B (the
+    // invitation purchase path is retired), whatever the flag.
+    expect(on.invite.event.tickets).toEqual([]);
 
     vi.stubEnv('FEATURES_DISABLED', 'ticketing');
     const off = await rsvpService.validate(invite.token);

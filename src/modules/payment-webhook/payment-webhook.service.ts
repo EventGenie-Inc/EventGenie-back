@@ -7,6 +7,7 @@ import { paymentWebhookRepository } from './payment-webhook.repository.js';
 import { isDuplicateWebhookEvent } from './payment-webhook-idempotency.util.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { ticketPurchaseService } from '../ticket-purchase/ticket-purchase.service.js';
+import { ticketOrderConfirmService } from '../ticket-order/ticket-order-confirm.service.js';
 import { subscriptionService } from '../subscription/subscription.service.js';
 import { eventPassService } from '../event-pass/event-pass.service.js';
 import { paymentAdjustmentService, REFUND_EVENTS, DISPUTE_EVENTS } from '../payment-adjustment/payment-adjustment.service.js';
@@ -80,7 +81,12 @@ const dispatchToFeatureHandler = async (ctx: WebhookContext): Promise<HandlerRes
   if (event === 'charge.success') {
     const merchantReference = extractMerchantReference(data);
     if (merchantReference) {
-      // Ticketing first, unchanged by release 1.
+      // A ticket order (ticket sales Round B): any of its references, the
+      // current one or an earlier attempt's.
+      const order = await ticketOrderConfirmService.confirmWithinTransaction(ctx, merchantReference);
+      if (order.outcome !== 'not_found') return { claimed: true };
+
+      // The retired invitation purchase path: its references still land.
       const ticket = await ticketPurchaseService.confirmPaymentWithinTransaction(tx, merchantReference, payload);
       if (ticket.outcome !== 'not_found') return { claimed: true };
 
@@ -98,6 +104,9 @@ const dispatchToFeatureHandler = async (ctx: WebhookContext): Promise<HandlerRes
   if (event === 'charge.failed') {
     const merchantReference = extractMerchantReference(data);
     if (merchantReference) {
+      const order = await ticketOrderConfirmService.failWithinTransaction(ctx, merchantReference);
+      if (order.outcome !== 'not_found') return { claimed: true };
+
       const ticket = await ticketPurchaseService.failPaymentWithinTransaction(tx, merchantReference, payload);
       if (ticket.outcome !== 'not_found') return { claimed: true };
 

@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../../src/app.js';
 import prisma from '../../src/shared/prisma/prisma.client.js';
 import { createTenant, createActor, headersFor, deleteTenantsDeep, type Actor } from '../helpers/team.js';
+import { sentWebhookKeys } from '../helpers/paystack-webhook.js';
 
 // ─────────────────────────────────────────
 //  Ticket sales Round A fixtures: an organisation (Elevate unless asked)
@@ -18,7 +19,16 @@ export const cleanupTicketSalesFixtures = async (): Promise<void> => {
   const ids = tenantIds.splice(0);
   if (!ids.length) return;
   const events = await prisma.event.findMany({ where: { tenantId: { in: ids } }, select: { id: true } });
-  await prisma.checkInPass.deleteMany({ where: { eventId: { in: events.map((e) => e.id) } } });
+  const eventIds = events.map((e) => e.id);
+  // Round B: orders and what they made, then the money rows.
+  const orders = await prisma.ticketOrder.findMany({ where: { eventId: { in: eventIds } }, select: { id: true, payments: { select: { reference: true } } } });
+  const references = orders.flatMap((o) => o.payments.map((p) => p.reference));
+  await prisma.issuedTicket.deleteMany({ where: { eventId: { in: eventIds } } });
+  await prisma.ticketOrder.deleteMany({ where: { eventId: { in: eventIds } } });
+  await prisma.paymentLedgerEntry.deleteMany({ where: { OR: [{ tenantId: { in: ids } }, { eventId: { in: eventIds } }, { paystackReference: { in: references } }] } });
+  await prisma.paymentMismatch.deleteMany({ where: { OR: [{ tenantId: { in: ids } }, { paystackReference: { in: references } }] } });
+  await prisma.paystackWebhookEvent.deleteMany({ where: { dedupeKey: { in: sentWebhookKeys.splice(0) } } });
+  await prisma.checkInPass.deleteMany({ where: { eventId: { in: eventIds } } });
   await prisma.eventPass.deleteMany({ where: { eventId: { in: events.map((e) => e.id) } } });
   await prisma.adminAuditEntry.deleteMany({ where: { tenantId: { in: ids } } });
   await prisma.tenant.updateMany({ where: { id: { in: ids } }, data: { customTierId: null } });

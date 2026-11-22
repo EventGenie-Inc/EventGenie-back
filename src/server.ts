@@ -19,6 +19,7 @@ import { assertPaystackKeyMode } from './shared/payments/paystack.client.js';
 import { assertCheckInQrSecretConfigured } from './modules/check-in-pass/check-in-pass-token.util.js';
 import { startPaymentMaintenance } from './modules/payment-reconciliation/payment-maintenance.service.js';
 import { startPayoutAccountWorker } from './modules/payment-account/payment-account.worker.js';
+import { startTicketOrderWorker } from './modules/ticket-order/ticket-order.worker.js';
 
 // ─────────────────────────────────────────
 //  PORT
@@ -75,6 +76,7 @@ const start = async (): Promise<void> => {
     startEventGrantSweeps();
     startPaymentMaintenance();
     startPayoutAccountWorker();
+    startTicketOrderWorker();
   } catch (error) {
     console.error('✘  Failed to start server:', error);
     reportError(error);

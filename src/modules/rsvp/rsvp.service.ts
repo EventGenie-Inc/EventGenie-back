@@ -9,6 +9,7 @@ import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
 import { assertAnswersValid, assertAnswersKnown, answerRows, isValidRsvpResponseShape, answerableFields, withAnswerValues } from './rsvp-answers.util.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { resolveDocumentLimits } from '../guest-document/guest-document-allowance.util.js';
+import { ticketPurchaseRetired } from '../ticket-purchase/ticket-purchase-retired.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
@@ -385,7 +386,8 @@ export const rsvpService = {
           })),
           // Only non-archived, isAvailable tickets — see
           // invite.repository.ts's findByToken.
-          tickets: (ticketingOn ? invite.event.tickets : []).map((t) => ({
+          // None since ticket sales Round B: an invitation sells nothing.
+          tickets: ([] as typeof invite.event.tickets).map((t) => ({
             id: t.id,
             name: t.name,
             price: t.price,
@@ -448,6 +450,9 @@ export const rsvpService = {
     if (data.ticketId && !isFeatureEnabled('ticketing')) {
       throw new HttpError(422, "Tickets aren't available for this event. Please refresh the page and reply again.");
     }
+    // Buying a ticket through the invitation is retired (ticket sales
+    // Round B): only public events sell tickets, from their own page.
+    if (data.ticketId) throw ticketPurchaseRetired();
 
     const documentFieldsOn = isFeatureEnabled('documentFields');
     const result = await prisma.$transaction(async (tx) => {

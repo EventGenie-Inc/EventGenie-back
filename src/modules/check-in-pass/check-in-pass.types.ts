@@ -37,7 +37,10 @@ export type ScanRefusalReason =
   | 'WRONG_EVENT'
   | 'WRONG_DAY'
   | 'EVENT_CANCELLED'
-  | 'NOT_ALLOWED';
+  | 'NOT_ALLOWED'
+  // Ticket sales Round B: a ticket cancelled by the organiser, refunded, or
+  // whose chargeback was lost.
+  | 'TICKET_CANCELLED';
 
 export interface ScanResult {
   result: ScanColour;
@@ -49,7 +52,20 @@ export interface ScanResult {
   // GREEN, AMBER and WRONG_DAY; null otherwise. guestId is the person's own
   // (the plus-one's, for a plus-one): what undo takes
   // (DELETE /api/events/:eventId/check-in/days/:dayId/guests/:guestId).
-  person: { guestId: string; name: string; isPlusOne: boolean; guestOf: string | null } | null;
+  //
+  // A ticket (ticket sales Round B): guestId null, name the buyer's,
+  // detail "Ticket 2 of 3 · General", and the ticket's own id and number
+  // (undo: DELETE …/check-in/days/:dayId/tickets/:ticketId). For a guest,
+  // detail, ticketId and ticketNumber are null.
+  person: {
+    guestId: string | null;
+    name: string;
+    isPlusOne: boolean;
+    guestOf: string | null;
+    detail: string | null;
+    ticketId: string | null;
+    ticketNumber: string | null;
+  } | null;
   // GREEN and AMBER: the day checked in for. WRONG_DAY: the day the code is
   // for. null otherwise.
   day: { id: string; label: string; date: Date } | null;

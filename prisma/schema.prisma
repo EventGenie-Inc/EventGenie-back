@@ -772,6 +772,8 @@ model Event {
   grantRecipient           EventGrantRecipient?
   // As a template: the grants made from it.
   grantsAsSource           EventGrant[]              @relation("EventGrantSource")
+  ticketOrders             TicketOrder[]
+  issuedTickets            IssuedTicket[]
 }
 
 // ─────────────────────────────────────────
@@ -831,6 +833,7 @@ model EventDay {
 
   @@unique([eventId, label])
   ticketAdmissions    TicketAdmittedDay[]
+  ticketCheckIns      TicketCheckIn[]
 }
 
 // ─────────────────────────────────────────
@@ -1062,6 +1065,10 @@ model CheckIn {
 
 enum CheckInPassKind {
   RSVP
+  // Ticket sales Round B: a ticket's QR (EVT1.<issuedTicketId>.<sig>). Never
+  // a CheckInPass row: the IssuedTicket itself is the pass (one QR per
+  // ticket, valid once on each admitted venue day; TicketCheckIn).
+  TICKET
 }
 
 enum CheckInPassStatus {
@@ -1496,6 +1503,8 @@ model Ticket {
   event        Event               @relation(fields: [eventId], references: [id])
   purchases    TicketPurchase[]
   admittedDays TicketAdmittedDay[]
+  orderItems   TicketOrderItem[]
+  issuedTickets IssuedTicket[]
 }
 
 enum TicketTypeStatus {
@@ -2983,4 +2992,193 @@ model PayoutAccountChange {
 
   @@index([tenantId, createdAt])
   @@index([status, effectiveAt])
+}
+
+// ─────────────────────────────────────────
+//  TICKET ORDERS (ticket sales Round B, 2026-11; STEERING "Ticket sales")
+//
+//  A guest's purchase of tickets for a paid public event: no sign-in, one
+//  order per checkout, several ticket types. Money in integer cents, every
+//  figure snapshotted at checkout from Round A's fee calculator, with the
+//  organisation's live payout subaccount and the Terms version accepted.
+//  Never deleted.
+//
+//  status: PENDING       stock held (holdExpiresAt), waiting for Paystack.
+//          PAID          confirmed by the webhook or a verify: tickets issued.
+//          FAILED        the latest attempt failed or was abandoned; a late
+//                        success on any of its references still goes through.
+//          EXPIRED       unpaid when its hold ran out; same.
+//          UNDER_REVIEW  paid but held for a person: the amount, currency or
+//                        split didn't match (reviewReason PAYMENT_MISMATCH: no
+//                        tickets), or a chargeback is open (DISPUTE: the
+//                        tickets stay valid).
+//          REFUNDED      refunded in full (refund.processed): tickets voided.
+//          REVERSED      chargeback lost: tickets voided.
+// ─────────────────────────────────────────
+
+enum TicketOrderStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  UNDER_REVIEW
+  REFUNDED
+  REVERSED
+}
+
+enum TicketOrderPaymentStatus {
+  INITIATED
+  SUCCEEDED
+  FAILED
+  // A success on an order already paid through another reference: nothing
+  // issued, PAYMENT_DUPLICATE for the super admin.
+  DUPLICATE
+  // A success whose amount, currency or split didn't match the snapshot.
+  MISMATCH
+}
+
+enum IssuedTicketStatus {
+  VALID
+  // By the organiser (they handle any refund themselves).
+  CANCELLED
+  // Refunded in full through Paystack (refund.processed).
+  REFUNDED
+  // Chargeback lost.
+  REVERSED
+}
+
+model TicketOrder {
+  id                    String            @id @default(cuid())
+  eventId               String
+  tenantId              String
+  status                TicketOrderStatus @default(PENDING)
+  // Why it is UNDER_REVIEW: PAYMENT_MISMATCH or DISPUTE.
+  reviewReason          String?
+  buyerName             String
+  buyerEmail            String
+  buyerPhone            String?
+  // The client's key for this checkout: the same key again is the same
+  // checkout, never a second hold or charge.
+  idempotencyKey        String
+  // sha256 of the event, the normalised email and the items: the same buyer
+  // asking for the same tickets while this is pending gets this checkout.
+  requestFingerprint    String
+  // The fee calculator's breakdown for the whole order, at checkout.
+  subtotalCents         Int
+  commissionCents       Int
+  platformFixedFeeCents Int
+  processingFeeCents    Int
+  totalCents            Int
+  transactionChargeCents Int
+  currency              String            @default("ZAR")
+  // The organisation's live payout subaccount at checkout: the split.
+  subaccountCode        String
+  termsVersion          String
+  // The stock this order holds lapses at holdExpiresAt; holdReleasedAt is
+  // set once it has been given back (expired, failed, or turned into sales).
+  holdExpiresAt         DateTime
+  holdReleasedAt        DateTime?
+  paidAt                DateTime?
+  paidReference         String?
+  paystackTransactionId String?
+  // Paystack's actual fee for the paid payment, when the event gives it.
+  actualFeeCents        Int?
+  // Paid after its hold lapsed, when the type had sold out meanwhile.
+  oversold              Boolean           @default(false)
+  // Chargeback: OPEN, WON or LOST.
+  disputeStatus         String?
+  confirmationEmailClaimedAt DateTime?
+  confirmationEmailSentAt    DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  event    Event                @relation(fields: [eventId], references: [id])
+  items    TicketOrderItem[]
+  payments TicketOrderPayment[]
+  tickets  IssuedTicket[]
+
+  @@unique([eventId, idempotencyKey])
+  @@index([eventId, status])
+  @@index([requestFingerprint, status])
+  @@index([status, holdExpiresAt])
+}
+
+// One ticket type in an order, as it was at checkout.
+model TicketOrderItem {
+  id             String   @id @default(cuid())
+  orderId        String
+  ticketTypeId   String
+  typeName       String
+  quantity       Int
+  unitPriceCents Int
+  // The days the type admitted at checkout (its days lock once sold).
+  admitsAllDays  Boolean
+  admittedDayIds String[] @default([])
+  createdAt      DateTime @default(now())
+
+  order      TicketOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ticketType Ticket      @relation(fields: [ticketTypeId], references: [id])
+
+  @@index([orderId])
+  @@index([ticketTypeId])
+}
+
+// Every Paystack attempt for an order, its reference kept forever: a retry
+// adds a row, so a late success on an earlier reference is still found.
+model TicketOrderPayment {
+  id               String                   @id @default(cuid())
+  orderId          String
+  reference        String                   @unique
+  authorizationUrl String?
+  status           TicketOrderPaymentStatus @default(INITIATED)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  order TicketOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+// One admission: a ticket bought in a paid order. It is its own check-in
+// pass (CheckInPassKind TICKET): one QR, valid once on each admitted venue
+// day. Not named: the buyer forwards it.
+model IssuedTicket {
+  id                String             @id @default(cuid())
+  orderId           String
+  eventId           String
+  ticketTypeId      String
+  orderItemId       String
+  // Short, human-readable, unique: "TK-7QK4-M2XP".
+  number            String             @unique
+  // 1..n within its order ("Ticket 2 of 3").
+  indexInOrder      Int
+  status            IssuedTicketStatus @default(VALID)
+  voidedAt          DateTime?
+  cancelReason      String?
+  cancelledByUserId String?
+  createdAt         DateTime           @default(now())
+
+  order      TicketOrder     @relation(fields: [orderId], references: [id])
+  event      Event           @relation(fields: [eventId], references: [id])
+  ticketType Ticket          @relation(fields: [ticketTypeId], references: [id])
+  checkIns   TicketCheckIn[]
+
+  @@index([orderId])
+  @@index([eventId, status])
+}
+
+// A ticket checked in on a day: one per ticket per day (the unique pair), by
+// a scan or the guest list alike; undo deletes it.
+model TicketCheckIn {
+  id             String   @id @default(cuid())
+  issuedTicketId String
+  eventDayId     String
+  checkedInAt    DateTime @default(now())
+  checkedBy      String
+
+  ticket   IssuedTicket @relation(fields: [issuedTicketId], references: [id], onDelete: Cascade)
+  eventDay EventDay     @relation(fields: [eventDayId], references: [id], onDelete: Cascade)
+
+  @@unique([issuedTicketId, eventDayId])
+  @@index([eventDayId])
 }

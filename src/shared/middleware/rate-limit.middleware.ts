@@ -1029,3 +1029,67 @@ export const payoutCancelLinkLimiter = rateLimit({
     message: 'Too many attempts from this network. Please wait a few minutes and try again.',
   },
 });
+
+// ─────────────────────────────────────────
+//  RATE LIMITERS — TICKET CHECKOUT AND ORDERS (ticket sales Round B; public)
+//
+//  Checkout: per IP (a box office's queue on one Wi-Fi: generous, counting
+//  every request) and per buyer email (the SHA-256 of the normalised
+//  address, never the address: one person can't start a flood of holds).
+//  The order status, retry: per order token (its SHA-256), with an IP
+//  backstop counting failures only (a script trying made-up tokens).
+// ─────────────────────────────────────────
+export const TICKET_CHECKOUTS_PER_IP_PER_15_MIN = 300;
+export const TICKET_CHECKOUTS_PER_EMAIL_PER_HOUR = 10;
+export const TICKET_ORDER_VIEWS_PER_ORDER_PER_5_MIN = 60;
+
+const buyerEmailOf = (body: unknown): string | null => {
+  const buyer = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['buyer'] : undefined;
+  const raw = typeof buyer === 'object' && buyer !== null ? (buyer as Record<string, unknown>)['email'] : undefined;
+  return typeof raw === 'string' && raw.trim() ? normalizeEmail(raw) : null;
+};
+
+export const ticketCheckoutIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: TICKET_CHECKOUTS_PER_IP_PER_15_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `ticket-checkout-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: { status: 'error', message: 'Too many ticket orders from this network. Please wait a few minutes and try again.', code: 'TICKET_ORDER_RATE_LIMITED' },
+});
+
+export const ticketCheckoutEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: TICKET_CHECKOUTS_PER_EMAIL_PER_HOUR,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const email = buyerEmailOf(req.body);
+    return email ? `ticket-checkout-email:${hashToken(email)}` : `ticket-checkout-email-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+  },
+  message: { status: 'error', message: 'Too many ticket orders for this email address. Please wait a while and try again.', code: 'TICKET_ORDER_RATE_LIMITED' },
+});
+
+export const ticketOrderTokenLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: TICKET_ORDER_VIEWS_PER_ORDER_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const token = typeof req.body === 'object' && req.body !== null ? (req.body as Record<string, unknown>)['token'] : undefined;
+    return typeof token === 'string' && token
+      ? `ticket-order:${hashToken(token)}`
+      : `ticket-order-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+  },
+  message: { status: 'error', message: 'Too many requests for this order. Please wait a few minutes and try again.', code: 'TICKET_ORDER_RATE_LIMITED' },
+});
+
+export const ticketOrderIpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `ticket-order-fail-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: { status: 'error', message: 'Too many requests from this network. Please wait a few minutes and try again.', code: 'TICKET_ORDER_RATE_LIMITED' },
+});

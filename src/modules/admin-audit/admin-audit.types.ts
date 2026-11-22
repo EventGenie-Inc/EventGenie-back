@@ -47,6 +47,10 @@ export const ADMIN_AUDIT_ACTIONS = {
   // An unused subaccount deactivated at Paystack: a cancelled or failed
   // change's own, or the one a change replaced (details.reason).
   PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED: 'PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED',
+  // Ticket sales Round B: an organiser cancelled tickets (details: the
+  // event, the order, each ticket and whether it had been checked in, the
+  // reason). No money moved.
+  TICKETS_CANCELLED: 'TICKETS_CANCELLED',
   // Any other super admin write, recorded by admin-audit.middleware.ts from
   // the request itself (method, path, which fields were sent).
   API_WRITE: 'API_WRITE',

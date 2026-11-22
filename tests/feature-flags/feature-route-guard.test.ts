@@ -120,15 +120,20 @@ describe('ticketing switched off — payout bank details', () => {
 });
 
 describe('ticketing switched off — guest ticket routes (public)', () => {
-  it('flag on: /rsvp/ticket-quote is a real route (400 on an empty body, not 404)', async () => {
-    vi.stubEnv('FEATURES_DISABLED', '');
-    const res = await request(app).post('/api/rsvp/ticket-quote').send({});
-    expect(res.status).toBe(400);
+  // The invitation's ticket quote is retired (ticket sales Round B): 410
+  // whatever the flag. Public checkout is /api/ticket-orders, behind it.
+  it('/rsvp/ticket-quote is retired: 410 with the flag on or off', async () => {
+    for (const flags of ['', 'ticketing']) {
+      vi.stubEnv('FEATURES_DISABLED', flags);
+      const res = await request(app).post('/api/rsvp/ticket-quote').send({});
+      expect(res.status).toBe(410);
+      expect(res.body.code).toBe('TICKET_PURCHASE_RETIRED');
+    }
   }, 30000);
 
-  it('flag off: /rsvp/ticket-quote 404s', async () => {
+  it('flag off: /api/ticket-orders 404s', async () => {
     vi.stubEnv('FEATURES_DISABLED', 'ticketing');
-    const res = await request(app).post('/api/rsvp/ticket-quote').send({});
+    const res = await request(app).post('/api/ticket-orders/checkout').send({});
     expect(res.status).toBe(404);
     expect(res.body).toEqual(NOT_FOUND);
   }, 30000);

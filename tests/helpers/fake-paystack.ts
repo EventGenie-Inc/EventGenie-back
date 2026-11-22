@@ -45,6 +45,14 @@ export interface FakeTransaction {
   created_at: string;
   customer: { customer_code: string; email: string };
   metadata?: unknown;
+  // A split payment (ticket sales): as initialize was asked.
+  subaccount?: string | null;
+  transaction_charge?: number | null;
+  bearer?: string | null;
+  channels?: string[] | null;
+  // Paystack's fee, as it reports it on the payment: by default each part
+  // rounded up (2.9% + R1, then 15% VAT), as Paystack charges a local card.
+  fees?: number | null;
 }
 
 export interface FakeSubscription {
@@ -132,13 +140,19 @@ export const fakePaystack = {
 
   // The payer completes the checkout for `reference`. Returns the webhook
   // data Paystack would send for charge.success.
-  pay(reference: string, overrides: Partial<{ amount: number; currency: string; paidAt: string }> = {}): Record<string, unknown> {
+  pay(
+    reference: string,
+    overrides: Partial<{ amount: number; currency: string; paidAt: string; fees: number; subaccount: string | null; transactionCharge: number }> = {}
+  ): Record<string, unknown> {
     const tx = this.transactions.get(reference);
     if (!tx) throw new Error(`fake Paystack: no transaction ${reference}`);
     tx.status = 'success';
     tx.paid_at = overrides.paidAt ?? new Date().toISOString();
     if (overrides.amount !== undefined) tx.amount = overrides.amount;
     if (overrides.currency !== undefined) tx.currency = overrides.currency;
+    if (overrides.fees !== undefined) tx.fees = overrides.fees;
+    if (overrides.subaccount !== undefined) tx.subaccount = overrides.subaccount;
+    if (overrides.transactionCharge !== undefined) tx.transaction_charge = overrides.transactionCharge;
     if (tx.plan) {
       // A plan checkout creates the subscription, as Paystack does.
       this.addSubscription({ email: tx.email, plan_code: tx.plan, plan_amount: tx.amount });
@@ -168,6 +182,19 @@ export const fakePaystack = {
       customer: tx.customer,
       ...(tx.plan && { plan: { plan_code: tx.plan, amount: tx.amount } }),
       authorization: { authorization_code: 'AUTH_fake', card_type: 'visa', last4: '4081', exp_month: '12', exp_year: '2030' },
+      ...(tx.metadata !== undefined && { metadata: tx.metadata }),
+      ...(tx.status === 'success' && { fees: tx.fees ?? fakePaystackFee(tx.amount) }),
+      // A split: the subaccount, and how the payment was divided (the
+      // subaccount gets amount − transaction_charge with bearer "account").
+      ...(tx.subaccount && {
+        subaccount: { subaccount_code: tx.subaccount },
+        fees_split: {
+          paystack: tx.fees ?? fakePaystackFee(tx.amount),
+          integration: (tx.transaction_charge ?? 0) - (tx.fees ?? fakePaystackFee(tx.amount)),
+          subaccount: tx.amount - (tx.transaction_charge ?? 0),
+          params: { bearer: tx.bearer ?? 'account', transaction_charge: String(tx.transaction_charge ?? 0), percentage_charge: '0' },
+        },
+      }),
     };
   },
 
@@ -225,6 +252,12 @@ export const fakePaystack = {
   },
 };
 
+// Paystack's local card fee as it charges it: each part rounded up.
+export const fakePaystackFee = (amount: number): number => {
+  const percent = Math.ceil((amount * 290) / 10_000);
+  return percent + 100 + Math.ceil(((percent + 100) * 15) / 100);
+};
+
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const ok = (data: unknown, meta?: unknown) => json(200, { status: true, message: 'ok', data, ...(meta !== undefined && { meta }) });
@@ -269,6 +302,11 @@ const handle = (call: FakeCall): Response => {
       paid_at: null,
       created_at: new Date().toISOString(),
       customer: { customer_code: f.customerCodeFor(email), email },
+      metadata: body?.['metadata'],
+      subaccount: typeof body?.['subaccount'] === 'string' ? (body['subaccount'] as string) : null,
+      transaction_charge: typeof body?.['transaction_charge'] === 'number' ? (body['transaction_charge'] as number) : null,
+      bearer: typeof body?.['bearer'] === 'string' ? (body['bearer'] as string) : null,
+      channels: Array.isArray(body?.['channels']) ? (body['channels'] as string[]) : null,
     });
     return ok({ authorization_url: `https://checkout.paystack.test/${reference}`, access_code: `ac_${reference}`, reference });
   }

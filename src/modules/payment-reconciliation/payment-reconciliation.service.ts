@@ -76,6 +76,27 @@ export const paymentReconciliationService = {
         continue;
       }
       matchedLedgerIds.add(entry.id);
+      // A ticket order (ticket sales Round B): e-velope's net, its charge
+      // less the commission less Paystack's fee, below zero.
+      if (entry.type === 'TICKET_PAYMENT_SUCCEEDED' && entry.relatedType === 'TicketOrder' && t.feesCents !== null) {
+        const snapshot = (entry.payload ?? {}) as { transactionChargeCents?: unknown; commissionCents?: unknown };
+        if (typeof snapshot.transactionChargeCents === 'number' && typeof snapshot.commissionCents === 'number') {
+          const netCents = snapshot.transactionChargeCents - snapshot.commissionCents - t.feesCents;
+          if (netCents < 0) {
+            mismatches.push({
+              source: 'RECONCILIATION',
+              kind: 'NEGATIVE_NET',
+              paystackReference: t.reference,
+              paystackTransactionId: t.id,
+              tenantId: entry.tenantId,
+              eventId: entry.eventId,
+              actualAmountCents: t.feesCents,
+              currency: t.currency,
+              details: { ledgerEntryId: entry.id, relatedId: entry.relatedId, netCents, transactionChargeCents: snapshot.transactionChargeCents, commissionCents: snapshot.commissionCents },
+            });
+          }
+        }
+      }
       if (entry.amountCents !== t.amountCents) {
         mismatches.push({
           source: 'RECONCILIATION',
