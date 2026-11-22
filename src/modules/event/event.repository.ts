@@ -188,8 +188,9 @@ export const eventRepository = {
   // creating a new one — so this never double-counts a guest who RSVP'd.
   // Plus-ones (rsvp.service.ts) keep the same 1:1 invariant — each gets
   // its own Guest+Invite pair, created already ACCEPTED — so they're
-  // included here deliberately: they occupy a seat, so they count toward
-  // the venue-capacity indicator this feeds (acceptedGuestCount).
+  // included here deliberately: they occupy a seat (acceptedGuestCount).
+  // Venue capacity is per day now: the same rule, per day, is
+  // eventDayRepository.countAttendingByDay (day-capacity.util.ts).
   // A registration awaiting approval isn't accepted by the organiser yet,
   // so it is counted apart (countPendingApprovalForEvent), never here.
   countAcceptedInvitesForEvent: (eventId: string) =>

@@ -11,6 +11,8 @@ import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from '
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
 import { assertValidCapacity } from './event-capacity.util.js';
+import { eventDayRepository } from '../event-day/event-day.repository.js';
+import { capacityWarningsFor, countAttendingForDays, logLegacyCapacity, warningsFromCounts } from '../event-day/day-capacity.util.js';
 import { assertValidHostName, assertHostNamePresent, assertHostNamePresentAfterEdit } from './event-host-name.util.js';
 import { acceptCover, applyCoverChange, planCoverChange, type CoverChange } from './event-cover-image.util.js';
 import prisma from '../../shared/prisma/prisma.client.js';
@@ -263,9 +265,19 @@ export const eventService = {
     const guestLimitInfo = await resolveGuestLimit(event);
     const currentGuestCount = await guestRepository.countForEvent(id);
     const documentStorage = isFeatureEnabled('documentFields') ? await resolveEventDocumentStorage(event) : undefined;
+    // Per day: how many people attend it (day-capacity.util.ts's rule, the
+    // same one as acceptedGuestCount), against its own capacity.
+    const attendingByDay = await countAttendingForDays(event.eventDays.map((d) => d.id));
     return {
       ...event,
+      eventDays: event.eventDays.map((d) => ({ ...d, attendingCount: attendingByDay.get(d.id) ?? 0 })),
+      // Every live day with more people attending than its venue capacity
+      // (informational: nothing is refused for it). Empty when none is.
+      capacityWarnings: warningsFromCounts(event.eventDays, attendingByDay),
       ...(documentStorage && { documentStorage }),
+      // Event-wide, as before. Venue capacity is per day now: compare each
+      // day's attendingCount with its capacity, never this with the
+      // deprecated event-level capacity.
       acceptedGuestCount,
       // Registrations awaiting approval, never in acceptedGuestCount:
       // the registrants (as the registration settings count them) and
@@ -286,6 +298,10 @@ export const eventService = {
   create: async (tenantId: string, userId: string, data: CreateEventDto) => {
     assertEventName(data.name);
     assertValidCapacity(data.capacity);
+    // Deprecated (day-capacity.util.ts). This route creates no days, so
+    // there is no venue day to apply it to: it is stored on the event
+    // column, which nothing reads; each day's capacity is set on the day.
+    if (data.capacity !== undefined && data.capacity !== null) logLegacyCapacity('POST /api/events');
     assertValidHostName(data.hostName);
     // A cover from our uploader: accepted through its StoredFile (this
     // tenant's, signed for no event or this new one) and measured by
@@ -329,18 +345,31 @@ export const eventService = {
     // Last, as in the full update: an older event with no host name gets
     // one on its next edit.
     assertHostNamePresentAfterEdit(event.hostName, data.hostName);
+    // Compatibility (day-capacity.util.ts): this route has no days, so an
+    // event-level capacity from an older frontend goes to every live venue
+    // day whose number it changes. The event column is still written, never read.
+    const legacyDayIds =
+      data.capacity !== undefined
+        ? event.eventDays.filter((d) => d.locationType !== 'ONLINE' && d.capacity !== (data.capacity ?? null)).map((d) => d.id)
+        : [];
+    if (data.capacity !== undefined) logLegacyCapacity('PUT /api/events/:id', id);
+
     // The save, the new cover attached and the replaced one requested for
     // deletion, together.
     await prisma.$transaction(async (tx) => {
       await eventRepository.update(id, userId, data, tx);
+      if (legacyDayIds.length > 0) await eventDayRepository.setCapacity(legacyDayIds, data.capacity ?? null, userId, tx);
       if (coverChange) await applyCoverChange(tx, id, coverChange);
     });
+    // A day the save took below the number already attending: saved, and
+    // warned about.
+    const capacityWarnings = legacyDayIds.length > 0 ? await capacityWarningsFor(legacyDayIds) : [];
 
     // Re-fetched through getById (not the bare update() result) so this
     // response goes through the same withEffectiveStatus presenter as
     // every other read — PUT's response must agree with a subsequent
     // GET, not show raw status while GET shows derived.
-    return eventService.getById(id, requestingRole, tenantId);
+    return { ...(await eventService.getById(id, requestingRole, tenantId)), capacityWarnings };
   },
 
   // Deleting an event archives it, and its files go (STEERING "Storage"):

@@ -35,6 +35,9 @@ export interface FullUpdatePlan {
     creates: EventDayWrite[];
     updates: { id: string; patch: EventDayPatch; relabel: boolean }[];
     archives: string[];
+    // An event-level capacity from an older frontend with no days in the
+    // request: only these saved days' capacity is written.
+    capacityOnly: { ids: string[]; capacity: number | null } | null;
   };
   tickets: { creates: CreateTicketDto[]; updates: { id: string; data: UpdateTicketDto }[]; archives: string[] };
   rsvpFields: { creates: CreateRsvpFieldDto[]; updates: { id: string; data: UpdateRsvpFieldDto }[]; archives: string[] };
@@ -84,6 +87,9 @@ export const eventFullUpdateRepository = {
         for (const day of plan.days.creates) {
           dayLabel = day.label;
           createdDayIds.push((await eventDayRepository.create(eventId, userId, day, tx)).id);
+        }
+        if (plan.days.capacityOnly) {
+          await eventDayRepository.setCapacity(plan.days.capacityOnly.ids, plan.days.capacityOnly.capacity, userId, tx);
         }
       } catch (err) {
         if (isDayLabelUniqueViolation(err)) throw new HttpError(409, duplicateDayLabelMessage(dayLabel));

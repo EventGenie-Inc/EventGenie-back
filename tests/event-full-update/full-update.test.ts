@@ -186,8 +186,16 @@ describe('a valid full update applies everything', () => {
     const day = (id: string) => days.find((d) => d.id === id)!;
     expect(day(s.days[0]!)).toMatchObject({ label: 'Ceremony', location: 'Chapel', isArchived: false });
     expect(day(s.days[0]!).date.toISOString()).toBe('2027-03-05T00:00:00.000Z');
-    // Sent with only its id: nothing about it changed, so it wasn't written.
-    expect(day(s.days[1]!).updatedAt.getTime()).toBe(before!.updatedAt.getTime());
+    // The event-level capacity with no day capacities (an older frontend's
+    // request): every venue day takes it, Day 2 too, though it was sent
+    // with only its id (day-capacity.util.ts).
+    expect([day(s.days[0]!).capacity, day(s.days[1]!).capacity, days.find((d) => d.label === 'Brunch')!.capacity]).toEqual([250, 250, 250]);
+    expect(day(s.days[1]!).updatedAt.getTime()).toBeGreaterThan(before!.updatedAt.getTime());
+    // The same save again: nothing about Day 2 changes, so it isn't written.
+    const written = day(s.days[1]!).updatedAt.getTime();
+    const again = await request(app).put(url(s.eventId)).set(headersFor(owner)).send({ event: fullEdit(s).event, days: res.body.data.eventDays.map((d: { id: string }) => ({ id: d.id })) });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect((await prisma.eventDay.findUniqueOrThrow({ where: { id: s.days[1]! } })).updatedAt.getTime()).toBe(written);
     const brunch = days.find((d) => d.label === 'Brunch')!;
     expect(brunch).toMatchObject({ isArchived: false, location: 'Cafe' });
     expect(Number(brunch.latitude)).toBeCloseTo(-33.9);
