@@ -116,7 +116,7 @@ const seed = async (): Promise<Seeded> => {
   }
   const tickets = [];
   for (const name of ['General', 'VIP']) {
-    tickets.push(await prisma.ticket.create({ data: { eventId: event.id, name, price: 100, createdBy: by, updatedBy: by } }));
+    tickets.push(await prisma.ticket.create({ data: { eventId: event.id, name, price: 100, priceCents: 10000, createdBy: by, updatedBy: by } }));
   }
   return {
     eventId: event.id,
@@ -153,7 +153,7 @@ const fullEdit = (s: Seeded) => ({
     { id: s.days[1] },
     { label: 'Brunch', date: '2027-03-06', location: 'Cafe', address: '3 Beach Rd', latitude: -33.9, longitude: 18.4 },
   ],
-  tickets: [{ id: s.tickets[0], name: 'General admission', price: 150 }, { name: 'Early bird', price: 80, totalQuantity: 20 }],
+  tickets: [{ id: s.tickets[0], name: 'General admission', priceCents: 15000, quantity: 100 }, { name: 'Early bird', priceCents: 8000, quantity: 20 }],
   rsvpFields: [{ id: s.fields[1], label: 'Song request' }, { label: 'Shirt size', fieldType: 'DROPDOWN', options: '["S","M","L"]', isRequired: true }],
   program: {
     title: 'Order of the day',
@@ -209,8 +209,10 @@ describe('a valid full update applies everything', () => {
 
     const tickets = await prisma.ticket.findMany({ where: { eventId: s.eventId } });
     expect(tickets.find((t) => t.id === s.tickets[0])).toMatchObject({ name: 'General admission', isArchived: false });
+    expect(tickets.find((t) => t.id === s.tickets[0])).toMatchObject({ priceCents: 15000, totalQuantity: 100 });
+    // The deprecated decimal column is kept in step.
     expect(Number(tickets.find((t) => t.id === s.tickets[0])!.price)).toBe(150);
-    expect(tickets.find((t) => t.name === 'Early bird')).toMatchObject({ totalQuantity: 20, isArchived: false });
+    expect(tickets.find((t) => t.name === 'Early bird')).toMatchObject({ priceCents: 8000, totalQuantity: 20, isArchived: false });
 
     const hub = await prisma.memoryHub.findUniqueOrThrow({ where: { id: s.hubId } });
     expect(hub.opensAt?.toISOString()).toBe('2027-03-05T18:00:00.000Z');

@@ -3,6 +3,8 @@ import { type CreateEventDayDto, type UpdateEventDayDto } from './event-day.type
 import { eventService } from '../event/event.service.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
+import prisma from '../../shared/prisma/prisma.client.js';
+import { assertDaysRemovable, forgetRemovedDays } from '../ticket/ticket-day-guard.util.js';
 import {
   assertNoDuplicateDayLabel,
   isDayLabelUniqueViolation,
@@ -65,8 +67,14 @@ export const eventDayService = {
     }
   },
 
+  // Refused while a ticket type with sales admits the day, or when it is
+  // the only day a type admits (ticket-day-guard.util.ts).
   archive: async (id: string, eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
-    await eventDayService.getById(id, eventId, requestingRole, tenantId);
-    return eventDayRepository.archive(id, userId);
+    const day = await eventDayService.getById(id, eventId, requestingRole, tenantId);
+    await assertDaysRemovable(eventId, [{ id: day.id, label: day.label }]);
+    return prisma.$transaction(async (tx) => {
+      await forgetRemovedDays([id], tx);
+      return eventDayRepository.archive(id, userId, tx);
+    });
   },
 };

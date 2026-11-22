@@ -9,7 +9,10 @@ import { type UpsertEventDraftDto } from './event-draft.types.js';
 import { type EventVisibility, type EventTicketing, type RsvpFieldType } from '@prisma/client';
 import { assertEventCreatable, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { resolveNewDay, findDuplicateDayLabel } from '../event-day/event-day-validation.util.js';
-import { requireTicketName, requireTicketPrice, optionalTicketQuantity } from '../ticket/ticket-validation.util.js';
+import { resolveTicketType } from '../ticket/ticket-validation.util.js';
+import { ticketRepository } from '../ticket/ticket.repository.js';
+import { assertNotCreatedPaid } from '../ticket-sales/ticket-sales-rules.util.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { requireFieldLabel, requireFieldType, resolveDraftFieldOptions, resolveFieldDescription, assertChoiceOptions } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
   requireItemTitle,
@@ -162,14 +165,28 @@ export const eventDraftService = {
     const coverImagePublicId = typeof p.coverImagePublicId === 'string' ? p.coverImagePublicId : undefined;
     const coverFileId = coverImagePublicId ? await acceptCover(tenantId, null, coverImagePublicId, p.coverImageUrl, draft.id) : null;
 
-    const tickets = (Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : []).map((ticket) => {
-      const name = requireTicketName(ticket.name);
-      return {
-        ...ticket,
-        name,
-        price: requireTicketPrice(ticket.price, name),
-        totalQuantity: optionalTicketQuantity(ticket.totalQuantity, name),
-      } as Record<string, unknown> & { name: string; price: number; totalQuantity: number | null };
+    // Ticket types (ticket sales Round A): only for a public event, through
+    // the ticket endpoints' own rules (resolveTicketType), in cents. The
+    // event is created FREE; ticket sales are switched on afterwards. A type
+    // names the days it admits by their positions in the draft's `days`
+    // (`admittedDayIndexes`, null or left out for every day), since the
+    // days have no ids yet. A private event's tickets are ignored, as they
+    // always were for a free event.
+    // Stand-in ids for the draft's days (positions), swapped for the real
+    // ids once the days are created below.
+    const dayRef = (index: number): string => `draft-day-${index}`;
+    const draftDays = days.map((d, i) => ({ id: dayRef(i), date: d.date, endTime: d.endTime }));
+    const sellsTickets = p.visibility === 'PUBLIC' && isFeatureEnabled('ticketing');
+    const tickets = (sellsTickets && Array.isArray(p.tickets) ? (p.tickets as Array<Record<string, unknown>>) : []).map((ticket, index) => {
+      const { admittedDayIndexes, ...fields } = ticket;
+      if (admittedDayIndexes !== undefined && admittedDayIndexes !== null &&
+        (!Array.isArray(admittedDayIndexes) || !admittedDayIndexes.every((i) => Number.isInteger(i)))) {
+        throw new HttpError(400, 'admittedDayIndexes must be a list of day positions, or null for every day.');
+      }
+      const admittedDayIds = Array.isArray(admittedDayIndexes)
+        ? (admittedDayIndexes as number[]).map((i) => (i >= 0 && i < days.length ? dayRef(i) : `draft-day-unknown-${i}`))
+        : null;
+      return resolveTicketType({ ...fields, admittedDayIds }, null, { eventDays: draftDays, sold: 0, nextSortOrder: index }).write;
     });
     const customFields = (Array.isArray(p.customFields) ? (p.customFields as Array<Record<string, unknown>>) : []).map((field) => {
       const label = requireFieldLabel(field.label);
@@ -217,6 +234,8 @@ export const eventDraftService = {
 
     assertPaidTicketingAvailable(p.ticketing as EventTicketing | undefined);
     assertPublicEventsAvailable(p.visibility as EventVisibility | undefined);
+    // Created FREE: ticket sales are switched on afterwards.
+    assertNotCreatedPaid(p.ticketing as EventTicketing | undefined);
     await assertEventCreatable(tenantId, {
       ...(p.visibility !== undefined && { visibility: p.visibility as EventVisibility }),
       ...(p.ticketing !== undefined && { ticketing: p.ticketing as EventTicketing }),
@@ -246,7 +265,7 @@ export const eventDraftService = {
           coverFileId,
           status: 'DRAFT',
           visibility: (p.visibility as EventVisibility) ?? 'PRIVATE',
-          ticketing: (p.ticketing as EventTicketing) ?? 'FREE',
+          ticketing: 'FREE',
           // Shown to guests as the host line; an empty one means no host line.
           hostName: typeof p.hostName === 'string' && p.hostName.trim() ? p.hostName.trim() : null,
           rsvpDeadline: rsvpDeadline ?? null,
@@ -282,24 +301,14 @@ export const eventDraftService = {
         createdDayIds.push(createdDay.id);
       }
 
-      if (p.ticketing === 'PAID') {
-        for (const ticket of tickets) {
-          await tx.ticket.create({
-            data: {
-              eventId: event.id,
-              name: ticket.name,
-              description: (ticket.description as string) ?? null,
-              price: ticket.price,
-              currency: (ticket.currency as string) ?? 'ZAR',
-              totalQuantity: ticket.totalQuantity,
-              soldCount: 0,
-              isAvailable: true,
-              isArchived: false,
-              createdBy: userId,
-              updatedBy: userId,
-            },
-          });
-        }
+      for (const ticket of tickets) {
+        await ticketRepository.create(
+          event.id,
+          userId,
+          // The draft's day positions become the days just created.
+          { ...ticket, admittedDayIds: ticket.admittedDayIds.map((ref) => createdDayIds[Number(ref.slice('draft-day-'.length))]!) },
+          tx
+        );
       }
 
       for (const [index, field] of customFields.entries()) {

@@ -275,6 +275,7 @@ export const guestDocumentService = {
     if (!event || event.visibility !== 'PUBLIC') throw new HttpError(404, INVALID_REGISTRATION_LINK_MESSAGE);
     assertRegistrationOpen(resolveRegistrationState({
       status: resolveEffectiveStatus(event),
+      ticketing: isFeatureEnabled('ticketing') ? event.ticketing : 'FREE',
       rsvpDeadline: event.rsvpDeadline,
       registrationClosesAt: event.registrationClosesAt,
       registrationCap: event.registrationCap,

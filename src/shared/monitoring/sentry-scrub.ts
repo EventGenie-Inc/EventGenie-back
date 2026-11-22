@@ -37,9 +37,10 @@ const USER_KEYS = ['id', 'role', 'tenantId'] as const;
 
 // An object key naming a secret or a contact detail: its value goes whole.
 // A file's name (a guest's uploaded document: "Proof of payment Thandi
-// Nkosi.pdf") is a contact detail too.
+// Nkosi.pdf") is a contact detail too. A bank account number (a payout
+// account, payment-account.service.ts) is never sent anywhere, whole.
 const SENSITIVE_KEY =
-  /pass(word)?|secret|token|authori[sz]ation|cookie|session|otp|oob_?code|^code$|e-?mail|phone|mobile|msisdn|api[-_]?key|signature|credential|file_?name|original_?name|^public_?id$|cloudinary_?public_?id/i;
+  /pass(word)?|secret|token|authori[sz]ation|cookie|session|otp|oob_?code|^code$|e-?mail|phone|mobile|msisdn|api[-_]?key|signature|credential|file_?name|original_?name|^public_?id$|cloudinary_?public_?id|account_?number|account_?no$|^acc_?num/i;
 
 // Path segments that are themselves credentials. Real tokens are 64 hex
 // and would be masked by the text rules anyway; these also catch a
@@ -63,6 +64,9 @@ const TEXT_RULES: Array<[RegExp, string]> = [
   [/^.*(?:is not valid JSON|in JSON at position|Unexpected token|Unexpected end of JSON).*$/gim, 'Malformed JSON (message withheld: it can quote the request body)'],
   // Absolute URLs: drop query string and fragment.
   [/(\bhttps?:\/\/[^\s?#"'<>]+)[?#][^\s"'<>]*/gi, '$1'],
+  // A bank account number written out as key=value, key: value or JSON
+  // ("account_number":"62012345678"), Paystack's name or ours.
+  [/("?(?:account_?number|accountNo)"?s*[=:]s*)("[^"]*"|'[^']*'|[^&s"',;#)}]+)/gi, `$1"${FILTERED}"`],
   // JWTs (session tokens, Firebase ID tokens).
   [/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, '[token]'],
   // Authorization header values written out.

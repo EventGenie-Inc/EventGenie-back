@@ -4,7 +4,8 @@ import { type UpdateEventDto } from '../event/event.types.js';
 import { eventDayRepository, type EventDayWrite, type EventDayPatch } from '../event-day/event-day.repository.js';
 import { isDayLabelUniqueViolation, duplicateDayLabelMessage } from '../event-day/event-day-validation.util.js';
 import { ticketRepository } from '../ticket/ticket.repository.js';
-import { type CreateTicketDto, type UpdateTicketDto } from '../ticket/ticket.types.js';
+import { type TicketTypeWrite } from '../ticket/ticket.types.js';
+import { forgetRemovedDays } from '../ticket/ticket-day-guard.util.js';
 import { rsvpFieldRepository } from '../rsvp-field/rsvp-field.repository.js';
 import { type CreateRsvpFieldDto, type UpdateRsvpFieldDto } from '../rsvp-field/rsvp-field.types.js';
 import { eventProgramRepository } from '../event-program/event-program.repository.js';
@@ -36,7 +37,7 @@ export interface FullUpdatePlan {
     updates: { id: string; patch: EventDayPatch; relabel: boolean }[];
     archives: string[];
   };
-  tickets: { creates: CreateTicketDto[]; updates: { id: string; data: UpdateTicketDto }[]; archives: string[] };
+  tickets: { creates: TicketTypeWrite[]; updates: { id: string; data: TicketTypeWrite }[]; archives: string[] };
   rsvpFields: { creates: CreateRsvpFieldDto[]; updates: { id: string; data: UpdateRsvpFieldDto }[]; archives: string[] };
   program: {
     programId: string | null;
@@ -92,6 +93,8 @@ export const eventFullUpdateRepository = {
       const dayId = (ref: DayRef | null): string | null =>
         ref === null ? null : ref.kind === 'saved' ? ref.id : createdDayIds[ref.index]!;
 
+      // A removed day is no longer any ticket type's chosen day.
+      await forgetRemovedDays(plan.days.archives, tx);
       for (const id of plan.tickets.archives) await ticketRepository.archive(id, userId, tx);
       for (const { id, data } of plan.tickets.updates) await ticketRepository.update(id, userId, data, tx);
       for (const data of plan.tickets.creates) await ticketRepository.create(eventId, userId, data, tx);

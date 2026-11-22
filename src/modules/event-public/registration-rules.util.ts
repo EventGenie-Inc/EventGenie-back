@@ -1,4 +1,4 @@
-import { type EventStatus } from '@prisma/client';
+import { type EventStatus, type EventTicketing } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { type RegistrationClosedCode, type RegistrationClosedReason, type RegistrationState } from './event-public.types.js';
@@ -22,6 +22,9 @@ import { MAX_GUESTS_PER_EVENT, exceedsGuestCeiling } from '../guest/guest-ceilin
 export const REGISTRATION_ERROR_CODES = {
   CANCELLED: 'REGISTRATION_EVENT_CANCELLED',
   CLOSED: 'REGISTRATION_CLOSED',
+  // The event sells tickets (ticket sales Round A): buying one replaces
+  // free registration.
+  TICKETS_ONLY: 'REGISTRATION_TICKETS_ONLY',
   FULL: 'REGISTRATION_FULL',
   // Room left, but not for this many people: the form marks the plus-ones.
   PARTY_TOO_LARGE: 'REGISTRATION_PARTY_TOO_LARGE',
@@ -61,6 +64,8 @@ export const REGISTRATION_FULL_MESSAGE =
 
 export interface RegistrationRulesEvent {
   status: EventStatus; // effective status (resolveEffectiveStatus)
+  // PAID: the event sells tickets, so there is no free registration.
+  ticketing: EventTicketing;
   rsvpDeadline: Date | null;
   registrationClosesAt: Date | null;
   registrationCap: number | null;
@@ -107,6 +112,8 @@ export const resolveRegistrationState = (
   // link is only ever minted for a published event, and publishing has no
   // reversal, so only the organiser's settings screen sees this.
   if (event.status !== 'PUBLISHED') return closed('CLOSED', 'NOT_PUBLISHED', 'Registration for this event is not open yet.');
+  // A paid event: a ticket is how to attend (the page shows them).
+  if (event.ticketing === 'PAID') return closed('CLOSED', 'TICKETS_ONLY', TICKETS_ONLY_MESSAGE);
   if (closing && closing.closesAt < now) {
     const date = formatGuestDate(closing.closesAt);
     return closing.byDeadline
@@ -129,8 +136,13 @@ const isFull = (event: { registrationCap: number | null }, seats: RegistrationSe
   (guestLimit !== null && seats.primaryGuests >= guestLimit) ||
   seats.totalGuests >= MAX_GUESTS_PER_EVENT;
 
+export const TICKETS_ONLY_MESSAGE = 'This event sells tickets, so there is no free registration. Get a ticket instead.';
+
 export const assertRegistrationOpen = (state: RegistrationState): void => {
   if (state.isOpen || !state.reason) return;
+  // Its own code and status: the event may stop selling (before any sale),
+  // so this isn't "gone" (410), and the page shows the tickets instead.
+  if (state.code === 'TICKETS_ONLY') throw new HttpError(409, TICKETS_ONLY_MESSAGE, REGISTRATION_ERROR_CODES.TICKETS_ONLY);
   throw new HttpError(STATUS_FOR_REASON[state.reason], state.message ?? REGISTRATION_FULL_MESSAGE, CODE_FOR_REASON[state.reason]);
 };
 

@@ -159,7 +159,7 @@ describe('ticketing off — guests and event creation', () => {
     const { event, organiser, invite } = await setup();
     await prisma.event.update({ where: { id: event.id }, data: { ticketing: 'PAID' } });
     await prisma.ticket.create({
-      data: { eventId: event.id, name: 'General', price: 150, createdBy: organiser.id, updatedBy: organiser.id },
+      data: { eventId: event.id, name: 'General', price: 150, priceCents: 15000, createdBy: organiser.id, updatedBy: organiser.id },
     });
 
     vi.stubEnv('FEATURES_DISABLED', '');
@@ -177,10 +177,12 @@ describe('ticketing off — guests and event creation', () => {
   it('creating a paid event is a 422 while ticketing is off, before any plan message', async () => {
     const { tenant, organiser } = await setup();
 
+    // On: never created paid (ticket sales Round A): the switch's own 422,
+    // still before any plan message.
     vi.stubEnv('FEATURES_DISABLED', '');
     await expect(
       eventService.create(tenant.id, organiser.id, { name: `Launch Mode ${randomUUID()}`, hostName: 'Test Host', ticketing: 'PAID' })
-    ).rejects.toMatchObject({ statusCode: 403, message: expect.stringMatching(/plan/) });
+    ).rejects.toMatchObject({ statusCode: 422, code: 'TICKET_SALES_USE_SWITCH' });
 
     vi.stubEnv('FEATURES_DISABLED', 'ticketing');
     await expect(

@@ -93,8 +93,8 @@ describe('organiser endpoints refuse blanks with 422', () => {
   }, 60000);
 
   it('ticket: name and price', async () => {
-    expect((await post('/tickets', { name: '', price: 100 })).status).toBe(422);
-    const noPrice = await post('/tickets', { name: 'General' });
+    expect((await post('/tickets', { name: '', priceCents: 10000, quantity: 10 })).status).toBe(422);
+    const noPrice = await post('/tickets', { name: 'General', quantity: 10 });
     expect(noPrice.status).toBe(422);
     expect(noPrice.body.message).toMatch(/'General' needs a price/);
     expect(await prisma.ticket.count({ where: { eventId } })).toBe(0);
@@ -139,7 +139,8 @@ describe('wizard materialize refuses the same blanks', () => {
       [{ name: 'E', days: [VALID_DAY], program: { items: [{ title: '', startTime: '2030-01-01T10:00' }] } }, /needs a title/],
       [{ name: 'E', days: [VALID_DAY], program: { items: [{ title: 'Vows' }] } }, /'Vows' needs a start/],
       [{ name: 'E', days: [VALID_DAY], customFields: [{ label: '', fieldType: 'TEXT' }] }, /needs a label/],
-      [{ name: 'E', days: [VALID_DAY], ticketing: 'PAID', tickets: [{ name: '', price: 10 }] }, /needs a name/],
+      // A public event's ticket types (since 2026-11 the wizard never makes an event paid).
+      [{ name: 'E', days: [VALID_DAY], visibility: 'PUBLIC', tickets: [{ name: '', priceCents: 1000, quantity: 1 }] }, /needs a name/],
       [{ name: 'E', days: [VALID_DAY] }, /Add the host's name/],
       [{ name: 'E', hostName: '  ', days: [VALID_DAY] }, /Add the host's name/],
     ];

@@ -1,5 +1,6 @@
 import { type CheckInPassKind } from '@prisma/client';
 import { checkInPassRepository, type PassRow, type RsvpParty } from './check-in-pass.repository.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 
 // ─────────────────────────────────────────
 //  WHAT EACH KIND OF PASS IS VALID FOR
@@ -54,6 +55,12 @@ const acceptedDayIds = (invites: RsvpParty['invites']): Set<string> =>
 // RSVP passes for a party (the guest who RSVP'd and their plus-ones), read
 // from the party as it is now:
 // - none on a cancelled or draft event, or an archived one;
+// - none on a public event selling tickets (ticketing PAID, while the
+//   `ticketing` flag is on): there the ticket is the pass (ticket sales
+//   Round B), and a free registration from before sales were switched on
+//   loses its RSVP pass. A paid PRIVATE event (the invitation purchase path,
+//   from before 2026-11, which Round B removes) keeps them: it has no ticket
+//   pass to replace them;
 // - none for a removed guest, a registration awaiting approval or declined;
 // - none unless the guest has accepted;
 // - one per person per day they said yes to, for live days with a venue
@@ -64,6 +71,7 @@ export const rsvpPartyPasses = (party: RsvpParty): PartyPasses => {
 
   if (event.status === 'CANCELLED') return none('EVENT_CANCELLED');
   if (event.status === 'DRAFT' || event.isArchived) return none('NO_LONGER_VALID');
+  if (event.ticketing === 'PAID' && event.visibility === 'PUBLIC' && isFeatureEnabled('ticketing')) return none('NO_LONGER_VALID');
   if (party.isArchived) return none('GUEST_REMOVED');
   if (party.registrationDeclinedAt) return none('REGISTRATION_DECLINED');
   if (party.pendingApproval) return none('NO_LONGER_VALID');

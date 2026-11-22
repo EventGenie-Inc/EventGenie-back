@@ -1006,3 +1006,26 @@ export const memoryHubDownloadLimiter = rateLimit({
     code: MEMORY_HUB_DOWNLOAD_RATE_LIMIT,
   },
 });
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — CANCELLING A PAYOUT ACCOUNT CHANGE BY ITS EMAILED LINK
+//  (POST /api/payments/subaccount/change/cancel-by-link, no sign-in)
+//
+//  The token is 64 hex: guessing is hopeless, so this only bounds load and
+//  a script trying made-up tokens. Failed requests only, per IP: a real
+//  admin uses the link once.
+// ─────────────────────────────────────────
+export const PAYOUT_CANCEL_LINK_FAILURES_PER_IP_PER_15_MIN = 20;
+
+export const payoutCancelLinkLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: PAYOUT_CANCEL_LINK_FAILURES_PER_IP_PER_15_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `payout-cancel:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: 'Too many attempts from this network. Please wait a few minutes and try again.',
+  },
+});

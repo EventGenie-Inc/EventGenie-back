@@ -20,7 +20,11 @@ import {
   findDuplicateDayLabel,
   duplicateDayLabelMessage,
 } from '../event-day/event-day-validation.util.js';
-import { resolveNewTicket, resolveTicketChanges } from '../ticket/ticket-validation.util.js';
+import { resolveTicketType, toStoredTicketType } from '../ticket/ticket-validation.util.js';
+import { ticketRepository } from '../ticket/ticket.repository.js';
+import { ticketSalesCounts } from '../ticket/ticket-sales-count.util.js';
+import { ticketHasSalesError } from '../ticket/ticket.service.js';
+import { assertDaysRemovable } from '../ticket/ticket-day-guard.util.js';
 import { TICKETING_UNAVAILABLE_MESSAGE } from '../ticket/ticketing-availability.util.js';
 import { assertFieldTypeChangeAllowed, resolveNewField, resolveFieldChanges } from '../rsvp-field/rsvp-field-validation.util.js';
 import {
@@ -198,31 +202,36 @@ const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
 
 // ── Tickets ──
 
-const planTickets = (event: LoadedEvent, input: FullUpdateTicket[] | undefined) => {
+// Each row through the ticket endpoints' own rules (resolveTicketType),
+// judged against the days this save leaves: a saved row re-sent unchanged
+// is never re-checked. A row names its admitted days by the ids of saved
+// days (a day this save creates has none yet: add it to a ticket type
+// after saving). A removed row with sales is refused, as its DELETE is.
+const planTickets = async (eventId: string, resultingDays: ResultingDay[], input: FullUpdateTicket[] | undefined) => {
   const plan = { creates: [] as FullUpdatePlan['tickets']['creates'], updates: [] as FullUpdatePlan['tickets']['updates'], archives: [] as string[] };
   if (input === undefined) return plan;
 
-  for (const { row, stored } of matchSavedRows(input, event.tickets, 'ticket type', 'Ticket not found')) {
+  const saved = await ticketRepository.findAll(eventId);
+  const counts = await ticketSalesCounts(saved.map((t) => t.id));
+  // A day this save creates has no id yet: it counts for when sales may
+  // end, but no type can name it.
+  const eventDays = resultingDays.map((d, i) => ({ id: d.id ?? `new-day-${i}`, date: d.date, endTime: d.endTime }));
+  const admittableDayIds = resultingDays.flatMap((d) => (d.id ? [d.id] : []));
+  let nextSortOrder = saved.reduce((max, t) => Math.max(max, t.sortOrder + 1), 0);
+
+  for (const { row, stored } of matchSavedRows(input, saved, 'ticket type', 'Ticket not found')) {
+    const { id: _id, ...fields } = row;
     if (!stored) {
-      plan.creates.push({
-        ...resolveNewTicket(row),
-        ...(row.description !== undefined && row.description !== null && { description: row.description }),
-        ...(row.currency !== undefined && { currency: row.currency }),
-      });
+      plan.creates.push(resolveTicketType(fields, null, { eventDays, admittableDayIds, sold: 0, nextSortOrder: nextSortOrder++ }).write);
       continue;
     }
-    const { id: _id, ...fields } = row;
-    const data = { ...fields, ...resolveTicketChanges(row, stored) };
-    const changed =
-      (data.name !== undefined && data.name !== stored.name) ||
-      (data.description !== undefined && (data.description ?? null) !== stored.description) ||
-      (data.price !== undefined && data.price !== Number(stored.price)) ||
-      (data.currency !== undefined && data.currency !== stored.currency) ||
-      (data.totalQuantity !== undefined && (data.totalQuantity ?? null) !== stored.totalQuantity) ||
-      (data.isAvailable !== undefined && data.isAvailable !== stored.isAvailable);
-    if (changed) plan.updates.push({ id: stored.id, data });
+    const sold = counts.get(stored.id)?.sold ?? 0;
+    const { write, changed } = resolveTicketType(fields, toStoredTicketType(stored), { eventDays, admittableDayIds, sold, nextSortOrder: stored.sortOrder });
+    if (changed) plan.updates.push({ id: stored.id, data: write });
   }
-  plan.archives = removedRows(event.tickets, input);
+  plan.archives = removedRows(saved, input);
+  const withSales = saved.find((t) => plan.archives.includes(t.id) && (counts.get(t.id)?.sold ?? 0) > 0);
+  if (withSales) throw ticketHasSalesError(withSales.name);
   return plan;
 };
 
@@ -385,7 +394,19 @@ export const eventFullUpdateService = {
     const days = planDays(event, daysInput);
     const coverChange: CoverChange | null = eventFields ? await assertEventUpdateAllowed(event, eventFields, days.resulting) : null;
 
-    const tickets = planTickets(event, ticketsInput);
+    const tickets = await planTickets(eventId, days.resulting, ticketsInput);
+    // A day removed while a ticket type with sales admits it, or that is the
+    // only day a type admits (after this save's own ticket changes), is
+    // refused as DELETE .../days/:id refuses it.
+    await assertDaysRemovable(
+      eventId,
+      days.archives.map((id) => ({ id, label: event.eventDays.find((d) => d.id === id)?.label ?? 'This day' })),
+      undefined,
+      new Map<string, { admitsAllDays: boolean; admittedDayIds: string[] } | null>([
+        ...tickets.updates.map(({ id, data }) => [id, { admitsAllDays: data.admitsAllDays, admittedDayIds: data.admittedDayIds }] as const),
+        ...tickets.archives.map((id) => [id, null] as const),
+      ])
+    );
     // The ticket routes are switched off with `ticketing`; a change to
     // tickets is refused here as a change to paid ticketing is (422,
     // before any tier check). Re-sending them unchanged is fine.

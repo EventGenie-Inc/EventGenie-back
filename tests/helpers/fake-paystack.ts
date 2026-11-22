@@ -18,6 +18,13 @@
 //   addSubscription(…)       — a subscription Paystack holds.
 //   failNext(match, how)     — the next matching call times out, loses the
 //                              network, or answers with a status and body.
+//                              'timeoutAfterApplying': Paystack acts on it,
+//                              then the answer is lost (an unclear outcome
+//                              that really happened).
+//   subaccounts              — the subaccounts Paystack holds (POST
+//                              /subaccount, listed and fetched). The full
+//                              account number is kept here only because
+//                              Paystack keeps it; the app never stores it.
 //   calls / callsTo(path)    — what was asked of it.
 //
 //  A test file that mocks paystack.client.js itself (vi.mock) keeps doing
@@ -59,7 +66,18 @@ export interface FakeCall {
   body: Record<string, unknown> | null;
 }
 
-type Failure = 'timeout' | 'network' | { status: number; body?: unknown };
+type Failure = 'timeout' | 'timeoutAfterApplying' | 'network' | { status: number; body?: unknown };
+
+export interface FakeSubaccount {
+  subaccount_code: string;
+  business_name: string;
+  settlement_bank: string;
+  account_number: string;
+  description: string | null;
+  percentage_charge: number;
+  active: boolean;
+  created_at: string;
+}
 
 const API = 'https://api.paystack.co';
 
@@ -74,6 +92,9 @@ const newId = (): number => ++nextId;
 export const fakePaystack = {
   transactions: new Map<string, FakeTransaction>(),
   subscriptions: new Map<string, FakeSubscription>(),
+  subaccounts: new Map<string, FakeSubaccount>(),
+  // The bank list GET /bank answers.
+  banks: [{ name: 'Fake Bank', code: '000' }] as { name: string; code: string }[],
   refunds: [] as Record<string, unknown>[],
   settlements: [] as Record<string, unknown>[],
   calls: [] as FakeCall[],
@@ -84,6 +105,8 @@ export const fakePaystack = {
   reset(): void {
     this.transactions.clear();
     this.subscriptions.clear();
+    this.subaccounts.clear();
+    this.banks = [{ name: 'Fake Bank', code: '000' }];
     this.refunds = [];
     this.settlements = [];
     this.calls = [];
@@ -264,7 +287,50 @@ const handle = (call: FakeCall): Response => {
 
   if (method === 'GET' && path === '/refund') return ok(f.refunds, { pageCount: 1 });
   if (method === 'GET' && path === '/settlement') return ok(f.settlements, { pageCount: 1 });
-  if (method === 'GET' && path === '/bank') return ok([{ name: 'Fake Bank', code: '000' }]);
+  if (method === 'GET' && path === '/bank') return ok(f.banks.map((b) => ({ ...b, country: 'South Africa', currency: 'ZAR' })));
+
+  if (method === 'POST' && path === '/subaccount') {
+    const bank = f.banks.find((b) => b.code === body?.['settlement_bank']);
+    if (!bank) return bad('Invalid settlement bank');
+    const accountNumber = String(body?.['account_number'] ?? '');
+    if (!/^\d{6,16}$/.test(accountNumber)) return bad('Account number is invalid');
+    const sub: FakeSubaccount = {
+      subaccount_code: `ACCT_${newId()}`,
+      business_name: String(body?.['business_name'] ?? ''),
+      settlement_bank: bank.name,
+      account_number: accountNumber,
+      description: typeof body?.['description'] === 'string' ? (body['description'] as string) : null,
+      percentage_charge: Number(body?.['percentage_charge'] ?? 0),
+      active: true,
+      created_at: new Date().toISOString(),
+    };
+    f.subaccounts.set(sub.subaccount_code, sub);
+    return ok(sub);
+  }
+
+  if (method === 'GET' && path === '/subaccount') {
+    // Newest first, as Paystack lists them.
+    const rows = [...f.subaccounts.values()].reverse();
+    const perPage = Number(query['perPage'] ?? 50);
+    const page = Number(query['page'] ?? 1);
+    const pageCount = Math.max(1, Math.ceil(rows.length / perPage));
+    return ok(rows.slice((page - 1) * perPage, page * perPage), { total: rows.length, page, pageCount, perPage });
+  }
+
+  const subaccount = path.match(/^\/subaccount\/([^/]+)$/);
+  if (subaccount) {
+    const found = f.subaccounts.get(decodeURIComponent(subaccount[1]!));
+    if (!found) return notFound('Subaccount not found');
+    if (method === 'GET') return ok(found);
+    if (method === 'PUT') {
+      Object.assign(found, {
+        ...(body?.['business_name'] !== undefined && { business_name: String(body['business_name']) }),
+        ...(body?.['account_number'] !== undefined && { account_number: String(body['account_number']) }),
+        ...(body?.['active'] !== undefined && { active: Boolean(body['active']) }),
+      });
+      return ok(found);
+    }
+  }
 
   if (method === 'POST' && path === '/subscription') {
     const customer = String(body?.['customer'] ?? '');
@@ -321,6 +387,10 @@ export const installFakePaystack = (): void => {
       failure.times--;
       if (failure.how === 'timeout') throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
       if (failure.how === 'network') throw new TypeError('fetch failed');
+      if (failure.how === 'timeoutAfterApplying') {
+        handle(call);
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      }
       return json(failure.how.status, failure.how.body ?? { status: false, message: `fake ${failure.how.status}` });
     }
     return handle(call);

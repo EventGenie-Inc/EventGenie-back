@@ -8,7 +8,7 @@ import { type PlatformRole, type EventStatus, type EventTicketing, type EventVis
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventRestorable, assertEventUpdatable, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { withMediaRetention } from './event-media-retention.util.js';
-import { assertTenantReadyToSellTickets, assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
+import { assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
@@ -24,6 +24,7 @@ import { guestRepository } from '../guest/guest.repository.js';
 import { resolveTenantScope, isTenantScopeEmptyForList } from '../../shared/utils/tenant-scope.util.js';
 import { frontendUrl } from '../../shared/utils/frontend-url.util.js';
 import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
+import { assertNotCreatedPaid, assertTicketingSaveAllowed, assertPaidEventIsPublic } from '../ticket-sales/ticket-sales-rules.util.js';
 import { assertPublicEventsAvailable } from './public-events-availability.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { eventAssignmentLock, eventIdsFilter } from '../event-assignment/event-assignment-lock.util.js';
@@ -147,6 +148,9 @@ export const assertEventUpdateAllowed = async (
   // details, whose routes are off too.
   assertPaidTicketingAvailable(data.ticketing, event.ticketing);
   assertPublicEventsAvailable(data.visibility, event.visibility);
+  // Paid only through the ticket sales switch; a paid event stays public
+  // (ticket-sales-rules.util.ts). Before any plan check.
+  await assertTicketingSaveAllowed(event, data);
   const ticketing = isFeatureEnabled('ticketing') ? data.ticketing : undefined;
   const visibility = isFeatureEnabled('publicEvents') ? data.visibility : undefined;
   await assertEventUpdatable(event, {
@@ -312,15 +316,13 @@ export const eventService = {
     assertValidRsvpDeadline(data.rsvpDeadline ? parseDeadline(data.rsvpDeadline) : null, [], { rejectPast: true });
     assertPaidTicketingAvailable(data.ticketing);
     assertPublicEventsAvailable(data.visibility);
+    // Never created paid: ticket sales are switched on afterwards, once the
+    // event has ticket types (ticket-sales-rules.util.ts).
+    assertNotCreatedPaid(data.ticketing);
     await assertEventCreatable(tenantId, {
       ...(data.visibility !== undefined && { visibility: data.visibility }),
       ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
     });
-    // A paid event needs somewhere for a ticket split to land — see
-    // payment-account-readiness.util.ts's own comment.
-    if (data.ticketing === 'PAID') {
-      await assertTenantReadyToSellTickets(tenantId);
-    }
     // Last, so every other refusal (and its code) comes first.
     if (!template) assertHostNamePresent(data.hostName);
     return eventRepository.create(
@@ -505,6 +507,8 @@ export const eventService = {
     // update attempt) — see payment-account-readiness.util.ts.
     assertPaidTicketingAvailable(event.ticketing);
     assertPublicEventsAvailable(event.visibility);
+    // A paid private event (possible before 2026-11) isn't published.
+    assertPaidEventIsPublic(event);
     if (event.ticketing === 'PAID') {
       await assertEventReadyToSellTickets(event);
     }

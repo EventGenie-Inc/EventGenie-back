@@ -25,6 +25,7 @@ import {
 import { toDayVenueView } from '../event-day/event-day-venue.util.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { resolveDocumentLimits } from '../guest-document/guest-document-allowance.util.js';
+import { buildPublicTicketSales, type PublicTicketSales } from '../ticket-sales/ticket-public-view.js';
 import {
   REGISTRATION_ERROR_CODES,
   resolveRegistrationState,
@@ -72,6 +73,8 @@ const findPublicEvent = async (shareToken: string): Promise<ShareTokenEvent> => 
 
 const rulesFor = (event: ShareTokenEvent): RegistrationRulesEvent => ({
   status: resolveEffectiveStatus(event),
+  // While ticketing is off, an event is never treated as selling tickets.
+  ticketing: isFeatureEnabled('ticketing') ? event.ticketing : 'FREE',
   rsvpDeadline: event.rsvpDeadline,
   registrationClosesAt: event.registrationClosesAt,
   registrationCap: event.registrationCap,
@@ -82,7 +85,12 @@ const rulesFor = (event: ShareTokenEvent): RegistrationRulesEvent => ({
 // shows (PublicEventView). Built as an explicit allowlist, never a spread
 // of the Prisma row, so a column added to Event or EventDay later can't
 // start leaking by itself (STEERING "Guest-facing responses").
-const toPublicView = (event: ShareTokenEvent, state: RegistrationState, maxDocumentBytes: number | null): PublicEventView => ({
+const toPublicView = (
+  event: ShareTokenEvent,
+  state: RegistrationState,
+  maxDocumentBytes: number | null,
+  ticketSales: PublicTicketSales | null
+): PublicEventView => ({
   name: event.name,
   hostName: event.hostName,
   description: event.description,
@@ -124,6 +132,9 @@ const toPublicView = (event: ShareTokenEvent, state: RegistrationState, maxDocum
     allowedEmailDomains: event.registrationEmailDomains,
   },
   maxDocumentBytes,
+  // An event selling tickets: its visible ticket types (ticket-public-view.ts),
+  // in place of free registration. null otherwise.
+  ticketSales,
 });
 
 // ─────────────────────────────────────────
@@ -301,7 +312,9 @@ export const eventPublicService = {
     const event = await findPublicEvent(shareToken);
     const [seats, { limit }] = await Promise.all([eventPublicRepository.countSeats(event.id), resolveGuestLimit(event)]);
     const maxDocumentBytes = isFeatureEnabled('documentFields') ? (await resolveDocumentLimits(event)).maxBytesPerDocument : null;
-    return toPublicView(event, resolveRegistrationState(rulesFor(event), seats, limit), maxDocumentBytes);
+    const rules = rulesFor(event);
+    const ticketSales = rules.ticketing === 'PAID' && rules.status !== 'CANCELLED' ? await buildPublicTicketSales(event) : null;
+    return toPublicView(event, resolveRegistrationState(rules, seats, limit), maxDocumentBytes, ticketSales);
   },
 
   // Creates the guest and their accepted invite (their days, their
@@ -319,8 +332,11 @@ export const eventPublicService = {
     const rules = rulesFor(event);
 
     // Cancelled, over, or not yet open: nothing to register for, and no
-    // link worth re-sending either.
-    if (rules.status !== 'PUBLISHED') assertRegistrationOpen(resolveRegistrationState(rules, NO_SEATS, null));
+    // link worth re-sending either. Selling tickets: no free registration at
+    // all (409 REGISTRATION_TICKETS_ONLY), before anything is read or sent.
+    if (rules.status !== 'PUBLISHED' || rules.ticketing === 'PAID') {
+      assertRegistrationOpen(resolveRegistrationState(rules, NO_SEATS, null));
+    }
 
     if (!isEmailInAllowedDomains(input.email, event.registrationEmailDomains)) {
       throw emailDomainRefusal(event.registrationEmailDomains);
