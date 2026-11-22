@@ -327,7 +327,84 @@ const applyChange = async (change: PayoutAccountChange, now: Date): Promise<bool
   const orgName = tenant?.name ?? change.tenantId;
   if (change.kind === 'SETUP') await payoutEmails.setUp(emailView(change), orgName);
   else await payoutEmails.changeApplied(emailView(change), orgName);
+  // Only now, with the switch committed, is the replaced subaccount unused.
+  await deactivateUnused(change.id, now);
   return true;
+};
+
+// ── Deactivating subaccounts nobody uses ──
+//
+// A cancelled or failed change's own subaccount, and the one an applied
+// change replaced, are deactivated at Paystack (PUT /subaccount/:code,
+// active: false), best effort: tried at once, then by the worker with a
+// growing wait (5 minutes doubling, at most 6 hours), never given up.
+// Deactivating is the same request however often it is sent, so an unclear
+// answer is simply tried again. The organisation's live subaccount is read
+// fresh before every call and never deactivated. Each one is audited.
+
+const DEACTIVATION_FIRST_RETRY_MS = 5 * 60_000;
+const DEACTIVATION_MAX_RETRY_MS = 6 * 60 * 60_000;
+
+interface DeactivationTarget {
+  which: 'OWN' | 'REPLACED';
+  subaccountCode: string;
+  businessName: string | null;
+  bankCode: string | null;
+  reason: 'CANCELLED' | 'FAILED' | 'REPLACED';
+}
+
+const deactivationTargetOf = (change: PayoutAccountChange): DeactivationTarget | null => {
+  if ((change.status === 'CANCELLED' || change.status === 'FAILED') && change.subaccountCode && !change.subaccountDeactivatedAt) {
+    return { which: 'OWN', subaccountCode: change.subaccountCode, businessName: change.businessName, bankCode: change.bankCode, reason: change.status };
+  }
+  if (change.status === 'APPLIED' && change.replacedSubaccountCode && !change.replacedDeactivatedAt) {
+    return { which: 'REPLACED', subaccountCode: change.replacedSubaccountCode, businessName: change.replacedBusinessName, bankCode: change.replacedBankCode, reason: 'REPLACED' };
+  }
+  return null;
+};
+
+// Never throws: a failure is recorded on the change for the worker.
+const deactivateUnused = async (changeId: string, now: Date): Promise<boolean> => {
+  try {
+    const change = await paymentAccountRepository.findChangeById(changeId);
+    const target = change ? deactivationTargetOf(change) : null;
+    if (!change || !target) return false;
+
+    const live = (await paymentAccountRepository.findStatusByTenantId(change.tenantId))?.paystackSubaccountCode ?? null;
+    if (live === target.subaccountCode) {
+      // It is (again) the account sales are paid into: never deactivated.
+      await paymentAccountRepository.markDeactivated(change.id, target.which, now);
+      await audit(ADMIN_AUDIT_ACTIONS.PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED, change, PAYOUT_AUDIT_SYSTEM_ACTOR, {
+        subaccountCode: target.subaccountCode,
+        reason: target.reason,
+        skipped: 'LIVE_ACCOUNT',
+      });
+      return false;
+    }
+
+    try {
+      await paystackClient.updateSubaccount(target.subaccountCode, {
+        active: false,
+        // Sent with it in case Paystack wants them on every update.
+        ...(target.businessName && { businessName: target.businessName }),
+        ...(target.bankCode && { settlementBank: target.bankCode }),
+      });
+    } catch (err) {
+      console.error(`[payment-account] subaccount ${target.subaccountCode} not deactivated yet (change ${change.id}): ${describe(err)}`);
+      const wait = Math.min(DEACTIVATION_FIRST_RETRY_MS * 2 ** change.deactivationAttempts, DEACTIVATION_MAX_RETRY_MS);
+      await paymentAccountRepository.deferDeactivation(change.id, `PAYSTACK_${describe(err)}`, new Date(now.getTime() + wait));
+      return false;
+    }
+    await paymentAccountRepository.markDeactivated(change.id, target.which, now);
+    await audit(ADMIN_AUDIT_ACTIONS.PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED, change, PAYOUT_AUDIT_SYSTEM_ACTOR, {
+      subaccountCode: target.subaccountCode,
+      reason: target.reason,
+    });
+    return true;
+  } catch (err) {
+    console.error(`[payment-account] deactivation for change ${changeId} failed:`, err instanceof Error ? err.message : err);
+    return false;
+  }
 };
 
 // ── Setup and change, one flow ──
@@ -573,6 +650,15 @@ export const paymentAccountService = {
     }
     return applied;
   },
+
+  // Unused subaccounts still to deactivate (deactivateUnused), due now.
+  deactivateDue: async (now: Date, tenantIds?: string[]): Promise<number> => {
+    let deactivated = 0;
+    for (const change of await paymentAccountRepository.findDueForDeactivation(now, tenantIds)) {
+      if (await deactivateUnused(change.id, now)) deactivated++;
+    }
+    return deactivated;
+  },
 };
 
 const afterCancel = async (change: PayoutAccountChange, via: 'APP' | 'EMAIL_LINK', userId: string | null): Promise<void> => {
@@ -580,4 +666,6 @@ const afterCancel = async (change: PayoutAccountChange, via: 'APP' | 'EMAIL_LINK
   await audit(ADMIN_AUDIT_ACTIONS.PAYOUT_ACCOUNT_CHANGE_CANCELLED, change, userId ?? PAYOUT_AUDIT_EMAIL_LINK_ACTOR, { via });
   const tenant = await paymentAccountRepository.findStatusByTenantId(change.tenantId);
   await payoutEmails.changeCancelled(emailView(change), tenant?.name ?? change.tenantId, via);
+  // Its subaccount (if Paystack made one) is no one's now.
+  await deactivateUnused(change.id, new Date());
 };

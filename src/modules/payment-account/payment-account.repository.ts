@@ -166,9 +166,24 @@ export const paymentAccountRepository = {
     now: Date
   ): Promise<boolean> =>
     prisma.$transaction(async (tx) => {
+      // What it replaces, read under the claim: deactivated at Paystack once
+      // this write has committed (never before the switch).
+      const previous = await tx.tenant.findUniqueOrThrow({
+        where: { id: change.tenantId },
+        select: { paystackSubaccountCode: true, paystackBusinessName: true, paystackSettlementBankCode: true },
+      });
+      const replaced = previous.paystackSubaccountCode && previous.paystackSubaccountCode !== change.subaccountCode ? previous : null;
       const claimed = await tx.payoutAccountChange.updateMany({
         where: { id: change.id, status: 'PENDING' },
-        data: { status: 'APPLIED', appliedAt: now, nextAttemptAt: null, lastAttemptError: null },
+        data: {
+          status: 'APPLIED',
+          appliedAt: now,
+          nextAttemptAt: null,
+          lastAttemptError: null,
+          replacedSubaccountCode: replaced?.paystackSubaccountCode ?? null,
+          replacedBusinessName: replaced?.paystackBusinessName ?? null,
+          replacedBankCode: replaced?.paystackSettlementBankCode ?? null,
+        },
       });
       if (claimed.count !== 1) return false;
       await tx.tenant.update({
@@ -186,6 +201,38 @@ export const paymentAccountRepository = {
         },
       });
       return true;
+    }),
+
+  // Subaccounts to deactivate at Paystack: a cancelled or failed change's
+  // own, and what an applied change replaced; each not yet done and due.
+  findDueForDeactivation: (now: Date, tenantIds?: string[]) =>
+    prisma.payoutAccountChange.findMany({
+      where: {
+        OR: [
+          { status: { in: ['CANCELLED', 'FAILED'] }, subaccountCode: { not: null }, subaccountDeactivatedAt: null },
+          { status: 'APPLIED', replacedSubaccountCode: { not: null }, replacedDeactivatedAt: null },
+        ],
+        AND: [{ OR: [{ nextDeactivationAt: null }, { nextDeactivationAt: { lte: now } }] }],
+        ...(tenantIds && { tenantId: { in: tenantIds } }),
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 50,
+    }),
+
+  markDeactivated: (id: string, which: 'OWN' | 'REPLACED', now: Date) =>
+    prisma.payoutAccountChange.update({
+      where: { id },
+      data: {
+        ...(which === 'OWN' ? { subaccountDeactivatedAt: now } : { replacedDeactivatedAt: now }),
+        nextDeactivationAt: null,
+        lastDeactivationError: null,
+      },
+    }),
+
+  deferDeactivation: (id: string, error: string, nextDeactivationAt: Date) =>
+    prisma.payoutAccountChange.update({
+      where: { id },
+      data: { deactivationAttempts: { increment: 1 }, lastDeactivationError: error, nextDeactivationAt },
     }),
 
   deferApply: (id: string, error: string, nextAttemptAt: Date) =>

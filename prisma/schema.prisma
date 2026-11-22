@@ -2964,6 +2964,18 @@ model PayoutAccountChange {
   creationAttempts     Int                       @default(0)
   nextAttemptAt        DateTime?
   lastAttemptError     String?
+  // Deactivating subaccounts nobody uses (ticket sales follow-ups): this
+  // change's own subaccount once it is cancelled or fails, and the account
+  // it replaced once it takes effect (only after the switch). Best effort,
+  // retried by the worker; the organisation's live subaccount never.
+  subaccountDeactivatedAt DateTime?
+  replacedSubaccountCode  String?
+  replacedBusinessName    String?
+  replacedBankCode        String?
+  replacedDeactivatedAt   DateTime?
+  deactivationAttempts    Int       @default(0)
+  nextDeactivationAt      DateTime?
+  lastDeactivationError   String?
   createdAt            DateTime                  @default(now())
   updatedAt            DateTime                  @updatedAt
 

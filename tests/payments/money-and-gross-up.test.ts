@@ -68,12 +68,15 @@ describe('gross-up', () => {
     const b = computeTicketChargeCents(10000, 1);
     expect(b.ticketPriceCents).toBe(10000);
     expect(b.commissionCents).toBe(200);
-    // T = (10000 + 200 + 115) / (1 - 0.03335) = 10671 (rounded)
-    expect(b.totalChargeCents).toBe(10671);
+    // The smallest T with T − Paystack's fee ≥ 10200, the fee rounded per
+    // part as Paystack charges it (ticket-fee-calculator.ts): 10672 −
+    // (⌈309.488⌉ + 100 + ⌈61.5⌉) = 10200.
+    expect(b.totalChargeCents).toBe(10672);
     expect(b.totalChargeCents - b.platformChargeCents).toBe(10000);
-    // Paystack's card fee on T, VAT-inclusive, leaves at least the commission.
-    const fee = Math.round((b.totalChargeCents * 33350) / 1_000_000) + 115;
-    expect(b.platformChargeCents - fee).toBeGreaterThanOrEqual(200 - 1);
+    // Paystack's card fee on T leaves at least the commission.
+    const percent = Math.ceil((b.totalChargeCents * 290) / 10_000);
+    const fee = percent + 100 + Math.ceil(((percent + 100) * 15) / 100);
+    expect(b.platformChargeCents - fee).toBeGreaterThanOrEqual(200);
   });
 
   it('scales with quantity and never puts rounding on the organiser', () => {

@@ -6,6 +6,7 @@ import { resolveTicketType, toStoredTicketType, TICKET_ERROR_CODES } from './tic
 import { ticketSalesCount, ticketSalesCounts, type TicketSalesCount } from './ticket-sales-count.util.js';
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { formatSaLocal } from '../reminder-schedule/reminder-schedule-time.util.js';
 
 // Ticket has no tenantId of its own — ownership is transitive through its
 // event, like every other event sub-resource (event-day, program-item).
@@ -38,6 +39,8 @@ export const toTicketTypeView = (row: TicketRow, count: TicketSalesCount): Ticke
   hasSales: count.sold > 0,
   salesStart: row.salesStart,
   salesEnd: row.salesEnd,
+  salesStartLocal: row.salesStart ? formatSaLocal(row.salesStart) : null,
+  salesEndLocal: row.salesEnd ? formatSaLocal(row.salesEnd) : null,
   admittedDayIds: row.admitsAllDays ? null : row.admittedDays.map((d) => d.eventDayId),
   maxPerOrder: row.maxPerOrder,
   sortOrder: row.sortOrder,

@@ -34,6 +34,13 @@ import { HAVE_SALES_MESSAGE, PUBLIC_ONLY_MESSAGE, TICKET_SALES_ERROR_CODES } fro
 //
 //  Off: allowed freely until a ticket is sold, refused after (409
 //  TICKET_SALES_HAVE_SALES): pause instead (salesPaused).
+//
+//  The plan is checked ONLY when sales are switched on. Once paid, an event
+//  keeps selling whatever happens to its organisation's plan (a downgrade,
+//  a lapse to Spark): event saves re-sending PAID pass, publishing doesn't
+//  re-check it, resuming after a pause doesn't either (it still needs an
+//  active payout account and an active ticket type), and Round B's checkout
+//  must not re-check it.
 // ─────────────────────────────────────────
 
 export interface TicketSalesRequirements {
@@ -56,6 +63,15 @@ export interface TicketSalesView {
 }
 
 type ScopedEvent = Awaited<ReturnType<typeof eventService.getScopedWithPass>>;
+
+const payoutRequiredError = (): HttpError =>
+  new HttpError(
+    422,
+    'Ticket sales need an active payout account. Add your bank details under payout settings first.',
+    TICKET_SALES_ERROR_CODES.PAYOUT_ACCOUNT_REQUIRED
+  );
+const activeTypeRequiredError = (): HttpError =>
+  new HttpError(422, 'Add a ticket type that is on sale (not hidden) first.', TICKET_SALES_ERROR_CODES.ACTIVE_TYPE_REQUIRED);
 
 const requirementsFor = async (event: ScopedEvent): Promise<{ requirements: TicketSalesRequirements; refusal: HttpError | null }> => {
   const tenant = await paymentAccountRepository.findStatusByTenantId(event.tenantId);
@@ -81,13 +97,9 @@ const requirementsFor = async (event: ScopedEvent): Promise<{ requirements: Tick
   } else if (!requirements.planAllowsTicketSales) {
     refusal = new HttpError(403, paidTicketingRefusal(plan, true), TICKET_SALES_ERROR_CODES.PLAN);
   } else if (!requirements.payoutAccountActive) {
-    refusal = new HttpError(
-      422,
-      'Ticket sales need an active payout account. Add your bank details under payout settings first.',
-      TICKET_SALES_ERROR_CODES.PAYOUT_ACCOUNT_REQUIRED
-    );
+    refusal = payoutRequiredError();
   } else if (!requirements.activeTicketType) {
-    refusal = new HttpError(422, 'Add a ticket type that is on sale (not hidden) first.', TICKET_SALES_ERROR_CODES.ACTIVE_TYPE_REQUIRED);
+    refusal = activeTypeRequiredError();
   } else if (!requirements.registrationApprovalOff) {
     refusal = new HttpError(
       422,
@@ -140,6 +152,14 @@ export const ticketSalesService = {
     }
     if (change.paused !== undefined && !enabledAfter) {
       throw new HttpError(422, "Ticket sales aren't switched on, so there is nothing to pause.", TICKET_SALES_ERROR_CODES.NOT_ENABLED);
+    }
+    // Resuming paused sales: never the plan (the event became paid while the
+    // plan allowed it; a downgrade since doesn't stop it selling), but sales
+    // still need somewhere to land and something to sell.
+    if (change.paused === false && event.ticketing === 'PAID' && event.salesPaused && change.enabled !== false) {
+      const { requirements } = await requirementsFor(event);
+      if (!requirements.payoutAccountActive) throw payoutRequiredError();
+      if (!requirements.activeTicketType) throw activeTypeRequiredError();
     }
 
     await prisma.event.update({

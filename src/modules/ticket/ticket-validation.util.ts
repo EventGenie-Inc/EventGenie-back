@@ -1,6 +1,6 @@
 import { type TicketTypeStatus } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
-import { parseClientDateTime } from '../../shared/utils/date-input.util.js';
+import { parseSaLocal, SA_OFFSET_MS } from '../reminder-schedule/reminder-schedule-time.util.js';
 import { endOfDayUtc } from '../event/event-status.util.js';
 import { type TicketTypeInput, type TicketTypeWrite } from './ticket.types.js';
 
@@ -88,22 +88,32 @@ export interface TicketRuleContext {
 
 const formatRand = (cents: number): string => `R${(cents / 100).toFixed(2)}`;
 
-// When the event's last live day ends (its endTime, else the end of its
-// date): the latest a ticket type's sales can end. null with no days.
-export const lastDayEnd = (days: { date: Date; endTime: Date | null }[]): Date | null => {
+// When the event's last live day ends, as a real instant: its endTime, else
+// the end of its date. An event day's date and times are stored as the
+// organiser typed them, literal UTC clocks (STEERING "Dates"); until events
+// have a time zone they are read here as South African time, the same as a
+// ticket type's sales window, so "sales end at 23:59 on the last day" and
+// "the last day ends at 23:59" are the same moment. null with no days.
+export const lastDayEndsAt = (days: { date: Date; endTime: Date | null }[]): Date | null => {
   if (days.length === 0) return null;
   const last = days.reduce((latest, day) => (day.date > latest.date ? day : latest));
-  return last.endTime ?? endOfDayUtc(last.date);
+  return new Date((last.endTime ?? endOfDayUtc(last.date)).getTime() - SA_OFFSET_MS);
 };
 
 const wholeNumber = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
 
+// A sales window time, organiser-picked: "2027-03-02T18:00" (seconds
+// allowed) in South African time, stored as the instant (the scheduled
+// reminders' own helper, reminder-schedule-time.util.ts). Anything else,
+// an offset or "Z" included, is refused: the time is always the
+// organiser's wall clock. Returned as both (salesStart, salesStartLocal).
 const parseDate = (value: unknown, label: string): Date | null => {
   if (value === null || value === '') return null;
-  if (typeof value !== 'string') throw new HttpError(422, `${label} must be a date and time.`, TICKET_ERROR_CODES.SALES_DATE_INVALID);
-  const date = parseClientDateTime(value);
-  if (Number.isNaN(date.getTime())) throw new HttpError(422, `${label} isn't a valid date and time.`, TICKET_ERROR_CODES.SALES_DATE_INVALID);
+  const date = typeof value === 'string' ? parseSaLocal(value) : null;
+  if (!date) {
+    throw new HttpError(422, `${label} must be a date and time in South African time, e.g. 2027-03-02T18:00.`, TICKET_ERROR_CODES.SALES_DATE_INVALID);
+  }
   return date;
 };
 
@@ -275,7 +285,7 @@ export const resolveTicketType = (
   if (write.salesStart && write.salesEnd && write.salesStart >= write.salesEnd) {
     throw new HttpError(422, `${label}'s sales must start before they end.`, TICKET_ERROR_CODES.SALES_WINDOW_INVALID);
   }
-  const eventEnds = lastDayEnd(ctx.eventDays);
+  const eventEnds = lastDayEndsAt(ctx.eventDays);
   if (write.salesEnd && eventEnds && write.salesEnd > eventEnds) {
     throw new HttpError(422, `${label}'s sales can't end after the event's last day ends.`, TICKET_ERROR_CODES.SALES_END_AFTER_EVENT);
   }

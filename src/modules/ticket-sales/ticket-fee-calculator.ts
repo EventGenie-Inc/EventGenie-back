@@ -15,15 +15,25 @@ import { applyBasisPoints } from '../../shared/payments/money.util.js';
 //  the ORDER as a whole, so Paystack's flat fee is charged once per payment,
 //  never once per ticket.
 //
+//  Paystack's fee, as Paystack charges it (paystackFeeCents): each part
+//  rounded UP to the cent, separately:
+//      percent = ⌈T × rate⌉,  fee before VAT = percent + flat,
+//      VAT = ⌈fee before VAT × VAT rate⌉,  fee = fee before VAT + VAT.
+//  Confirmed by a real test payment: R999.00 by local card was charged
+//  R34.48 (⌈R28.971⌉ = R28.98, + R1 = R29.98, + ⌈R4.497⌉ = R4.50), where one
+//  rounding of the whole gives R34.47.
+//
 //  The gross-up: the smallest total T (whole cents) such that
-//      T − paystackFee(T) ≥ subtotal + commission + fixed fee
-//  where paystackFee(T) = (T × rate + flat) × (1 + VAT), rounded UP to the
-//  cent (we assume Paystack rounds its fee the way that costs us most).
+//      T − paystackFee(T) ≥ subtotal + commission + fixed fee.
+//  With per-part rounding there is no exact closed form, so it searches
+//  upward from the exact real-valued solution, a lower bound (rounding only
+//  ever adds to the fee). The result leaves e-velope its target exactly, or
+//  at most a cent over; never short.
 //
 //  Rounding, stated:
 //  - commission: subtotal × rate, half up (applyBasisPoints);
-//  - total: up to the next cent, and then up again while the fee rounded up
-//    would leave less than the target, so e-velope is never short;
+//  - Paystack's fee: each part up, as above;
+//  - total: the smallest that covers it;
 //  - the organiser's share is the subtotal exactly, always: Round B sends
 //    Paystack `transaction_charge` = total − subtotal with `bearer:
 //    "account"` (Paystack's fee taken from e-velope's side), so every cent
@@ -68,11 +78,14 @@ const isWholeCents = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
 
 const ceilDiv = (a: bigint, b: bigint): bigint => (a + b - 1n) / b;
 
-// Paystack's fee on a payment of `total` cents, rounded up to the cent.
-const paystackFeeCents = (total: bigint, c: TicketFeeConfig): bigint => {
-  // (total × bp/10⁴ + flat) × (10⁴ + vat)/10⁴, exactly, over 10⁸.
-  const numerator = (total * BigInt(c.paystackFeeBasisPoints) + BigInt(c.paystackFlatFeeCents) * 10_000n) * BigInt(10_000 + c.paystackVatBasisPoints);
-  return ceilDiv(numerator, 100_000_000n);
+// Paystack's fee on a payment of `total` cents, each part rounded up to the
+// cent (see above). Exported for tests and Round B's reconciliation.
+export const paystackFeeCents = (totalCents: number, c: TicketFeeConfig = getTicketFeeConfig()): number => {
+  const total = BigInt(totalCents);
+  const percent = ceilDiv(total * BigInt(c.paystackFeeBasisPoints), 10_000n);
+  const beforeVat = percent + BigInt(c.paystackFlatFeeCents);
+  const vat = ceilDiv(beforeVat * BigInt(c.paystackVatBasisPoints), 10_000n);
+  return Number(beforeVat + vat);
 };
 
 export const calculateTicketOrderFees = (input: TicketOrderInput, config: TicketFeeConfig = getTicketFeeConfig()): TicketOrderFees => {
@@ -85,14 +98,15 @@ export const calculateTicketOrderFees = (input: TicketOrderInput, config: Ticket
   const platformFixedFeeCents = config.platformFixedFeeCents;
   const target = BigInt(subtotalCents + commissionCents + platformFixedFeeCents);
 
-  // T × (10⁸ − bp × (10⁴ + vat)) ≥ target × 10⁸ + flat × 10⁴ × (10⁴ + vat)
+  // The exact real-valued solution, rounded down: a lower bound, since
+  // rounding only adds to the fee. Then upward to the first total that
+  // covers the target.
+  //   T × (10⁸ − bp × (10⁴ + vat)) = target × 10⁸ + flat × 10⁴ × (10⁴ + vat)
   const vatFactor = BigInt(10_000 + config.paystackVatBasisPoints);
   const keptPerUnit = 100_000_000n - BigInt(config.paystackFeeBasisPoints) * vatFactor;
-  let total = ceilDiv(target * 100_000_000n + BigInt(config.paystackFlatFeeCents) * 10_000n * vatFactor, keptPerUnit);
-  // The fee rounded up can still take one cent too many: step up until not.
-  while (total - paystackFeeCents(total, config) < target) total += 1n;
+  let totalCents = Number((target * 100_000_000n + BigInt(config.paystackFlatFeeCents) * 10_000n * vatFactor) / keptPerUnit);
+  while (totalCents - paystackFeeCents(totalCents, config) < Number(target)) totalCents += 1;
 
-  const totalCents = Number(total);
   return {
     unitPriceCents,
     quantity,

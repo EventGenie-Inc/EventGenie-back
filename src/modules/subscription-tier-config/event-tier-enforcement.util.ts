@@ -154,13 +154,12 @@ export const assertEventRestorable = async (event: { tenantId: string; eventPass
 // and everything guest-facing built on it (RSVPs, ticket purchases), is
 // untouched by this function, which never runs on any guest-facing path.
 //
-// Flagged, not fixed (pre-existing, independent of this batch): a
-// well-behaved frontend that always resends the event's CURRENT
-// ticketing/visibility on every edit (rather than omitting unchanged
-// fields) would re-trigger this gate on every save once a tenant lapses
-// — even though nothing is actually changing. Fixing that needs this
-// function to compare against the event's stored value, which is a
-// larger signature change out of scope for subscription billing.
+// The caller passes only a CHANGE (event.service.ts's
+// assertEventUpdateAllowed compares with the stored value, since the ticket
+// sales follow-ups, 2026-11): a frontend re-sending the event's current
+// visibility on every save no longer re-triggers this gate once a tenant
+// lapses. Ticketing never comes here from an event save: a change to PAID
+// is the ticket sales switch's.
 export const assertEventUpdatable = async (event: EntitlementDerivableEvent, input: EventTierCheckInput): Promise<void> => {
   if (!asksForCapability(input)) return;
   const tenant = await tenantRepository.findById(event.tenantId);

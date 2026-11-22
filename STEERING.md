@@ -3620,8 +3620,13 @@ shortly), 422 `PAYMENT_REJECTED`, or a 500 when Paystack was never reached
 Ticketing's guest wording doesn't use this yet. **Every payments message a
 customer can see is in their words**: "you", "your organisation", "a plan",
 never "tenant", an endpoint or route name, or a tier's code (`STANDARD`: its
-label, "Standard"). A refused subscribe: "You're already subscribed. Choose a
-plan below to switch to it."; a missing organisation and an account with
+label, "Standard"). Every tier refusal passes through `tierRefusalMessage`,
+which puts any tier or pass code in its message into its display name
+(`planDisplayName`: "The Spark plan … Upgrade to Celebrate or Elevate",
+"This event's Small pass"); a custom tier's name is its own.
+`ResolvedPlan.name` itself stays the code for a standard tier (code compares
+it). A refused subscribe: "You're already subscribed. Choose a plan below to
+switch to it."; a missing organisation and an account with
 none share `ORGANISATION_NOT_FOUND_MESSAGE` and `NO_ORGANISATION_MESSAGE`
 (`payment-errors.util.ts`). The super admin's own payments routes keep
 their terms.
@@ -3900,6 +3905,17 @@ submitted = { changeId, kind, bankName, accountNumberLast4, accountHolderName, e
   subaccount not active, leaves the current account in use and tries again
   next run. The switch is claimed by the change's own `PENDING → APPLIED`
   write. Emailed again. Nothing runs while `ticketing` is off.
+- **Unused subaccounts are deactivated at Paystack** (`PUT /subaccount/:code`,
+  `active: false`, best effort): a cancelled or failed change's own
+  subaccount, at once; the subaccount a change replaced, only after the
+  switch has committed (`replacedSubaccountCode`). A failure is retried by
+  the worker (5 minutes, doubling, at most 6 hours apart; never given up;
+  deactivating twice is harmless, so an unclear answer is just tried again).
+  The organisation's live subaccount is read fresh before every call and is
+  never deactivated. Each one is audited (`PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED`,
+  `details.reason`: `CANCELLED`, `FAILED` or `REPLACED`). A change
+  cancelled while its creation was still unclear may leave a subaccount
+  nobody found: it isn't deactivated.
 - **Creation is safe to retry.** Paystack takes no idempotency key on `POST
   /subaccount`, so each change has a `creationKey`, written into the
   subaccount's description (`e-velope payout <key>`). After an unclear answer
@@ -3934,7 +3950,9 @@ submitted = { changeId, kind, bankName, accountNumberLast4, accountHolderName, e
 - **Audited** (`AdminAuditEntry`, against the tenant): `PAYOUT_ACCOUNT_SETUP_REQUESTED`,
   `PAYOUT_ACCOUNT_CHANGE_REQUESTED`, `PAYOUT_ACCOUNT_SUBACCOUNT_CREATED`,
   `PAYOUT_ACCOUNT_APPLIED`, `PAYOUT_ACCOUNT_CHANGE_CANCELLED` (`details.via`:
-  `APP` or `EMAIL_LINK`), `PAYOUT_ACCOUNT_CHANGE_FAILED` (`details.reason`).
+  `APP` or `EMAIL_LINK`), `PAYOUT_ACCOUNT_CHANGE_FAILED` (`details.reason`),
+  `PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED` (`details.reason`, and
+  `skipped: 'LIVE_ACCOUNT'` if it had become the live one again).
   The actor is the Tenant Admin, `system` for the worker's steps, or
   `email-link`. Details: the change's id, kind, bank, last 4 digits, holder,
   dates.
@@ -3951,10 +3969,12 @@ PUT  /api/events/:eventId/tickets/:id  TicketTypeInput (any of it) → TicketTyp
 GET  /api/events/:eventId/tickets[/:id] → TicketTypeView[] (by sortOrder) | TicketTypeView
 DELETE /api/events/:eventId/tickets/:id → archived (409 TICKET_TYPE_HAS_SALES after a sale)
 TicketTypeInput = { name, description?: string | null, priceCents, quantity,
-  salesStart?: ISO | null, salesEnd?: ISO | null, admittedDayIds?: string[] | null,
+  salesStart?: 'YYYY-MM-DDTHH:mm' | null, salesEnd?: (the same) | null,   South African time
+  admittedDayIds?: string[] | null,
   maxPerOrder?: 1-20, sortOrder?, status?: 'ACTIVE'|'HIDDEN', currency?: 'ZAR' }
 TicketTypeView = { id, eventId, name, description, priceCents, currency, quantity, soldCount,
-  remaining, hasSales, salesStart, salesEnd, admittedDayIds (null = every day), maxPerOrder,
+  remaining, hasSales, salesStart, salesEnd (instants, ISO), salesStartLocal, salesEndLocal
+  ('YYYY-MM-DDTHH:mm', South African time), admittedDayIds (null = every day), maxPerOrder,
   sortOrder, status, createdAt, updatedAt }
 ```
 
@@ -3971,11 +3991,25 @@ TicketTypeView = { id, eventId, name, description, priceCents, currency, quantit
   (`TICKET_PRICE_INVALID`); a quantity, required, 1 to 100,000
   (`TICKET_QUANTITY_REQUIRED`/`_INVALID`); sales starting before they end
   (`TICKET_SALES_WINDOW_INVALID`) and ending no later than the event's last
-  day ends (`TICKET_SALES_END_AFTER_EVENT`); every day (`admittedDayIds:
+  day ends (`TICKET_SALES_END_AFTER_EVENT`), both in South African time (see
+  below); every day (`admittedDayIds:
   null`, including days added later) or chosen days, at least one
   (`TICKET_ADMITTED_DAYS_REQUIRED`), the event's own live ones
   (`TICKET_ADMITTED_DAY_UNKNOWN`); `maxPerOrder` 1 to 20, default 10
   (`TICKET_MAX_PER_ORDER_INVALID`); `status` ACTIVE or HIDDEN.
+- **Sales windows are South African time** (until events have a time zone).
+  `salesStart`/`salesEnd` are sent as the organiser's wall clock,
+  `YYYY-MM-DDTHH:mm` (seconds allowed), read as Africa/Johannesburg and
+  stored as the instant, through the scheduled reminders' own helper
+  (`reminder-schedule-time.util.ts`'s `parseSaLocal`); an offset or `Z` is
+  422 `TICKET_SALES_DATE_INVALID`. Returned twice, like a reminder's
+  `sendAt`/`sendAtLocal`: the instant, and `salesStartLocal`/`salesEndLocal`,
+  exactly as entered. The event's last day (stored as a literal UTC clock,
+  "Dates") is read as South African time too (`lastDayEndsAt`), for "sales
+  can't end after the event" and for "sales ended" on the public page, so a
+  window ending 23:59 on the last day is on sale at 23:58 and ended at 00:00,
+  South African time, whatever the server's zone. (Before 2026-11 they were
+  compared as UTC and opened and closed two hours late.)
 - **A type saved before these rules keeps saving unchanged.** A type whose
   resolved values equal what is stored isn't checked; once anything changes,
   the whole resulting type meets every rule (an R0 type with no quantity
@@ -4023,7 +4057,21 @@ TicketSalesView = { enabled, paused, ticketsSold, canEnable, canDisable,
 - **Off** is allowed freely before any sale and refused after (409
   `TICKET_SALES_HAVE_SALES`, through an event save too); **pause instead**
   (`paused: true`, `Event.salesPaused`; pausing a free event is 422
-  `TICKET_SALES_NOT_ENABLED`).
+  `TICKET_SALES_NOT_ENABLED`). **Resuming** (`paused: false`) needs an active
+  payout account and an active ticket type (the same 422s), never the plan.
+- **A downgrade never breaks a paid event.** Limits are checked when
+  something is created or switched on, never when it is used: the plan is
+  checked only when ticket sales are switched on. After that the event keeps
+  selling whatever happens to its organisation's plan (a downgrade, a lapse
+  to Spark): an event save re-sending `ticketing: 'PAID'` (or the stored
+  `visibility: 'PUBLIC'`) passes with no plan or payout check (only a
+  CHANGE to public is held to the plan; `assertEventUpdateAllowed`),
+  publishing a paid draft doesn't re-check them, the public page keeps
+  showing its tickets, and resuming after a pause doesn't re-check the plan.
+  **Round B's checkout must not re-check the plan either** (only that sales
+  are on and not paused, the type on sale, and a live payout account to
+  split into). Until 2026-11 an organisation whose plan lapsed, or whose
+  payout account wasn't active, was refused when it edited its paid event.
 - **No other path makes an event paid**: create, `PUT /api/events/:id`, the
   wizard's final save and the full update refuse a change to PAID (422
   `TICKET_SALES_USE_SWITCH`), after the `ticketing` flag's own 422 and before
@@ -4050,14 +4098,21 @@ subtotal; e-velope keeps `PLATFORM_COMMISSION_PERCENT` (2%) of it plus
 `PLATFORM_TICKET_FIXED_FEE_CENTS` per order; the guest pays those and
 Paystack's fee on top. **The order is grossed up as a whole**, so Paystack's
 flat fee is charged once per payment: the total T is the smallest whole
-number of cents with T − fee(T) ≥ subtotal + commission + fixed fee, where
-fee(T) = (T × rate + flat) × (1 + VAT) rounded **up**. Rounding: commission
-half up; the total up, then up again while short; the organiser's share is
-always the subtotal exactly, so every cent of rounding is e-velope's.
+number of cents with T − fee(T) ≥ subtotal + commission + fixed fee.
+**Paystack's fee rounds each part up to the cent** (`paystackFeeCents`):
+⌈T × rate⌉ + flat, then VAT ⌈(that) × VAT rate⌉ on top. Confirmed by a real
+test payment: R999.00 by local card was charged R34.48 (⌈R28.971⌉ = R28.98,
++ R1 = R29.98, + ⌈R4.497⌉ = R4.50), where one rounding of the whole gives
+R34.47. With that rounding there is no closed form: the gross-up starts at
+the exact real-valued solution (a lower bound: rounding only adds) and
+searches upward for the first T that covers the target. The result leaves
+e-velope its target exactly or at most a cent over, never short; the
+organiser's share is always the subtotal exactly. Commission rounds half up.
 Output, all whole cents: `subtotalCents`, `commissionCents`,
 `platformFixedFeeCents`, `processingFeeCents` (total − the rest),
 `totalCents`, `organiserShareCents` (= subtotal), `transactionChargeCents`
-(total − subtotal). **A single R200 ticket: R212.23.** Round B sends
+(total − subtotal). **A single R200 ticket: R212.24** (commission R4.00,
+processing R8.24, Paystack's fee on R212.24 exactly R8.24). Round B sends
 `transaction_charge` = `transactionChargeCents` with `bearer: "account"`
 (Paystack's fee from e-velope's side), so the subaccount gets exactly the
 subtotal; Paystack's split docs say `transaction_charge` overrides the
@@ -4091,7 +4146,7 @@ ticketSales: { paused, ticketTypes: [{ id, name, description,
   days: [{ id, label, date }], priceCents, allInPriceCents,
   fees: { commissionCents, platformFixedFeeCents, processingFeeCents, totalCents },
   availability: 'ON_SALE'|'NOT_YET_ON_SALE'|'SALES_ENDED'|'SOLD_OUT',
-  salesStart, salesEnd, remaining, maxPerOrder }] }
+  salesStart, salesEnd, salesStartLocal, salesEndLocal, remaining, maxPerOrder }] }
 ```
 
 ACTIVE types only, by `sortOrder`. Both the all-in price of one ticket and
@@ -5390,6 +5445,23 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   300 guests are three Resend calls rather than 300, but there is no queue
   behind it. A crash mid-send leaves fewer delivery rows than the
   announcement's recipient count.
+- **The RSVP deadline is read as UTC, not South African time.** An
+  organiser-picked deadline ("RSVP by 25 October, 23:59") is a literal UTC
+  clock ("Dates") compared with the real time, so replies close about two
+  hours late. Ticket sales windows were fixed for the same bug (they use the
+  scheduled reminders' Africa/Johannesburg helper); the deadline, and
+  registration's closing date with it, are a separate ticket.
+- **Ticket sales Round B** (notes, not built):
+  - The pass reconcile (`check-in-pass.service.ts`'s `planReconcile`)
+    treats any pass that isn't `RSVP` as stale and revokes it: it must
+    learn about `TICKET` passes before tickets are issued.
+  - At checkout, a ticket type isn't on sale after the event's last day ends
+    (`lastDayEndsAt`, South African time), even if the event's days were
+    moved earlier after the type was saved (the "sales can't end after the
+    event" rule is only checked when the type is saved).
+  - Checkout never re-checks the plan (see "Ticket sales", "A downgrade
+    never breaks a paid event"): only that sales are on and not paused, the
+    type is on sale, and there is a live payout account to split into.
 - **Ticket payments are not release-1 ready** (see "Payments", "Ticket
   sales"): Round A (2026-11) built the payout account (a change waits 24
   hours, emailed with a cancel link: audit A6's confirmation, without

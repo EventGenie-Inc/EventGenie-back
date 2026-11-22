@@ -88,7 +88,8 @@ describe('validation', () => {
 
   it("sales can't end after the event's last day ends, or before they start", async () => {
     const { org, ev } = await setup();
-    // The last day is 2 March 2027 with no end time: it ends at 23:59:59.999.
+    // The last day is 2 March 2027 with no end time: it ends at 23:59:59.999,
+    // South African time, like the sales window itself.
     const late = await createType(org.admin, ev.eventId, { salesEnd: '2027-03-03T00:00:00' });
     expect(late.status).toBe(422);
     expect(late.body.code).toBe('TICKET_SALES_END_AFTER_EVENT');
@@ -97,9 +98,19 @@ describe('validation', () => {
     expect(backwards.status).toBe(422);
     expect(backwards.body.code).toBe('TICKET_SALES_WINDOW_INVALID');
 
-    const ok = await createType(org.admin, ev.eventId, { salesStart: '2027-01-01T09:00:00', salesEnd: '2027-03-02T18:00:00' });
+    const ok = await createType(org.admin, ev.eventId, { salesStart: '2027-01-01T09:00:00', salesEnd: '2027-03-02T23:59' });
     expect(ok.status).toBe(201);
-    expect(ok.body.data).toMatchObject({ salesStart: '2027-01-01T09:00:00.000Z', salesEnd: '2027-03-02T18:00:00.000Z' });
+    // Stored as the instant (SA is UTC+2), returned as entered too.
+    expect(ok.body.data).toMatchObject({
+      salesStart: '2027-01-01T07:00:00.000Z',
+      salesEnd: '2027-03-02T21:59:00.000Z',
+      salesStartLocal: '2027-01-01T09:00',
+      salesEndLocal: '2027-03-02T23:59',
+    });
+    // An offset or "Z" isn't an organiser's wall clock: refused.
+    const zulu = await createType(org.admin, ev.eventId, { name: 'Zulu', salesEnd: '2027-03-02T18:00:00Z' });
+    expect(zulu.status).toBe(422);
+    expect(zulu.body.code).toBe('TICKET_SALES_DATE_INVALID');
 
     // Moving the end past the event later is refused the same way.
     const moved = await updateType(org.admin, ev.eventId, ok.body.data.id, { salesEnd: '2027-03-05T00:00:00' });

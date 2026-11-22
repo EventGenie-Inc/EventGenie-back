@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { installFirebaseMock } from '../helpers/team.js';
+import request from 'supertest';
+import app from '../../src/app.js';
+import { installFirebaseMock, headersFor } from '../helpers/team.js';
 import { view } from '../public-events/helpers.js';
+import { buildPublicTicketSales } from '../../src/modules/ticket-sales/ticket-public-view.js';
+import { parseSaLocal } from '../../src/modules/reminder-schedule/reminder-schedule-time.util.js';
 import {
   cleanupTicketSalesFixtures,
   createOrg,
@@ -56,14 +60,14 @@ describe('the public ticket list', () => {
 
     const [general, saturday] = sales.ticketTypes;
     expect(Object.keys(general).sort()).toEqual(
-      ['allInPriceCents', 'availability', 'days', 'description', 'fees', 'id', 'maxPerOrder', 'name', 'priceCents', 'remaining', 'salesEnd', 'salesStart'].sort()
+      ['allInPriceCents', 'availability', 'days', 'description', 'fees', 'id', 'maxPerOrder', 'name', 'priceCents', 'remaining', 'salesEnd', 'salesEndLocal', 'salesStart', 'salesStartLocal'].sort()
     );
-    // R200: R212.23 all in; the split adds up.
+    // R200: R212.24 all in (Paystack's fee rounded per part); the split adds up.
     expect(general).toMatchObject({
       description: 'Both days',
       priceCents: 20_000,
-      allInPriceCents: 21_223,
-      fees: { commissionCents: 400, platformFixedFeeCents: 0, processingFeeCents: 823, totalCents: 1_223 },
+      allInPriceCents: 21_224,
+      fees: { commissionCents: 400, platformFixedFeeCents: 0, processingFeeCents: 824, totalCents: 1_224 },
       availability: 'ON_SALE',
       remaining: null,
       maxPerOrder: 10,
@@ -120,5 +124,40 @@ describe('the public ticket list', () => {
     vi.unstubAllEnvs();
     await prisma.event.update({ where: { id: ev.eventId }, data: { ticketing: 'FREE' } });
     expect((await view(ev.shareToken)).body.data.ticketSales).toBeNull();
+  }, 60000);
+});
+
+describe('sales windows are South African time, whatever the server says', () => {
+  it('a window ending 23:59 SA is on sale at 23:58 SA and has ended at 00:00 SA', async () => {
+    // A server far from South Africa: nothing may depend on its zone.
+    vi.stubEnv('TZ', 'America/Los_Angeles');
+    expect(new Date('2027-03-02T12:00:00Z').getTimezoneOffset()).toBe(480);
+
+    const { org, ev, general } = await paidEvent();
+    const saved = await request(app)
+      .put(`/api/events/${ev.eventId}/tickets/${general}`)
+      .set(headersFor(org.admin))
+      .send({ salesEnd: '2027-03-02T23:59' });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data).toMatchObject({ salesEnd: '2027-03-02T21:59:00.000Z', salesEndLocal: '2027-03-02T23:59' });
+
+    const event = await prisma.event.findUniqueOrThrow({ where: { id: ev.eventId }, include: { eventDays: { where: { isArchived: false } } } });
+    const at = async (local: string) =>
+      (await buildPublicTicketSales(event, parseSaLocal(local)!)).ticketTypes.find((t) => t.id === general)!;
+
+    expect((await at('2027-03-02T23:58')).availability).toBe('ON_SALE');
+    expect((await at('2027-03-03T00:00')).availability).toBe('SALES_ENDED');
+    expect((await at('2027-03-02T23:58')).salesEndLocal).toBe('2027-03-02T23:59');
+  }, 60000);
+
+  it('a window opening 09:00 SA is not yet on sale at 08:59 SA and on sale at 09:00 SA', async () => {
+    vi.stubEnv('TZ', 'Pacific/Auckland');
+    const { ev, saturday } = await paidEvent();
+    await prisma.ticket.update({ where: { id: saturday }, data: { salesStart: parseSaLocal('2027-02-01T09:00')! } });
+    const event = await prisma.event.findUniqueOrThrow({ where: { id: ev.eventId }, include: { eventDays: { where: { isArchived: false } } } });
+    const at = async (local: string) =>
+      (await buildPublicTicketSales(event, parseSaLocal(local)!)).ticketTypes.find((t) => t.id === saturday)!.availability;
+    expect(await at('2027-02-01T08:59')).toBe('NOT_YET_ON_SALE');
+    expect(await at('2027-02-01T09:00')).toBe('ON_SALE');
   }, 60000);
 });

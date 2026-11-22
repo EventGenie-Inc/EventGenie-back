@@ -8,7 +8,6 @@ import { type PlatformRole, type EventStatus, type EventTicketing, type EventVis
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertEventCreatable, assertEventRestorable, assertEventUpdatable, assertWithinEventLimit } from '../subscription-tier-config/event-tier-enforcement.util.js';
 import { withMediaRetention } from './event-media-retention.util.js';
-import { assertEventReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { withEffectiveStatus, assertEventIsPublished, type EventDayLike } from './event-status.util.js';
 import { type EntitlementDerivableEvent } from '../event-pass/event-entitlement.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from './event-rsvp-deadline.util.js';
@@ -151,15 +150,17 @@ export const assertEventUpdateAllowed = async (
   // Paid only through the ticket sales switch; a paid event stays public
   // (ticket-sales-rules.util.ts). Before any plan check.
   await assertTicketingSaveAllowed(event, data);
-  const ticketing = isFeatureEnabled('ticketing') ? data.ticketing : undefined;
-  const visibility = isFeatureEnabled('publicEvents') ? data.visibility : undefined;
+  // Limits are checked when something is created or switched on, never
+  // when it is used: only a CHANGE to public is held to the plan. The stored
+  // value re-sent by a full-form save passes, so an organisation whose plan
+  // lapsed (to Spark, say) can still edit its public or paid event, and a
+  // paid event keeps selling. (A change to PAID never gets here: it is the
+  // ticket sales switch's, which checks the plan and the payout account when
+  // sales are switched on; ticket-sales.service.ts.)
+  const visibility = isFeatureEnabled('publicEvents') && data.visibility !== event.visibility ? data.visibility : undefined;
   await assertEventUpdatable(event, {
     ...(visibility !== undefined && { visibility }),
-    ...(ticketing !== undefined && { ticketing }),
   });
-  if (ticketing === 'PAID') {
-    await assertEventReadyToSellTickets(event);
-  }
   return coverChange;
 };
 
@@ -509,9 +510,8 @@ export const eventService = {
     assertPublicEventsAvailable(event.visibility);
     // A paid private event (possible before 2026-11) isn't published.
     assertPaidEventIsPublic(event);
-    if (event.ticketing === 'PAID') {
-      await assertEventReadyToSellTickets(event);
-    }
+    // No plan or payout check for a paid event here: those are the ticket
+    // sales switch's, when sales are switched on (STEERING "Ticket sales").
 
     await eventRepository.updateStatus(id, userId, 'PUBLISHED');
     return eventService.getById(id, requestingRole, tenantId);

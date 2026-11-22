@@ -1,6 +1,7 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { ticketSalesCounts } from '../ticket/ticket-sales-count.util.js';
-import { lastDayEnd } from '../ticket/ticket-validation.util.js';
+import { lastDayEndsAt } from '../ticket/ticket-validation.util.js';
+import { formatSaLocal } from '../reminder-schedule/reminder-schedule-time.util.js';
 import { calculateTicketOrderFees } from './ticket-fee-calculator.js';
 
 // ─────────────────────────────────────────
@@ -47,8 +48,12 @@ export interface PublicTicketType {
     totalCents: number;
   };
   availability: PublicTicketAvailability;
+  // The instants, and the same in South African time ("2027-03-02T18:00"),
+  // as the organiser entered them.
   salesStart: Date | null;
   salesEnd: Date | null;
+  salesStartLocal: string | null;
+  salesEndLocal: string | null;
   // Only when 1 to 10 are left (and on sale); otherwise null.
   remaining: number | null;
   maxPerOrder: number;
@@ -70,7 +75,7 @@ export const buildPublicTicketSales = async (
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
   });
   const counts = await ticketSalesCounts(rows.map((r) => r.id));
-  const eventEnds = lastDayEnd(event.eventDays);
+  const eventEnds = lastDayEndsAt(event.eventDays);
 
   const ticketTypes = rows.map((row): PublicTicketType => {
     const fees = calculateTicketOrderFees({ unitPriceCents: row.priceCents, quantity: 1 });
@@ -103,6 +108,8 @@ export const buildPublicTicketSales = async (
       availability,
       salesStart: row.salesStart,
       salesEnd: row.salesEnd,
+      salesStartLocal: row.salesStart ? formatSaLocal(row.salesStart) : null,
+      salesEndLocal: row.salesEnd ? formatSaLocal(row.salesEnd) : null,
       remaining: availability === 'ON_SALE' && left !== null && left <= ONLY_N_LEFT_THRESHOLD ? left : null,
       maxPerOrder: row.maxPerOrder,
     };

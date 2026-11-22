@@ -7,7 +7,9 @@ import { paymentAccountService } from './payment-account.service.js';
 //
 //  Every 5 minutes (started by server.ts only; tests call runOnce scoped to
 //  their own tenants): confirms subaccounts whose creation got no clear
-//  answer, then switches every confirmed change whose 24 hours are up.
+//  answer, switches every confirmed change whose 24 hours are up, then
+//  deactivates subaccounts nobody uses (a cancelled or failed change's, a
+//  replaced one), retrying any Paystack failed on.
 //  Each switch is claimed by the change's own PENDING → APPLIED write, so
 //  two servers never both apply one. Paystack failing leaves the current
 //  account in use, and the next run tries again.
@@ -20,11 +22,14 @@ export const PAYOUT_WORKER_INTERVAL_MS = 5 * 60 * 1000;
 const FIRST_RUN_DELAY_MS = 60 * 1000;
 
 export const payoutAccountWorker = {
-  runOnce: async ({ now = new Date(), tenantIds }: { now?: Date; tenantIds?: string[] } = {}): Promise<{ confirmed: number; applied: number }> => {
-    if (!isFeatureEnabled('ticketing')) return { confirmed: 0, applied: 0 };
+  runOnce: async ({ now = new Date(), tenantIds }: { now?: Date; tenantIds?: string[] } = {}): Promise<{ confirmed: number; applied: number; deactivated: number }> => {
+    if (!isFeatureEnabled('ticketing')) return { confirmed: 0, applied: 0, deactivated: 0 };
     const confirmed = await paymentAccountService.confirmPending(now, tenantIds);
     const applied = await paymentAccountService.applyDue(now, tenantIds);
-    return { confirmed, applied };
+    // Unused subaccounts (cancelled, failed, replaced) whose deactivation is
+    // due: the first try, or a retry after Paystack failed.
+    const deactivated = await paymentAccountService.deactivateDue(now, tenantIds);
+    return { confirmed, applied, deactivated };
   },
 };
 

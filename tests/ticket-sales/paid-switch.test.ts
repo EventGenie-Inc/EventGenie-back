@@ -126,8 +126,10 @@ describe('the plan setting (paidTicketingEnabled, on the event\'s effective plan
     const res = await switchOn(org, ev);
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('TICKET_SALES_NOT_ON_PLAN');
-    // The existing refusal wording (paidTicketingRefusal), plan named.
-    expect(res.body.message).toMatch(/spark/i);
+    // The plan's display name, never its code (tierRefusalMessage).
+    expect(res.body.message).toContain('Spark');
+    expect(res.body.message).not.toContain('SPARK');
+    expect(res.body.message).toBe('The Spark plan does not support paid ticketing. Upgrade your plan, or buy an Event Pass for this event, to sell tickets.');
     expect(await ticketingOf(ev)).toBe('FREE');
   }, 60000);
 
@@ -159,6 +161,8 @@ describe('the plan setting (paidTicketingEnabled, on the event\'s effective plan
     const refused = await switchOn(b.org, b.ev);
     expect(refused.status).toBe(403);
     expect(refused.body.code).toBe('TICKET_SALES_NOT_ON_PLAN');
+    // A custom tier's refusal names it, with the contact wording.
+    expect(refused.body.message).toBe(`Paid ticketing isn't available on your ${off.name} plan. Contact us at admin@e-velope.co.za if you need it.`);
   }, 60000);
 });
 
@@ -275,5 +279,77 @@ describe('while paid', () => {
     expect(after.status).toBe(200);
     expect(after.body.data.passes).toEqual([]);
     expect(await prisma.checkInPass.count({ where: { guestId: guest.id, status: 'ACTIVE' } })).toBe(0);
+  }, 60000);
+});
+
+describe('a downgrade never breaks a paid event', () => {
+  // Paid while on Elevate, then the organisation lands on Spark (a lapse,
+  // a downgrade): the plan was checked when sales were switched on, never
+  // again.
+  const paidThenSpark = async () => {
+    const r = await ready('ELEVATE');
+    expect((await switchOn(r.org, r.ev)).status).toBe(200);
+    await prisma.tenant.update({ where: { id: r.org.tenantId }, data: { subscriptionTier: 'SPARK' } });
+    return r;
+  };
+
+  it('the paid event can still be edited, the full form re-sending PUBLIC and PAID, and stays on sale', async () => {
+    const { org, ev } = await paidThenSpark();
+    const h = headersFor(org.admin);
+    const save = await request(app).put(`/api/events/${ev.eventId}`).set(h).send({ name: 'Renamed after the downgrade', visibility: 'PUBLIC', ticketing: 'PAID' });
+    expect(save.status).toBe(200);
+    expect(save.body.data).toMatchObject({ name: 'Renamed after the downgrade', ticketing: 'PAID' });
+    const full = await request(app).put(`/api/events/${ev.eventId}/full`).set(h).send({ event: { name: 'Full save', visibility: 'PUBLIC', ticketing: 'PAID' } });
+    expect(full.status).toBe(200);
+
+    // A payout account with a change waiting, or not active at Paystack:
+    // editing is still fine.
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { paystackSubaccountStatus: 'PENDING' } });
+    expect((await request(app).put(`/api/events/${ev.eventId}`).set(h).send({ description: 'Still editable', ticketing: 'PAID' })).status).toBe(200);
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { paystackSubaccountStatus: 'ACTIVE' } });
+
+    const sales = (await view(ev.shareToken)).body.data.ticketSales;
+    expect(sales.paused).toBe(false);
+    expect(sales.ticketTypes.map((t: { availability: string }) => t.availability)).toEqual(['ON_SALE']);
+    expect((await request(app).get(salesUrl(ev.eventId)).set(h)).body.data).toMatchObject({ enabled: true, paused: false });
+  }, 60000);
+
+  it('switching sales on for a new event on Spark is still refused', async () => {
+    const { org } = await paidThenSpark();
+    const fresh = await createTicketedEvent(org);
+    expect((await createType(org.admin, fresh.eventId)).status).toBe(201);
+    const res = await switchOn(org, fresh);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('TICKET_SALES_NOT_ON_PLAN');
+  }, 60000);
+
+  it('resuming after a pause works on Spark; it still needs an active payout account and an active type', async () => {
+    const { org, ev, ticketId } = await ready('ELEVATE');
+    await switchOn(org, ev);
+    expect((await setSales(org.admin, ev.eventId, { paused: true })).status).toBe(200);
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { subscriptionTier: 'SPARK' } });
+
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { paystackSubaccountStatus: 'PENDING' } });
+    const noPayout = await setSales(org.admin, ev.eventId, { paused: false });
+    expect(noPayout.status).toBe(422);
+    expect(noPayout.body.code).toBe('TICKET_SALES_PAYOUT_ACCOUNT_REQUIRED');
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { paystackSubaccountStatus: 'ACTIVE' } });
+
+    await prisma.ticket.update({ where: { id: ticketId }, data: { status: 'HIDDEN' } });
+    const noType = await setSales(org.admin, ev.eventId, { paused: false });
+    expect(noType.status).toBe(422);
+    expect(noType.body.code).toBe('TICKET_SALES_ACTIVE_TYPE_REQUIRED');
+    await prisma.ticket.update({ where: { id: ticketId }, data: { status: 'ACTIVE' } });
+
+    const resumed = await setSales(org.admin, ev.eventId, { paused: false });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body.data).toMatchObject({ enabled: true, paused: false });
+  }, 60000);
+
+  it('publishing a paid draft re-checks neither the plan nor the payout account', async () => {
+    const org = await createOrg('SPARK');
+    const draft = await createTicketedEvent(org, { status: 'DRAFT', ticketing: 'PAID' });
+    const res = await request(app).post(`/api/events/${draft.eventId}/publish`).set(headersFor(org.admin));
+    expect(res.status).toBe(200);
   }, 60000);
 });

@@ -133,11 +133,11 @@ describe('a change', () => {
     expect(emailsTo(ALERTS)[0]!.html).not.toMatch(/cancel-change/);
 
     // 23 hours on: nothing has switched.
-    expect(await runWorker(org, new Date(requestedAt + 23 * HOUR))).toEqual({ confirmed: 0, applied: 0 });
+    expect(await runWorker(org, new Date(requestedAt + 23 * HOUR))).toMatchObject({ confirmed: 0, applied: 0 });
     expect((await tenantOf(org)).paystackSubaccountCode).toBe(before.paystackSubaccountCode);
 
     // At effectiveAt: switched, and emailed again.
-    expect(await runWorker(org, new Date(effectiveAt + 60_000))).toEqual({ confirmed: 0, applied: 1 });
+    expect(await runWorker(org, new Date(effectiveAt + 60_000))).toMatchObject({ confirmed: 0, applied: 1 });
     const after = await tenantOf(org);
     expect(after.paystackSubaccountCode).not.toBe(before.paystackSubaccountCode);
     expect(after).toMatchObject({ paystackSubaccountStatus: 'ACTIVE', paystackAccountNumberLast4: '4321', paystackAccountHolderName: 'Acme Events New' });
@@ -146,9 +146,11 @@ describe('a change', () => {
     expect(await auditActions(org)).toEqual([
       'PAYOUT_ACCOUNT_SETUP_REQUESTED', 'PAYOUT_ACCOUNT_SUBACCOUNT_CREATED', 'PAYOUT_ACCOUNT_APPLIED',
       'PAYOUT_ACCOUNT_CHANGE_REQUESTED', 'PAYOUT_ACCOUNT_SUBACCOUNT_CREATED', 'PAYOUT_ACCOUNT_APPLIED',
+      // The replaced subaccount, deactivated once the switch is done.
+      'PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED',
     ]);
     // A second run changes nothing.
-    expect(await runWorker(org, new Date(effectiveAt + 2 * HOUR))).toEqual({ confirmed: 0, applied: 0 });
+    expect(await runWorker(org, new Date(effectiveAt + 2 * HOUR))).toMatchObject({ confirmed: 0, applied: 0 });
   }, 60000);
 
   it('one change at a time: another is refused until the first is cancelled', async () => {
@@ -194,7 +196,7 @@ describe('cancelling a change', () => {
     expect(again.body.code).toBe('PAYOUT_CANCEL_LINK_USED');
 
     // Nothing switches at effectiveAt.
-    expect(await runWorker(org, new Date(Date.now() + PAYOUT_CHANGE_DELAY_MS + HOUR))).toEqual({ confirmed: 0, applied: 0 });
+    expect(await runWorker(org, new Date(Date.now() + PAYOUT_CHANGE_DELAY_MS + HOUR))).toMatchObject({ confirmed: 0, applied: 0 });
     expect((await tenantOf(org)).paystackSubaccountCode).toBe(before.paystackSubaccountCode);
     expect(emailsTo(org.admin.email).map((e) => e.subject)).toContain('Your payout account change was cancelled');
     expect(await auditActions(org)).toContain('PAYOUT_ACCOUNT_CHANGE_CANCELLED');
@@ -235,7 +237,7 @@ describe('cancelling a change', () => {
       cancelledVia: 'APP',
       cancelledByUserId: org.admin.id,
     });
-    expect(await runWorker(org, new Date(Date.now() + PAYOUT_CHANGE_DELAY_MS + HOUR))).toEqual({ confirmed: 0, applied: 0 });
+    expect(await runWorker(org, new Date(Date.now() + PAYOUT_CHANGE_DELAY_MS + HOUR))).toMatchObject({ confirmed: 0, applied: 0 });
     expect((await tenantOf(org)).paystackSubaccountCode).toBe(before.paystackSubaccountCode);
 
     const nothing = await request(app).post(`${PAYOUT_URL}/change/cancel`).set(headersFor(org.admin)).send({});
@@ -279,7 +281,7 @@ describe('Paystack failing during a change leaves the current account in use', (
 
     // Looked for and not found: still waiting, then given up after an hour.
     const changeId = res.body.data.pendingChange.id;
-    expect(await runWorker(org, new Date(Date.now() + 2 * 60_000))).toEqual({ confirmed: 0, applied: 0 });
+    expect(await runWorker(org, new Date(Date.now() + 2 * 60_000))).toMatchObject({ confirmed: 0, applied: 0 });
     expect((await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: changeId } })).status).toBe('CREATING');
     clearSentEmails();
     await runWorker(org, new Date(Date.now() + PAYOUT_CONFIRMATION_WINDOW_MS + 10 * 60_000));
@@ -297,10 +299,10 @@ describe('Paystack failing during a change leaves the current account in use', (
     const code = (await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: res.body.data.pendingChange.id } })).subaccountCode!;
 
     fakePaystack.failNext(`GET /subaccount/${code}`, 'network', 3);
-    expect(await runWorker(org, new Date(effectiveAt + 60_000))).toEqual({ confirmed: 0, applied: 0 });
+    expect(await runWorker(org, new Date(effectiveAt + 60_000))).toMatchObject({ confirmed: 0, applied: 0 });
     expect(await tenantOf(org)).toMatchObject({ paystackSubaccountCode: before.paystackSubaccountCode, paystackSubaccountStatus: 'ACTIVE' });
 
-    expect(await runWorker(org, new Date(effectiveAt + 10 * 60_000))).toEqual({ confirmed: 0, applied: 1 });
+    expect(await runWorker(org, new Date(effectiveAt + 10 * 60_000))).toMatchObject({ confirmed: 0, applied: 1 });
     expect((await tenantOf(org)).paystackSubaccountCode).toBe(code);
   }, 60000);
 });
@@ -347,7 +349,7 @@ describe('creation is safe to retry', () => {
     const res = await change(org);
     expect(res.status).toBe(202);
 
-    expect(await runWorker(org, new Date(Date.now() + 2 * 60_000))).toEqual({ confirmed: 1, applied: 0 });
+    expect(await runWorker(org, new Date(Date.now() + 2 * 60_000))).toMatchObject({ confirmed: 1, applied: 0 });
     expect(await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: res.body.data.pendingChange.id } })).toMatchObject({ status: 'PENDING' });
     expect(fakePaystack.subaccounts.size).toBe(2);
   }, 60000);
@@ -427,5 +429,111 @@ describe('who can see or change it', () => {
     const res = await status(other);
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ state: 'NONE', accountNumberLast4: null, subaccountCode: null });
+  }, 60000);
+});
+
+describe('unused subaccounts are deactivated at Paystack', () => {
+  const pendingCodeOf = async (changeId: string) =>
+    (await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: changeId } })).subaccountCode!;
+  const deactivations = (code: string) => fakePaystack.callsTo('PUT', `/subaccount/${code}`).filter((c) => c.body?.['active'] === false);
+
+  it('cancelling deactivates the pending subaccount and leaves the live one alone (app and email link), audited', async () => {
+    for (const via of ['APP', 'EMAIL_LINK'] as const) {
+      const org = await createOrg();
+      await setUp(org);
+      const live = (await tenantOf(org)).paystackSubaccountCode!;
+      clearSentEmails();
+      const res = await change(org);
+      const pending = await pendingCodeOf(res.body.data.pendingChange.id);
+      expect(fakePaystack.subaccounts.get(pending)?.active).toBe(true);
+
+      if (via === 'APP') {
+        expect((await request(app).post(`${PAYOUT_URL}/change/cancel`).set(headersFor(org.admin)).send({})).status).toBe(200);
+      } else {
+        const token = new URLSearchParams(cancelLinkIn(emailsTo(org.admin.email)[0]!.html).hash.slice(1)).get('token')!;
+        expect((await cancelByLink(token)).status).toBe(200);
+      }
+      expect(fakePaystack.subaccounts.get(pending)?.active, via).toBe(false);
+      expect(fakePaystack.subaccounts.get(live)?.active, via).toBe(true);
+      expect(deactivations(live), via).toHaveLength(0);
+      expect((await tenantOf(org)).paystackSubaccountCode).toBe(live);
+      const entry = await prisma.adminAuditEntry.findFirstOrThrow({ where: { tenantId: org.tenantId, action: 'PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED' } });
+      expect(entry.details).toMatchObject({ subaccountCode: pending, reason: 'CANCELLED' });
+    }
+  }, 60000);
+
+  it('a failed deactivation is retried by the worker, and never touches the live account', async () => {
+    const org = await createOrg();
+    await setUp(org);
+    const live = (await tenantOf(org)).paystackSubaccountCode!;
+    const res = await change(org);
+    const changeId = res.body.data.pendingChange.id;
+    const pending = await pendingCodeOf(changeId);
+
+    fakePaystack.failNext(`PUT /subaccount/${pending}`, 'timeout');
+    expect((await request(app).post(`${PAYOUT_URL}/change/cancel`).set(headersFor(org.admin)).send({})).status).toBe(200);
+    expect(fakePaystack.subaccounts.get(pending)?.active).toBe(true);
+    const row = await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: changeId } });
+    expect(row).toMatchObject({ subaccountDeactivatedAt: null, deactivationAttempts: 1 });
+    expect(row.lastDeactivationError).toMatch(/timeout/);
+
+    // Not before its wait; then done.
+    expect(await runWorker(org, new Date(Date.now() + 60_000))).toMatchObject({ deactivated: 0 });
+    fakePaystack.failNext(`PUT /subaccount/${pending}`, { status: 500 });
+    expect(await runWorker(org, new Date(Date.now() + 6 * 60_000))).toMatchObject({ deactivated: 0 });
+    expect(await runWorker(org, new Date(Date.now() + 30 * 60_000))).toMatchObject({ deactivated: 1 });
+    expect(fakePaystack.subaccounts.get(pending)?.active).toBe(false);
+    expect((await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: changeId } })).subaccountDeactivatedAt).not.toBeNull();
+
+    // The live account, through all of it: active, in use, never asked.
+    expect(fakePaystack.subaccounts.get(live)?.active).toBe(true);
+    expect(deactivations(live)).toHaveLength(0);
+    expect(await tenantOf(org)).toMatchObject({ paystackSubaccountCode: live, paystackSubaccountStatus: 'ACTIVE' });
+    // Nothing left to do.
+    expect(await runWorker(org, new Date(Date.now() + 24 * HOUR))).toMatchObject({ deactivated: 0 });
+  }, 60000);
+
+  it('when a change takes effect, the old subaccount is deactivated, only after the switch', async () => {
+    const org = await createOrg();
+    await setUp(org);
+    const old = (await tenantOf(org)).paystackSubaccountCode!;
+    const res = await change(org);
+    const changeId = res.body.data.pendingChange.id;
+    const next = await pendingCodeOf(changeId);
+    const effectiveAt = new Date(res.body.data.pendingChange.effectiveAt).getTime();
+
+    // Before the switch: the old account is in use and untouched.
+    await runWorker(org, new Date(effectiveAt - HOUR));
+    expect(deactivations(old)).toHaveLength(0);
+
+    // The switch can't happen (Paystack unreachable): still nothing deactivated.
+    fakePaystack.failNext(`GET /subaccount/${next}`, 'network', 3);
+    expect(await runWorker(org, new Date(effectiveAt + 60_000))).toMatchObject({ applied: 0, deactivated: 0 });
+    expect(deactivations(old)).toHaveLength(0);
+    expect(fakePaystack.subaccounts.get(old)?.active).toBe(true);
+
+    expect(await runWorker(org, new Date(effectiveAt + 10 * 60_000))).toMatchObject({ applied: 1 });
+    expect((await tenantOf(org)).paystackSubaccountCode).toBe(next);
+    expect(fakePaystack.subaccounts.get(old)?.active).toBe(false);
+    expect(fakePaystack.subaccounts.get(next)?.active).toBe(true);
+    expect(deactivations(next)).toHaveLength(0);
+    expect(await prisma.payoutAccountChange.findUniqueOrThrow({ where: { id: changeId } })).toMatchObject({ replacedSubaccountCode: old });
+    const entry = await prisma.adminAuditEntry.findFirstOrThrow({ where: { tenantId: org.tenantId, action: 'PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED' } });
+    expect(entry.details).toMatchObject({ subaccountCode: old, reason: 'REPLACED' });
+  }, 60000);
+
+  it('a subaccount that is (again) the live one is never deactivated', async () => {
+    const org = await createOrg();
+    await setUp(org);
+    const res = await change(org);
+    const changeId = res.body.data.pendingChange.id;
+    const pending = await pendingCodeOf(changeId);
+    // As if it had become the live account some other way.
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { paystackSubaccountCode: pending } });
+    await prisma.payoutAccountChange.update({ where: { id: changeId }, data: { status: 'CANCELLED' } });
+    await runWorker(org, new Date(Date.now() + 60_000));
+    expect(deactivations(pending)).toHaveLength(0);
+    expect(fakePaystack.subaccounts.get(pending)?.active).toBe(true);
+    await prisma.tenant.update({ where: { id: org.tenantId }, data: { paystackSubaccountCode: null } });
   }, 60000);
 });

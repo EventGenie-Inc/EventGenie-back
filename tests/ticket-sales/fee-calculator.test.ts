@@ -1,17 +1,16 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { calculateTicketOrderFees } from '../../src/modules/ticket-sales/ticket-fee-calculator.js';
+import { calculateTicketOrderFees, paystackFeeCents } from '../../src/modules/ticket-sales/ticket-fee-calculator.js';
 import { getTicketFeeConfig, type TicketFeeConfig } from '../../src/shared/payments/payments.config.js';
 
 // ─────────────────────────────────────────
-//  THE TICKET FEE CALCULATOR (ticket sales Round A)
+//  THE TICKET FEE CALCULATOR (ticket sales Round A, rounding as Paystack
+//  charges since the follow-ups)
 //
-//  One pure function: the guest pays the commission and Paystack's fee on
-//  top of the ticket price, grossed up over the whole order (Paystack's
-//  flat fee once per payment), and the organiser receives exactly the
-//  subtotal. Every number is whole cents.
-//
-//  Paystack's fee, as the calculator assumes it: (T × 2.9% + R1) × 1.15,
-//  rounded up to the cent. `paystackFee` below recomputes it independently.
+//  The guest pays the commission and Paystack's fee on top of the ticket
+//  price, grossed up over the whole order (Paystack's flat fee once per
+//  payment); the organiser receives exactly the subtotal. Paystack's fee
+//  rounds each part up to the cent: ⌈2.9% of T⌉ + R1, then ⌈15% VAT⌉ on that.
+//  Every number is whole cents.
 // ─────────────────────────────────────────
 
 const DEFAULTS: TicketFeeConfig = {
@@ -22,15 +21,28 @@ const DEFAULTS: TicketFeeConfig = {
   paystackVatBasisPoints: 1500,
 };
 
-const paystackFee = (total: number, c: TicketFeeConfig = DEFAULTS): number =>
-  Math.ceil(((total * c.paystackFeeBasisPoints) / 10_000 + c.paystackFlatFeeCents) * (1 + c.paystackVatBasisPoints / 10_000) - 1e-9);
-
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe("Paystack's fee", () => {
+  it('a real test payment: R999.00 by local card was charged R34.48 in fees', () => {
+    // From the Paystack test-mode transaction: ⌈R28.971⌉ = R28.98, + R1 =
+    // R29.98, + VAT ⌈R4.497⌉ = R4.50 → R34.48. One rounding of the whole
+    // would give R34.47: Paystack rounds each part.
+    expect(paystackFeeCents(99_900, DEFAULTS)).toBe(3_448);
+  });
+
+  it('rounds each part up, never down', () => {
+    // R100: 290 + 100 = 390, VAT 58.5 → 59: 449 (one rounding: 448.5 → 449 too).
+    expect(paystackFeeCents(10_000, DEFAULTS)).toBe(449);
+    // R10.01: 29.029 → 30, + 100 = 130, VAT 19.5 → 20: 150.
+    expect(paystackFeeCents(1_001, DEFAULTS)).toBe(150);
+  });
+});
+
 describe('the worked example', () => {
-  it('a single R200 ticket: the guest pays R212.23, the organiser receives R200.00', () => {
+  it('a single R200 ticket: the guest pays R212.24, the organiser receives R200.00', () => {
     const fees = calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 1 }, DEFAULTS);
     expect(fees).toEqual({
       unitPriceCents: 20_000,
@@ -38,51 +50,55 @@ describe('the worked example', () => {
       subtotalCents: 20_000,
       commissionCents: 400,
       platformFixedFeeCents: 0,
-      processingFeeCents: 823,
-      totalCents: 21_223,
+      processingFeeCents: 824,
+      totalCents: 21_224,
       organiserShareCents: 20_000,
-      transactionChargeCents: 1_223,
+      transactionChargeCents: 1_224,
     });
+    // Paystack's fee on R212.24 is exactly the processing: nothing over.
+    expect(paystackFeeCents(21_224, DEFAULTS)).toBe(824);
   });
 
   it('reads the same values from the environment by default (PLATFORM_COMMISSION_PERCENT 2, Paystack 2.9% + R1 + 15% VAT)', () => {
     vi.stubEnv('PLATFORM_COMMISSION_PERCENT', '2');
     expect(getTicketFeeConfig()).toEqual(DEFAULTS);
-    expect(calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 1 }).totalCents).toBe(21_223);
+    expect(calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 1 }).totalCents).toBe(21_224);
   });
 });
 
 describe('every price and quantity', () => {
-  const cases: [number, number][] = [
-    [1_000, 1], // R10, the least a ticket can cost
-    [1_000, 20],
-    [5_000, 3],
-    [15_050, 4],
-    [20_000, 2],
-    [99_999, 7],
-    [500_000, 1], // R5,000
-    [500_000, 20],
-  ];
+  // R10 to R5,000, 1 to 20 tickets: every price step a little irregular, so
+  // the rounding lands every way.
+  const prices: number[] = [];
+  for (let cents = 1_000; cents <= 500_000; cents += 3_331) prices.push(cents);
+  prices.push(500_000, 99_900, 20_000, 1_001, 1_099);
 
-  it.each(cases)('R%s cents × %s: whole cents, the organiser gets exactly the subtotal, and e-velope is never short', (unit, qty) => {
-    const f = calculateTicketOrderFees({ unitPriceCents: unit, quantity: qty }, DEFAULTS);
-    for (const value of Object.values(f)) expect(Number.isInteger(value)).toBe(true);
-    expect(f.subtotalCents).toBe(unit * qty);
-    expect(f.organiserShareCents).toBe(f.subtotalCents);
-    expect(f.totalCents - f.transactionChargeCents).toBe(f.subtotalCents);
-    expect(f.commissionCents).toBe(Math.round((unit * qty * 2) / 100));
-    expect(f.subtotalCents + f.commissionCents + f.platformFixedFeeCents + f.processingFeeCents).toBe(f.totalCents);
-    // After Paystack's fee, e-velope keeps at least its commission...
-    expect(f.totalCents - paystackFee(f.totalCents) - f.subtotalCents).toBeGreaterThanOrEqual(f.commissionCents);
-    // ...and the total is the smallest that does: a cent less falls short.
-    const less = f.totalCents - 1;
-    expect(less - paystackFee(less) - f.subtotalCents).toBeLessThan(f.commissionCents);
+  it('e-velope is never short, never more than a cent over, and the organiser always gets the subtotal', () => {
+    let checked = 0;
+    for (const unit of prices) {
+      for (let qty = 1; qty <= 20; qty++) {
+        const f = calculateTicketOrderFees({ unitPriceCents: unit, quantity: qty }, DEFAULTS);
+        const needed = f.subtotalCents + f.commissionCents + f.platformFixedFeeCents;
+        const kept = f.totalCents - paystackFeeCents(f.totalCents, DEFAULTS);
+        expect(kept, `${unit} × ${qty}`).toBeGreaterThanOrEqual(needed);
+        expect(kept - needed, `${unit} × ${qty}`).toBeLessThanOrEqual(1);
+        expect(f.organiserShareCents).toBe(unit * qty);
+        expect(f.totalCents - f.transactionChargeCents).toBe(f.subtotalCents);
+        expect(f.subtotalCents + f.commissionCents + f.platformFixedFeeCents + f.processingFeeCents).toBe(f.totalCents);
+        for (const value of Object.values(f)) expect(Number.isInteger(value), `${unit} × ${qty}`).toBe(true);
+        // The smallest such total: a cent less falls short.
+        const less = f.totalCents - 1;
+        expect(less - paystackFeeCents(less, DEFAULTS), `${unit} × ${qty}`).toBeLessThan(needed);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(3_000);
   });
 
   it('R10 and R5,000 come to the totals worked out by hand', () => {
-    // R10: (1000 + 20 + 115) / (1 − 0.03335) = 1174.15… → 1175
-    expect(calculateTicketOrderFees({ unitPriceCents: 1_000, quantity: 1 }, DEFAULTS).totalCents).toBe(1_175);
-    // R5,000: (500000 + 10000 + 115) / 0.96665 = 527714.27… → 527715
+    // R10: target 1020. 1175 − ⌈34.075⌉ − 100 − ⌈20.25⌉ = 1019; 1176 → 1020.
+    expect(calculateTicketOrderFees({ unitPriceCents: 1_000, quantity: 1 }, DEFAULTS).totalCents).toBe(1_176);
+    // R5,000: target 510000. 527715 − (15304 + 100 + 2311) = 510000.
     expect(calculateTicketOrderFees({ unitPriceCents: 500_000, quantity: 1 }, DEFAULTS).totalCents).toBe(527_715);
   });
 });
@@ -91,15 +107,14 @@ describe('the order is grossed up as a whole', () => {
   it("Paystack's flat fee is charged once per order, not once per ticket", () => {
     const one = calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 1 }, DEFAULTS);
     const five = calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 5 }, DEFAULTS);
-    // Five tickets in one order cost less than five orders of one: the
-    // R1.15 flat fee (with VAT) and its gross-up are paid once.
-    expect(five.totalCents).toBeLessThan(5 * one.totalCents);
+    // Five in one order cost less than five orders of one: the R1.15 flat
+    // fee (with VAT) is paid once.
     expect(5 * one.totalCents - five.totalCents).toBeGreaterThanOrEqual(4 * 115);
-    // Exactly one flat fee in the order's processing: what's left after the
-    // percentage (with VAT) of the total is one flat fee, give or take a cent.
-    const percentPart = (five.totalCents * 290 * 1.15) / 10_000;
-    expect(five.processingFeeCents - percentPart).toBeGreaterThan(115 - 1);
-    expect(five.processingFeeCents - percentPart).toBeLessThan(115 + 2);
+    // The order's Paystack fee holds exactly one flat fee: ⌈2.9% of T⌉ + R1
+    // and VAT on that, never R5.
+    const percent = Math.ceil((five.totalCents * 290) / 10_000);
+    expect(paystackFeeCents(five.totalCents, DEFAULTS)).toBe(percent + 100 + Math.ceil(((percent + 100) * 15) / 100));
+    expect(five.processingFeeCents - paystackFeeCents(five.totalCents, DEFAULTS)).toBeLessThanOrEqual(1);
   });
 });
 
@@ -113,10 +128,9 @@ describe('configuration', () => {
     const without = calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 3 }, DEFAULTS);
     expect(withFee.platformFixedFeeCents).toBe(500);
     expect(withFee.organiserShareCents).toBe(60_000);
-    // R5 more for e-velope, grossed up: the guest pays a little over R5 more.
     expect(withFee.totalCents - without.totalCents).toBeGreaterThanOrEqual(500);
-    expect(withFee.totalCents - without.totalCents).toBeLessThanOrEqual(519);
-    expect(withFee.totalCents - paystackFee(withFee.totalCents) - withFee.subtotalCents).toBeGreaterThanOrEqual(withFee.commissionCents + 500);
+    expect(withFee.totalCents - without.totalCents).toBeLessThanOrEqual(520);
+    expect(withFee.totalCents - paystackFeeCents(withFee.totalCents, config) - withFee.subtotalCents).toBeGreaterThanOrEqual(withFee.commissionCents + 500);
   });
 
   it("Paystack's percentage, flat fee and VAT are configuration", () => {
@@ -127,7 +141,7 @@ describe('configuration', () => {
     const config = getTicketFeeConfig();
     expect(config).toMatchObject({ paystackFeeBasisPoints: 350, paystackFlatFeeCents: 200, paystackVatBasisPoints: 0 });
     const f = calculateTicketOrderFees({ unitPriceCents: 20_000, quantity: 1 });
-    // (20000 + 400 + 200) / 0.965 = 21347.15… → 21348
+    // 21348 − (⌈747.18⌉ + 200) = 20400.
     expect(f.totalCents).toBe(21_348);
     expect(f.organiserShareCents).toBe(20_000);
   });

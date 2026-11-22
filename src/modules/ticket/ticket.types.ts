@@ -14,8 +14,8 @@ export interface TicketTypeInput {
   description?: unknown; // string, or null to clear
   priceCents?: unknown; // whole cents, at least MIN_TICKET_PRICE_CENTS
   quantity?: unknown; // whole number, 1 or more; required for a new type
-  salesStart?: unknown; // ISO date-time, or null
-  salesEnd?: unknown; // ISO date-time, or null; not after the event's last day ends
+  salesStart?: unknown; // "2027-03-02T18:00", South African time, or null
+  salesEnd?: unknown; // the same, or null; not after the event's last day ends
   admittedDayIds?: unknown; // null = every day of the event; else at least one of its live day ids
   maxPerOrder?: unknown; // 1 to 20; default 10
   sortOrder?: unknown; // whole number; default: after the others
@@ -56,8 +56,12 @@ export interface TicketTypeView {
   // quantity − sold − held (checkouts in progress); null when unlimited.
   remaining: number | null;
   hasSales: boolean;
+  // The sales window: the instants, and the same in South African time
+  // ("2027-03-02T18:00"), exactly as the organiser entered them.
   salesStart: Date | null;
   salesEnd: Date | null;
+  salesStartLocal: string | null;
+  salesEndLocal: string | null;
   // null = every day of the event.
   admittedDayIds: string[] | null;
   maxPerOrder: number;
