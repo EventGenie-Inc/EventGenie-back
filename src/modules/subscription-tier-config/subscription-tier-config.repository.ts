@@ -56,6 +56,7 @@ export const subscriptionTierConfigRepository = {
         paidTicketingEnabled: data.paidTicketingEnabled ?? false,
         customRsvpFieldsEnabled: data.customRsvpFieldsEnabled ?? false,
         vendorPriorityPlacement: data.vendorPriorityPlacement ?? false,
+        qrCheckInEnabled: data.qrCheckInEnabled ?? true,
       },
     }).then(toPlain),
 
@@ -80,6 +81,7 @@ export const subscriptionTierConfigRepository = {
         ...(data.paidTicketingEnabled !== undefined && { paidTicketingEnabled: data.paidTicketingEnabled }),
         ...(data.customRsvpFieldsEnabled !== undefined && { customRsvpFieldsEnabled: data.customRsvpFieldsEnabled }),
         ...(data.vendorPriorityPlacement !== undefined && { vendorPriorityPlacement: data.vendorPriorityPlacement }),
+        ...(data.qrCheckInEnabled !== undefined && { qrCheckInEnabled: data.qrCheckInEnabled }),
         ...(data.isAvailable !== undefined && { isAvailable: data.isAvailable }),
       },
     }).then(toPlain),

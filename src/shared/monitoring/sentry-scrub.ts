@@ -53,6 +53,9 @@ const TOKEN_PATH_RULES: RegExp[] = [
 ];
 
 const TEXT_RULES: Array<[RegExp, string]> = [
+  // A check-in QR payload (check-in-pass-token.util.ts), whole: its pass id
+  // and signature together are a door code.
+  [/\b[A-Z]{2}\d+\.[a-z0-9]{20,40}\.[A-Za-z0-9_-]{20,}/g, '[checkin-code]'],
   // A guest document's Cloudinary public id ends in the file's own name
   // (guest-document.service.ts): the name goes, the folder stays.
   [/(\/documents\/[^/\s"']+\/[0-9a-f-]{36}\/)[^\s"'?#]+/gi, `$1${FILTERED}`],

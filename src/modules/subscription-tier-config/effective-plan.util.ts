@@ -67,6 +67,7 @@ export const PLAN_SWITCH_KEYS = [
   'paidTicketingEnabled',
   'customRsvpFieldsEnabled',
   'vendorPriorityPlacement',
+  'qrCheckInEnabled',
 ] as const;
 
 export type PlanLimitKey = (typeof PLAN_LIMIT_KEYS)[number];
@@ -100,6 +101,7 @@ const CAPABILITIES: readonly TierCapability[] = [
   'paidTicketingEnabled',
   'customRsvpFieldsEnabled',
   'vendorPriorityPlacement',
+  'qrCheckInEnabled',
 ];
 
 export const isCustomTierCurrent = (tenant: Pick<TenantPlanState, 'customTierId' | 'customTierEndsAt'>, now: Date = new Date()): boolean =>

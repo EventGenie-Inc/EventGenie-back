@@ -28,6 +28,7 @@ export interface CreateSubscriptionTierConfigDto {
   paidTicketingEnabled?: boolean;
   customRsvpFieldsEnabled?: boolean;
   vendorPriorityPlacement?: boolean;
+  qrCheckInEnabled?: boolean;
 }
 
 export interface UpdateSubscriptionTierConfigDto {
@@ -49,5 +50,6 @@ export interface UpdateSubscriptionTierConfigDto {
   paidTicketingEnabled?: boolean;
   customRsvpFieldsEnabled?: boolean;
   vendorPriorityPlacement?: boolean;
+  qrCheckInEnabled?: boolean;
   isAvailable?: boolean;
 }

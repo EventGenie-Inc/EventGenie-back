@@ -21,13 +21,17 @@ export type TierCapability =
   | 'publicEventsEnabled'
   | 'paidTicketingEnabled'
   | 'customRsvpFieldsEnabled'
-  | 'vendorPriorityPlacement';
+  | 'vendorPriorityPlacement'
+  | 'qrCheckInEnabled';
 
 const DEFAULT_WITHOUT_CONFIG: Record<TierCapability, (tier: SubscriptionTier) => boolean> = {
   publicEventsEnabled: (tier) => tier !== 'SPARK',
   paidTicketingEnabled: (tier) => tier !== 'SPARK',
   customRsvpFieldsEnabled: (tier) => tier !== 'SPARK',
   vendorPriorityPlacement: (tier) => tier === 'ELEVATE',
+  // QR check-in: on for every tier from the start (20261121120000_check_in_passes),
+  // so a tier with no config row has it too.
+  qrCheckInEnabled: () => true,
 };
 
 export const resolveTierCapability = (

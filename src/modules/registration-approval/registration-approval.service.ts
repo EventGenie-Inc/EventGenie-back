@@ -1,5 +1,6 @@
 import { type PlatformRole } from '@prisma/client';
 import { eventService } from '../event/event.service.js';
+import { checkInPassService } from '../check-in-pass/check-in-pass.service.js';
 import { eventPublicRepository } from '../event-public/event-public.repository.js';
 import { inviteDispatchService } from '../invite/invite-dispatch.service.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
@@ -152,6 +153,8 @@ export const registrationApprovalService = {
   ): Promise<RegistrationDecision> => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     const guest = await decide(event, guestId, 'APPROVED', userId);
+    // Approved is accepted: their door codes (check-in-pass.service.ts).
+    await checkInPassService.syncPartyQuietly(guest.id);
 
     const invite = await eventPublicRepository.findLatestInviteForGuest(guest.id);
     const email = guest.email?.trim();
@@ -173,6 +176,8 @@ export const registrationApprovalService = {
   ): Promise<RegistrationDecision> => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     const guest = await decide(event, guestId, 'DECLINED', userId);
+    // Never held any, but a decline leaves none active whatever happened.
+    await checkInPassService.syncPartyQuietly(guest.id);
 
     const email = guest.email?.trim();
     const emailSent = email ? (await inviteDispatchService.sendRegistrationDeclinedEmail(event, guest.id, email)).ok : false;

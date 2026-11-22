@@ -82,6 +82,13 @@ process.env.PAYSTACK_RETRY_DELAY_MS = '1';
 installFakePaystack();
 
 // ─────────────────────────────────────────
+//  CHECK-IN QR CODES — signed with a fixed test key, set before dotenv so a
+//  developer's .env can't change it (check-in-pass-token.util.ts). A test of
+//  another key or of a missing one stubs it itself.
+// ─────────────────────────────────────────
+process.env.CHECKIN_QR_SECRET = 'test-checkin-qr-secret-0123456789abcdefghijkl';
+
+// ─────────────────────────────────────────
 //  A STALLED DATABASE QUERY FAILS, IT DOESN'T WAIT.
 //
 //  query_timeout on the test database's URL, which the test-only pg pool in

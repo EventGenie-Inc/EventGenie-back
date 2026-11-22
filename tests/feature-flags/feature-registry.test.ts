@@ -80,6 +80,7 @@ describe('GET /api/config/features', () => {
       storageRetention: true,
       scheduledReminders: true,
       customTiers: true,
+      qrCheckIn: true,
     });
   });
 

@@ -12,6 +12,7 @@ const TIER_CAPABILITY_LABELS: Record<TierCapability, string> = {
   paidTicketingEnabled: 'Paid ticketing',
   customRsvpFieldsEnabled: 'Additional fields',
   vendorPriorityPlacement: 'Vendor priority placement',
+  qrCheckInEnabled: 'QR check-in',
 };
 
 // The capability settings (tier-capabilities.util.ts), and guest export,

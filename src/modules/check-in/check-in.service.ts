@@ -139,6 +139,38 @@ const loadEventAndDay = async (eventId: string, dayId: string, role: PlatformRol
 
 const isUniqueViolation = (err: unknown): boolean => (err as { code?: string } | null)?.code === 'P2002';
 
+// THE ONE CHECK-IN WRITE, for the guest list and a QR scan alike
+// (check-in-scan.service.ts): both record the person's CheckIn row for the
+// day on their invite, so the two can never disagree, and undo removes it
+// whichever made it. Idempotent and race-safe: the unique (invite, day) row
+// decides, never a read-then-write, so two taps or scans at once record one
+// check-in and the second sees it (created: false, the original time and
+// who). null when the person has no live invite to the day.
+const recordArrival = async (
+  eventId: string,
+  dayId: string,
+  guestId: string,
+  userId: string
+): Promise<{ created: boolean; invite: RosterInvite } | null> => {
+  const invites = await checkInRepository.findGuestInvites(eventId, guestId, dayId);
+  if (!invites.length) return null;
+
+  const already = onePerGuest(invites)[0]!;
+  if (already.checkIns.length) return { created: false, invite: already };
+
+  try {
+    const created = await checkInRepository.create(already.id, dayId, userId);
+    return { created: true, invite: { ...already, checkIns: [created] } };
+  } catch (err) {
+    // Lost a race with another tap on the same guest+day: the unique
+    // (invite, day) row already exists, which is exactly the "already
+    // checked in" outcome — read it back rather than fail.
+    if (!isUniqueViolation(err)) throw err;
+    const reread = await checkInRepository.findGuestInvites(eventId, guestId, dayId);
+    return { created: false, invite: onePerGuest(reread)[0]! };
+  }
+};
+
 export const checkInService = {
   // The door screen: everyone invited to the day, whether they have arrived,
   // and the day's counts.
@@ -200,28 +232,16 @@ export const checkInService = {
       guestId = match.guestId;
     }
 
-    const invites = await checkInRepository.findGuestInvites(eventId, guestId, dayId);
-    if (!invites.length) {
+    const recorded = await recordArrival(eventId, dayId, guestId, userId);
+    if (!recorded) {
       const guest = await checkInRepository.findGuestOnEvent(eventId, guestId);
       if (!guest) throw new HttpError(404, 'Guest not found');
       throw new HttpError(422, `${displayName(guest)} isn't invited to ${day.label}, so they can't be checked in for that day.`);
     }
-
-    const already = onePerGuest(invites)[0]!;
-    if (already.checkIns.length) return { created: false, guest: toRow(already) };
-
-    try {
-      const created = await checkInRepository.create(already.id, dayId, userId);
-      return { created: true, guest: toRow({ ...already, checkIns: [created] }) };
-    } catch (err) {
-      // Lost a race with another tap on the same guest+day: the unique
-      // (invite, day) row already exists, which is exactly the "already
-      // checked in" outcome — read it back rather than fail.
-      if (!isUniqueViolation(err)) throw err;
-      const reread = await checkInRepository.findGuestInvites(eventId, guestId, dayId);
-      return { created: false, guest: toRow(onePerGuest(reread)[0]!) };
-    }
+    return { created: recorded.created, guest: toRow(recorded.invite) };
   },
+
+  recordArrival,
 
   // Undo a wrong tap. Attendance-style hard delete: the row is removed
   // outright, there is nothing to restore. Idempotent like check-in —

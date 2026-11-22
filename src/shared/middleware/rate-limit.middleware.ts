@@ -481,6 +481,72 @@ export const rsvpQrIpLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITERS — THE INVITATION'S CHECK-IN CODES (POST /api/rsvp/passes)
+//
+//  The QR code's shape, with their own budgets: per invite (the SHA-256 of
+//  the token in the body, never the raw token; no token falls back to the
+//  IP and the service refuses it with a 400), and a backstop of FAILED
+//  requests per IP for a made-up token per request. The page asks once per
+//  open, and at the door a whole room opens it on one Wi-Fi, which is why it
+//  isn't keyed by IP.
+// ─────────────────────────────────────────
+export const RSVP_PASS_VIEWS_PER_INVITE_PER_5_MIN = 60;
+
+export const rsvpPassesInviteKey = (rawToken: string): string => `rsvp-passes-invite:${hashToken(rawToken)}`;
+
+export const rsvpPassesLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: RSVP_PASS_VIEWS_PER_INVITE_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    typeof req.body?.token === 'string' && req.body.token
+      ? rsvpPassesInviteKey(req.body.token as string)
+      : `rsvp-passes-ip:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please wait a few minutes and try again.',
+  },
+});
+
+export const rsvpPassesIpLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `rsvp-passes-ip-failures:${ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    message: 'Too many requests from this network. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
+//  RATE LIMITER — SCANNING CHECK-IN CODES
+//  (POST /api/events/:eventId/check-in/scan)
+//
+//  Per signed-in user (the route needs `authenticate`). A busy door scans
+//  about one code a second; 900 in 5 minutes is three a second sustained,
+//  so a fast scanner and its retries never meet it, while a script looping
+//  on codes is cut off. Each door phone is its own user's budget.
+// ─────────────────────────────────────────
+export const CHECK_IN_SCANS_PER_USER_PER_5_MIN = 900;
+
+export const checkInScanLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: CHECK_IN_SCANS_PER_USER_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `check-in-scan:${req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown')}`,
+  message: {
+    status: 'error',
+    code: 'CHECK_IN_SCAN_RATE_LIMITED',
+    message: 'Too many scans in a short time. Please wait a moment and scan again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITERS — A TEXT'S SHORT LINK (POST /api/rsvp/short-link)
 //
 //  Against guessing: SHORT_LINK_FAILURES_PER_IP_PER_15_MIN failed lookups

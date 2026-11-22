@@ -710,6 +710,7 @@ model Event {
   eventDays                EventDay[]
   invites                  Invite[]
   guests                   Guest[]
+  checkInPasses            CheckInPass[]
   memoryHub                MemoryHub?
   rsvpFields               RsvpField[]
   program                  EventProgram?
@@ -816,6 +817,7 @@ model EventDay {
   inviteEventDay InviteEventDay[]
   attendances    Attendance[]
   checkIns       CheckIn[]
+  checkInPasses  CheckInPass[]
   programItems   ProgramItem[]
   announcements  Announcement[]
 
@@ -877,6 +879,10 @@ model Guest {
   plusOnes               Guest[]                @relation("GuestPlusOnes")
   announcementDeliveries AnnouncementDelivery[]
   consentRecords         ConsentRecord[]
+  // Door check-in codes (CheckInPass): the party's passes, held on the
+  // guest who RSVP'd, and the ones that admit this guest as a plus-one.
+  checkInPasses          CheckInPass[]          @relation("CheckInPassGuest")
+  plusOneCheckInPasses   CheckInPass[]          @relation("CheckInPassPlusOne")
 }
 
 // ─────────────────────────────────────────
@@ -1016,6 +1022,66 @@ model CheckIn {
   eventDay EventDay @relation(fields: [eventDayId], references: [id])
 
   @@unique([inviteId, eventDayId])
+  @@index([eventDayId])
+}
+
+// ─────────────────────────────────────────
+//  CHECK-IN PASS — a door code's credential, one per person per event day.
+//
+//  Only a credential: whether someone is checked in is the CheckIn row
+//  above, never a column here, so replacing a pass never loses a check-in
+//  and the guest-list check-in and a QR scan always agree. The QR payload
+//  (EV1.<id>.<HMAC>) is never stored; it is rebuilt from the id with
+//  CHECKIN_QR_SECRET (check-in-pass-token.util.ts), so a copy of this
+//  table can't make a working code.
+//
+//  guestId is the party's guest, the one who RSVP'd; plusOneGuestId is set
+//  when the pass admits one of their plus-ones (a Guest row of its own,
+//  hostGuestId = guestId). The person admitted is plusOneGuestId ?? guestId.
+//  At most one ACTIVE pass per person per day, by the partial unique index
+//  "CheckInPass_one_active_per_person_day" (migration
+//  20261121120000_check_in_passes; Prisma can't express it).
+//
+//  kind RSVP: issued from an accepted RSVP (check-in-pass.service.ts).
+//  Ticket sales add TICKET with its own issuing rules; the scan flow and
+//  its result don't change (check-in-pass-kinds.ts).
+//
+//  Never edited except ACTIVE -> REVOKED (revokedAt, revokeReason), and
+//  never deleted by the app. The foreign keys cascade only so fixtures
+//  can be removed: guests, days and events are never hard-deleted.
+// ─────────────────────────────────────────
+
+enum CheckInPassKind {
+  RSVP
+}
+
+enum CheckInPassStatus {
+  ACTIVE
+  REVOKED
+}
+
+model CheckInPass {
+  id             String            @id @default(cuid())
+  eventId        String
+  eventDayId     String
+  guestId        String
+  plusOneGuestId String?
+  kind           CheckInPassKind
+  status         CheckInPassStatus @default(ACTIVE)
+  revokedAt      DateTime?
+  // Why, for support: RSVP_CHANGED, DECLINED, GUEST_REMOVED,
+  // NO_LONGER_VALID (found out of date at a scan). Text, so a later kind
+  // can add its own (a refund) without a migration.
+  revokeReason   String?
+  createdAt      DateTime          @default(now())
+
+  event        Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  eventDay     EventDay @relation(fields: [eventDayId], references: [id], onDelete: Cascade)
+  guest        Guest    @relation("CheckInPassGuest", fields: [guestId], references: [id], onDelete: Cascade)
+  plusOneGuest Guest?   @relation("CheckInPassPlusOne", fields: [plusOneGuestId], references: [id], onDelete: Cascade)
+
+  @@index([guestId, status])
+  @@index([plusOneGuestId])
   @@index([eventDayId])
 }
 
@@ -1828,6 +1894,10 @@ model SubscriptionTierConfig {
   customRsvpFieldsEnabled   Boolean          @default(false)
   // Vendor spaces owned by a tenant on this tier rank first in discovery.
   vendorPriorityPlacement   Boolean          @default(false)
+  // QR check-in at the door (check-in passes and the scanner). On for
+  // every tier (20261121120000_check_in_passes); the guest-list check-in
+  // never depends on it.
+  qrCheckInEnabled          Boolean          @default(true)
   isAvailable               Boolean          @default(true)
   updatedAt                 DateTime         @updatedAt
 }
@@ -1866,6 +1936,7 @@ model CustomTier {
   paidTicketingEnabled      Boolean  @default(false)
   customRsvpFieldsEnabled   Boolean  @default(false)
   vendorPriorityPlacement   Boolean  @default(false)
+  qrCheckInEnabled          Boolean  @default(true)
   isActive                  Boolean  @default(true)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt

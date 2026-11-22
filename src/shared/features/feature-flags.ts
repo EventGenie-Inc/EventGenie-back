@@ -79,6 +79,12 @@ export const FEATURE_NAMES = [
   // made stay, with their feature set). Custom tiers themselves (the super
   // admin's tiers, assigning them, and their limits) are not behind it.
   'customTiers',
+  // QR check-in (check-in-pass module): accepted guests get a door code per
+  // person per day on their invitation (POST /api/rsvp/passes), and door
+  // staff scan it (POST /api/events/:eventId/check-in/scan). Off: both
+  // routes are 404 and no pass is issued; passes already issued are kept
+  // (the guest-list check-in is untouched either way).
+  'qrCheckIn',
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];

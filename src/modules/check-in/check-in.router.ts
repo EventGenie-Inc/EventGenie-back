@@ -4,6 +4,10 @@ import { authenticate } from '../../shared/middleware/auth.middleware.js';
 import { requireEventAdmin } from '../../shared/middleware/role.middleware.js';
 import { type AuthenticatedRequest } from '../../shared/types/common.types.js';
 import { type CheckInInput } from './check-in.types.js';
+import { requireFeature } from '../../shared/middleware/feature.middleware.js';
+import { checkInScanLimiter } from '../../shared/middleware/rate-limit.middleware.js';
+import { checkInScanService } from '../check-in-pass/check-in-scan.service.js';
+import { type ScanInput } from '../check-in-pass/check-in-pass.types.js';
 
 // Mounted at /api/events/:eventId/check-in — deliberately NOT under /days,
 // whose router authenticates every request under it; this one authenticates
@@ -33,6 +37,22 @@ router.post('/days/:dayId', async (req: Request, res: Response, next: NextFuncti
       (req.body ?? {}) as CheckInInput, auth.user.id, auth.user.role, auth.user.tenantId
     );
     res.status(result.created ? 201 : 200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// Scan a check-in code (QR check-in). Body: { eventDayId, payload }.
+// Always 200 with GREEN / AMBER / RED and a reason (check-in-scan.service.ts);
+// a GREEN writes the same CheckIn row as the guest list's check-in above,
+// and the undo below removes it either way. Behind qrCheckIn, limited per
+// signed-in user.
+router.post('/scan', requireFeature('qrCheckIn'), checkInScanLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const result = await checkInScanService.scan(
+      req.params['eventId'] as string, (req.body ?? {}) as ScanInput, auth.user.id, auth.user.role, auth.user.tenantId
+    );
+    res.set('Cache-Control', 'no-store');
+    res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }
 });
 

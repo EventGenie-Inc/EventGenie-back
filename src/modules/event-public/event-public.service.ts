@@ -1,6 +1,7 @@
 import { eventRepository } from '../event/event.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { inviteDispatchService } from '../invite/invite-dispatch.service.js';
+import { checkInPassService } from '../check-in-pass/check-in-pass.service.js';
 import { resolveGuestLimit } from '../subscription-tier-config/guest-tier-enforcement.util.js';
 import {
   normalizeEmail,
@@ -433,6 +434,9 @@ export const eventPublicService = {
     // organiser approves (registration-approval.service.ts sends this same
     // email then).
     if (!event.registrationAutoApprove) return registrationAnswer(event, false);
+
+    // Accepted on registering: their door codes (check-in-pass.service.ts).
+    await checkInPassService.syncPartyQuietly(outcome.registrant.guestId);
 
     // After the commit: a failed send leaves a real registration, and
     // registering again with the same email re-sends it.

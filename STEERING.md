@@ -190,6 +190,7 @@ before the pilot merge:
 | `/invites/send`, `/invites/remind` (body `guestIds`) | safe (queried by the URL's event; a guest of another event the caller can see is skipped and named, any other id refuses the whole request naming nobody: `sortOutUnsendable`) |
 | `/memory-hub/:id…`, `/memory-hub/:hubId/items…` | **fixed** in the wave 2 follow-ups |
 | `/check-in/days/:dayId`, `…/guests/:guestId` (and an `inviteToken`) | safe (the day from the event's own days; guest and token looked up by event) |
+| `/check-in/scan` (body `eventDayId`, a pass id in the payload) | safe (the day from the event's own days, else 404; a pass of another event is `WRONG_EVENT` and names nothing) |
 | `/guests` create and import (body `eventDayIds`, the file's days) | safe (the event's own days) |
 | `/announcements` (body `eventDayId`) | safe (one of the event's live days, else 422) |
 | `/registration-settings` (body `openDayIds`) | safe (422 `REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN`) |
@@ -1740,7 +1741,7 @@ too. Never sent: request bodies, cookies, query
 strings, any header outside a short allowlist (`Authorization` and
 `X-Session-Token` included), device and session tokens, invite, share and
 team-invite tokens (in a URL path too: `/rsvp/validate/:token` is masked),
-oobCodes, OTP codes, passwords, and **any email address or phone number
+oobCodes, OTP codes, passwords, check-in QR payloads, and **any email address or phone number
 anywhere** (message, URL, exception text, breadcrumb, extra, tags), all
 masked. **A file's name** (a guest's document, which can carry their name)
 is a contact detail too: a `fileName`/`originalname`/public id key goes
@@ -1811,7 +1812,7 @@ the 20 MB ceiling; the two document settings only while `documentFields`
 is on) and the on/off settings
 (`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
 `vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
-`customRsvpFieldsEnabled`, `vendorPriorityPlacement`) of the tenant's
+`customRsvpFieldsEnabled`, `vendorPriorityPlacement`, `qrCheckInEnabled`) of the tenant's
 effective plan, a standard tier or a custom tier (see "Custom tiers"). They
 come from the one resolution every check uses (`resolveTenantPlan`,
 `effective-plan.util.ts`), with exactly the server's fallback when a
@@ -1928,7 +1929,7 @@ codebase: a feature is switched off by configuration, **never deleted**.
   `settingsPage`, `invitationDesigns`, `teamMembers`, `publicEvents`,
   `announcements`, `payments`, `memoryHubVideo`, `memoryHubDownload`,
   `feedback`, `archiveMediaPurge`, `documentFields`, `storageDeletion`,
-  `storageRetention`, `scheduledReminders`, `customTiers`.
+  `storageRetention`, `scheduledReminders`, `customTiers`, `qrCheckIn`.
 - **Configured by `FEATURES_DISABLED`**, a comma-separated list of names
   (e.g. `vendors,ticketing,sms,wallet,settingsPage,invitationDesigns`).
   Unset means everything is on. An unknown name stops the app at load
@@ -2062,6 +2063,10 @@ codebase: a feature is switched off by configuration, **never deleted**.
     their feature set. Custom tiers themselves (the super admin's tiers,
     assigning them, their limits, the "ends in 7 days" email) and the audit
     log are not behind it.
+  - `qrCheckIn` off (see "Check-in"): the scan route and the guest's
+    `/api/rsvp/passes` are 404 and no pass is issued; passes already issued
+    are kept, and a decline still revokes them. The guest-list check-in is
+    untouched.
   Tier messages and limits never name a switched-off feature to a tenant.
 - **The frontend reads `GET /api/config/features`** (public, no auth,
   `{ status: 'ok', data: { vendors: true, … } }`) and keeps no copy of the
@@ -4451,6 +4456,69 @@ undo are **idempotent**, and refused only on a draft or cancelled event — a
 completed event still accepts corrections. Done by a Tenant Admin or Event
 Admin; there is no door-staff role.
 
+**QR check-in** (behind `qrCheckIn`; `src/modules/check-in-pass/`). Each
+accepted guest and each of their plus-ones gets a **check-in pass** per day
+they said yes to that has a venue (`CheckInPass`; an online day has no
+door, so none). A pass is **only a credential**: whether someone is checked
+in is still the `CheckIn` row above, and a scan writes it through the same
+code as the list (`checkInService.recordArrival`), so the two always agree
+and the list's undo removes either.
+- **The code is a signed string, never a URL**: `EV1.<passId>.<signature>`,
+  HMAC-SHA256 with `CHECKIN_QR_SECRET` of the prefix, kind and pass id,
+  compared in constant time (`check-in-pass-token.util.ts`). The prefix is
+  the version and kind (a ticket's will have its own). The payload is
+  never stored, only rebuilt from the id, so the database alone can't make
+  one. A deployed server refuses to start without the secret
+  (`assertCheckInQrSecretConfigured`, in `server.ts`); each environment has
+  its own. Never log a payload; Sentry masks one (`[checkin-code]`).
+- **One active pass per person per day**, by a partial unique index; a pass
+  is never edited except to REVOKED (`revokedAt`, `revokeReason`) and never
+  deleted. Who a pass admits is decided in one place,
+  `check-in-pass-kinds.ts`, for issuing and scanning alike.
+- **Issuing** reconciles the whole party (the guest and their plus-ones)
+  under a lock on the guest's row: after RSVP submit, registration,
+  approving or declining one, and removing or restoring a guest or an
+  invite; and lazily when the guest's page asks
+  (`POST /api/rsvp/passes { token }`, refused exactly as the invitation is),
+  which is how guests who accepted earlier get theirs. **The page reads
+  before it writes**: it compares the active passes with the RSVP as it is
+  (people, days with a venue, approval and removal, the plan setting) and
+  takes the lock only when something is missing or out of date, re-reading
+  under it; an unchanged load writes nothing. Every other trigger above
+  reconciles at once. Inside the lock the party is read as flat queries,
+  never a nested `select`/`include`: inside an interactive transaction
+  Prisma loads relations in parallel on its one connection, which pg
+  deprecates (see Known gaps). A pass still wanted
+  keeps its code; anything else is revoked (a decline, other days, a
+  replaced plus-one: plus-ones are new rows on each RSVP edit, so their
+  codes change). Removed, archived, pending or declined guests, cancelled
+  and draft events have none. The reconcile never fails the write it
+  follows; **a scan re-checks the pass against the RSVP** anyway, and
+  revokes one found out of date.
+- **Scanning** (`POST /api/events/:eventId/check-in/scan { eventDayId,
+  payload }`, organisers and their assigned members, 900 per 5 minutes per
+  user) always answers 200 with GREEN (checked in), AMBER (already, with
+  the time in South African time and who) or RED with a reason: `INVALID`,
+  `INVITATION_LINK` (the guest showed their invitation's QR, its link:
+  <FRONTEND_BASE_URL>/rsvp?token=… or a text's /r/<code>, on any
+  e-velope.co.za host, with or without a scheme; recognised by shape only,
+  never looked up, so a real, another event's and a made-up token answer
+  identically and nobody is checked in or named; `invitation-link.util.ts`),
+  `REVOKED` ("This code is no longer valid.": nobody holds a pass for that
+  person and day now), `REPLACED` ("This code has been replaced. …": the
+  same person holds a newer one: the guest's own pass for that day, or for
+  a plus-one their own row's, or else the party bringing at least as many
+  plus-ones that day as were replaced together with this one, since a
+  plus-one is a new row on each RSVP edit; neither names anyone),
+  `WRONG_EVENT` (naming nothing about the other event),
+  `WRONG_DAY` (naming the code's day), `EVENT_CANCELLED`, `NOT_ALLOWED`
+  (any event the scanner can't see, the same as one that doesn't exist).
+  Never the guest's email, phone or answers. `table` is null until there
+  is a seating plan.
+- **Plan setting `qrCheckInEnabled`**, on for every tier and custom tier.
+  Off for an event's plan: no pass is issued or shown, and a scan is 403
+  `QR_CHECK_IN_UNAVAILABLE`. The guest-list check-in never depends on it.
+
 ### Sign-up: the organisation address
 
 The organisation's address (`Tenant.slug`, unique across every tenant,
@@ -4974,6 +5042,19 @@ Every task ends with a written report covering:
 
 Carried deliberately. Do not treat as bugs to fix opportunistically.
 
+- **pg's "client.query() when the client is already executing a query"
+  deprecation in test runs.** Prisma 7's query interpreter loads a nested
+  `include`/`select`'s relations with `Promise.all`; inside an interactive
+  `$transaction` they share one connection, which pg 8.23 (the test-only
+  adapter, `@prisma/adapter-pg`) deprecates. Two sites, both older than QR
+  check-in: RSVP submit's first read (`rsvp.service.ts`, the
+  `tx.invite.findUnique` with its include, kept as one query on purpose: each
+  round trip inside that transaction costs on Neon) and the documents purge
+  claim (`storage-retention.service.ts`'s `findEvent(eventId, tx)`).
+  Production runs `@prisma/adapter-neon`, whose client queues the queries
+  without warning, so the same paths run correctly there. It becomes an
+  error in the tests at pg 9. New code inside an interactive transaction
+  reads flat (check-in passes' `findPartyLocked` does).
 - **Reminders and organiser resends are refused on public events**
   (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
   would skip them anyway; a registrant who lost their link registers again
