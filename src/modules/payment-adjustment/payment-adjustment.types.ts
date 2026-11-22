@@ -31,6 +31,8 @@ export type TakeBackEffect =
   | 'NOTHING_WAS_GRANTED'
   | 'ALREADY_TAKEN_BACK'
   | 'TICKET_NOT_CHANGED'
+  // A ticket order (ticket sales Round B): its valid tickets voided.
+  | 'TICKETS_VOIDED'
   | 'PARTIAL_RECORDED_ONLY';
 
 export interface TakeBackResult {

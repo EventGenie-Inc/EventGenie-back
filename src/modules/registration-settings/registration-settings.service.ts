@@ -10,6 +10,7 @@ import {
 } from '../event-public/registration-rules.util.js';
 import { isValidPlusOnesAllowed, MAX_PLUS_ONES_ALLOWED } from '../guest/guest-validation.util.js';
 import { HttpError } from '../../shared/errors/http-error.js';
+import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
 import { parseDeadline, deadlineEnd } from '../event/event-rsvp-deadline.util.js';
 import { formatGuestDate } from '../../shared/utils/guest-date.util.js';
 import { registrationSettingsRepository, type RegistrationSettingsWrite } from './registration-settings.repository.js';
@@ -42,6 +43,8 @@ export const REGISTRATION_SETTINGS_ERROR_CODES = {
   OPEN_DAY_UNKNOWN: 'REGISTRATION_SETTINGS_OPEN_DAY_UNKNOWN',
   NO_OPEN_DAYS: 'REGISTRATION_SETTINGS_NO_OPEN_DAYS',
   AUTO_APPROVE_INVALID: 'REGISTRATION_SETTINGS_AUTO_APPROVE_INVALID',
+  // Approval asked for on an event that sells tickets.
+  APPROVAL_PAID_EVENT: 'REGISTRATION_SETTINGS_APPROVAL_PAID_EVENT',
 } as const;
 
 const CODES = REGISTRATION_SETTINGS_ERROR_CODES;
@@ -64,7 +67,11 @@ const toView = async (event: ScopedEvent): Promise<RegistrationSettingsView> => 
     registeredCount: seats.registeredSeats,
     planGuestLimit: limit,
     // getScopedWithPass's status is already the effective one.
-    registration: resolveRegistrationState({ ...event, eventDays: days }, seats, limit),
+    registration: resolveRegistrationState(
+      { ...event, ticketing: isFeatureEnabled('ticketing') ? event.ticketing : 'FREE', eventDays: days },
+      seats,
+      limit
+    ),
   };
 };
 
@@ -187,6 +194,15 @@ export const registrationSettingsService = {
     if (data.autoApprove !== undefined) {
       if (typeof data.autoApprove !== 'boolean') {
         throw new HttpError(422, 'Choose whether registrations are approved automatically.', CODES.AUTO_APPROVE_INVALID);
+      }
+      // An event selling tickets has no approval step: buying is the
+      // approval (ticket sales Round A).
+      if (!data.autoApprove && event.ticketing === 'PAID' && isFeatureEnabled('ticketing')) {
+        throw new HttpError(
+          422,
+          "This event sells tickets, so registrations can't wait for approval: buying a ticket is the approval.",
+          CODES.APPROVAL_PAID_EVENT
+        );
       }
       write.registrationAutoApprove = data.autoApprove;
     }

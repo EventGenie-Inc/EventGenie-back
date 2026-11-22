@@ -186,7 +186,7 @@ describe('after the end date the tenant is back on Spark', () => {
     // The date passes: every check is Spark's, and /me says so.
     await prisma.tenant.update({ where: { id: tenantId }, data: { customTierEndsAt: new Date(Date.now() - 1000) } });
     const refused = await refusal(() => assertEventCreatable(tenantId, { visibility: 'PUBLIC' }));
-    expect(refused.message).toBe('The SPARK plan only supports private events. Upgrade your plan to make this event public.');
+    expect(refused.message).toBe('The Spark plan only supports private events. Upgrade your plan to make this event public.');
     const me = await request(app).get('/api/tenants/me').set(headersFor(admin));
     expect(me.body.data.customTier).toBeNull();
     expect(me.body.data.planSettings).toMatchObject({ maxEvents: 1, maxGuestsPerEvent: 2, publicEventsEnabled: false, memoryHubEnabled: false });
@@ -223,7 +223,7 @@ describe('a tenant on a standard tier is unaffected', () => {
     expect(plan).toMatchObject({ name: 'SPARK', tier: 'SPARK', customTier: null });
     expect(plan.values).toMatchObject({ maxEvents: 1, maxGuestsPerEvent: 2, publicEventsEnabled: false, smsEnabled: false });
     const refused = await refusal(() => assertEventCreatable(tenantId, { hasCustomRsvpFields: true }));
-    expect(refused.message).toBe('The SPARK plan does not support additional fields. Upgrade your plan to add them.');
+    expect(refused.message).toBe('The Spark plan does not support additional fields. Upgrade your plan to add them.');
   });
 
   it("Celebrate with a Large pass: Elevate's settings whole (the pass rule by rank), not merged", async () => {

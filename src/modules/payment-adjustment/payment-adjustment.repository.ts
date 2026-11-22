@@ -3,6 +3,7 @@ import { type OriginalPaymentKeys } from '../../shared/payments/paystack-payload
 import { eventPassRepository } from '../event-pass/event-pass.repository.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { type OriginalPayment } from './payment-adjustment.types.js';
+import { ticketOrderRepository } from '../ticket-order/ticket-order.repository.js';
 
 const findNothingGrantedSubscriptionPayment = (keys: OriginalPaymentKeys, tx: Prisma.TransactionClient) => {
   const or: Prisma.PaymentLedgerEntryWhereInput[] = [];
@@ -20,6 +21,23 @@ export const paymentAdjustmentRepository = {
   // SMS bundle purchase, else the ledger's success row (a subscription
   // charge or a ticket). null when nothing we hold matches.
   findOriginal: async (keys: OriginalPaymentKeys, tx: Prisma.TransactionClient): Promise<OriginalPayment | null> => {
+    // A ticket order (ticket sales Round B), by any of its references or its
+    // transaction id, once paid.
+    const order = await ticketOrderRepository.findOrderByPaymentKeys(keys, tx);
+    if (order && order.paidReference) {
+      return {
+        product: 'TICKET',
+        tenantId: order.tenantId,
+        eventId: order.eventId,
+        relatedType: 'TicketOrder',
+        relatedId: order.id,
+        reference: order.paidReference,
+        transactionId: order.paystackTransactionId ?? keys.transactionId,
+        paidCents: order.totalCents,
+        currency: order.currency,
+        ledgerEntryId: null,
+      };
+    }
     const pass = await eventPassRepository.findPurchaseByPaymentKeys(keys, tx);
     if (pass) {
       return {

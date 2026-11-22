@@ -1,84 +1,104 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type Prisma } from '@prisma/client';
-import { type CreateTicketDto, type UpdateTicketDto } from './ticket.types.js';
+import { centsToDecimalString } from '../../shared/payments/money.util.js';
+import { type TicketTypeWrite } from './ticket.types.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
+// Every ticket read carries its admitted days (the chosen ones, when it
+// doesn't admit every day).
+const withDays = { admittedDays: { select: { eventDayId: true } } } as const;
+
+export type TicketRow = Prisma.TicketGetPayload<{ include: typeof withDays }>;
+
+// The columns a write sets. priceCents is the source of truth; the old
+// decimal price is written in step (deprecated, still read by the
+// invitation purchase path), and isAvailable follows the status.
+const columnsOf = (data: TicketTypeWrite) => ({
+  name: data.name,
+  description: data.description,
+  priceCents: data.priceCents,
+  price: centsToDecimalString(data.priceCents),
+  totalQuantity: data.totalQuantity,
+  salesStart: data.salesStart,
+  salesEnd: data.salesEnd,
+  admitsAllDays: data.admitsAllDays,
+  maxPerOrder: data.maxPerOrder,
+  sortOrder: data.sortOrder,
+  status: data.status,
+  isAvailable: data.status === 'ACTIVE',
+});
+
 export const ticketRepository = {
 
-  findAll: (eventId: string, opts?: { availableOnly?: boolean }) =>
-    prisma.ticket.findMany({
-      where: {
-        eventId,
-        isArchived: false,
-        ...(opts?.availableOnly ? { isAvailable: true } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
+  // Live types, in the organiser's order.
+  findAll: (eventId: string, db: Db = prisma) =>
+    db.ticket.findMany({
+      where: { eventId, isArchived: false },
+      include: withDays,
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     }),
 
   findById: (id: string, db: Db = prisma) =>
-    db.ticket.findFirst({
-      where: { id, isArchived: false },
-    }),
+    db.ticket.findFirst({ where: { id, isArchived: false }, include: withDays }),
 
-  create: (eventId: string, userId: string, data: CreateTicketDto, db: Db = prisma) =>
+  nextSortOrder: async (eventId: string, db: Db = prisma): Promise<number> => {
+    const last = await db.ticket.findFirst({ where: { eventId, isArchived: false }, orderBy: { sortOrder: 'desc' }, select: { sortOrder: true } });
+    return last ? last.sortOrder + 1 : 0;
+  },
+
+  create: (eventId: string, userId: string, data: TicketTypeWrite, db: Db = prisma) =>
     db.ticket.create({
       data: {
         eventId,
-        name: data.name,
-        description: data.description ?? null,
-        price: data.price,
-        currency: data.currency ?? 'ZAR',
-        totalQuantity: data.totalQuantity ?? null,
+        ...columnsOf(data),
+        currency: 'ZAR',
         soldCount: 0,
-        isAvailable: true,
         isArchived: false,
         createdBy: userId,
         updatedBy: userId,
+        ...(!data.admitsAllDays && { admittedDays: { create: data.admittedDayIds.map((eventDayId) => ({ eventDayId })) } }),
       },
+      include: withDays,
     }),
 
-  update: (id: string, userId: string, data: UpdateTicketDto, db: Db = prisma) =>
-    db.ticket.update({
+  // The whole type as resolved (ticket-validation.util.ts's resolveTicketType);
+  // its admitted days replaced.
+  update: async (id: string, userId: string, data: TicketTypeWrite, db: Db = prisma) => {
+    await db.ticketAdmittedDay.deleteMany({ where: { ticketId: id } });
+    return db.ticket.update({
       where: { id },
       data: {
-        ...(data.name !== undefined && { name: data.name }),
-        ...(data.description !== undefined && { description: data.description ?? null }),
-        ...(data.price !== undefined && { price: data.price }),
-        ...(data.currency !== undefined && { currency: data.currency }),
-        ...(data.totalQuantity !== undefined && { totalQuantity: data.totalQuantity ?? null }),
-        ...(data.isAvailable !== undefined && { isAvailable: data.isAvailable }),
+        ...columnsOf(data),
         updatedBy: userId,
+        ...(!data.admitsAllDays && { admittedDays: { create: data.admittedDayIds.map((eventDayId) => ({ eventDayId })) } }),
       },
-    }),
+      include: withDays,
+    });
+  },
 
   archive: (id: string, userId: string, db: Db = prisma) =>
-    db.ticket.update({
-      where: { id },
-      data: { isArchived: true, updatedBy: userId },
+    db.ticket.update({ where: { id }, data: { isArchived: true, updatedBy: userId } }),
+
+  // The event's live types that admit `eventDayId`: every type that admits
+  // all days, and those that chose it.
+  findAdmitting: (eventId: string, eventDayId: string, db: Db = prisma) =>
+    db.ticket.findMany({
+      where: { eventId, isArchived: false, OR: [{ admitsAllDays: true }, { admittedDays: { some: { eventDayId } } }] },
+      include: withDays,
     }),
 
+  // A removed day is no longer any type's: its chosen-day rows go with it.
+  forgetDay: (eventDayId: string, db: Db = prisma) => db.ticketAdmittedDay.deleteMany({ where: { eventDayId } }),
+
   // ─────────────────────────────────────────
-  //  STOCK — Ticketing & Payments batch
+  //  STOCK — the invitation purchase path (ticket-purchase.service.ts)
   //
-  //  Overselling is prevented HERE, at reserveHold, not at confirmSale.
-  //  reserveHold is the only place that ever refuses a request for lack
-  //  of stock; incrementSoldCount/releaseHold below are only ever called
-  //  for a quantity a prior reserveHold already, verifiably, secured —
-  //  they have nothing left to guard and are plain unconditional
-  //  updates. See ticket-purchase.service.ts's report comment for the
-  //  full hold-with-expiry design and why.
+  //  Overselling is prevented at reserveHold: one conditional UPDATE, so two
+  //  checkouts for the last ticket can't both get it. incrementSoldCount and
+  //  releaseHold only move what a reserveHold already secured.
   // ─────────────────────────────────────────
 
-  // Single-statement, conditional UPDATE — not a read-then-check-then-
-  // write. Two concurrent calls for the same ticket's last unit
-  // serialize on Postgres's row lock for that UPDATE; whichever runs
-  // second re-evaluates its WHERE clause against the FIRST call's
-  // already-applied heldCount increment, so at most one of them can
-  // ever see enough room. Returns whether THIS call secured the hold —
-  // false means either the ticket doesn't exist / is
-  // archived/unavailable, or there wasn't enough stock
-  // (totalQuantity - soldCount - heldCount < quantity) at that instant.
   reserveHold: async (ticketId: string, quantity: number, db: Db = prisma): Promise<boolean> => {
     const affected = await db.$executeRaw`
       UPDATE "Ticket"
@@ -91,24 +111,9 @@ export const ticketRepository = {
     return affected === 1;
   },
 
-  // Releases a hold that failed or expired without paying — unconditional,
-  // since the caller only ever passes a quantity a matching reserveHold
-  // already secured for this exact purchase, exactly once.
   releaseHold: (ticketId: string, quantity: number, db: Db = prisma) =>
-    db.ticket.update({
-      where: { id: ticketId },
-      data: { heldCount: { decrement: quantity } },
-    }),
+    db.ticket.update({ where: { id: ticketId }, data: { heldCount: { decrement: quantity } } }),
 
-  // Converts a hold into a real sale (or, for a late confirmation whose
-  // hold already lapsed, just records the sale outright) — the caller
-  // decides separately whether releaseHold also needs to run alongside
-  // this, based on the purchase's pre-transition status. Accepts an
-  // optional transaction client so it can run standalone (rare) or
-  // inside the confirm-purchase transaction (the normal case).
   incrementSoldCount: (id: string, quantity: number, db: Db = prisma) =>
-    db.ticket.update({
-      where: { id },
-      data: { soldCount: { increment: quantity } },
-    }),
+    db.ticket.update({ where: { id }, data: { soldCount: { increment: quantity } } }),
 };

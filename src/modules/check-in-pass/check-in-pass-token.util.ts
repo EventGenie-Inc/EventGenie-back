@@ -24,8 +24,12 @@ export const CHECKIN_QR_SECRET_ENV = 'CHECKIN_QR_SECRET';
 // At least 32 characters: `randomBytes(32).toString('base64url')` is 43.
 export const CHECKIN_QR_SECRET_MIN_LENGTH = 32;
 
+// RSVP passes are EV1.<passId>; a ticket (ticket sales Round B) is
+// EVT1.<issuedTicketId>: one QR per ticket, valid once on each admitted
+// venue day.
 export const PASS_PAYLOAD_PREFIX: Record<CheckInPassKind, string> = {
   RSVP: 'EV1',
+  TICKET: 'EVT1',
 };
 
 const KIND_BY_PREFIX = new Map<string, CheckInPassKind>(
@@ -89,6 +93,35 @@ const sign = (prefix: string, kind: CheckInPassKind, passId: string): string =>
 export const buildPassPayload = (pass: { id: string; kind: CheckInPassKind }): string => {
   const prefix = PASS_PAYLOAD_PREFIX[pass.kind];
   return `${prefix}.${pass.id}.${sign(prefix, pass.kind, pass.id)}`;
+};
+
+// ─────────────────────────────────────────
+//  A TICKET ORDER'S ACCESS TOKEN (ticket sales Round B)
+//
+//    <orderId>.<signature>     the signature: HMAC-SHA256 with the same
+//                              secret, of "order|<orderId>", base64url
+//
+//  What lets a guest (no sign-in) see their order and its tickets. Rebuilt
+//  from the order id, never stored, so a copy of the database can't open an
+//  order. Never in a URL path: the API takes it in the body, the emailed
+//  link carries it in the fragment. Never logged; Sentry masks it.
+// ─────────────────────────────────────────
+const ORDER_TOKEN_DOMAIN = 'order';
+
+export const buildOrderToken = (orderId: string): string =>
+  `${orderId}.${crypto.createHmac('sha256', signingSecret()).update(`${ORDER_TOKEN_DOMAIN}|${orderId}`).digest('base64url')}`;
+
+// The order a token names, if its signature is ours; null otherwise.
+export const verifyOrderToken = (token: unknown): string | null => {
+  if (typeof token !== 'string' || token.length > MAX_PAYLOAD_LENGTH) return null;
+  const parts = token.trim().split('.');
+  if (parts.length !== 2) return null;
+  const [orderId, signature] = parts as [string, string];
+  if (!PASS_ID_SHAPE.test(orderId) || !SIGNATURE_SHAPE.test(signature)) return null;
+  const expected = Buffer.from(buildOrderToken(orderId).split('.')[1]!);
+  const given = Buffer.from(signature);
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+  return orderId;
 };
 
 export interface VerifiedPayload {

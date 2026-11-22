@@ -69,4 +69,19 @@ router.delete('/days/:dayId/guests/:guestId', async (req: Request, res: Response
   } catch (err) { next(err); }
 });
 
+// Undo a ticket's check-in for the day (ticket sales Round B).
+router.delete('/days/:dayId/tickets/:ticketId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = req as AuthenticatedRequest;
+    const result = await checkInService.undoTicket(
+      req.params['eventId'] as string,
+      req.params['dayId'] as string,
+      req.params['ticketId'] as string,
+      auth.user.role,
+      auth.user.tenantId
+    );
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
 export default router;

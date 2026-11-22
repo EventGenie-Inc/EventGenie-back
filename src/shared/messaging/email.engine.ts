@@ -43,12 +43,20 @@ interface EmailMessage {
 // An email with no attachments: what every builder returns, and all the
 // batch endpoint can carry ("The attachments field is not supported yet",
 // Resend's batch docs; the SDK's own CreateBatchEmailOptions omits it).
-export type OutgoingEmail = EmailMessage & { inlineImages?: never };
+export type OutgoingEmail = EmailMessage & { inlineImages?: never; attachments?: never };
 
 // An email that may carry inline images (a guest's QR code). Goes through
 // sendEmail or sendEmailAttempt, never sendEmailBatch: the compiler refuses
 // one with images there.
-export type OutgoingEmailWithImages = EmailMessage & { inlineImages?: InlineImage[] };
+// A file attached to the email (not shown inline): a ticket order's PDF
+// (ticket sales Round B). Like inline images, never in a batch send.
+export interface FileAttachment {
+  filename: string;
+  contentType: 'application/pdf';
+  content: Buffer;
+}
+
+export type OutgoingEmailWithImages = EmailMessage & { inlineImages?: InlineImage[]; attachments?: FileAttachment[] };
 
 // The two sender addresses, from env config. Read at call time.
 export const inviteSenderAddress = (): string => process.env.RESEND_INVITE_EMAIL ?? 'onboarding@resend.dev';
@@ -63,14 +71,21 @@ const toResendPayload = (email: OutgoingEmailWithImages) => ({
   ...(email.replyTo ? { replyTo: email.replyTo } : {}),
   // Base64, not the Buffer: the SDK passes `content` through as it is, and
   // a Buffer would be serialised as {"type":"Buffer","data":[...]}.
-  ...(email.inlineImages?.length
+  ...(email.inlineImages?.length || email.attachments?.length
     ? {
-        attachments: email.inlineImages.map((image) => ({
-          content: image.content.toString('base64'),
-          filename: image.filename,
-          contentType: image.contentType,
-          contentId: image.contentId,
-        })),
+        attachments: [
+          ...(email.inlineImages ?? []).map((image) => ({
+            content: image.content.toString('base64'),
+            filename: image.filename,
+            contentType: image.contentType,
+            contentId: image.contentId,
+          })),
+          ...(email.attachments ?? []).map((file) => ({
+            content: file.content.toString('base64'),
+            filename: file.filename,
+            contentType: file.contentType,
+          })),
+        ],
       }
     : {}),
 });

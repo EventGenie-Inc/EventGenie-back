@@ -87,7 +87,7 @@ const scan = (actor: Actor | null, eventId: string, eventDayId: string, payload:
 };
 const activePasses = (guestId: string) =>
   prisma.checkInPass.findMany({ where: { guestId, status: 'ACTIVE' }, orderBy: { createdAt: 'asc' } });
-const payloadOf = (pass: { id: string; kind: 'RSVP' }) => buildPassPayload(pass);
+const payloadOf = (pass: { id: string; kind: 'RSVP' | 'TICKET' }) => buildPassPayload(pass);
 const personKey = (p: { eventDayId: string; plusOneGuestId: string | null; guestId: string }) => `${p.eventDayId}:${p.plusOneGuestId ?? p.guestId}`;
 
 describe('issuing passes', () => {
@@ -411,7 +411,7 @@ describe('scanning', () => {
     expect(results.map((r) => r.body.data.result)).toEqual(['GREEN', 'AMBER', 'RED', 'RED']);
     for (const res of results) {
       expect(Object.keys(res.body.data).sort()).toEqual(['checkedInAt', 'checkedInBy', 'day', 'message', 'person', 'reason', 'result', 'table']);
-      if (res.body.data.person) expect(Object.keys(res.body.data.person).sort()).toEqual(['guestId', 'guestOf', 'isPlusOne', 'name']);
+      if (res.body.data.person) expect(Object.keys(res.body.data.person).sort()).toEqual(['detail', 'guestId', 'guestOf', 'isPlusOne', 'name', 'ticketId', 'ticketNumber']);
       const text = JSON.stringify(res.body);
       for (const secret of [f.guest.email!, f.guest.phoneNumber!, '821234567', 'Vegetarian', f.invite.token]) expect(text).not.toContain(secret);
     }

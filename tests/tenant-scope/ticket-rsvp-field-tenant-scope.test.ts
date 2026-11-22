@@ -58,7 +58,7 @@ beforeAll(async () => {
   siblingEventId = (await createTestEvent(t1.id, u1.id)).id;
   ticketId = (
     await prisma.ticket.create({
-      data: { eventId, name: 'General', price: 150, currency: 'ZAR', createdBy: u1.id, updatedBy: u1.id },
+      data: { eventId, name: 'General', price: 150, priceCents: 15000, currency: 'ZAR', createdBy: u1.id, updatedBy: u1.id },
     })
   ).id;
   fieldId = (
@@ -98,8 +98,8 @@ describe('tickets — scoped through the event', () => {
     const h = headersFor(outsider);
     expect((await request(app).get(ticketsUrl(eventId)).set(h)).status).toBe(404);
     expect((await request(app).get(`${ticketsUrl(eventId)}/${ticketId}`).set(h)).status).toBe(404);
-    expect((await request(app).post(ticketsUrl(eventId)).set(h).send({ name: 'Free for all', price: 0 })).status).toBe(404);
-    expect((await request(app).put(`${ticketsUrl(eventId)}/${ticketId}`).set(h).send({ price: 1 })).status).toBe(404);
+    expect((await request(app).post(ticketsUrl(eventId)).set(h).send({ name: 'Free for all', priceCents: 1000, quantity: 1 })).status).toBe(404);
+    expect((await request(app).put(`${ticketsUrl(eventId)}/${ticketId}`).set(h).send({ priceCents: 1000 })).status).toBe(404);
     expect((await request(app).delete(`${ticketsUrl(eventId)}/${ticketId}`).set(h)).status).toBe(404);
 
     const tickets = await prisma.ticket.findMany({ where: { eventId } });
@@ -116,7 +116,7 @@ describe('tickets — scoped through the event', () => {
     expect((await request(app).get(`${ticketsUrl(eventId)}/${ticketId}`).set(h)).status).toBe(200);
 
     expect((await request(app).get(`${ticketsUrl(siblingEventId)}/${ticketId}`).set(h)).status).toBe(404);
-    expect((await request(app).put(`${ticketsUrl(siblingEventId)}/${ticketId}`).set(h).send({ price: 1 })).status).toBe(404);
+    expect((await request(app).put(`${ticketsUrl(siblingEventId)}/${ticketId}`).set(h).send({ priceCents: 1000 })).status).toBe(404);
     expect((await request(app).delete(`${ticketsUrl(siblingEventId)}/${ticketId}`).set(h)).status).toBe(404);
   }, 60000);
 

@@ -57,8 +57,11 @@ export const isQrCheckInOnForEvent = async (eventId: string): Promise<boolean> =
 export const planReconcile = (party: RsvpParty, active: PassRow[], issuing: boolean) => {
   const { wanted, revokeReason } = rsvpPartyPasses(party);
   const wantedKeys = new Set(wanted.map(passKey));
-  const stale = active.filter((p) => p.kind !== 'RSVP' || !wantedKeys.has(passKey(p)));
-  const held = new Set(active.filter((p) => !stale.includes(p)).map(passKey));
+  // Only RSVP passes are this reconcile's: a pass of any other kind (a
+  // ticket's) is never stale here (ticket sales Round B; tickets are voided
+  // by their own rules: cancel, refund, a lost chargeback).
+  const stale = active.filter((p) => p.kind === 'RSVP' && !wantedKeys.has(passKey(p)));
+  const held = new Set(active.filter((p) => p.kind === 'RSVP' && !stale.includes(p)).map(passKey));
   const missing: NewPass[] = issuing
     ? wanted
         .filter((w) => !held.has(passKey(w)))

@@ -11,6 +11,8 @@ import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js
 import { subscriptionRepository } from '../subscription/subscription.repository.js';
 import { type WebhookContext, type HandlerResult } from '../payment-webhook/payment-webhook.types.js';
 import { paymentAdjustmentRepository } from './payment-adjustment.repository.js';
+import { ticketOrderConfirmService } from '../ticket-order/ticket-order-confirm.service.js';
+import { ticketOrderEmails } from '../ticket-order/ticket-order-emails.js';
 import { type OriginalPayment, type TakeBackResult } from './payment-adjustment.types.js';
 
 // ─────────────────────────────────────────
@@ -30,7 +32,12 @@ import { type OriginalPayment, type TakeBackResult } from './payment-adjustment.
 //     otherwise the highest still-paid tier. Nothing of the event is deleted.
 //   SMS bundle refunded: REFUNDED, so its credits stop counting; credits
 //     already sent stay sent, what was left of them is gone.
-//   Ticket refunded: recorded only (ticket handling is a later release);
+//   Ticket order refunded (ticket sales Round B): every valid ticket is
+//     voided (its QR stops working, its place freed), the order REFUNDED, the
+//     organisation's admins told. e-velope's commission isn't returned. A
+//     lost chargeback: the same, REVERSED. A chargeback opened: the order is
+//     UNDER_REVIEW, its tickets stay valid; won: back to PAID.
+//   Ticket refunded on the retired invitation purchase path: recorded only;
 //     the super admin is alerted to deal with the guest's access.
 //   A PARTIAL refund (less than was paid): recorded and alerted, nothing
 //     taken back; a person decides.
@@ -83,6 +90,15 @@ const takeBack = async (
   status: 'REFUNDED' | 'REVERSED'
 ): Promise<TakeBackResult> => {
   const { tx } = ctx;
+
+  if (original.relatedType === 'TicketOrder') {
+    const result = await ticketOrderConfirmService.takeBackWithinTransaction(ctx, original.relatedId, status);
+    if (result.alreadyTakenBack) return { effect: 'ALREADY_TAKEN_BACK', details: {} };
+    ctx.after(async () => {
+      await ticketOrderEmails.organisationNotice(original.relatedId, status === 'REFUNDED' ? 'REFUNDED_FULL' : 'DISPUTE_LOST');
+    });
+    return { effect: 'TICKETS_VOIDED', details: { voided: result.voided } };
+  }
 
   if (original.product === 'EVENT_PASS') {
     const purchase = await tx.eventPassPurchase.findUnique({ where: { id: original.relatedId } });
@@ -266,6 +282,13 @@ export const paymentAdjustmentService = {
       ...result.details,
     });
 
+    // A partial refund of a ticket order voids nothing: the super admin
+    // chooses which tickets to cancel; the organisation is told.
+    if (!full && original.relatedType === 'TicketOrder') {
+      ctx.after(async () => {
+        await ticketOrderEmails.organisationNotice(original.relatedId, 'REFUNDED_PARTIAL');
+      });
+    }
     const needsPerson = !full || result.effect === 'SUBSCRIPTION_NOT_CURRENT_CHARGE' || result.effect === 'TICKET_NOT_CHANGED';
     if (needsPerson) {
       ctx.after(async () => {
@@ -301,6 +324,14 @@ export const paymentAdjustmentService = {
     if (ctx.event === 'charge.dispute.create') {
       if (await paymentAdjustmentRepository.adjustmentRecorded('DISPUTE_OPENED', original?.relatedId ?? null, disputeId, tx)) return { claimed: true };
       await record(ctx, 'DISPUTE_OPENED', original, amountCents, currency, { adjustmentId: disputeId, product: original?.product ?? null, status, dueAt, keys });
+      // A ticket order: under review, its tickets still valid; the
+      // organisation (responsible under the Terms) is told.
+      if (original?.relatedType === 'TicketOrder') {
+        await ticketOrderConfirmService.disputeOpenedWithinTransaction(ctx, original.relatedId);
+        ctx.after(async () => {
+          await ticketOrderEmails.organisationNotice(original.relatedId, 'DISPUTE_OPENED');
+        });
+      }
       ctx.after(async () => {
         await paymentAlertService.send({
           kind: 'DISPUTE',
@@ -356,6 +387,12 @@ export const paymentAdjustmentService = {
 
     if (won) {
       await record(ctx, 'DISPUTE_WON', original, amountCents, currency, { adjustmentId: disputeId, resolution, product: original?.product ?? null });
+      if (original?.relatedType === 'TicketOrder') {
+        await ticketOrderConfirmService.disputeWonWithinTransaction(ctx, original.relatedId);
+        ctx.after(async () => {
+          await ticketOrderEmails.organisationNotice(original.relatedId, 'DISPUTE_WON');
+        });
+      }
       ctx.after(async () => {
         await paymentAlertService.send({
           kind: 'DISPUTE',

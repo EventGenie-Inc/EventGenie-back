@@ -1,4 +1,5 @@
 import { type EventDayLocationType, type RsvpFieldType } from '@prisma/client';
+import { type PublicTicketSales } from '../ticket-sales/ticket-public-view.js';
 
 // Public self-registration — everything arrives from an unauthenticated
 // POST body, so every field is checked at runtime (event-public.service.ts's
@@ -40,6 +41,7 @@ export type RegistrationClosedCode =
   | 'CLOSING_DATE_PASSED' // CLOSED: the organiser's own closing date
   | 'RSVP_DEADLINE_PASSED' // CLOSED: no earlier closing date; the RSVP deadline
   | 'NO_DAYS_OPEN' // CLOSED: every day is closed to registration
+  | 'TICKETS_ONLY' // CLOSED: the event sells tickets (no free registration)
   | 'FULL'; // FULL: the cap, the plan's guest limit or the hard ceiling
 
 export interface RegistrationState {
@@ -94,6 +96,11 @@ export interface PublicEventView {
   // guest-document-allowance.util.ts), for the upload to refuse a larger
   // file before sending it. Null while documentFields is off.
   maxDocumentBytes: number | null;
+  // The event sells tickets (ticket sales Round A): its visible ticket types,
+  // with prices and availability (ticket-public-view.ts). Ticket type ids are
+  // in it: the checkout (Round B) sends them back. null for a free event,
+  // a cancelled one, and while ticketing is off.
+  ticketSales: PublicTicketSales | null;
 }
 
 // One outcome per event setting, never per person: a repeat registration

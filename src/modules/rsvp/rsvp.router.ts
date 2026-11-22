@@ -1,9 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { requireFeature } from '../../shared/middleware/feature.middleware.js';
 import { rsvpService } from './rsvp.service.js';
+import { ticketPurchaseRetired } from '../ticket-purchase/ticket-purchase-retired.util.js';
 import { eventProgramService } from '../event-program/event-program.service.js';
 import {
-  ticketQuoteLimiter,
   rsvpProgramLimiter,
   rsvpProgramIpLimiter,
   rsvpQrLimiter,
@@ -34,12 +34,10 @@ router.get('/validate/:token', async (req: Request, res: Response, next: NextFun
 
 // POST rather than a query string: the invite token is the guest's
 // credential and must not be placed in URLs, logs, or referrers.
-router.post('/ticket-quote', requireFeature('ticketing'), ticketQuoteLimiter, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const quote = await rsvpService.quoteTicket(req.body);
-    res.status(200).json({ status: 'ok', data: quote });
-  } catch (err) { next(err); }
-});
+//
+// RETIRED (ticket sales Round B): tickets are sold for public events only,
+// through /api/ticket-orders. 410 TICKET_PURCHASE_RETIRED, whatever the body.
+router.post('/ticket-quote', (_req: Request, _res: Response, next: NextFunction) => next(ticketPurchaseRetired()));
 
 // POST /api/rsvp/program
 // { token } — Contract A. Tells the guest's page whether to show a
@@ -130,23 +128,17 @@ router.post('/documents', documentUploadIpLimiter, receiveDocument, documentUplo
 // Re-initiates payment for an existing FAILED/EXPIRED ticket purchase —
 // never resubmits the whole RSVP form. See rsvp.service.ts's
 // retryTicketPayment.
-router.post('/ticket-purchase/retry', requireFeature('ticketing'), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const result = await rsvpService.retryTicketPayment(req.body?.token as string);
-    res.status(200).json({ status: 'ok', data: result });
-  } catch (err) { next(err); }
-});
+// RETIRED (ticket sales Round B): 410 TICKET_PURCHASE_RETIRED.
+router.post('/ticket-purchase/retry', (_req: Request, _res: Response, next: NextFunction) => next(ticketPurchaseRetired()));
 
 // GET /api/rsvp/ticket-purchase/confirm/:token
 // Called from the guest's Paystack callback landing page. Never trusts
 // the callback's own query parameters as proof of payment — this makes
 // an authoritative call back to Paystack if still PENDING. See
 // rsvp.service.ts's confirmTicketPayment / ticketPurchaseService.reconcile.
-router.get('/ticket-purchase/confirm/:token', requireFeature('ticketing'), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const result = await rsvpService.confirmTicketPayment(req.params['token'] as string);
-    res.status(200).json({ status: 'ok', data: result });
-  } catch (err) { next(err); }
-});
+// RETIRED (ticket sales Round B): 410 TICKET_PURCHASE_RETIRED. Existing
+// purchases stay readable to the organiser (/api/ticket-purchases), and a
+// late Paystack success on one is still recorded by the webhook.
+router.get('/ticket-purchase/confirm/:token', (_req: Request, _res: Response, next: NextFunction) => next(ticketPurchaseRetired()));
 
 export default router;

@@ -32,6 +32,25 @@ export const ADMIN_AUDIT_ACTIONS = {
   // super admin console's guest list for one event (admin-console.service.ts),
   // one entry per view, against the event's tenant.
   EVENT_GUEST_LIST_VIEWED: 'EVENT_GUEST_LIST_VIEWED',
+  // The payout account (ticket sales Round A): every step of a setup or a
+  // change, by the Tenant Admin who asked for it, or by the system
+  // (PAYOUT_AUDIT_SYSTEM_ACTOR) when the worker confirms, applies or gives
+  // up on one. Recorded so the super admin can see who sent an
+  // organisation's ticket money where, and when. Details: the change's id,
+  // kind, bank, last 4 digits and dates; never the account number.
+  PAYOUT_ACCOUNT_SETUP_REQUESTED: 'PAYOUT_ACCOUNT_SETUP_REQUESTED',
+  PAYOUT_ACCOUNT_CHANGE_REQUESTED: 'PAYOUT_ACCOUNT_CHANGE_REQUESTED',
+  PAYOUT_ACCOUNT_SUBACCOUNT_CREATED: 'PAYOUT_ACCOUNT_SUBACCOUNT_CREATED',
+  PAYOUT_ACCOUNT_APPLIED: 'PAYOUT_ACCOUNT_APPLIED',
+  PAYOUT_ACCOUNT_CHANGE_CANCELLED: 'PAYOUT_ACCOUNT_CHANGE_CANCELLED',
+  PAYOUT_ACCOUNT_CHANGE_FAILED: 'PAYOUT_ACCOUNT_CHANGE_FAILED',
+  // An unused subaccount deactivated at Paystack: a cancelled or failed
+  // change's own, or the one a change replaced (details.reason).
+  PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED: 'PAYOUT_ACCOUNT_SUBACCOUNT_DEACTIVATED',
+  // Ticket sales Round B: an organiser cancelled tickets (details: the
+  // event, the order, each ticket and whether it had been checked in, the
+  // reason). No money moved.
+  TICKETS_CANCELLED: 'TICKETS_CANCELLED',
   // Any other super admin write, recorded by admin-audit.middleware.ts from
   // the request itself (method, path, which fields were sent).
   API_WRITE: 'API_WRITE',

@@ -10,7 +10,6 @@ import { assertEventCreatable, assertPlanAllowsEvent, assertWithinEventLimit } f
 import { resolveEventPlan } from '../subscription-tier-config/effective-plan.util.js';
 import { tenantRepository } from '../tenant/tenant.repository.js';
 import { assertGuestsCreatable } from '../subscription-tier-config/guest-tier-enforcement.util.js';
-import { assertPaidTicketingAvailable } from '../ticket/ticketing-availability.util.js';
 import { assertPublicEventsAvailable } from '../event/public-events-availability.util.js';
 import { assertTenantReadyToSellTickets } from '../payment-account/payment-account-readiness.util.js';
 import { requireFieldType } from '../rsvp-field/rsvp-field-validation.util.js';
@@ -165,16 +164,17 @@ export const eventDuplicateService = {
     // A question type the copy may not have (a document question while
     // document fields are off) is refused as a new one would be.
     for (const field of source.rsvpFields) requireFieldType(field.fieldType, field.label);
-    assertPaidTicketingAvailable(source.ticketing);
+    // The copy is always FREE (ticket sales Round A): its ticket types aren't
+    // copied, and an event is only made paid by switching ticket sales on,
+    // which needs one (ticket-sales-rules.util.ts).
     assertPublicEventsAvailable(source.visibility);
     const creationInput = {
       visibility: source.visibility,
-      ticketing: source.ticketing,
+      ticketing: 'FREE' as const,
       hasCustomRsvpFields: source.rsvpFields.length > 0,
     };
     if (!grant) {
       await assertEventCreatable(tenantId, creationInput);
-      if (source.ticketing === 'PAID') await assertTenantReadyToSellTickets(tenantId);
     }
 
     // ── Dates: every one moves by the same whole number of days ──
@@ -312,7 +312,7 @@ export const eventDuplicateService = {
           coverFileId: cover?.fileId ?? null,
           status: 'DRAFT',
           visibility: source.visibility,
-          ticketing: source.ticketing,
+          ticketing: 'FREE',
           hostName: grant ? grant.hostName : source.hostName,
           rsvpDeadline,
           capacity: source.capacity,

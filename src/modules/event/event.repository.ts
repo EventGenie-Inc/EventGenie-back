@@ -304,6 +304,8 @@ export const eventRepository = {
         ...(data.coverImagePublicId !== undefined && { coverImagePublicId: data.coverImagePublicId ?? null }),
         ...(data.visibility !== undefined && { visibility: data.visibility }),
         ...(data.ticketing !== undefined && { ticketing: data.ticketing }),
+        // Switched off: nothing left to pause.
+        ...(data.ticketing === 'FREE' && { salesPaused: false }),
         ...(data.hostName !== undefined && { hostName: normalizeHostName(data.hostName) }),
         ...(data.rsvpDeadline !== undefined && { rsvpDeadline: data.rsvpDeadline ? parseDeadline(data.rsvpDeadline) : null }),
         ...(data.capacity !== undefined && { capacity: data.capacity ?? null }),

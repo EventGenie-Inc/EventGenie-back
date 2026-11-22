@@ -361,6 +361,9 @@ model Tenant {
   // this is the organiser's own, unverified account-holder declaration.
   paystackAccountHolderName       String?
   paystackSubaccountFailureReason String?
+  // When the current payout account (the subaccount above) took effect: set
+  // up, or switched to after a change's 24 hours (PayoutAccountChange).
+  paystackSubaccountActiveSince   DateTime?
 
   // ── Subscription billing (Subscription Billing batch) ──
   // Opposite direction from the subaccount above: this is EventGenie's
@@ -479,6 +482,7 @@ model Tenant {
   storedFiles             StoredFile[]
   customTierRequests      CustomTierRequest[]
   eventGrantRecipients    EventGrantRecipient[]
+  payoutAccountChanges PayoutAccountChange[]
 }
 
 // ─────────────────────────────────────────
@@ -688,6 +692,10 @@ model Event {
   // rsvp.service.ts's validate() projection), never something this
   // backend acts on. Meaningless (and unused) while ticketing is FREE.
   ticketsRefundable           Boolean         @default(false)
+  // Ticket sales Round A: while the event is paid (ticketing PAID), the
+  // organiser may pause sales instead of switching them off (which is
+  // refused once a ticket is sold). Meaningless while FREE.
+  salesPaused                 Boolean         @default(false)
   isArchived                  Boolean         @default(false)
   // When the event was archived; null while it is live (restoring clears
   // it). Starts the Memory Hub retention clock: 30 days later its photos
@@ -764,6 +772,8 @@ model Event {
   grantRecipient           EventGrantRecipient?
   // As a template: the grants made from it.
   grantsAsSource           EventGrant[]              @relation("EventGrantSource")
+  ticketOrders             TicketOrder[]
+  issuedTickets            IssuedTicket[]
 }
 
 // ─────────────────────────────────────────
@@ -822,6 +832,8 @@ model EventDay {
   announcements  Announcement[]
 
   @@unique([eventId, label])
+  ticketAdmissions    TicketAdmittedDay[]
+  ticketCheckIns      TicketCheckIn[]
 }
 
 // ─────────────────────────────────────────
@@ -1053,6 +1065,10 @@ model CheckIn {
 
 enum CheckInPassKind {
   RSVP
+  // Ticket sales Round B: a ticket's QR (EVT1.<issuedTicketId>.<sig>). Never
+  // a CheckInPass row: the IssuedTicket itself is the pass (one QR per
+  // ticket, valid once on each admitted venue day; TicketCheckIn).
+  TICKET
 }
 
 enum CheckInPassStatus {
@@ -1433,8 +1449,16 @@ model Ticket {
   eventId       String
   name          String
   description   String?
+  // DEPRECATED (ticket sales Round A, 2026-11): priceCents is the source of
+  // truth. Still written in step with it (priceCents / 100) so anything that
+  // reads the old column keeps working; to be dropped in a later cleanup.
   price         Decimal  @db.Decimal(10, 2)
+  // The ticket's price in integer cents: what the organiser receives per
+  // ticket. Backfilled from price × 100 by 20261122090000_ticket_sales_a.
+  priceCents    Int
   currency      String   @default("ZAR")
+  // The ticket type's quantity (the API's `quantity`). Required for a new
+  // type; null (unlimited) survives only on types saved before 2026-11.
   totalQuantity Int?
   // Truly, permanently sold — incremented ONLY when a TicketPurchase is
   // confirmed PAID (Ticketing & Payments batch), never at checkout
@@ -1455,15 +1479,52 @@ model Ticket {
   // conflict must be prevented BEFORE either guest is allowed to pay,
   // not discovered after.
   heldCount     Int      @default(0)
+  // Kept in step with status (ACTIVE = true, HIDDEN = false) for the
+  // invitation purchase path, which still reads it.
   isAvailable   Boolean  @default(true)
   isArchived    Boolean  @default(false)
+  // Ticket sales Round A (2026-11). Optional sales window; salesEnd can't be
+  // after the end of the event's last day.
+  salesStart    DateTime?
+  salesEnd      DateTime?
+  // true: admits every live day of the event, including days added later.
+  // false: admits exactly its TicketAdmittedDay rows (at least one).
+  admitsAllDays Boolean  @default(true)
+  maxPerOrder   Int      @default(10)
+  sortOrder     Int      @default(0)
+  // HIDDEN: never on the public page. A type with sales can only be hidden,
+  // never deleted.
+  status        TicketTypeStatus @default(ACTIVE)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   createdBy     String
   updatedBy     String
 
-  event     Event            @relation(fields: [eventId], references: [id])
-  purchases TicketPurchase[]
+  event        Event               @relation(fields: [eventId], references: [id])
+  purchases    TicketPurchase[]
+  admittedDays TicketAdmittedDay[]
+  orderItems   TicketOrderItem[]
+  issuedTickets IssuedTicket[]
+}
+
+enum TicketTypeStatus {
+  ACTIVE
+  HIDDEN
+}
+
+// The chosen days a ticket type admits, when it doesn't admit every day
+// (Ticket.admitsAllDays false). The app never deletes a ticket or a day (it
+// archives them); the cascade is for tests' hard deletes.
+model TicketAdmittedDay {
+  ticketId   String
+  eventDayId String
+  createdAt  DateTime @default(now())
+
+  ticket   Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  eventDay EventDay @relation(fields: [eventDayId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, eventDayId])
+  @@index([eventDayId])
 }
 
 // ─────────────────────────────────────────
@@ -2845,4 +2906,279 @@ model ReminderSchedule {
 
   @@index([status, sendAt])
   @@index([eventId, createdAt])
+}
+
+// ─────────────────────────────────────────
+//  PAYOUT ACCOUNT CHANGE (ticket sales Round A, 2026-11)
+//
+//  One row per payout account set up or changed. The CURRENT account is
+//  always Tenant.paystackSubaccount*; a change becomes current only when
+//  the worker applies it at effectiveAt (24 hours after it was asked for;
+//  at once for the first setup), so sales keep using the account that
+//  works until then. Never the full account number: the bank, its last 4
+//  digits and the holder's name only.
+//
+//  status: CREATING   the Paystack subaccount isn't confirmed yet (no clear
+//                     answer): the worker retries, looking for it by
+//                     creationKey before creating another.
+//          PENDING    created; waiting for effectiveAt.
+//          APPLIED    now the tenant's current account.
+//          CANCELLED  stopped by the email link or a Tenant Admin.
+//          FAILED     Paystack refused the details: nothing changed.
+//  At most one CREATING or PENDING row per tenant (a partial unique index
+//  in the migration).
+// ─────────────────────────────────────────
+
+enum PayoutAccountChangeStatus {
+  CREATING
+  PENDING
+  APPLIED
+  CANCELLED
+  FAILED
+}
+
+enum PayoutAccountChangeKind {
+  SETUP
+  CHANGE
+}
+
+model PayoutAccountChange {
+  id                   String                    @id @default(cuid())
+  tenantId             String
+  kind                 PayoutAccountChangeKind
+  status               PayoutAccountChangeStatus @default(CREATING)
+  // Written into the subaccount's description at Paystack, so a retry after
+  // an unclear answer finds the one already made instead of making another.
+  creationKey          String                    @unique
+  subaccountCode       String?                   @unique
+  subaccountActive     Boolean?
+  businessName         String
+  bankCode             String
+  bankName             String
+  accountNumberLast4   String
+  accountHolderName    String
+  effectiveAt          DateTime
+  requestedByUserId    String
+  // The emailed cancel link's token, as a SHA-256 hash: single use
+  // (cancelTokenUsedAt), expiring at cancelTokenExpiresAt.
+  cancelTokenHash      String?                   @unique
+  cancelTokenExpiresAt DateTime?
+  cancelTokenUsedAt    DateTime?
+  cancelledAt          DateTime?
+  cancelledByUserId    String?
+  // 'EMAIL_LINK' or 'APP'.
+  cancelledVia         String?
+  appliedAt            DateTime?
+  failureReason        String?
+  creationAttempts     Int                       @default(0)
+  nextAttemptAt        DateTime?
+  lastAttemptError     String?
+  // Deactivating subaccounts nobody uses (ticket sales follow-ups): this
+  // change's own subaccount once it is cancelled or fails, and the account
+  // it replaced once it takes effect (only after the switch). Best effort,
+  // retried by the worker; the organisation's live subaccount never.
+  subaccountDeactivatedAt DateTime?
+  replacedSubaccountCode  String?
+  replacedBusinessName    String?
+  replacedBankCode        String?
+  replacedDeactivatedAt   DateTime?
+  deactivationAttempts    Int       @default(0)
+  nextDeactivationAt      DateTime?
+  lastDeactivationError   String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([status, effectiveAt])
+}
+
+// ─────────────────────────────────────────
+//  TICKET ORDERS (ticket sales Round B, 2026-11; STEERING "Ticket sales")
+//
+//  A guest's purchase of tickets for a paid public event: no sign-in, one
+//  order per checkout, several ticket types. Money in integer cents, every
+//  figure snapshotted at checkout from Round A's fee calculator, with the
+//  organisation's live payout subaccount and the Terms version accepted.
+//  Never deleted.
+//
+//  status: PENDING       stock held (holdExpiresAt), waiting for Paystack.
+//          PAID          confirmed by the webhook or a verify: tickets issued.
+//          FAILED        the latest attempt failed or was abandoned; a late
+//                        success on any of its references still goes through.
+//          EXPIRED       unpaid when its hold ran out; same.
+//          UNDER_REVIEW  paid but held for a person: the amount, currency or
+//                        split didn't match (reviewReason PAYMENT_MISMATCH: no
+//                        tickets), or a chargeback is open (DISPUTE: the
+//                        tickets stay valid).
+//          REFUNDED      refunded in full (refund.processed): tickets voided.
+//          REVERSED      chargeback lost: tickets voided.
+// ─────────────────────────────────────────
+
+enum TicketOrderStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  UNDER_REVIEW
+  REFUNDED
+  REVERSED
+}
+
+enum TicketOrderPaymentStatus {
+  INITIATED
+  SUCCEEDED
+  FAILED
+  // A success on an order already paid through another reference: nothing
+  // issued, PAYMENT_DUPLICATE for the super admin.
+  DUPLICATE
+  // A success whose amount, currency or split didn't match the snapshot.
+  MISMATCH
+}
+
+enum IssuedTicketStatus {
+  VALID
+  // By the organiser (they handle any refund themselves).
+  CANCELLED
+  // Refunded in full through Paystack (refund.processed).
+  REFUNDED
+  // Chargeback lost.
+  REVERSED
+}
+
+model TicketOrder {
+  id                    String            @id @default(cuid())
+  eventId               String
+  tenantId              String
+  status                TicketOrderStatus @default(PENDING)
+  // Why it is UNDER_REVIEW: PAYMENT_MISMATCH or DISPUTE.
+  reviewReason          String?
+  buyerName             String
+  buyerEmail            String
+  buyerPhone            String?
+  // The client's key for this checkout: the same key again is the same
+  // checkout, never a second hold or charge.
+  idempotencyKey        String
+  // sha256 of the event, the normalised email and the items: the same buyer
+  // asking for the same tickets while this is pending gets this checkout.
+  requestFingerprint    String
+  // The fee calculator's breakdown for the whole order, at checkout.
+  subtotalCents         Int
+  commissionCents       Int
+  platformFixedFeeCents Int
+  processingFeeCents    Int
+  totalCents            Int
+  transactionChargeCents Int
+  currency              String            @default("ZAR")
+  // The organisation's live payout subaccount at checkout: the split.
+  subaccountCode        String
+  termsVersion          String
+  // The stock this order holds lapses at holdExpiresAt; holdReleasedAt is
+  // set once it has been given back (expired, failed, or turned into sales).
+  holdExpiresAt         DateTime
+  holdReleasedAt        DateTime?
+  paidAt                DateTime?
+  paidReference         String?
+  paystackTransactionId String?
+  // Paystack's actual fee for the paid payment, when the event gives it.
+  actualFeeCents        Int?
+  // Paid after its hold lapsed, when the type had sold out meanwhile.
+  oversold              Boolean           @default(false)
+  // Chargeback: OPEN, WON or LOST.
+  disputeStatus         String?
+  confirmationEmailClaimedAt DateTime?
+  confirmationEmailSentAt    DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  event    Event                @relation(fields: [eventId], references: [id])
+  items    TicketOrderItem[]
+  payments TicketOrderPayment[]
+  tickets  IssuedTicket[]
+
+  @@unique([eventId, idempotencyKey])
+  @@index([eventId, status])
+  @@index([requestFingerprint, status])
+  @@index([status, holdExpiresAt])
+}
+
+// One ticket type in an order, as it was at checkout.
+model TicketOrderItem {
+  id             String   @id @default(cuid())
+  orderId        String
+  ticketTypeId   String
+  typeName       String
+  quantity       Int
+  unitPriceCents Int
+  // The days the type admitted at checkout (its days lock once sold).
+  admitsAllDays  Boolean
+  admittedDayIds String[] @default([])
+  createdAt      DateTime @default(now())
+
+  order      TicketOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ticketType Ticket      @relation(fields: [ticketTypeId], references: [id])
+
+  @@index([orderId])
+  @@index([ticketTypeId])
+}
+
+// Every Paystack attempt for an order, its reference kept forever: a retry
+// adds a row, so a late success on an earlier reference is still found.
+model TicketOrderPayment {
+  id               String                   @id @default(cuid())
+  orderId          String
+  reference        String                   @unique
+  authorizationUrl String?
+  status           TicketOrderPaymentStatus @default(INITIATED)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  order TicketOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+// One admission: a ticket bought in a paid order. It is its own check-in
+// pass (CheckInPassKind TICKET): one QR, valid once on each admitted venue
+// day. Not named: the buyer forwards it.
+model IssuedTicket {
+  id                String             @id @default(cuid())
+  orderId           String
+  eventId           String
+  ticketTypeId      String
+  orderItemId       String
+  // Short, human-readable, unique: "TK-7QK4-M2XP".
+  number            String             @unique
+  // 1..n within its order ("Ticket 2 of 3").
+  indexInOrder      Int
+  status            IssuedTicketStatus @default(VALID)
+  voidedAt          DateTime?
+  cancelReason      String?
+  cancelledByUserId String?
+  createdAt         DateTime           @default(now())
+
+  order      TicketOrder     @relation(fields: [orderId], references: [id])
+  event      Event           @relation(fields: [eventId], references: [id])
+  ticketType Ticket          @relation(fields: [ticketTypeId], references: [id])
+  checkIns   TicketCheckIn[]
+
+  @@index([orderId])
+  @@index([eventId, status])
+}
+
+// A ticket checked in on a day: one per ticket per day (the unique pair), by
+// a scan or the guest list alike; undo deletes it.
+model TicketCheckIn {
+  id             String   @id @default(cuid())
+  issuedTicketId String
+  eventDayId     String
+  checkedInAt    DateTime @default(now())
+  checkedBy      String
+
+  ticket   IssuedTicket @relation(fields: [issuedTicketId], references: [id], onDelete: Cascade)
+  eventDay EventDay     @relation(fields: [eventDayId], references: [id], onDelete: Cascade)
+
+  @@unique([issuedTicketId, eventDayId])
+  @@index([eventDayId])
 }

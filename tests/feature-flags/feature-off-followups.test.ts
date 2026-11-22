@@ -166,7 +166,9 @@ describe('ticketing off — publish, the wizard, and RSVP submit', () => {
     const { draftEvent, publish } = await setup();
     const event = await draftEvent({ ticketing: 'PAID' });
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(publish(event.id)).rejects.toMatchObject(planRefusal);
+    // On: a paid PRIVATE draft (possible before 2026-11) isn't published:
+    // tickets are for public events (ticket sales Round A).
+    await expect(publish(event.id)).rejects.toMatchObject({ statusCode: 422, code: 'TICKET_SALES_PUBLIC_ONLY' });
     vi.stubEnv('FEATURES_DISABLED', 'ticketing');
     await expect(publish(event.id)).rejects.toMatchObject({ statusCode: 422, message: TICKETING_UNAVAILABLE_MESSAGE });
     expect((await prisma.event.findUniqueOrThrow({ where: { id: event.id } })).status).toBe('DRAFT');
@@ -175,7 +177,8 @@ describe('ticketing off — publish, the wizard, and RSVP submit', () => {
   it("the wizard's final save refuses a paid event and creates nothing", async () => {
     const { tenant, materialize } = await setup();
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(materialize({ ticketing: 'PAID' })).rejects.toMatchObject(planRefusal);
+    // On: the wizard never makes an event paid (ticket sales Round A).
+    await expect(materialize({ ticketing: 'PAID' })).rejects.toMatchObject({ statusCode: 422, code: 'TICKET_SALES_USE_SWITCH' });
     vi.stubEnv('FEATURES_DISABLED', 'ticketing');
     await expect(materialize({ ticketing: 'PAID' })).rejects.toMatchObject({ statusCode: 422, message: TICKETING_UNAVAILABLE_MESSAGE });
     expect(await prisma.event.count({ where: { tenantId: tenant.id } })).toBe(0);
@@ -195,10 +198,9 @@ describe('ticketing off — publish, the wizard, and RSVP submit', () => {
     expect(after.status).toBe('PENDING');
     expect(await prisma.ticketPurchase.count({ where: { inviteId: invite.id } })).toBe(0);
 
-    // On, the same request reaches ticket handling (and is refused there
-    // for its own reason: the ticket doesn't exist).
+    // On: buying through an invitation is retired (ticket sales Round B).
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(submit()).rejects.toMatchObject({ statusCode: 409 });
+    await expect(submit()).rejects.toMatchObject({ statusCode: 410, code: 'TICKET_PURCHASE_RETIRED' });
   }, 60000);
 });
 

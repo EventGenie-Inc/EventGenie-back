@@ -105,18 +105,27 @@ describe('whole numbers: program item duration, ticket quantity', () => {
     expect(blankEdit.body.data.durationMins).toBeNull();
   }, 60000);
 
-  it('a decimal or negative ticket quantity is 422; blank means unlimited', async () => {
-    for (const totalQuantity of [2.5, -3]) {
-      const res = await post('/tickets', { name: 'General', price: 100, totalQuantity });
-      expect(res.status).toBe(422);
-      expect(res.body.message).toBe("Enter a whole number of tickets for 'General', or leave it blank for unlimited.");
+  // Since ticket sales Round A (2026-11) a new ticket type needs a quantity:
+  // there is no "blank means unlimited" any more.
+  it('a decimal, negative or missing ticket quantity is 422', async () => {
+    for (const quantity of [2.5, '3']) {
+      const res = await post('/tickets', { name: 'General', priceCents: 10000, quantity });
+      expect(res.status, JSON.stringify(quantity)).toBe(422);
+      expect(res.body).toMatchObject({ code: 'TICKET_QUANTITY_INVALID', message: "Enter how many 'General' tickets there are, as a whole number." });
     }
+    for (const quantity of [-3, 0]) {
+      const res = await post('/tickets', { name: 'General', priceCents: 10000, quantity });
+      expect(res.status, JSON.stringify(quantity)).toBe(422);
+      expect(res.body.code).toBe('TICKET_QUANTITY_INVALID');
+    }
+    const missing = await post('/tickets', { name: 'General', priceCents: 10000 });
+    expect(missing.body).toMatchObject({ code: 'TICKET_QUANTITY_REQUIRED', message: "Enter how many 'General' tickets there are." });
     expect(await prisma.ticket.count({ where: { eventId } })).toBe(0);
 
-    const blank = await post('/tickets', { name: 'General', price: 100, totalQuantity: '' });
-    expect(blank.status).toBe(201);
-    expect(blank.body.data.totalQuantity).toBeNull();
-    const edit = await put(`/tickets/${blank.body.data.id}`, { totalQuantity: 0.5 });
+    const ok = await post('/tickets', { name: 'General', priceCents: 10000, quantity: 50 });
+    expect(ok.status).toBe(201);
+    expect(ok.body.data.quantity).toBe(50);
+    const edit = await put(`/tickets/${ok.body.data.id}`, { quantity: 0.5 });
     expect(edit.status).toBe(422);
   }, 60000);
 });

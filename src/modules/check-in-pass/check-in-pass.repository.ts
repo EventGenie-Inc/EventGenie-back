@@ -41,6 +41,9 @@ const partySelect = {
       id: true,
       status: true,
       isArchived: true,
+      // A paid event issues no RSVP passes (check-in-pass-kinds.ts).
+      ticketing: true,
+      visibility: true,
       eventDays: {
         where: { isArchived: false },
         select: { id: true, label: true, date: true, startTime: true, endTime: true, locationType: true },

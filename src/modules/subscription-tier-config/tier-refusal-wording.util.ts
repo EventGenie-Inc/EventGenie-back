@@ -44,11 +44,33 @@ export const customPlanMessage = (launchMessage: string, planName: string): stri
     .replace(FREE_TRIAL_PHRASES[0], ` on your ${planName} plan`)
     .replace(FREE_TRIAL_PHRASES[1], ` on its ${planName} plan`);
 
+// A plan's or a pass's name as customers read it: "Spark", not the code
+// "SPARK" (STEERING "Payments": never a tier's code). A custom tier's name
+// is its own and passes through as it is.
+const DISPLAY_NAMES: Record<string, string> = {
+  SPARK: 'Spark',
+  CELEBRATE: 'Celebrate',
+  ELEVATE: 'Elevate',
+  SMALL: 'Small',
+  STANDARD: 'Standard',
+  LARGE: 'Large',
+};
+
+export const planDisplayName = (name: string): string => DISPLAY_NAMES[name] ?? name;
+
+// Every tier or pass code in a message, in customers' words. The messages
+// are built by each enforcement point from ResolvedPlan.name (the code, for
+// a standard tier: other code compares it), so the one place they all pass
+// through puts them right: "The SPARK plan … Upgrade to CELEBRATE or
+// ELEVATE" reads "The Spark plan … Upgrade to Celebrate or Elevate".
+const TIER_CODE = new RegExp(`\\b(${Object.keys(DISPLAY_NAMES).join('|')})\\b`, 'g');
+export const withPlanDisplayNames = (message: string): string => message.replace(TIER_CODE, (code) => planDisplayName(code));
+
 export const tierRefusalMessage = (
   planMessage: string,
   launchMessage: string,
   plan?: { customTier: { name: string } | null } | null
 ): string => {
   if (plan?.customTier) return customPlanMessage(launchMessage, plan.customTier.name);
-  return isFeatureEnabled('payments') ? planMessage : launchMessage;
+  return isFeatureEnabled('payments') ? withPlanDisplayNames(planMessage) : launchMessage;
 };

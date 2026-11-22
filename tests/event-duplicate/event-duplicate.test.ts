@@ -164,7 +164,7 @@ const buildSource = async (opts: { withFiles?: boolean; visibility?: 'PRIVATE' |
   await prisma.checkIn.create({ data: { inviteId: plainInvite.id, eventDayId: day1.id, checkedBy: admin.id } });
 
   // What must stay behind.
-  await prisma.ticket.create({ data: { eventId: event.id, name: 'Entry', price: 50, ...audit() } });
+  await prisma.ticket.create({ data: { eventId: event.id, name: 'Entry', price: 50, priceCents: 5000, ...audit() } });
   await prisma.memoryItem.create({
     data: { memoryHubId: hub.id, uploadedByUserId: admin.id, mediaUrl: 'https://res.cloudinary.com/x/image/upload/a.jpg', cloudinaryPublicId: 'a', mediaType: 'IMAGE', bytes: 10, ...audit() },
   });

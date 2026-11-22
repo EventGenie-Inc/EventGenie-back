@@ -10,19 +10,18 @@ import { ORGANISATION_NOT_FOUND_MESSAGE } from '../../shared/payments/payment-er
 type Db = Prisma.TransactionClient | typeof prisma;
 
 // ─────────────────────────────────────────
-//  Guard used by event.service.ts's create/update/publish — a paid
-//  event cannot be newly created, or newly published, unless (a) the
-//  tenant's CURRENT EFFECTIVE plan permits ticketing at all (SPARK
-//  doesn't) and (b) there is somewhere for the split to land.
+//  A tenant-level check that (a) the tenant's CURRENT EFFECTIVE plan
+//  permits paid ticketing (paidTicketingEnabled) and (b) there is an active
+//  payout account for the split to land in.
 //
-//  CREATION-TIME ONLY. Checked at event create/update time (ticketing
-//  being set to PAID) and again at publish time — a tenant's subaccount
-//  can regress from ACTIVE to FAILED after an event was already created
-//  as PAID (a bad bank-detail update attempt — see
-//  payment-account.service.ts's update, which calls markFailed on a
-//  rejected Paystack update even when a previous submission had
-//  succeeded), and a tenant's effective tier can lapse to SPARK
-//  (Subscription Billing batch) after a PAID event already exists.
+//  Since ticket sales Round A (2026-11) no event is CREATED paid (only the
+//  paid switch, ticket-sales.service.ts, makes one paid), so event.service.ts
+//  no longer calls this; it stays for its tests and any tenant-level check.
+//  A payout account no longer regresses to FAILED on a refused change (a
+//  change makes a new subaccount and leaves the current one alone,
+//  payment-account.service.ts); a tenant's effective tier can still lapse to
+//  SPARK after a paid event exists, which is why publish re-checks
+//  (assertEventReadyToSellTickets, below).
 //
 //  Deliberately NOT used to gate an actual ticket PURCHASE on an
 //  already-published event — see assertSubaccountReadyForPurchase

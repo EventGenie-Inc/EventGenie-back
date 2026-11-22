@@ -75,11 +75,16 @@ describe('ticketing off — an older paid event stays editable', () => {
     await expect(update(event.id, { description: 'Still paid' })).resolves.toMatchObject({ ticketing: 'PAID' });
   }, 60000);
 
-  it('flag on: the same save still goes through the plan check (the control)', async () => {
+  // Since the ticket sales follow-ups (2026-11): limits are checked when
+  // something is switched on, never on access, so the stored value re-sent
+  // passes with the flag on too; only a change is checked.
+  it("flag on: re-sending PAID passes (no plan check on access); a change to PAID is the switch's", async () => {
     const { makeEvent, update } = await setup();
     const { event } = await makeEvent({ ticketing: 'PAID' });
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(update(event.id, { name: 'Renamed', ticketing: 'PAID' })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(update(event.id, { name: 'Renamed', ticketing: 'PAID' })).resolves.toMatchObject({ name: 'Renamed', ticketing: 'PAID' });
+    const { event: free } = await makeEvent({});
+    await expect(update(free.id, { ticketing: 'PAID' })).rejects.toMatchObject({ statusCode: 422, code: 'TICKET_SALES_USE_SWITCH' });
   }, 60000);
 
   it('changing FREE to PAID is still 422 while off', async () => {
@@ -107,11 +112,13 @@ describe('publicEvents off — an older public event stays editable', () => {
       .resolves.toMatchObject({ name: 'Renamed public event', visibility: 'PUBLIC' });
   }, 60000);
 
-  it('flag on: the same save still goes through the plan check (the control)', async () => {
+  it('flag on: re-sending PUBLIC passes (no plan check on access); a change to PUBLIC is still checked', async () => {
     const { makeEvent, update } = await setup();
     const { event } = await makeEvent({ visibility: 'PUBLIC' });
     vi.stubEnv('FEATURES_DISABLED', '');
-    await expect(update(event.id, { name: 'Renamed', visibility: 'PUBLIC' })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(update(event.id, { name: 'Renamed', visibility: 'PUBLIC' })).resolves.toMatchObject({ name: 'Renamed', visibility: 'PUBLIC' });
+    const { event: priv } = await makeEvent({});
+    await expect(update(priv.id, { visibility: 'PUBLIC' })).rejects.toMatchObject({ statusCode: 403 });
   }, 60000);
 
   it('changing PRIVATE to PUBLIC is still 422 while off', async () => {

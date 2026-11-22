@@ -107,7 +107,7 @@ describe('reading and saving', () => {
 
       const over = await put(101);
       expect(over.status).toBe(422);
-      expect(over.body.message).toBe('The CELEBRATE plan allows 100 guests per event, so the registration cap can be at most 100.');
+      expect(over.body.message).toBe('The Celebrate plan allows 100 guests per event, so the registration cap can be at most 100.');
       expect(over.body.code).toBe('REGISTRATION_SETTINGS_CAP_ABOVE_PLAN_LIMIT');
       const ok = await put(100);
       expect(ok.status).toBe(200);

@@ -468,6 +468,36 @@ export const updateSubaccount = async (
   return toSubaccountResult(data);
 };
 
+// The integration's subaccounts, newest first, a page at a time (a read:
+// retried like every GET). Used to make subaccount creation safe to retry
+// (payment-account.service.ts): Paystack takes no idempotency key on
+// POST /subaccount, so a creation with no clear answer is looked for by the
+// marker written into its description before another is made.
+export interface ListedSubaccount {
+  subaccountCode: string;
+  description: string | null;
+  active: boolean;
+  settlementBank: string;
+  accountNumber: string;
+  businessName: string;
+}
+
+export const listSubaccounts = async (params: { page?: number; perPage?: number } = {}): Promise<{ items: ListedSubaccount[]; pageCount: number }> => {
+  const query = new URLSearchParams({ perPage: String(params.perPage ?? 100), page: String(params.page ?? 1) });
+  const { data, meta } = await paystackRequestWithMeta<PaystackSubaccountData[]>('GET', `/subaccount?${query.toString()}`);
+  return {
+    items: data.map((row) => ({
+      subaccountCode: row.subaccount_code,
+      description: typeof row['description'] === 'string' ? (row['description'] as string) : null,
+      active: row.active,
+      settlementBank: row.settlement_bank,
+      accountNumber: row.account_number,
+      businessName: row.business_name,
+    })),
+    pageCount: meta?.pageCount ?? 1,
+  };
+};
+
 // Used only to fill the masked-detail cache for subaccounts that existed
 // before EventGenie stored a last-four fragment. Normal status reads stay
 // local after that one refresh; this is not a Paystack dependency on every
@@ -816,6 +846,8 @@ export interface PaystackListedTransaction {
   currency: string;
   paidAt: string | null;
   createdAt: string | null;
+  // Paystack's fee on it, in cents, when listed (ticket sales: e-velope's net).
+  feesCents: number | null;
 }
 
 interface PaystackListedTransactionData {
@@ -828,6 +860,7 @@ interface PaystackListedTransactionData {
   paidAt?: string | null;
   created_at?: string | null;
   createdAt?: string | null;
+  fees?: number | null;
 }
 
 export const listTransactions = async (params: { from: string; to: string }): Promise<PaystackListedTransaction[]> => {
@@ -840,6 +873,7 @@ export const listTransactions = async (params: { from: string; to: string }): Pr
     currency: row.currency,
     paidAt: row.paid_at ?? row.paidAt ?? null,
     createdAt: row.created_at ?? row.createdAt ?? null,
+    feesCents: typeof row.fees === 'number' ? row.fees : null,
   }));
 };
 

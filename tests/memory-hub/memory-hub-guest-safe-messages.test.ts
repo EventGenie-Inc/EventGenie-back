@@ -254,7 +254,9 @@ describe('Contract C — guest-safe messages (guest-upload-signature, guest-item
     // audience, must still name the plan and suggest an upgrade.
     const err = await memoryHubService.getByEventId(event.id, user.role, user.tenantId).catch((e) => e);
     expect(err).toMatchObject({ statusCode: 403 });
-    expect(err.message).toContain('SPARK');
+    // Named as customers read it (tierRefusalMessage), never the code.
+    expect(err.message).toContain('Spark');
+    expect(err.message).not.toContain('SPARK');
     expect(err.message).toContain('Upgrade');
   });
 });

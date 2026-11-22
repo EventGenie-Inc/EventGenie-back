@@ -13,7 +13,13 @@ export type MismatchKind =
   | 'UNEXPECTED_AMOUNT'
   // A second payment for something already paid for: nothing extra
   // granted, to be refunded (payment-mismatch.util.ts's recordDuplicatePayment).
-  | 'DUPLICATE_PAYMENT';
+  | 'DUPLICATE_PAYMENT'
+  // Ticket sales Round B: a ticket payment whose subaccount or split wasn't
+  // its order's (the order is UNDER_REVIEW, no tickets issued).
+  | 'SPLIT_MISMATCH'
+  // Ticket sales Round B: Paystack's actual fee on a ticket order was above
+  // e-velope's charge less the commission (e-velope lost money on it).
+  | 'NEGATIVE_NET';
 
 export interface CreateMismatchInput {
   runId?: string | null;
