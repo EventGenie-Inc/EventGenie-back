@@ -36,6 +36,7 @@ export interface CustomTierInput {
   paidTicketingEnabled?: unknown;
   customRsvpFieldsEnabled?: unknown;
   vendorPriorityPlacement?: unknown;
+  qrCheckInEnabled?: unknown;
   // false retires it, true brings it back. Never deleted.
   isActive?: unknown;
 }

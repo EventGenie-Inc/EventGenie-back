@@ -73,6 +73,7 @@ describe('GET /api/tenants/me — planSettings', () => {
       paidTicketingEnabled: false,
       customRsvpFieldsEnabled: false,
       vendorPriorityPlacement: false,
+      qrCheckInEnabled: true,
     };
     await prisma.subscriptionTierConfig.upsert({ where: { tier: 'SPARK' }, create: { tier: 'SPARK', ...sparkRow }, update: sparkRow });
     expect(await me()).toEqual(sparkRow);
@@ -89,6 +90,8 @@ describe('GET /api/tenants/me — planSettings', () => {
       paidTicketingEnabled: true,
       customRsvpFieldsEnabled: true,
       vendorPriorityPlacement: true,
+      // On by default; a super admin can switch it off.
+      qrCheckInEnabled: false,
     };
     await prisma.subscriptionTierConfig.update({ where: { tier: 'SPARK' }, data: switchedOn });
     expect(await me()).toEqual({ ...sparkRow, ...switchedOn });
@@ -116,6 +119,8 @@ describe('GET /api/tenants/me — planSettings', () => {
       paidTicketingEnabled: false,
       customRsvpFieldsEnabled: false,
       vendorPriorityPlacement: false,
+      // QR check-in is on for every tier, a missing row included.
+      qrCheckInEnabled: true,
     });
 
     await onTier('ELEVATE');
@@ -131,9 +136,9 @@ describe('GET /api/tenants/me — planSettings', () => {
   it('a switched-off feature’s settings are left out', async () => {
     installFirebaseMock();
     await onTier('SPARK');
-    vi.stubEnv('FEATURES_DISABLED', 'vendors,sms,ticketing,publicEvents,documentFields');
+    vi.stubEnv('FEATURES_DISABLED', 'vendors,sms,ticketing,publicEvents,documentFields,qrCheckIn');
     const settings = await me();
-    for (const key of ['maxVendorSpaces', 'vendorMarketplace', 'vendorPriorityPlacement', 'maxSmsPerMonth', 'smsEnabled', 'paidTicketingEnabled', 'publicEventsEnabled', 'maxDocumentBytesPerEvent', 'maxDocumentBytesPerFile']) {
+    for (const key of ['maxVendorSpaces', 'vendorMarketplace', 'vendorPriorityPlacement', 'maxSmsPerMonth', 'smsEnabled', 'paidTicketingEnabled', 'publicEventsEnabled', 'maxDocumentBytesPerEvent', 'maxDocumentBytesPerFile', 'qrCheckInEnabled']) {
       expect(settings).not.toHaveProperty(key);
     }
     expect(Object.keys(settings).sort()).toEqual(

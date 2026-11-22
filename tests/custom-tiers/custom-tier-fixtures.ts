@@ -118,6 +118,7 @@ export const TRIAL_VALUES = {
   paidTicketingEnabled: false,
   customRsvpFieldsEnabled: true,
   vendorPriorityPlacement: true,
+  qrCheckInEnabled: true,
 };
 
 export const createCustomTier = (overrides: Partial<typeof TRIAL_VALUES> & { name?: string; isActive?: boolean } = {}) =>

@@ -28,6 +28,7 @@ import {
   isGuestEmailUniqueViolation,
 } from '../guest/guest-validation.util.js';
 import { guestRepository } from '../guest/guest.repository.js';
+import { checkInPassService } from '../check-in-pass/check-in-pass.service.js';
 import { centsToDecimalString } from '../../shared/payments/money.util.js';
 import { toGuestDesign } from '../invitation-design/invitation-design-guest.util.js';
 import { isFeatureEnabled } from '../../shared/features/feature-flags.js';
@@ -1001,6 +1002,12 @@ export const rsvpService = {
     // Files this reply replaced or removed, deleted now the reply is saved;
     // a failure is the documents sweep's to retry, never the guest's.
     if (documentsReplaced > 0) await guestDocumentService.deleteRequestedNow({ inviteId: rest.invite.id });
+
+    // Their door codes, now the answer is saved: issued for each person and
+    // day they accept, and revoked for what they no longer do (a decline,
+    // other days, other plus-ones). Never fails the reply
+    // (check-in-pass.service.ts).
+    await checkInPassService.syncPartyQuietly(rest.invite.guestId);
 
     // Explicit guest-facing shape — never the raw Invite/TicketPurchase
     // rows the transaction above worked with. `rest.invite` is

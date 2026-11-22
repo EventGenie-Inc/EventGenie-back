@@ -21,7 +21,7 @@ const rosterInviteSelect = (eventDayId: string) => ({
     },
   },
   attendances: { where: { eventDayId }, select: { id: true } },
-  checkIns: { where: { eventDayId }, select: { checkedInAt: true } },
+  checkIns: { where: { eventDayId }, select: { checkedInAt: true, checkedBy: true } },
 } satisfies Prisma.InviteSelect);
 
 export type RosterInvite = Prisma.InviteGetPayload<{ select: ReturnType<typeof rosterInviteSelect> }>;
@@ -77,7 +77,7 @@ export const checkInRepository = {
   create: (inviteId: string, eventDayId: string, checkedBy: string) =>
     prisma.checkIn.create({
       data: { inviteId, eventDayId, checkedBy },
-      select: { checkedInAt: true },
+      select: { checkedInAt: true, checkedBy: true },
     }),
 
   // Undo. A hard delete — a check-in is a fact record with no archived

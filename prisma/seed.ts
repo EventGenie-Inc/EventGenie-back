@@ -160,6 +160,7 @@ const TIER_CONFIGS = [
     paidTicketingEnabled: false,
     customRsvpFieldsEnabled: false,
     vendorPriorityPlacement: false,
+    qrCheckInEnabled: true,
     isAvailable: true,
   },
   {
@@ -185,6 +186,7 @@ const TIER_CONFIGS = [
     paidTicketingEnabled: true,
     customRsvpFieldsEnabled: true,
     vendorPriorityPlacement: false,
+    qrCheckInEnabled: true,
     isAvailable: true,
   },
   {
@@ -209,6 +211,7 @@ const TIER_CONFIGS = [
     paidTicketingEnabled: true,
     customRsvpFieldsEnabled: true,
     vendorPriorityPlacement: true,
+    qrCheckInEnabled: true,
     isAvailable: true,
   },
 ];

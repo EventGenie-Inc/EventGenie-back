@@ -44,6 +44,7 @@ const SWITCH_LABELS: Record<(typeof PLAN_SWITCH_KEYS)[number], string> = {
   paidTicketingEnabled: 'Paid ticketing',
   customRsvpFieldsEnabled: 'Additional fields',
   vendorPriorityPlacement: 'Vendor priority placement',
+  qrCheckInEnabled: 'QR check-in',
 };
 
 // The checked settings of a create or edit: only what was sent.

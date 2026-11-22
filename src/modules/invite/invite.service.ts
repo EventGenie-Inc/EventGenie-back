@@ -4,6 +4,7 @@ import { type CreateInviteDto, type UpdateInviteDto } from './invite.types.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService } from '../event/event.service.js';
+import { checkInPassService } from '../check-in-pass/check-in-pass.service.js';
 
 // Invite has no tenantId of its own — ownership is transitive through its
 // direct eventId -> Event -> tenantId, exactly like event-day/guest. Every
@@ -70,13 +71,18 @@ export const inviteService = {
   // same shape as event-day.service.ts.
   archive: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     await inviteInScope(eventId, id, requestingRole, tenantId);
-    return inviteRepository.archive(id, userId);
+    const archived = await inviteRepository.archive(id, userId);
+    // An archived invite's door codes stop scanning (check-in-pass.service.ts).
+    await checkInPassService.syncPartyQuietly(archived.guestId);
+    return archived;
   },
 
   reactivate: async (eventId: string, id: string, userId: string, requestingRole: PlatformRole, tenantId: string | null) => {
     // Must look up including archived — the whole point of reactivate is
     // to find an invite that is currently archived and un-archive it.
     await inviteInScope(eventId, id, requestingRole, tenantId, true);
-    return inviteRepository.reactivate(id, userId, eventId);
+    const restored = await inviteRepository.reactivate(id, userId, eventId);
+    await checkInPassService.syncPartyQuietly(restored.guestId);
+    return restored;
   },
 };

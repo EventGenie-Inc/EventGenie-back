@@ -34,6 +34,10 @@ const SECRETS = {
   phoneIntl: '+27825551234',
   phoneLocal: '082 555 1234',
   bodyInJsonError: 'json-body-secret-77',
+  // A check-in QR payload (check-in-pass-token.util.ts): the pass id and
+  // signature together are a door code, so neither may survive.
+  checkInPayload: 'EV1.cm3xq2w9k0000qrpass12345ab.Zk9mN0pQrStUvWxYz0123456789-_AbCdEfGhIjKl',
+  checkInPassId: 'cm3xq2w9k0000qrpass12345ab',
 } as const;
 
 const buildEvent = (): ErrorEvent => ({
@@ -71,7 +75,8 @@ const buildEvent = (): ErrorEvent => ({
         value:
           `Session ${SECRETS.sessionToken} for ${SECRETS.email2} rejected; device ${SECRETS.deviceToken}; ` +
           `reset link https://e-velope.co.za/auth/action?mode=resetPassword&oobCode=${SECRETS.oobCode} ` +
-          `password=${SECRETS.password} phone ${SECRETS.phoneLocal} invite /api/rsvp/validate/${SECRETS.mistypedInviteToken}`,
+          `password=${SECRETS.password} phone ${SECRETS.phoneLocal} invite /api/rsvp/validate/${SECRETS.mistypedInviteToken} ` +
+          `scanned ${SECRETS.checkInPayload}`,
         stacktrace: {
           frames: [{ filename: 'app.js', function: 'handler', vars: { password: SECRETS.password, otp: SECRETS.otp } }],
         },

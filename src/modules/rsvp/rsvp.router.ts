@@ -8,6 +8,8 @@ import {
   rsvpProgramIpLimiter,
   rsvpQrLimiter,
   rsvpQrIpLimiter,
+  rsvpPassesLimiter,
+  rsvpPassesIpLimiter,
   rsvpSubmitInviteLimiter,
   shortLinkIpLimiter,
   shortLinkLimiter,
@@ -16,6 +18,7 @@ import {
 } from '../../shared/middleware/rate-limit.middleware.js';
 import { guestDocumentService } from '../guest-document/guest-document.service.js';
 import { receiveDocument } from '../guest-document/guest-document.router.js';
+import { checkInPassService } from '../check-in-pass/check-in-pass.service.js';
 
 // Fully public surface — a guest only has a bare invite token, never a
 // platform session. No auth middleware anywhere in this file.
@@ -62,6 +65,20 @@ router.post('/program', rsvpProgramIpLimiter, rsvpProgramLimiter, async (req: Re
 router.post('/qr', rsvpQrIpLimiter, rsvpQrLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await rsvpService.getInviteQr(req.body?.token);
+    res.set('Cache-Control', 'no-store');
+    res.status(200).json({ status: 'ok', data: result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/rsvp/passes
+// { token } → { passes: [{ personName, isPlusOne, day: { id, label, date },
+// payload }] }: the accepted guest's door codes, one per person per day,
+// issued on first ask (check-in-pass.service.ts's listForToken). POST so
+// the token stays out of URLs and logs; never cached (each payload is a
+// credential). Behind qrCheckIn. Its own two limiters, the QR code's shape.
+router.post('/passes', requireFeature('qrCheckIn'), rsvpPassesIpLimiter, rsvpPassesLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await checkInPassService.listForToken(req.body?.token);
     res.set('Cache-Control', 'no-store');
     res.status(200).json({ status: 'ok', data: result });
   } catch (err) { next(err); }

@@ -1,4 +1,5 @@
 import { guestRepository } from './guest.repository.js';
+import { checkInPassService } from '../check-in-pass/check-in-pass.service.js';
 import { type CreateGuestDto, type UpdateGuestDto } from './guest.types.js';
 import { type PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
@@ -214,6 +215,10 @@ export const guestService = {
       }
     });
 
+    // A removed guest's door codes stop scanning (a removed plus-one's too:
+    // the party is reconciled). Restoring issues new ones.
+    await checkInPassService.syncPartyQuietly(id);
+
     // Their uploaded documents are kept, so restoring the guest brings
     // them back. Still archived when the event finishes, they are deleted
     // then (storage-retention.service.ts); the guest details' documentCount
@@ -295,6 +300,8 @@ export const guestService = {
       }
     }).catch(rethrowGuestEmailTaken);
 
+    // Back on the list: their door codes again, if they had accepted.
+    await checkInPassService.syncPartyQuietly(id);
     return guestRepository.findById(id, true);
   },
 

@@ -16,6 +16,7 @@ import { startCustomTierSweeps } from './modules/custom-tier/custom-tier-ending.
 import { startEventGrantSweeps } from './modules/event-grant/event-grant.service.js';
 import { assertStorageEnvValid } from './modules/upload/upload-folders.js';
 import { assertPaystackKeyMode } from './shared/payments/paystack.client.js';
+import { assertCheckInQrSecretConfigured } from './modules/check-in-pass/check-in-pass-token.util.js';
 import { startPaymentMaintenance } from './modules/payment-reconciliation/payment-maintenance.service.js';
 
 // ─────────────────────────────────────────
@@ -47,6 +48,9 @@ const start = async (): Promise<void> => {
     assertStorageEnvValid();
     // Live keys in production (STORAGE_ENV=prod), test keys everywhere else.
     assertPaystackKeyMode();
+    // The key that signs check-in QR codes: required on a deployed server
+    // (check-in-pass-token.util.ts).
+    assertCheckInQrSecretConfigured();
 
     // Verify Prisma can reach the database
     // before accepting any traffic.
