@@ -1,4 +1,5 @@
 import { type PlatformRole } from '@prisma/client';
+import { capacityWarningsFor } from '../event-day/day-capacity.util.js';
 import { eventService } from '../event/event.service.js';
 import { eventPublicRepository } from '../event-public/event-public.repository.js';
 import { inviteDispatchService } from '../invite/invite-dispatch.service.js';
@@ -10,6 +11,7 @@ import {
   type PendingRegistration,
   type PendingRegistrationList,
   type RegistrationDecision,
+  type RegistrationApproval,
 } from './registration-approval.types.js';
 
 // ─────────────────────────────────────────
@@ -149,7 +151,7 @@ export const registrationApprovalService = {
     userId: string,
     requestingRole: PlatformRole,
     tenantId: string | null
-  ): Promise<RegistrationDecision> => {
+  ): Promise<RegistrationApproval> => {
     const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     const guest = await decide(event, guestId, 'APPROVED', userId);
 
@@ -161,7 +163,11 @@ export const registrationApprovalService = {
       const days = attending.length > 0 ? attending : invite.inviteEventDay.map((d) => d.eventDay);
       emailSent = (await inviteDispatchService.sendRegistrationEmail(event, invite, email, days, 'REGISTRATION')).ok;
     }
-    return { guestId: guest.id, decision: 'APPROVED', emailSent };
+    // Venue capacity never refuses an approval (day-capacity.util.ts); the
+    // organiser sees, as they approve, any of the registrant's days now over
+    // its capacity. Organiser-only: nothing about it reaches the registrant.
+    const capacityWarnings = await capacityWarningsFor((invite?.attendances ?? []).map((a) => a.eventDay.id));
+    return { guestId: guest.id, decision: 'APPROVED', emailSent, capacityWarnings };
   },
 
   decline: async (

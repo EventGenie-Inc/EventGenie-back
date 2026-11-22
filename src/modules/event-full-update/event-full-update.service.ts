@@ -13,6 +13,12 @@ import { assertHostNamePresentAfterEdit } from '../event/event-host-name.util.js
 import { parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { type UpdateEventDto } from '../event/event.types.js';
 import { type EventDayWrite, type EventDayPatch } from '../event-day/event-day.repository.js';
+import { type DayVenue } from '../event-day/event-day-venue.util.js';
+import {
+  usesLegacyCapacity,
+  applyLegacyCapacity,
+  logLegacyCapacity,
+} from '../event-day/day-capacity.util.js';
 import {
   resolveNewDay,
   resolveDayChanges,
@@ -127,7 +133,9 @@ const eventFieldsChanged = (event: LoadedEvent, d: UpdateEventDto): boolean =>
   (d.ticketing !== undefined && d.ticketing !== event.ticketing) ||
   (d.hostName !== undefined && normalizeHostName(d.hostName) !== event.hostName) ||
   (d.rsvpDeadline !== undefined && !sameInstant(d.rsvpDeadline ? parseDeadline(d.rsvpDeadline) : null, event.rsvpDeadline)) ||
-  (d.capacity !== undefined && (d.capacity ?? null) !== event.capacity) ||
+  // Event.capacity is deprecated and never read (day-capacity.util.ts): a
+  // capacity sent on the event goes to its venue days, so it alone is no
+  // reason to write the event row.
   (d.ticketsRefundable !== undefined && d.ticketsRefundable !== event.ticketsRefundable);
 
 // ── Days ──
@@ -143,7 +151,11 @@ interface ResultingDay {
   dateChanged: boolean;
 }
 
-const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
+// `legacyCapacity`: an event-level capacity from an older frontend, applied
+// to every venue day in the list (undefined: none sent).
+const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined, legacyCapacity?: number | null) => {
+  const withLegacy = <T extends { venue: DayVenue }>(day: T): T =>
+    legacyCapacity === undefined ? day : { ...day, venue: applyLegacyCapacity(day.venue, legacyCapacity) };
   if (input === undefined) {
     const resulting: ResultingDay[] = event.eventDays.map((d) => ({
       ref: { kind: 'saved', id: d.id },
@@ -153,7 +165,23 @@ const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
       endTime: d.endTime,
       dateChanged: false,
     }));
-    return { resulting, creates: [] as EventDayWrite[], updates: [] as { id: string; patch: EventDayPatch; relabel: boolean }[], archives: [] as string[] };
+    // No days in the request, but an event-level capacity: it goes to the
+    // saved venue days whose number it changes, and only their capacity is
+    // written (their other fields aren't re-judged).
+    const capacityOnly: FullUpdatePlan['days']['capacityOnly'] =
+      legacyCapacity === undefined
+        ? null
+        : {
+            capacity: legacyCapacity,
+            ids: event.eventDays.filter((d) => d.locationType !== 'ONLINE' && d.capacity !== legacyCapacity).map((d) => d.id),
+          };
+    return {
+      resulting,
+      creates: [] as EventDayWrite[],
+      updates: [] as { id: string; patch: EventDayPatch; relabel: boolean }[],
+      archives: [] as string[],
+      capacityOnly,
+    };
   }
 
   const creates: EventDayWrite[] = [];
@@ -162,12 +190,12 @@ const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
 
   for (const { row, stored } of matchSavedRows(input, event.eventDays, 'day', 'Event day not found')) {
     if (!stored) {
-      const day = resolveNewDay(row);
+      const day = withLegacy(resolveNewDay(row));
       resulting.push({ ref: { kind: 'new', index: creates.length }, id: null, label: day.label, date: day.date, endTime: day.endTime, dateChanged: true });
       creates.push(day);
       continue;
     }
-    const patch = resolveDayChanges(row, stored);
+    const patch = withLegacy(resolveDayChanges(row, stored));
     const label = patch.label ?? stored.label;
     const date = patch.date ?? stored.date;
     const startTime = patch.startTime !== undefined ? patch.startTime : stored.startTime;
@@ -182,7 +210,8 @@ const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
       patch.venue.latitude !== plainNumber(stored.latitude) ||
       patch.venue.longitude !== plainNumber(stored.longitude) ||
       patch.venue.locationType !== (stored.locationType ?? 'VENUE') ||
-      patch.venue.onlineUrl !== stored.onlineUrl;
+      patch.venue.onlineUrl !== stored.onlineUrl ||
+      patch.venue.capacity !== stored.capacity;
     if (changed) updates.push({ id: stored.id, patch, relabel: label !== stored.label });
     resulting.push({ ref: { kind: 'saved', id: stored.id }, id: stored.id, label, date, endTime, dateChanged: !isSameUtcDate(date, stored.date) });
   }
@@ -192,7 +221,7 @@ const planDays = (event: LoadedEvent, input: FullUpdateDay[] | undefined) => {
   const duplicate = findDuplicateDayLabel(resulting.map((d) => d.label));
   if (duplicate !== null) throw new HttpError(409, duplicateDayLabelMessage(duplicate));
 
-  return { resulting, creates, updates, archives: removedRows(event.eventDays, input) };
+  return { resulting, creates, updates, archives: removedRows(event.eventDays, input), capacityOnly: null };
 };
 
 // ── Tickets ──
@@ -354,7 +383,7 @@ const planMemoryHub = (event: LoadedEvent, input: Record<string, unknown> | unde
 
 const hasChanges = (plan: FullUpdatePlan): boolean =>
   plan.event !== null ||
-  plan.days.creates.length + plan.days.updates.length + plan.days.archives.length > 0 ||
+  plan.days.creates.length + plan.days.updates.length + plan.days.archives.length + (plan.days.capacityOnly?.ids.length ?? 0) > 0 ||
   plan.tickets.creates.length + plan.tickets.updates.length + plan.tickets.archives.length > 0 ||
   plan.rsvpFields.creates.length + plan.rsvpFields.updates.length + plan.rsvpFields.archives.length > 0 ||
   (plan.program !== null &&
@@ -381,7 +410,11 @@ export const eventFullUpdateService = {
 
     // The event's own fields, then each part, in the wizard's order.
     if (eventFields) assertEventFieldsValid(eventFields);
-    const days = planDays(event, daysInput);
+    // Compatibility (day-capacity.util.ts): an event-level capacity and no
+    // capacity on any day goes to every venue day.
+    const legacy = usesLegacyCapacity(eventFields?.capacity, daysInput);
+    if (legacy) logLegacyCapacity('PUT /api/events/:eventId/full', eventId);
+    const days = planDays(event, daysInput, legacy ? (eventFields!.capacity ?? null) : undefined);
     const coverChange: CoverChange | null = eventFields ? await assertEventUpdateAllowed(event, eventFields, days.resulting) : null;
 
     const tickets = planTickets(event, ticketsInput);
@@ -412,7 +445,7 @@ export const eventFullUpdateService = {
 
     const plan: FullUpdatePlan = {
       event: eventFields && eventFieldsChanged(event, eventFields) ? eventFields : null,
-      days: { creates: days.creates, updates: days.updates, archives: days.archives },
+      days: { creates: days.creates, updates: days.updates, archives: days.archives, capacityOnly: days.capacityOnly },
       tickets,
       rsvpFields,
       program,
@@ -431,7 +464,8 @@ export const eventFullUpdateService = {
     }
 
     // The same shape as GET /api/events/:id, so the wizard can re-baseline
-    // from the response.
+    // from the response. Its capacityWarnings name every day now over its
+    // venue capacity, so a day this save took over is among them.
     return eventService.getDetail(eventId, requestingRole, tenantId);
   },
 };

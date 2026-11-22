@@ -56,6 +56,7 @@ export const eventDayRepository = {
           longitude: data.venue.longitude,
           locationType: data.venue.locationType,
           onlineUrl: data.venue.onlineUrl,
+          capacity: data.venue.capacity,
           isArchived: false,
           createdBy: userId,
           updatedBy: userId,
@@ -81,6 +82,7 @@ export const eventDayRepository = {
           longitude: data.venue.longitude,
           locationType: data.venue.locationType,
           onlineUrl: data.venue.onlineUrl,
+          capacity: data.venue.capacity,
           updatedBy: userId,
         },
       })
@@ -91,4 +93,48 @@ export const eventDayRepository = {
       where: { id },
       data: { isArchived: true, updatedBy: userId },
     }),
+
+  // How many people attend each of these days: day-capacity.util.ts's rule
+  // (countAttendingForDays), the per-day form of
+  // eventRepository.countAcceptedInvitesForEvent. One Attendance row per
+  // person per day: a guest's own, and one per plus-one (each its own
+  // Guest+Invite pair, rsvp.service.ts). Days with nobody are left out.
+  countAttendingByDay: async (eventDayIds: string[], db: Db = prisma): Promise<Map<string, number>> => {
+    if (eventDayIds.length === 0) return new Map();
+    const rows = await db.attendance.groupBy({
+      by: ['eventDayId'],
+      where: {
+        eventDayId: { in: eventDayIds },
+        invite: { isArchived: false, status: 'ACCEPTED', guest: { pendingApproval: false } },
+      },
+      _count: { _all: true },
+    });
+    return new Map(rows.map((r) => [r.eventDayId, r._count._all]));
+  },
+
+  // The live days among these ids that have a capacity, with what the
+  // capacity messages name.
+  findCappedDays: (eventDayIds: string[], db: Db = prisma) =>
+    eventDayIds.length === 0
+      ? Promise.resolve([])
+      : db.eventDay.findMany({
+          where: { id: { in: eventDayIds }, isArchived: false, capacity: { not: null } },
+          select: { id: true, label: true, date: true, capacity: true },
+          orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+        }),
+
+  // An event's live VENUE days (a null locationType reads as VENUE): the
+  // days an event-level capacity sent by an older frontend is applied to.
+  findVenueDayIds: async (eventId: string, db: Db = prisma): Promise<string[]> =>
+    (
+      await db.eventDay.findMany({
+        where: { eventId, isArchived: false, OR: [{ locationType: 'VENUE' }, { locationType: null }] },
+        select: { id: true },
+      })
+    ).map((d) => d.id),
+
+  setCapacity: (eventDayIds: string[], capacity: number | null, userId: string, db: Db = prisma) =>
+    eventDayIds.length === 0
+      ? Promise.resolve({ count: 0 })
+      : db.eventDay.updateMany({ where: { id: { in: eventDayIds } }, data: { capacity, updatedBy: userId } }),
 };

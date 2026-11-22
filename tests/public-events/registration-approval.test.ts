@@ -486,7 +486,7 @@ describe('approving', () => {
 
     const res = await approve(ev, guest.id);
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ guestId: guest.id, decision: 'APPROVED', emailSent: true });
+    expect(res.body.data).toEqual({ guestId: guest.id, decision: 'APPROVED', emailSent: true, capacityWarnings: [] });
 
     expect(sentEmails()).toHaveLength(1);
     const [invitation] = sentEmails();
@@ -614,7 +614,7 @@ describe('declining', () => {
     expect((await pendingList(ev)).body.data.registrations.map((r: { guestId: string }) => r.guestId)).toEqual([guest.id]);
     expect(sentEmails()).toEqual([]);
 
-    expect((await approve(ev, guest.id)).body.data).toEqual({ guestId: guest.id, decision: 'APPROVED', emailSent: true });
+    expect((await approve(ev, guest.id)).body.data).toEqual({ guestId: guest.id, decision: 'APPROVED', emailSent: true, capacityWarnings: [] });
     expect(sentEmails().map((e) => e.subject)).toEqual([expect.stringMatching(/^You're registered for /)]);
     expect((await request(app).get(`/api/rsvp/validate/${token}`)).status).toBe(200);
   });

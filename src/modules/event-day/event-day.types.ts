@@ -17,6 +17,9 @@ export interface CreateEventDayDto {
   // An ONLINE day's optional link, https only (422
   // EVENT_DAY_ONLINE_URL_INVALID). Ignored for a VENUE day.
   onlineUrl?: string | null;
+  // A VENUE day's capacity, 1 to 100,000; null or left out = no limit.
+  // 422 EVENT_DAY_CAPACITY_ONLINE on an ONLINE day (day-capacity.util.ts).
+  capacity?: number | null;
 }
 export interface UpdateEventDayDto {
   label?: string;
@@ -31,4 +34,6 @@ export interface UpdateEventDayDto {
   latitude?: number | null;
   longitude?: number | null;
   onlineUrl?: string | null;
+  // Left out = keep; null = no limit. Refused on an ONLINE day.
+  capacity?: number | null;
 }

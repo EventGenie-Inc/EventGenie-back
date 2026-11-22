@@ -10,6 +10,7 @@ import {
   resolveNewDay,
   resolveDayChanges,
 } from './event-day-validation.util.js';
+import { capacityWarningsFor } from './day-capacity.util.js';
 
 // EventDay has no tenantId of its own — ownership is transitive through
 // its parent Event. Rather than duplicating tenant-scoping logic here,
@@ -56,7 +57,11 @@ export const eventDayService = {
       await assertNoDuplicateDayLabel(day.eventId, patch.label, id);
     }
     try {
-      return await eventDayRepository.update(id, userId, patch);
+      const updated = await eventDayRepository.update(id, userId, patch);
+      // A capacity changed to below the number already attending is saved
+      // and warned about, to the organiser only (day-capacity.util.ts).
+      const capacityWarnings = patch.venue.capacity !== day.capacity ? await capacityWarningsFor([id]) : [];
+      return { ...updated, capacityWarnings };
     } catch (err) {
       if (isDayLabelUniqueViolation(err)) {
         throw new HttpError(409, duplicateDayLabelMessage(patch.label ?? day.label));
