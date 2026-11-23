@@ -345,6 +345,9 @@ export const eventDuplicateService = {
             longitude: day.longitude,
             locationType: day.locationType,
             onlineUrl: day.onlineUrl,
+            // Each day's venue capacity (day-capacity.util.ts); a template
+            // grant copies through here too.
+            capacity: day.capacity,
             openForRegistration: day.openForRegistration,
             isArchived: false,
             ...audit,

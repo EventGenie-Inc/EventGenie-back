@@ -106,7 +106,7 @@ const buildSource = async (opts: { withFiles?: boolean; visibility?: 'PRIVATE' |
   const day1 = await prisma.eventDay.create({
     data: {
       eventId: event.id, label: 'Round 1', date: at(d1), startTime: at(`${d1}T14:00:00Z`), endTime: at(`${d1}T22:00:00Z`),
-      location: 'Hall', address: '1 Board Road', latitude: -33.9, longitude: 18.4, ...audit(),
+      location: 'Hall', address: '1 Board Road', latitude: -33.9, longitude: 18.4, capacity: 64, ...audit(),
     },
   });
   const day2 = await prisma.eventDay.create({
@@ -251,6 +251,8 @@ describe('POST /api/events/:id/duplicate — what is copied', () => {
     expect(c2!.onlineUrl).toBe('https://meet.example/round2');
     expect(c2!.openForRegistration).toBe(false);
     expect(c2!.startTime).toEqual(shifted('2027-03-04T09:00:00Z', SHIFT));
+    // Each day's venue capacity (day-capacity.util.ts); an online day has none.
+    expect([c1!.capacity, c2!.capacity]).toEqual([64, null]);
 
     // Registration settings and deadlines, shifted.
     expect(copy.rsvpDeadline).toEqual(shifted(source.event.rsvpDeadline!.toISOString(), SHIFT));

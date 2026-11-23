@@ -59,7 +59,7 @@ beforeAll(async () => {
   templateIds.push(templateId);
   const userId = superAdmin.id;
   await prisma.eventDay.create({
-    data: { eventId: templateId, label: 'Day 1', date: new Date('2027-03-01'), location: 'Campus', address: '1 Jan Smuts Ave', createdBy: userId, updatedBy: userId },
+    data: { eventId: templateId, label: 'Day 1', date: new Date('2027-03-01'), location: 'Campus', address: '1 Jan Smuts Ave', capacity: 300, createdBy: userId, updatedBy: userId },
   });
   await prisma.rsvpField.create({
     data: { eventId: templateId, label: 'Society', fieldType: 'TEXT', isRequired: false, order: 0, createdBy: userId, updatedBy: userId },
@@ -119,6 +119,8 @@ describe('granting to chosen tenants', () => {
       expect(copy).toMatchObject({ name: 'Freshers week', status: 'DRAFT', grantedTier: 'CELEBRATE', grantedCustomTierId: null, createdByUserId: t.admin.id });
       const days = await prisma.eventDay.findMany({ where: { eventId: copy!.id } });
       expect(days.map((d) => d.date.toISOString().slice(0, 10))).toEqual(['2027-04-01']);
+      // The template day's venue capacity comes with it.
+      expect(days.map((d) => d.capacity)).toEqual([300]);
       expect(await prisma.rsvpField.count({ where: { eventId: copy!.id } })).toBe(1);
 
       const mail = sentEmails().filter((m) => m.to === t.email);
