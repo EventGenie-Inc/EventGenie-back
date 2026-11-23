@@ -207,6 +207,7 @@ export const adminConsoleRepository = {
             location: true,
             address: true,
             onlineUrl: true,
+            capacity: true,
           },
         },
       },

@@ -90,6 +90,11 @@ export interface ConsoleEventDay {
   location: string | null;
   address: string | null;
   onlineUrl: string | null;
+  // The day's venue capacity; null = no limit, always null on an ONLINE day.
+  capacity: number | null;
+  // People attending the day: day-capacity.util.ts's ATTENDING count
+  // (accepted guests plus valid sold tickets; never checkout holds).
+  attendingCount: number;
 }
 
 // GET /api/admin/events/:eventId
