@@ -1,6 +1,7 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { type Prisma, type SubscriptionTier, type SubscriptionPeriod } from '@prisma/client';
 import { type ActivateSubscriptionInput } from './subscription.types.js';
+import { displayCardBrand } from '../../shared/payments/card-brand.util.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
@@ -153,28 +154,33 @@ export const subscriptionRepository = {
         paystackCustomerCode: data.customerCode,
         subscriptionGraceStartedAt: null,
         ...(data.authorizationCode !== undefined && { paystackAuthorizationCode: data.authorizationCode }),
-        ...(data.cardBrand !== undefined && { paystackCardBrand: data.cardBrand }),
+        ...(data.cardBrand !== undefined && { paystackCardBrand: displayCardBrand(data.cardBrand) }),
         ...(data.cardLast4 !== undefined && { paystackCardLast4: data.cardLast4 }),
         ...(data.cardExpMonth !== undefined && { paystackCardExpMonth: data.cardExpMonth }),
         ...(data.cardExpYear !== undefined && { paystackCardExpYear: data.cardExpYear }),
       },
     }),
 
-  // The card shown on the Subscription page (fix/payments-go-live): brand,
-  // last 4 and expiry, as Paystack holds them on the subscription now. Display
-  // fields only; nothing else of the authorisation is stored here.
-  updateCardDisplay: (
+  // The card on the subscription as Paystack holds it now
+  // (fix/payments-go-live): its authorisation code, so anything that reads
+  // the stored code is current, and what the Subscription page shows (brand,
+  // last 4, expiry). Each part is kept as it was when Paystack didn't send
+  // it (no authorisation code; no last 4: no display fields).
+  updateCardFromPaystack: (
     tenantId: string,
-    card: { cardBrand: string | null; cardLast4: string; cardExpMonth: string | null; cardExpYear: string | null },
+    card: { authorizationCode: string | null; cardBrand: string | null; cardLast4: string | null; cardExpMonth: string | null; cardExpYear: string | null },
     db: Db = prisma
   ) =>
     db.tenant.update({
       where: { id: tenantId },
       data: {
-        paystackCardBrand: card.cardBrand,
-        paystackCardLast4: card.cardLast4,
-        paystackCardExpMonth: card.cardExpMonth,
-        paystackCardExpYear: card.cardExpYear,
+        ...(card.authorizationCode !== null && { paystackAuthorizationCode: card.authorizationCode }),
+        ...(card.cardLast4 !== null && {
+          paystackCardBrand: displayCardBrand(card.cardBrand),
+          paystackCardLast4: card.cardLast4,
+          paystackCardExpMonth: card.cardExpMonth,
+          paystackCardExpYear: card.cardExpYear,
+        }),
       },
     }),
 
@@ -209,7 +215,7 @@ export const subscriptionRepository = {
         customTierAssignedAt: null,
         customTierEndingNoticeSentAt: null,
         ...(data.authorizationCode !== undefined && { paystackAuthorizationCode: data.authorizationCode }),
-        ...(data.cardBrand !== undefined && { paystackCardBrand: data.cardBrand }),
+        ...(data.cardBrand !== undefined && { paystackCardBrand: displayCardBrand(data.cardBrand) }),
         ...(data.cardLast4 !== undefined && { paystackCardLast4: data.cardLast4 }),
         ...(data.cardExpMonth !== undefined && { paystackCardExpMonth: data.cardExpMonth }),
         ...(data.cardExpYear !== undefined && { paystackCardExpYear: data.cardExpYear }),

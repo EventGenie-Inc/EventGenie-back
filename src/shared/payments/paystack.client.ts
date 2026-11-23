@@ -668,6 +668,9 @@ interface PaystackSubscriptionData {
     card_type: string;
     exp_month: string;
     exp_year: string;
+    // Whether Paystack can charge it again without the customer
+    // (fix/payments-go-live: a plan change charges only a reusable one).
+    reusable?: boolean;
   } | number;
   [key: string]: unknown;
 }
@@ -701,7 +704,11 @@ export interface PaystackSubscription {
   customerCode: string | null;
   planCode: string | null;
   authorizationCode: string | null;
+  // Paystack's `authorization.reusable`; null when it didn't say.
+  authorizationReusable: boolean | null;
   cardLast4: string | null;
+  // As Paystack sends it (card_type, e.g. "visa "): displayCardBrand
+  // (card-brand.util.ts) before it is stored or shown.
   cardBrand: string | null;
   cardExpMonth: string | null;
   cardExpYear: string | null;
@@ -720,6 +727,7 @@ const toSubscription = (data: PaystackSubscriptionData): PaystackSubscription =>
     customerCode: customer?.customer_code ?? null,
     planCode,
     authorizationCode: authorization?.authorization_code ?? null,
+    authorizationReusable: typeof authorization?.reusable === 'boolean' ? authorization.reusable : null,
     cardLast4: authorization?.last4 ?? null,
     cardBrand: authorization?.card_type ?? null,
     cardExpMonth: authorization?.exp_month ?? null,

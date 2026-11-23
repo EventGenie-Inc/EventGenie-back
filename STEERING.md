@@ -3786,16 +3786,40 @@ verification charges and refunds seen, never `PAYSTACK_ONLY` or
 (`GET /api/subscriptions/update-card-link`) is Paystack's own manage page for
 the current subscription (`/subscription/:code/manage/link`); the card is
 captured and swapped there, and Paystack sends **no subscription webhook**
-for it. The card shown (`card` on `GET /api/subscriptions`: brand, last 4,
-expiry; display fields only, `updateCardDisplay`) is read back from the
-subscription (`getSubscription`'s authorisation): after commit when the
-card-update verification charge or its refund arrives, on `POST
-/api/subscriptions/verify` (the frontend calls it when the organiser comes
-back from the update page; best effort, never failing verify), and in the
-sync (daily for every tenant with a subscription; `CARD_UPDATED` in the
-`SUBSCRIPTION_SYNC_CORRECTED` row). Before, it was written only by
-`subscription.create`, so a replaced card never showed. The stored
-`paystackAuthorizationCode` is **not** refreshed (see "Known gaps").
+for it. The stored card (`paystackAuthorizationCode`, and what `card` on `GET
+/api/subscriptions` shows: brand, last 4, expiry; `updateCardFromPaystack`)
+is read back from the subscription (`getSubscription`'s authorisation):
+after commit when the card-update verification charge or its refund arrives,
+on `POST /api/subscriptions/verify` (the frontend calls it when the
+organiser comes back from the update page; best effort, never failing
+verify), in the sync (daily for every tenant with a subscription;
+`CARD_UPDATED` in the `SUBSCRIPTION_SYNC_CORRECTED` row, whose before/after
+show the card's last 4 and expiry, never the authorisation code), and on a
+plan change (below). Before, only `subscription.create` wrote them, so a
+replaced card never showed.
+
+**A charge to the saved card uses the card Paystack holds now, never the
+stored code.** The only such charge is a plan change's upgrade (`changeTier`
+→ `createSubscription`); passes, SMS bundles, first subscribes and ticket
+orders each open a new checkout and never read the stored code, and a
+downgrade only disables. Before anything is claimed, disabled or recorded,
+`currentChargeableAuthorization` reads the subscription from Paystack (a
+GET: the client's timeout and two retries) and charges its authorisation
+only if Paystack marks it `reusable: true`. Unreachable or unclear (after the
+retries): **503 `PAYMENT_CARD_NOT_CONFIRMED`**; Paystack refusing the read,
+or no reusable authorisation: **422 `PAYMENT_CARD_NOT_CONFIRMED`**; both
+"We couldn't confirm your card just now. Nothing was charged. Please try
+again in a few minutes." (`CARD_NOT_CONFIRMED_MESSAGE`,
+`payment-errors.util.ts`). Nothing is charged, the old subscription stays
+live, no pending attempt and no ledger row. The card read is stored on the
+way. With no card update, a plan change charges the same card as before.
+
+**A card's brand** is shown and stored trimmed, each word capitalised
+(`displayCardBrand`, `shared/payments/card-brand.util.ts`): Paystack's
+`card_type` arrives as `"visa "`; `card.brand` reads `"Visa"`. Every write
+normalises it, and `GET /api/subscriptions` normalises on read too, so rows
+stored before the fix read correctly with no data migration; the sync
+compares brands as displayed, so it doesn't rewrite a row for that alone.
 
 **The card-update verification charge** (`shared/payments/card-verification.util.ts`).
 Paystack charges the new card R1 and refunds it at once. Neither is ours:
@@ -6486,13 +6510,6 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **A template's date is fixed.** A grant to all whose first date has
   passed records FAILED for each later sign-up rather than moving the date;
   make a new grant with a later date.
-- **A plan change after a card update charges the old card** (found in
-  fix/payments-go-live, not fixed: that task stored display fields only).
-  `changeTier` passes the stored `Tenant.paystackAuthorizationCode` to
-  `createSubscription`; replacing the card on Paystack's manage page changes
-  the subscription's authorisation but not that column (only
-  `subscription.create` writes it). Refreshing it with the card, or omitting
-  it so Paystack picks the customer's latest card, is a decision for later.
 - A deferred technical debt register tracks tenant-isolation and
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —

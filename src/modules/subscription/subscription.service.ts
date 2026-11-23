@@ -17,7 +17,10 @@ import {
   PAYMENT_PROVIDER_UNAVAILABLE,
   PAYMENT_PROVIDER_UNAVAILABLE_MESSAGE,
   ORGANISATION_NOT_FOUND_MESSAGE,
+  CARD_NOT_CONFIRMED,
+  CARD_NOT_CONFIRMED_MESSAGE,
 } from '../../shared/payments/payment-errors.util.js';
+import { displayCardBrand } from '../../shared/payments/card-brand.util.js';
 import { checkAmount, paidAtOf, transactionIdOf, amountCentsOf, currencyOf, type AmountCheck } from '../../shared/payments/paystack-payload.util.js';
 import { reuseCutoff, reuseEndsAt, PENDING_CHECKOUT_REUSE_MS } from '../../shared/payments/pending-checkout.util.js';
 import { checkoutCancelUrl } from '../../shared/payments/checkout-cancel.util.js';
@@ -278,7 +281,9 @@ export const subscriptionService = {
       latestPayment: resolveLatestSubscriptionPayment(latestRow, takeBacks, tenant),
       card: tenant.paystackCardLast4
         ? {
-            brand: tenant.paystackCardBrand,
+            // Trimmed and capitalised on read too: rows stored before the
+            // brand was normalised read "Visa", not "visa " (card-brand.util.ts).
+            brand: displayCardBrand(tenant.paystackCardBrand),
             last4: tenant.paystackCardLast4,
             expMonth: tenant.paystackCardExpMonth,
             expYear: tenant.paystackCardExpYear,
@@ -418,6 +423,14 @@ export const subscriptionService = {
     const isUpgrade = targetRank > currentRank;
 
     if (isUpgrade) {
+      // The card to charge, read from Paystack now (fix/payments-go-live):
+      // first, so a card that can't be confirmed refuses before anything is
+      // claimed, disabled, charged or recorded.
+      const authorizationCode = await subscriptionService.currentChargeableAuthorization({
+        ...tenant,
+        paystackSubscriptionCode: tenant.paystackSubscriptionCode,
+      });
+
       const marker = generateUpgradeMarker();
       const claimed = await subscriptionRepository.claimPendingAttempt(tenantId, { reference: marker, tier: dto.tier, period: dto.period }, reuseCutoff());
       if (!claimed) {
@@ -444,7 +457,8 @@ export const subscriptionService = {
         const created = await paystackClient.createSubscription({
           customerCode: tenant.paystackCustomerCode,
           planCode: getPlanCode(dto.tier, dto.period),
-          ...(tenant.paystackAuthorizationCode !== null && { authorizationCode: tenant.paystackAuthorizationCode }),
+          // The subscription's current card, never the stored code.
+          authorizationCode,
         });
 
         await paymentLedgerService.record({
@@ -547,23 +561,60 @@ export const subscriptionService = {
   // verification charge's refund). So the card shown is read back from the
   // subscription itself: after the verification charge or its refund arrives
   // (after commit), on POST /verify (the page the organiser comes back to),
-  // and in the sync (daily for every tenant with a subscription). Brand, last
-  // 4 and expiry only. Returns whether the stored card changed.
+  // and in the sync (daily for every tenant with a subscription). Stored:
+  // the authorisation code (so anything reading it is current; a charge
+  // itself always reads it from Paystack: currentChargeableAuthorization)
+  // and the display fields (brand, last 4, expiry). Brands are compared as
+  // displayed, so a row stored before the brand was trimmed isn't rewritten
+  // for that alone. Returns whether anything stored changed.
   applyCardFrom: async (tenant: BillingTenant, sub: paystackClient.PaystackSubscription): Promise<boolean> => {
-    if (!sub.cardLast4) return false;
-    const same =
-      tenant.paystackCardLast4 === sub.cardLast4 &&
-      tenant.paystackCardBrand === sub.cardBrand &&
-      tenant.paystackCardExpMonth === sub.cardExpMonth &&
-      tenant.paystackCardExpYear === sub.cardExpYear;
-    if (same) return false;
-    await subscriptionRepository.updateCardDisplay(tenant.id, {
+    const codeChanged = sub.authorizationCode !== null && sub.authorizationCode !== tenant.paystackAuthorizationCode;
+    const displayChanged =
+      sub.cardLast4 !== null &&
+      !(
+        tenant.paystackCardLast4 === sub.cardLast4 &&
+        displayCardBrand(tenant.paystackCardBrand) === displayCardBrand(sub.cardBrand) &&
+        tenant.paystackCardExpMonth === sub.cardExpMonth &&
+        tenant.paystackCardExpYear === sub.cardExpYear
+      );
+    if (!codeChanged && !displayChanged) return false;
+    await subscriptionRepository.updateCardFromPaystack(tenant.id, {
+      authorizationCode: sub.authorizationCode,
       cardBrand: sub.cardBrand,
       cardLast4: sub.cardLast4,
       cardExpMonth: sub.cardExpMonth,
       cardExpYear: sub.cardExpYear,
     });
     return true;
+  },
+
+  // The card a plan change may charge (fix/payments-go-live): the
+  // subscription's CURRENT authorisation, read from Paystack at that moment,
+  // never the stored code (a card replaced on Paystack's page leaves the
+  // stored one pointing at the removed card until something refreshes it).
+  // Paystack's GET has the client's timeout and retries. Unreachable, an
+  // unclear answer, or no reusable authorisation: refused before anything is
+  // claimed, disabled or charged (CARD_NOT_CONFIRMED). The stored card is
+  // brought up to date on the way.
+  currentChargeableAuthorization: async (tenant: BillingTenant & { paystackSubscriptionCode: string }): Promise<string> => {
+    let sub: paystackClient.PaystackSubscription;
+    try {
+      sub = await paystackClient.getSubscription(tenant.paystackSubscriptionCode);
+    } catch (err) {
+      console.error(`[subscription] could not read the current card — tenant ${tenant.id}:`, err);
+      throw new HttpError(err instanceof PaystackApiError && err.kind === 'rejected' ? 422 : 503, CARD_NOT_CONFIRMED_MESSAGE, CARD_NOT_CONFIRMED);
+    }
+    if (!sub.authorizationCode || sub.authorizationReusable !== true) {
+      console.error(`[subscription] no reusable authorisation on subscription ${tenant.paystackSubscriptionCode} — tenant ${tenant.id}; plan change refused`);
+      throw new HttpError(422, CARD_NOT_CONFIRMED_MESSAGE, CARD_NOT_CONFIRMED);
+    }
+    try {
+      await subscriptionService.applyCardFrom(tenant, sub);
+    } catch (err) {
+      // Bookkeeping only: the charge uses `sub`'s code whatever is stored.
+      console.error(`[subscription] could not store the current card — tenant ${tenant.id}:`, err);
+    }
+    return sub.authorizationCode;
   },
 
   // Throws PaystackApiError when Paystack can't be asked.

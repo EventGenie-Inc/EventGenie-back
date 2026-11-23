@@ -69,9 +69,10 @@ export interface FakeCard {
   exp_year: string;
 }
 
-export const DEFAULT_FAKE_CARD: FakeCard = { last4: '4081', card_type: 'visa', exp_month: '12', exp_year: '2030' };
+// card_type padded, as Paystack sends it ("visa ", seen on dev on 22 Nov 2026).
+export const DEFAULT_FAKE_CARD: FakeCard = { last4: '4081', card_type: 'visa ', exp_month: '12', exp_year: '2030' };
 
-const authorizationOf = (code: string, card: FakeCard | undefined) => ({ authorization_code: code, channel: 'card', reusable: true, ...(card ?? DEFAULT_FAKE_CARD) });
+const authorizationOf = (code: string, card: FakeCard | undefined, reusable = true) => ({ authorization_code: code, channel: 'card', reusable, ...(card ?? DEFAULT_FAKE_CARD) });
 
 export interface FakeSubscription {
   subscription_code: string;
@@ -85,6 +86,9 @@ export interface FakeSubscription {
   authorization_code: string;
   // The card on it (default: visa 4081 12/2030).
   card?: FakeCard;
+  // Paystack's authorization.reusable on it (default true); a test sets
+  // false for a card Paystack can't charge again.
+  authorization_reusable?: boolean;
 }
 
 export interface FakeCall {
@@ -336,7 +340,7 @@ const subscriptionView = (s: FakeSubscription) => ({
   next_payment_date: s.next_payment_date,
   customer: { customer_code: s.customer_code, email: s.email },
   plan: { plan_code: s.plan_code, amount: s.plan_amount },
-  authorization: authorizationOf(s.authorization_code, s.card),
+  authorization: authorizationOf(s.authorization_code, s.card, s.authorization_reusable ?? true),
 });
 
 const inWindow = (iso: string | null, query: Record<string, string>): boolean => {

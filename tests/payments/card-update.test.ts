@@ -9,6 +9,7 @@ import { subscriptionSyncService } from '../../src/modules/subscription/subscrip
 import { paymentReconciliationService } from '../../src/modules/payment-reconciliation/payment-reconciliation.service.js';
 import { SUBSCRIPTION_PRICES_CENTS } from '../../src/modules/subscription/subscription-plans.config.js';
 import { cardVerificationChargeOf, cardVerificationRefundOf } from '../../src/shared/payments/card-verification.util.js';
+import { displayCardBrand } from '../../src/shared/payments/card-brand.util.js';
 import {
   createPaymentsTenant,
   cleanupPayments,
@@ -33,7 +34,7 @@ import {
 // ─────────────────────────────────────────
 
 const ELEVATE_M = SUBSCRIPTION_PRICES_CENTS.ELEVATE.MONTHLY;
-const NEW_CARD = { last4: '0409', card_type: 'visa', exp_month: '01', exp_year: '2030' };
+const NEW_CARD = { last4: '0409', card_type: 'visa ', exp_month: '01', exp_year: '2030' };
 
 const status = (t: PaymentsTenant) => request(app).get('/api/subscriptions').set(headersFor(t.admin));
 const verify = (t: PaymentsTenant) => request(app).post('/api/subscriptions/verify').set(headersFor(t.admin));
@@ -69,13 +70,13 @@ afterEach(async () => {
 describe('the card shown after a card update', () => {
   it('the next subscription read shows the new card, once the verification refund arrives', async () => {
     const { sub } = await subscribeElevate(t);
-    expect((await status(t)).body.data.card).toEqual({ brand: 'visa', last4: '4081', expMonth: '12', expYear: '2030' });
+    expect((await status(t)).body.data.card).toEqual({ brand: 'Visa', last4: '4081', expMonth: '12', expYear: '2030' });
 
     const { refund } = fakePaystack.updateCard(sub.subscription_code, NEW_CARD);
     // What dev received: refund.pending seconds after the charge.
     await sendWebhook('refund.pending', { ...refund, status: 'pending' });
 
-    expect((await status(t)).body.data.card).toEqual({ brand: 'visa', last4: '0409', expMonth: '01', expYear: '2030' });
+    expect((await status(t)).body.data.card).toEqual({ brand: 'Visa', last4: '0409', expMonth: '01', expYear: '2030' });
   }, 60000);
 
   it('coming back from the update page, POST /verify answers with the new card (no webhook needed)', async () => {
@@ -83,7 +84,7 @@ describe('the card shown after a card update', () => {
     fakePaystack.updateCard(sub.subscription_code, NEW_CARD);
     const res = await verify(t);
     expect(res.status).toBe(200);
-    expect(res.body.data.card).toEqual({ brand: 'visa', last4: '0409', expMonth: '01', expYear: '2030' });
+    expect(res.body.data.card).toEqual({ brand: 'Visa', last4: '0409', expMonth: '01', expYear: '2030' });
   }, 60000);
 
   it('the daily sync corrects a stale card', async () => {
@@ -93,7 +94,7 @@ describe('the card shown after a card update', () => {
 
     const result = await subscriptionSyncService.syncMany({ onlyFlagged: false, tenantIds: [t.tenantId] });
     expect(result).toMatchObject({ checked: 1, corrected: 1, failed: 0 });
-    expect(await tenantOf(t)).toMatchObject({ paystackCardLast4: '0409', paystackCardExpMonth: '01', paystackCardExpYear: '2030', paystackCardBrand: 'visa' });
+    expect(await tenantOf(t)).toMatchObject({ paystackCardLast4: '0409', paystackCardExpMonth: '01', paystackCardExpYear: '2030', paystackCardBrand: 'Visa' });
     const corrected = (await ledgerOf(t)).find((e) => e.type === 'SUBSCRIPTION_SYNC_CORRECTED');
     expect(corrected?.payload).toMatchObject({ changes: ['CARD_UPDATED'], before: { card: { last4: '4081' } }, after: { card: { last4: '0409' } } });
 
@@ -220,4 +221,138 @@ describe('recognising them is strict', () => {
     expect(await prisma.paymentLedgerEntry.count({ where: { type: 'WEBHOOK_EVENT_UNHANDLED', paystackReference: String(foreign['id']) } })).toBe(1);
     expect(paymentAlerts().some((e) => /nothing handled/.test(e.subject))).toBe(true);
   }, 60000);
+});
+
+// ─────────────────────────────────────────
+//  NEVER CHARGE A REPLACED CARD (fix/payments-go-live, round 2)
+//
+//  A plan change (the only charge to a saved card) reads the subscription's
+//  current authorisation from Paystack at that moment and charges it, never
+//  the stored code; unconfirmed, it refuses before anything is claimed,
+//  disabled or charged. The card refreshes store the code too.
+// ─────────────────────────────────────────
+
+const changeTier = (t: PaymentsTenant, tier: string, period: string) =>
+  request(app).put('/api/subscriptions/change-tier').set(headersFor(t.admin)).send({ tier, period });
+const createCalls = () => fakePaystack.calls.filter((c) => c.method === 'POST' && c.path === '/subscription');
+const disableCalls = () => fakePaystack.calls.filter((c) => c.method === 'POST' && c.path === '/subscription/disable');
+const isSubscriptionRead = (c: { method: string; path: string }) => c.method === 'GET' && /^\/subscription\/SUB_[^/]+$/.test(c.path);
+const CARD_NOT_CONFIRMED_MESSAGE = "We couldn't confirm your card just now. Nothing was charged. Please try again in a few minutes.";
+
+describe('a plan change charges the current card', () => {
+  it('after a card update: the new authorisation, not the stored old one', async () => {
+    const { sub } = await subscribeElevate(t);
+    expect((await tenantOf(t)).paystackAuthorizationCode).toBe('AUTH_fake');
+    // Replaced on Paystack's page; no webhook has refreshed anything yet.
+    fakePaystack.updateCard(sub.subscription_code, NEW_CARD);
+    const replacement = fakePaystack.subscriptions.get(sub.subscription_code)!.authorization_code;
+    expect(replacement).not.toBe('AUTH_fake');
+
+    const res = await changeTier(t, 'ELEVATE', 'ANNUAL');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ outcome: 'accepted' });
+    expect(createCalls()).toHaveLength(1);
+    expect(createCalls()[0]!.body).toMatchObject({ authorization: replacement });
+    // And the stored card is current now.
+    expect(await tenantOf(t)).toMatchObject({ paystackAuthorizationCode: replacement, paystackCardLast4: '0409' });
+  }, 60000);
+
+  it('with no card update, exactly as before: the same card, accepted, the charge initiated and the change pending', async () => {
+    const { sub } = await subscribeElevate(t);
+    const before = await tenantOf(t);
+    const res = await changeTier(t, 'ELEVATE', 'ANNUAL');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ outcome: 'accepted' });
+    expect(disableCalls().map((c) => c.body?.['code'])).toEqual([sub.subscription_code]);
+    expect(createCalls()).toHaveLength(1);
+    expect(createCalls()[0]!.body).toEqual({ customer: before.paystackCustomerCode, plan: expect.any(String), authorization: 'AUTH_fake' });
+    const after = await tenantOf(t);
+    expect(after).toMatchObject({
+      paystackAuthorizationCode: 'AUTH_fake',
+      paystackCardLast4: before.paystackCardLast4,
+      paystackCardBrand: before.paystackCardBrand,
+      subscriptionPendingTier: 'ELEVATE',
+      subscriptionPendingPeriod: 'ANNUAL',
+    });
+    expect(after.subscriptionPendingReference).toMatch(/^upg_/);
+    expect((await ledgerOf(t)).at(-1)).toMatchObject({ type: 'SUBSCRIPTION_CHARGE_INITIATED', amountCents: SUBSCRIPTION_PRICES_CENTS.ELEVATE.ANNUAL });
+  }, 60000);
+
+  const refusedWithNothingDone = async (status: number) => {
+    const before = await ledgerOf(t);
+    const res = await changeTier(t, 'ELEVATE', 'ANNUAL');
+    expect(res.status).toBe(status);
+    expect(res.body).toMatchObject({ code: 'PAYMENT_CARD_NOT_CONFIRMED', message: CARD_NOT_CONFIRMED_MESSAGE });
+    // Nothing disabled, created, claimed or recorded.
+    expect(disableCalls()).toEqual([]);
+    expect(createCalls()).toEqual([]);
+    expect(await tenantOf(t)).toMatchObject({ subscriptionTier: 'ELEVATE', subscriptionPeriod: 'MONTHLY', subscriptionPendingReference: null, subscriptionNeedsSync: false });
+    expect((await ledgerOf(t)).length).toBe(before.length);
+  };
+
+  it("Paystack unreachable: refused with the message, and nothing charged or recorded", async () => {
+    const { sub } = await subscribeElevate(t);
+    // The read is a GET: the client retries it twice, so all three fail.
+    fakePaystack.failNext(isSubscriptionRead, 'network', 3);
+    await refusedWithNothingDone(503);
+    expect(fakePaystack.calls.filter(isSubscriptionRead)).toHaveLength(3);
+    expect(fakePaystack.subscriptions.get(sub.subscription_code)?.status).toBe('active');
+  }, 60000);
+
+  it('no reusable authorisation on the subscription: refused with the message, and nothing charged or recorded', async () => {
+    const { sub } = await subscribeElevate(t);
+    fakePaystack.subscriptions.get(sub.subscription_code)!.authorization_reusable = false;
+    await refusedWithNothingDone(422);
+  }, 60000);
+});
+
+describe('the card refreshes store the authorisation code too', () => {
+  const replaced = async () => {
+    const { sub } = await subscribeElevate(t);
+    const { refund } = fakePaystack.updateCard(sub.subscription_code, NEW_CARD);
+    return { sub, refund, code: fakePaystack.subscriptions.get(sub.subscription_code)!.authorization_code };
+  };
+
+  it('after the verification refund arrives', async () => {
+    const { refund, code } = await replaced();
+    await sendWebhook('refund.pending', { ...refund, status: 'pending' });
+    expect((await tenantOf(t)).paystackAuthorizationCode).toBe(code);
+  }, 60000);
+
+  it('on POST /verify', async () => {
+    const { code } = await replaced();
+    expect((await verify(t)).status).toBe(200);
+    expect((await tenantOf(t)).paystackAuthorizationCode).toBe(code);
+  }, 60000);
+
+  it('in the daily sync', async () => {
+    const { code } = await replaced();
+    await subscriptionSyncService.syncMany({ onlyFlagged: false, tenantIds: [t.tenantId] });
+    expect((await tenantOf(t)).paystackAuthorizationCode).toBe(code);
+  }, 60000);
+});
+
+describe("the card's brand", () => {
+  it('"visa " is stored and returned as "Visa"', async () => {
+    await subscribeElevate(t);
+    // Paystack's subscription.create carried card_type "visa ".
+    expect((await tenantOf(t)).paystackCardBrand).toBe('Visa');
+    expect((await status(t)).body.data.card.brand).toBe('Visa');
+  }, 60000);
+
+  it('a row stored before the fix ("visa ") is returned as "Visa", and the sync leaves it alone', async () => {
+    await subscribeElevate(t);
+    await prisma.tenant.update({ where: { id: t.tenantId }, data: { paystackCardBrand: 'visa ' } });
+    expect((await status(t)).body.data.card.brand).toBe('Visa');
+    expect(await subscriptionSyncService.syncMany({ onlyFlagged: false, tenantIds: [t.tenantId] })).toMatchObject({ corrected: 0 });
+  }, 60000);
+
+  it('trimmed, each word capitalised, empty as null', () => {
+    expect(displayCardBrand('visa ')).toBe('Visa');
+    expect(displayCardBrand(' MASTERCARD')).toBe('Mastercard');
+    expect(displayCardBrand('american  express')).toBe('American Express');
+    expect(displayCardBrand('Visa')).toBe('Visa');
+    expect(displayCardBrand('   ')).toBeNull();
+    expect(displayCardBrand(null)).toBeNull();
+  });
 });
