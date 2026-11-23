@@ -22,6 +22,7 @@ const snapshot = (t: BillingTenant) => ({
   subscriptionCode: t.paystackSubscriptionCode,
   pendingTier: t.subscriptionPendingTier,
   pendingPeriod: t.subscriptionPendingPeriod,
+  card: t.paystackCardLast4 ? { last4: t.paystackCardLast4, expMonth: t.paystackCardExpMonth, expYear: t.paystackCardExpYear } : null,
 });
 
 const isValidDate = (value: string | null | undefined): value is string =>
@@ -113,6 +114,10 @@ export const subscriptionSyncService = {
     if (code) {
       const sub = await paystackClient.getSubscription(code);
       paystackStatus = sub.status;
+
+      // The card shown, as Paystack holds it on the subscription now (a card
+      // replaced on Paystack's page sends us no subscription webhook).
+      if (await subscriptionService.applyCardFrom(tenant, sub)) changes.push('CARD_UPDATED');
 
       if (tenant.subscriptionTier === 'SPARK') {
         // Refunded or otherwise ended here: it must not stay live there.

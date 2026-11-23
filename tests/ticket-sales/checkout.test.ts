@@ -5,7 +5,7 @@ import { ticketOrderService } from '../../src/modules/ticket-order/ticket-order.
 import { TERMS_VERSION } from '../../src/modules/terms/terms.service.js';
 import { calculateTicketOrderFees } from '../../src/modules/ticket-sales/ticket-fee-calculator.js';
 import { cleanupTicketSalesFixtures, createOrg, createTicketedEvent, createType, givePayoutAccount, setSales } from './helpers.js';
-import { checkout, sellingEvent, fakePaystack, prisma, buyerEmail, type Selling } from './orders-helpers.js';
+import { checkout, orderStatus, sellingEvent, fakePaystack, prisma, buyerEmail, type Selling } from './orders-helpers.js';
 
 // ─────────────────────────────────────────
 //  CHECKOUT (ticket sales Round B) — POST /api/ticket-orders/checkout
@@ -241,5 +241,34 @@ describe('a free event, or one not yet on sale', () => {
     expect(res.body.code).toBe('TICKET_ORDER_NOT_ON_SALE');
     expect((await setSales(org.admin, ev.eventId, { enabled: true })).status).toBe(200);
     expect((await checkout({ ev }, [{ ticketTypeId: type.body.data.id, quantity: 1 }])).status).toBe(201);
+  }, 60000);
+});
+
+describe("the order view's link back to the event (fix/payments-go-live)", () => {
+  it("carries the event's share token while it is public", async () => {
+    const s = await sellingEvent();
+    const res = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+    expect(res.status).toBe(201);
+    expect(res.body.data.event).toMatchObject({ shareToken: s.ev.shareToken });
+    const view = await orderStatus(res.body.data.orderToken);
+    expect(view.body.data.event).toMatchObject({ shareToken: s.ev.shareToken });
+  }, 60000);
+
+  it('is null once the event is archived', async () => {
+    const s = await sellingEvent();
+    const res = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+    await prisma.event.update({ where: { id: s.ev.eventId }, data: { isArchived: true } });
+    const view = await orderStatus(res.body.data.orderToken);
+    expect(view.status).toBe(200);
+    expect(view.body.data.event.shareToken).toBeNull();
+  }, 60000);
+
+  it('is null once the event is made private', async () => {
+    const s = await sellingEvent();
+    const res = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+    await prisma.event.update({ where: { id: s.ev.eventId }, data: { visibility: 'PRIVATE' } });
+    const view = await orderStatus(res.body.data.orderToken);
+    expect(view.status).toBe(200);
+    expect(view.body.data.event.shareToken).toBeNull();
   }, 60000);
 });

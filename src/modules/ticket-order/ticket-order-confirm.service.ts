@@ -4,7 +4,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 import { checkAmount, paidAtOf, transactionIdOf } from '../../shared/payments/paystack-payload.util.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { paymentAlertService } from '../payment-alert/payment-alert.service.js';
-import { recordAmountMismatch, recordDuplicatePayment, formatRand } from '../payment-reconciliation/payment-mismatch.util.js';
+import { recordAmountMismatch, recordDuplicatePayment, formatRand, isTicketLoss } from '../payment-reconciliation/payment-mismatch.util.js';
 import { paymentReconciliationRepository } from '../payment-reconciliation/payment-reconciliation.repository.js';
 import { type WebhookContext } from '../payment-webhook/payment-webhook.types.js';
 import { PAYMENT_TRANSACTION_OPTIONS, runPostCommit, type PostCommitWork } from '../payment-webhook/payment-context.util.js';
@@ -29,8 +29,9 @@ import { daysOverIfSold } from '../ticket/ticket-day-capacity.util.js';
 //     admins and the super admin), one IssuedTicket per
 //     unit with a short number, and the ledger: TICKET_PAYMENT_SUCCEEDED with
 //     Paystack's actual fee and its difference from the calculated one, and
-//     COMMISSION_TAKEN. e-velope's net below zero (the fee above its charge
-//     minus the commission) is a PaymentMismatch and an alert.
+//     COMMISSION_TAKEN. A real loss (Paystack's fee above e-velope's whole
+//     charge) is a NEGATIVE_NET PaymentMismatch and an alert; a fee that
+//     only eats into the commission is the fee difference, totalled daily.
 //  The buyer's email (tickets, PDF) goes after commit, claimed once.
 // ─────────────────────────────────────────
 
@@ -297,7 +298,11 @@ export const ticketOrderConfirmService = {
       tx
     );
 
-    if (netCents !== null && netCents < 0) {
+    // A real loss only: Paystack's fee above e-velope's whole charge. A fee
+    // above the calculated one that still leaves e-velope something (an
+    // international card) is the fee difference above, totalled daily.
+    if (actualFeeCents !== null && isTicketLoss(actualFeeCents, order.transactionChargeCents)) {
+      const lossCents = actualFeeCents - order.transactionChargeCents;
       await paymentReconciliationRepository.createMismatch(
         {
           source: 'WEBHOOK',
@@ -306,10 +311,10 @@ export const ticketOrderConfirmService = {
           paystackTransactionId: transactionId,
           tenantId: order.tenantId,
           eventId: order.eventId,
-          expectedAmountCents: order.processingFeeCents,
+          expectedAmountCents: order.transactionChargeCents,
           actualAmountCents: actualFeeCents,
           currency: order.currency,
-          details: { product: 'TICKET', relatedType: 'TicketOrder', relatedId: order.id, netCents, transactionChargeCents: order.transactionChargeCents, commissionCents: order.commissionCents },
+          details: { product: 'TICKET', relatedType: 'TicketOrder', relatedId: order.id, lossCents, netCents, transactionChargeCents: order.transactionChargeCents, commissionCents: order.commissionCents },
         },
         tx
       );
@@ -318,8 +323,8 @@ export const ticketOrderConfirmService = {
           kind: 'RECONCILIATION',
           subject: "A ticket payment's fee was more than we charged for it",
           lines: [
-            `Paystack's fee (${formatRand(actualFeeCents)}) was above e-velope's charge less the commission, so e-velope lost ${formatRand(-netCents)} on this order.`,
-            "Usually an international card or another channel dearer than a local card. Check the payment's channel in Paystack.",
+            `Paystack's fee (${formatRand(actualFeeCents)}) was above e-velope's whole charge on this order (${formatRand(order.transactionChargeCents)}), so e-velope lost ${formatRand(lossCents)} on it.`,
+            "Check the payment's channel in Paystack.",
           ],
           facts: [`Reference: ${reference}`, `Order: ${order.id}`, `Charge: ${formatRand(order.transactionChargeCents)}`, `Commission: ${formatRand(order.commissionCents)}`],
         });

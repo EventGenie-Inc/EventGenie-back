@@ -668,6 +668,9 @@ interface PaystackSubscriptionData {
     card_type: string;
     exp_month: string;
     exp_year: string;
+    // Whether Paystack can charge it again without the customer
+    // (fix/payments-go-live: a plan change charges only a reusable one).
+    reusable?: boolean;
   } | number;
   [key: string]: unknown;
 }
@@ -701,7 +704,11 @@ export interface PaystackSubscription {
   customerCode: string | null;
   planCode: string | null;
   authorizationCode: string | null;
+  // Paystack's `authorization.reusable`; null when it didn't say.
+  authorizationReusable: boolean | null;
   cardLast4: string | null;
+  // As Paystack sends it (card_type, e.g. "visa "): displayCardBrand
+  // (card-brand.util.ts) before it is stored or shown.
   cardBrand: string | null;
   cardExpMonth: string | null;
   cardExpYear: string | null;
@@ -720,6 +727,7 @@ const toSubscription = (data: PaystackSubscriptionData): PaystackSubscription =>
     customerCode: customer?.customer_code ?? null,
     planCode,
     authorizationCode: authorization?.authorization_code ?? null,
+    authorizationReusable: typeof authorization?.reusable === 'boolean' ? authorization.reusable : null,
     cardLast4: authorization?.last4 ?? null,
     cardBrand: authorization?.card_type ?? null,
     cardExpMonth: authorization?.exp_month ?? null,
@@ -848,6 +856,9 @@ export interface PaystackListedTransaction {
   createdAt: string | null;
   // Paystack's fee on it, in cents, when listed (ticket sales: e-velope's net).
   feesCents: number | null;
+  // Paystack's whole row, for what only some rows carry (the card-update
+  // verification charge's metadata: card-verification.util.ts).
+  raw: Record<string, unknown>;
 }
 
 interface PaystackListedTransactionData {
@@ -874,6 +885,7 @@ export const listTransactions = async (params: { from: string; to: string }): Pr
     paidAt: row.paid_at ?? row.paidAt ?? null,
     createdAt: row.created_at ?? row.createdAt ?? null,
     feesCents: typeof row.fees === 'number' ? row.fees : null,
+    raw: row as unknown as Record<string, unknown>,
   }));
 };
 
@@ -884,6 +896,9 @@ export interface PaystackListedRefund {
   status: string;
   amountCents: number;
   currency: string;
+  // Paystack's whole row (its merchant_note marks a card-update verification
+  // refund: card-verification.util.ts).
+  raw: Record<string, unknown>;
 }
 
 interface PaystackListedRefundData {
@@ -912,6 +927,7 @@ export const listRefunds = async (params: { from: string; to: string }): Promise
       status: row.status,
       amountCents: row.amount,
       currency: row.currency,
+      raw: row as unknown as Record<string, unknown>,
     };
   });
 };

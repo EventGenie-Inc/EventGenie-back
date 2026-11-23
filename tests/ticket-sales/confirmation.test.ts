@@ -203,15 +203,35 @@ describe('the ledger', () => {
     expect(await prisma.paymentMismatch.count({ where: { eventId: s.ev.eventId, kind: 'NEGATIVE_NET' } })).toBe(0);
   }, 60000);
 
-  it("a negative net (the fee above e-velope's charge less the commission) raises an alert", async () => {
+  // Paystack's international card rate (3.1% + R1, then 15% VAT, each part
+  // rounded up) on a R200 ticket's R212.24 total: ⌈657.944⌉ = 658, + 100 =
+  // 758, + ⌈113.7⌉ = 114: R8.72, against the R8.24 the local rate assumed.
+  const INTERNATIONAL_FEE_ON_R200 = 872;
+
+  it('an international-rate fee on a R200 ticket records the difference, with no alert (e-velope still earns R3.52)', async () => {
     const s = await sellingEvent();
     const res = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
     const orderId = res.body.data.orderId;
     clearSentEmails();
-    // An international card: its fee is more than the local rate the price assumed.
-    await pay(await latestReference(orderId), { fees: 900 });
-    expect((await ledgerOf(orderId)).find((e) => e.type === 'TICKET_PAYMENT_SUCCEEDED')?.payload).toMatchObject({ netCents: 1224 - 400 - 900 });
-    expect(await prisma.paymentMismatch.count({ where: { eventId: s.ev.eventId, kind: 'NEGATIVE_NET' } })).toBe(1);
+    await pay(await latestReference(orderId), { fees: INTERNATIONAL_FEE_ON_R200 });
+    const success = (await ledgerOf(orderId)).find((e) => e.type === 'TICKET_PAYMENT_SUCCEEDED')!;
+    expect(success.payload).toMatchObject({ actualFeeCents: 872, calculatedProcessingFeeCents: 824, feeDifferenceCents: 48, transactionChargeCents: 1224 });
+    // What e-velope keeps of its R12.24 charge: R3.52 instead of the R4.00 commission.
+    expect(1224 - 872).toBe(352);
+    expect(await prisma.paymentMismatch.count({ where: { eventId: s.ev.eventId, kind: 'NEGATIVE_NET' } })).toBe(0);
+    expect(sentEmails().some((e) => /fee was more than we charged/.test(e.subject))).toBe(false);
+    expect((await orderOf(orderId)).status).toBe('PAID');
+  }, 60000);
+
+  it("a fee above e-velope's whole charge (a real loss) raises the alert", async () => {
+    const s = await sellingEvent();
+    const res = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+    const orderId = res.body.data.orderId;
+    clearSentEmails();
+    await pay(await latestReference(orderId), { fees: 1300 });
+    const mismatches = await prisma.paymentMismatch.findMany({ where: { eventId: s.ev.eventId, kind: 'NEGATIVE_NET' } });
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({ expectedAmountCents: 1224, actualAmountCents: 1300, details: { lossCents: 76 } });
     expect(sentEmails().some((e) => e.to === 'admin@e-velope.co.za' && /fee was more than we charged/.test(e.subject))).toBe(true);
     // The order is still paid: the buyer did nothing wrong.
     expect((await orderOf(orderId)).status).toBe('PAID');
@@ -219,21 +239,38 @@ describe('the ledger', () => {
 });
 
 describe('the daily reconciliation', () => {
-  it('matches ticket orders against Paystack, and finds a negative net from its listed fee', async () => {
+  it('matches ticket orders against Paystack, and finds a real loss (not an international fee) from its listed fee', async () => {
     const { paymentReconciliationService } = await import('../../src/modules/payment-reconciliation/payment-reconciliation.service.js');
     const s = await sellingEvent();
     const fine = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
     const fineRef = await latestReference(fine.body.data.orderId);
     await pay(fineRef);
-    const dear = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
-    const dearRef = await latestReference(dear.body.data.orderId);
-    await pay(dearRef, { fees: 950 });
+    const international = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+    const internationalRef = await latestReference(international.body.data.orderId);
+    await pay(internationalRef, { fees: 950 });
+    const loss = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+    const lossRef = await latestReference(loss.body.data.orderId);
+    await pay(lossRef, { fees: 1300 });
 
     const today = new Date().toISOString().slice(0, 10);
     const result = await paymentReconciliationService.reconcileDay(today, { tenantIds: [s.org.tenantId] });
     const forRef = (ref: string) => result.mismatches.filter((m) => m.paystackReference === ref).map((m) => m.kind);
     expect(forRef(fineRef)).toEqual([]);
-    expect(forRef(dearRef)).toEqual(['NEGATIVE_NET']);
+    expect(forRef(internationalRef)).toEqual([]);
+    expect(forRef(lossRef)).toEqual(['NEGATIVE_NET']);
+  }, 60000);
+
+  it("the day's summary totals the fee differences (actual less calculated) for the super admin", async () => {
+    const { paymentReconciliationService } = await import('../../src/modules/payment-reconciliation/payment-reconciliation.service.js');
+    const s = await sellingEvent();
+    for (const fees of [872, 820, 1300]) {
+      const res = await checkout(s, [{ ticketTypeId: s.general, quantity: 1 }]);
+      await pay(await latestReference(res.body.data.orderId), { fees });
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const result = await paymentReconciliationService.reconcileDay(today, { tenantIds: [s.org.tenantId] });
+    // 872 − 824 = 48, 820 − 824 = −4, 1300 − 824 = 476.
+    expect(result).toMatchObject({ ticketFeeDifferenceTotalCents: 48 - 4 + 476, ticketFeeDifferenceCount: 3 });
   }, 60000);
 });
 

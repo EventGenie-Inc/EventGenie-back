@@ -123,6 +123,27 @@ describe('the guest list, the reconcile, and RSVP codes', () => {
     expect(wrong.body.code).toBe('TICKET_WRONG_DAY');
   }, 60000);
 
+  it("the door list has a buyer's tickets in order, then by position in the order, whatever their random numbers (fix/payments-go-live)", async () => {
+    const s = await sellingEvent();
+    const first = await buyAndPay(s, [{ ticketTypeId: s.general, quantity: 3 }]);
+    const second = await buyAndPay(s, [{ ticketTypeId: s.general, quantity: 2 }]);
+    // Numbers in reverse of each order's positions, and the later order's
+    // sorting before the earlier one's: sorting by number gives 3, 2, 1.
+    const tag = `${Date.now()}`.slice(-4).replace(/[01]/g, '9');
+    const renumber = [
+      [first.tickets[0]!, `TK-ZZZZ-${tag}`],
+      [first.tickets[1]!, `TK-MMMM-${tag}`],
+      [first.tickets[2]!, `TK-AAAA-${tag}`],
+      [second.tickets[0]!, `TK-3333-${tag}`],
+      [second.tickets[1]!, `TK-2222-${tag}`],
+    ] as const;
+    for (const [ticket, number] of renumber) await prisma.issuedTicket.update({ where: { id: ticket.id }, data: { number } });
+
+    const roster = (await request(app).get(`/api/events/${s.ev.eventId}/check-in/days/${s.ev.dayIds[0]}`).set(headersFor(s.org.admin))).body.data;
+    expect(roster.tickets.map((t: { label: string }) => t.label)).toEqual(['Ticket 1 of 3', 'Ticket 2 of 3', 'Ticket 3 of 3', 'Ticket 1 of 2', 'Ticket 2 of 2']);
+    expect(roster.tickets.map((t: { ticketId: string }) => t.ticketId)).toEqual([...first.tickets, ...second.tickets].map((t) => t.id));
+  }, 60000);
+
   it('the RSVP reconcile leaves ticket passes alone', () => {
     const party = {
       id: 'g1', eventId: 'e1', firstName: 'A', surname: 'B', isArchived: false, pendingApproval: false, registrationDeclinedAt: null,

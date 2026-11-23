@@ -31,6 +31,14 @@ export const PAYMENT_REJECTED_MESSAGE =
 export const PAYMENT_IN_PROGRESS_MESSAGE =
   'This payment is still being set up. Please wait a moment and try again.';
 
+// A charge to the saved card (a plan change) refused because the card on
+// the subscription couldn't be confirmed with Paystack at that moment
+// (fix/payments-go-live): Paystack unreachable or unclear (503), or no
+// reusable card on the subscription (422). Nothing was claimed or charged.
+export const CARD_NOT_CONFIRMED = 'PAYMENT_CARD_NOT_CONFIRMED';
+export const CARD_NOT_CONFIRMED_MESSAGE =
+  "We couldn't confirm your card just now. Nothing was charged. Please try again in a few minutes.";
+
 // The billing routes' own refusals, in a customer's words (never "tenant").
 // The signed-in account's organisation is missing (404), or the account
 // belongs to none (400: a super admin on an organisation's billing route).

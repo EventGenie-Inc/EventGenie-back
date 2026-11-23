@@ -197,6 +197,19 @@ export const paymentLedgerRepository = {
   },
 
   // Reconciliation: every success recorded for a window.
+  // A card-update verification charge or refund recorded for this Paystack
+  // reference (WEBHOOK_EVENT_IGNORED, reason CARD_VERIFICATION:
+  // subscriptionService.recordCardVerificationWithinTransaction).
+  findCardVerification: (reference: string, step: 'CHARGE' | 'REFUND') =>
+    prisma.paymentLedgerEntry.findFirst({
+      where: {
+        type: 'WEBHOOK_EVENT_IGNORED',
+        paystackReference: reference,
+        AND: [{ payload: { path: ['reason'], equals: 'CARD_VERIFICATION' } }, { payload: { path: ['step'], equals: step } }],
+      },
+      select: { id: true },
+    }),
+
   findSuccessesBetween: (from: Date, to: Date, tenantIds?: string[]) =>
     prisma.paymentLedgerEntry.findMany({
       where: {

@@ -1,6 +1,7 @@
 import { type Prisma, type EventPassTier, type LedgerEntryType } from '@prisma/client';
 import * as paystackClient from '../../shared/payments/paystack.client.js';
 import { adjustmentAmountOf, currencyOf, originalPaymentOf } from '../../shared/payments/paystack-payload.util.js';
+import { cardVerificationRefundOf } from '../../shared/payments/card-verification.util.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { paymentLedgerRepository } from '../payment-ledger/payment-ledger.repository.js';
 import { paymentAlertService } from '../payment-alert/payment-alert.service.js';
@@ -9,6 +10,7 @@ import { eventPassRepository } from '../event-pass/event-pass.repository.js';
 import { EVENT_PASS_TIER_RANK } from '../event-pass/event-pass-plans.config.js';
 import { smsSendLogRepository } from '../sms-send-log/sms-send-log.repository.js';
 import { subscriptionRepository } from '../subscription/subscription.repository.js';
+import { subscriptionService } from '../subscription/subscription.service.js';
 import { type WebhookContext, type HandlerResult } from '../payment-webhook/payment-webhook.types.js';
 import { paymentAdjustmentRepository } from './payment-adjustment.repository.js';
 import { ticketOrderConfirmService } from '../ticket-order/ticket-order-confirm.service.js';
@@ -237,6 +239,25 @@ export const paymentAdjustmentService = {
     }
 
     if (!original) {
+      // The refund of the R1 Paystack takes to verify a replaced card
+      // (fix/payments-go-live): no payment of ours is refunded, Paystack's
+      // note names the subscription, and it is a tenant's current one.
+      // Recorded as card verification, nothing taken back, no alert; the card
+      // refreshed after commit (card-verification.util.ts).
+      const verification = cardVerificationRefundOf(data);
+      const tenant = verification ? await subscriptionRepository.findBySubscriptionCode(verification.subscriptionCode, tx) : null;
+      if (verification && tenant) {
+        await subscriptionService.recordCardVerificationWithinTransaction(ctx, {
+          tenantId: tenant.id,
+          subscriptionCode: verification.subscriptionCode,
+          step: 'REFUND',
+          reference: verification.transactionReference,
+          transactionId: keys.transactionId,
+          adjustmentId,
+        });
+        return { claimed: true };
+      }
+
       await record(ctx, type, null, amountCents, currency, { adjustmentId, keys, matched: false });
       if (type !== 'REFUND_PENDING') {
         ctx.after(async () => {

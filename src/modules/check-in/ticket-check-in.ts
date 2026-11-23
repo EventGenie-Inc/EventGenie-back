@@ -16,7 +16,7 @@ import prisma from '../../shared/prisma/prisma.client.js';
 // ─────────────────────────────────────────
 
 const ticketInclude = {
-  order: { select: { id: true, status: true, reviewReason: true, buyerName: true, _count: { select: { tickets: true } } } },
+  order: { select: { id: true, status: true, reviewReason: true, buyerName: true, createdAt: true, _count: { select: { tickets: true } } } },
   ticketType: { select: { name: true } },
   checkIns: true,
 } satisfies Prisma.IssuedTicketInclude;
@@ -72,7 +72,11 @@ export const undoTicketArrival = async (ticketId: string, dayId: string): Promis
   (await prisma.ticketCheckIn.deleteMany({ where: { issuedTicketId: ticketId, eventDayId: dayId } })).count > 0;
 
 // The door list's tickets for a day: every VALID ticket of a confirmed order
-// that admits it, with whether it's in. Ordered by buyer, then number.
+// that admits it, with whether it's in. Ordered by buyer, then order (oldest
+// first), then each ticket's stored position in its order (indexInOrder, the
+// "Ticket N of M" the order view, the email and the PDF show), so a buyer's
+// tickets read 1, 2, 3. (fix/payments-go-live: it was buyer, then the random
+// ticket number, which put "Ticket 2 of 2" first about half the time.)
 export const findRosterTickets = async (eventId: string, dayId: string) => {
   const tickets = await prisma.issuedTicket.findMany({
     where: {
@@ -89,5 +93,11 @@ export const findRosterTickets = async (eventId: string, dayId: string) => {
   return tickets
     .map((t) => ({ ...t, item: items.find((i) => i.id === t.orderItemId)! }))
     .filter((t) => ticketAdmitsDay(t.item, dayId))
-    .sort((a, b) => a.order.buyerName.localeCompare(b.order.buyerName) || a.number.localeCompare(b.number));
+    .sort(
+      (a, b) =>
+        a.order.buyerName.localeCompare(b.order.buyerName) ||
+        a.order.createdAt.getTime() - b.order.createdAt.getTime() ||
+        a.order.id.localeCompare(b.order.id) ||
+        a.indexInOrder - b.indexInOrder
+    );
 };

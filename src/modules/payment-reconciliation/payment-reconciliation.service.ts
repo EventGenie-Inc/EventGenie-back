@@ -2,10 +2,13 @@ import { type PaymentLedgerEntry, type LedgerEntryType } from '@prisma/client';
 import * as paystackClient from '../../shared/payments/paystack.client.js';
 import { PaystackApiError } from '../../shared/payments/paystack.client.js';
 import { reportError } from '../../shared/monitoring/error-reporting.js';
+import prisma from '../../shared/prisma/prisma.client.js';
+import { cardVerificationChargeOf, cardVerificationRefundOf } from '../../shared/payments/card-verification.util.js';
+import { paymentAdjustmentRepository } from '../payment-adjustment/payment-adjustment.repository.js';
 import { paymentLedgerRepository, LEDGER_SUCCESS_TYPES } from '../payment-ledger/payment-ledger.repository.js';
 import { paymentAlertService } from '../payment-alert/payment-alert.service.js';
 import { paymentReconciliationRepository } from './payment-reconciliation.repository.js';
-import { formatRand } from './payment-mismatch.util.js';
+import { formatRand, isTicketLoss } from './payment-mismatch.util.js';
 import {
   type CreateMismatchInput,
   type ReconciliationResult,
@@ -18,6 +21,33 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const utcDay = (date: Date): string => date.toISOString().slice(0, 10);
+
+// The day's ticket fee differences (Paystack's actual fee less the calculated
+// processing fee, as each TICKET_PAYMENT_SUCCEEDED row recorded it): their
+// total and how many there were, for the super admin's run summary. A
+// positive total is what Paystack took beyond the estimate (international
+// cards), paid out of e-velope's commission.
+const ticketFeeDifferences = (ledger: PaymentLedgerEntry[]): { ticketFeeDifferenceTotalCents: number; ticketFeeDifferenceCount: number } => {
+  let total = 0;
+  let count = 0;
+  for (const entry of ledger) {
+    if (entry.type !== 'TICKET_PAYMENT_SUCCEEDED' || entry.relatedType !== 'TicketOrder') continue;
+    const difference = (entry.payload as { feeDifferenceCents?: unknown } | null)?.feeDifferenceCents;
+    if (typeof difference !== 'number') continue;
+    total += difference;
+    count++;
+  }
+  return { ticketFeeDifferenceTotalCents: total, ticketFeeDifferenceCount: count };
+};
+
+const isCardVerificationRefund = async (
+  refund: paystackClient.PaystackListedRefund,
+  keys: { reference: string | null; transactionId: string | null }
+): Promise<boolean> => {
+  if (refund.transactionReference && (await paymentLedgerRepository.findCardVerification(refund.transactionReference, 'REFUND'))) return true;
+  if (!cardVerificationRefundOf(refund.raw)) return false;
+  return (await paymentAdjustmentRepository.findOriginal(keys, prisma)) === null;
+};
 
 // ─────────────────────────────────────────
 //  DAILY RECONCILIATION (payments release 1)
@@ -33,6 +63,11 @@ export const utcDay = (date: Date): string => date.toISOString().slice(0, 10);
 //     it is called LEDGER_ONLY.
 //   - every refund Paystack processed that day must have a REFUND_ISSUED
 //     row: else REFUND_NOT_RECORDED.
+//   - a card-update verification charge or its refund (the R1 Paystack
+//     takes when a card is replaced) is neither: counted in the summary.
+//   - a ticket order whose listed fee is above e-velope's whole charge is a
+//     NEGATIVE_NET (a real loss); the day's fee differences (actual less
+//     calculated, as recorded) are totalled in the summary.
 //   - settlements that day are counted and totalled (the ledger holds no
 //     fees, so they can't be matched one by one): in the run's summary.
 //  Mismatches are PaymentMismatch rows (the super admin's list) and one
@@ -60,9 +95,21 @@ export const paymentReconciliationService = {
       if (entry.paystackTransactionId && !byTransactionId.has(entry.paystackTransactionId)) byTransactionId.set(entry.paystackTransactionId, entry);
     }
 
+    // A card-update verification charge (the R1 Paystack takes and refunds
+    // when a card is replaced): not a payment of ours, never PAYSTACK_ONLY.
+    // Counted. Usually already "reversed" (refunded) by the time this runs,
+    // so not in this success list at all.
+    let cardVerificationCharges = 0;
+    const isCardVerificationCharge = async (t: paystackClient.PaystackListedTransaction): Promise<boolean> =>
+      cardVerificationChargeOf(t.raw) !== null || (await paymentLedgerRepository.findCardVerification(t.reference, 'CHARGE')) !== null;
+
     const matchedLedgerIds = new Set<string>();
     for (const t of transactions) {
       const entry = byReference.get(t.reference) ?? byTransactionId.get(t.id);
+      if (!entry && (await isCardVerificationCharge(t))) {
+        cardVerificationCharges++;
+        continue;
+      }
       if (!entry) {
         mismatches.push({
           source: 'RECONCILIATION',
@@ -76,25 +123,31 @@ export const paymentReconciliationService = {
         continue;
       }
       matchedLedgerIds.add(entry.id);
-      // A ticket order (ticket sales Round B): e-velope's net, its charge
-      // less the commission less Paystack's fee, below zero.
+      // A ticket order (ticket sales Round B): a real loss, Paystack's listed
+      // fee above e-velope's whole transaction charge (fix/payments-go-live:
+      // a fee that only eats into the commission, an international card, is
+      // a fee difference, totalled in the summary, not a loss).
       if (entry.type === 'TICKET_PAYMENT_SUCCEEDED' && entry.relatedType === 'TicketOrder' && t.feesCents !== null) {
         const snapshot = (entry.payload ?? {}) as { transactionChargeCents?: unknown; commissionCents?: unknown };
-        if (typeof snapshot.transactionChargeCents === 'number' && typeof snapshot.commissionCents === 'number') {
-          const netCents = snapshot.transactionChargeCents - snapshot.commissionCents - t.feesCents;
-          if (netCents < 0) {
-            mismatches.push({
-              source: 'RECONCILIATION',
-              kind: 'NEGATIVE_NET',
-              paystackReference: t.reference,
-              paystackTransactionId: t.id,
-              tenantId: entry.tenantId,
-              eventId: entry.eventId,
-              actualAmountCents: t.feesCents,
-              currency: t.currency,
-              details: { ledgerEntryId: entry.id, relatedId: entry.relatedId, netCents, transactionChargeCents: snapshot.transactionChargeCents, commissionCents: snapshot.commissionCents },
-            });
-          }
+        if (typeof snapshot.transactionChargeCents === 'number' && isTicketLoss(t.feesCents, snapshot.transactionChargeCents)) {
+          mismatches.push({
+            source: 'RECONCILIATION',
+            kind: 'NEGATIVE_NET',
+            paystackReference: t.reference,
+            paystackTransactionId: t.id,
+            tenantId: entry.tenantId,
+            eventId: entry.eventId,
+            expectedAmountCents: snapshot.transactionChargeCents,
+            actualAmountCents: t.feesCents,
+            currency: t.currency,
+            details: {
+              ledgerEntryId: entry.id,
+              relatedId: entry.relatedId,
+              lossCents: t.feesCents - snapshot.transactionChargeCents,
+              transactionChargeCents: snapshot.transactionChargeCents,
+              commissionCents: typeof snapshot.commissionCents === 'number' ? snapshot.commissionCents : null,
+            },
+          });
         }
       }
       if (entry.amountCents !== t.amountCents) {
@@ -154,9 +207,17 @@ export const paymentReconciliationService = {
 
     const refunds = (await paystackClient.listRefunds({ from: from.toISOString(), to: to.toISOString() }))
       .filter((r) => r.status === 'processed');
+    let cardVerificationRefunds = 0;
     for (const refund of refunds) {
       const keys = { reference: refund.transactionReference, transactionId: refund.transactionId };
       const recorded = await paymentLedgerRepository.existsFor('REFUND_ISSUED', keys);
+      // A card-update verification charge's refund: recorded as card
+      // verification by its webhook, or (webhook missed) Paystack's own note
+      // with no payment of ours refunded. Counted, never REFUND_NOT_RECORDED.
+      if (!recorded && (await isCardVerificationRefund(refund, keys))) {
+        cardVerificationRefunds++;
+        continue;
+      }
       if (!recorded) {
         mismatches.push({
           source: 'RECONCILIATION',
@@ -189,6 +250,9 @@ export const paymentReconciliationService = {
       refundCount: refunds.length,
       settlementCount,
       settledTotalCents,
+      ...ticketFeeDifferences(ledger),
+      cardVerificationChargeCount: cardVerificationCharges,
+      cardVerificationRefundCount: cardVerificationRefunds,
       mismatches,
     };
   },
