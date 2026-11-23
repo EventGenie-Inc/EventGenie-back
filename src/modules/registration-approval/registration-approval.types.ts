@@ -1,4 +1,5 @@
 import { type rsvpResponseService } from '../rsvp-response/rsvp-response.service.js';
+import { type CapacityWarning } from '../event-day/day-capacity.util.js';
 
 // The answers exactly as the guest details get them (GET
 // /api/invites/:inviteId/rsvp-responses): each row with its `rsvpField`, a
@@ -37,4 +38,11 @@ export interface RegistrationDecision {
   // Approve: the invitation email; decline: the "wasn't accepted" email.
   // false = it couldn't be sent; the decision stands either way.
   emailSent: boolean;
+}
+
+// POST .../approve: the decision, plus each of the registrant's days now
+// over its venue capacity (day-capacity.util.ts), for the organiser to see
+// as they approve. Empty when none is. Approval is never refused for it.
+export interface RegistrationApproval extends RegistrationDecision {
+  capacityWarnings: CapacityWarning[];
 }

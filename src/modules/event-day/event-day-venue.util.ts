@@ -1,6 +1,7 @@
 import { type EventDayLocationType, type Prisma } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { assertValidCoordinates } from '../event/event-coordinates.util.js';
+import { assertValidCapacity } from '../event/event-capacity.util.js';
 
 // ─────────────────────────────────────────
 //  THE VENUE BELONGS TO THE EVENT DAY
@@ -36,6 +37,13 @@ import { assertValidCoordinates } from '../event/event-coordinates.util.js';
 //  reminder and registration emails. Never the public registration page.
 //  Every guest-facing place shows an online day's venue as "Online"
 //  (ONLINE_VENUE_LABEL), with no address and no map (toDayVenueView).
+//
+//  CAPACITY. A VENUE day's capacity (null = no limit) is part of its venue:
+//  1 to 100,000 (event-capacity.util.ts). An ONLINE day has none: sending
+//  one for it is 422 EVENT_DAY_CAPACITY_ONLINE, and a day switched to
+//  online loses the one it had. On an update, left out = keep the stored
+//  number; null clears it. Never guest-facing (toDayVenueView leaves it
+//  out). Who counts against it: day-capacity.util.ts.
 // ─────────────────────────────────────────
 
 export const ONLINE_VENUE_LABEL = 'Online';
@@ -43,6 +51,7 @@ export const ONLINE_VENUE_LABEL = 'Online';
 // 422 codes, so the day editor marks the right control.
 export const EVENT_DAY_LOCATION_TYPE_INVALID = 'EVENT_DAY_LOCATION_TYPE_INVALID';
 export const EVENT_DAY_ONLINE_URL_INVALID = 'EVENT_DAY_ONLINE_URL_INVALID';
+export const EVENT_DAY_CAPACITY_ONLINE = 'EVENT_DAY_CAPACITY_ONLINE';
 
 export const MAX_ONLINE_URL_LENGTH = 2000;
 
@@ -53,6 +62,7 @@ export interface DayVenueInput {
   longitude?: unknown;
   locationType?: unknown;
   onlineUrl?: unknown;
+  capacity?: unknown;
 }
 
 export interface DayVenue {
@@ -62,6 +72,8 @@ export interface DayVenue {
   latitude: number | null;
   longitude: number | null;
   onlineUrl: string | null;
+  // null = no limit; always null on an ONLINE day.
+  capacity: number | null;
 }
 
 const dayName = (label: unknown): string =>
@@ -123,18 +135,41 @@ const onlineVenue = (onlineUrl: string | null): DayVenue => ({
   latitude: null,
   longitude: null,
   onlineUrl,
+  capacity: null,
 });
+
+// An ONLINE day has no venue, so no capacity: a number sent for one is
+// refused rather than dropped, so the organiser isn't left believing it
+// limits anything. null (or leaving it out) is fine.
+const assertNoOnlineCapacity = (capacity: unknown, label: unknown): void => {
+  if (capacity === undefined || capacity === null) return;
+  throw new HttpError(
+    422,
+    `${dayName(label)} happens online, so it has no venue capacity. Remove the capacity, or set it on a venue day.`,
+    EVENT_DAY_CAPACITY_ONLINE
+  );
+};
+
+// A VENUE day's capacity as sent: null when left out or null.
+const resolveVenueCapacity = (capacity: unknown, label: unknown): number | null => {
+  assertValidCapacity(capacity, typeof label === 'string' && label.trim() ? label.trim() : undefined);
+  return capacity === undefined || capacity === null ? null : (capacity as number);
+};
 
 export const resolveDayVenueForCreate = (data: DayVenueInput, label?: unknown): DayVenue => {
   const locationType = resolveLocationType(data.locationType, 'VENUE', label);
-  if (locationType === 'ONLINE') return onlineVenue(resolveOnlineUrl(data.onlineUrl, label));
+  if (locationType === 'ONLINE') {
+    assertNoOnlineCapacity(data.capacity, label);
+    return onlineVenue(resolveOnlineUrl(data.onlineUrl, label));
+  }
 
   const location = requiredText(data.location, 'name', label);
   const address = requiredText(data.address, 'address', label);
   const latitude = coordinate(data.latitude) ?? null;
   const longitude = coordinate(data.longitude) ?? null;
   assertValidCoordinates(latitude, longitude);
-  return { locationType, location, address, latitude, longitude, onlineUrl: null };
+  const capacity = resolveVenueCapacity(data.capacity, label);
+  return { locationType, location, address, latitude, longitude, onlineUrl: null, capacity };
 };
 
 export interface StoredDayVenue {
@@ -144,6 +179,7 @@ export interface StoredDayVenue {
   longitude: Prisma.Decimal | number | null;
   locationType: EventDayLocationType | null;
   onlineUrl: string | null;
+  capacity: number | null;
 }
 
 // A partial update is judged on the day it LEAVES behind, not on the
@@ -156,6 +192,7 @@ export const resolveDayVenueForUpdate = (data: DayVenueInput, existing: StoredDa
   const storedType = existing.locationType ?? 'VENUE';
   const locationType = resolveLocationType(data.locationType, storedType, label);
   if (locationType === 'ONLINE') {
+    assertNoOnlineCapacity(data.capacity, label);
     const onlineUrl = data.onlineUrl !== undefined
       ? resolveOnlineUrl(data.onlineUrl, label)
       : storedType === 'ONLINE' ? existing.onlineUrl : null;
@@ -164,17 +201,20 @@ export const resolveDayVenueForUpdate = (data: DayVenueInput, existing: StoredDa
 
   const location = requiredText(data.location !== undefined ? data.location : existing.location, 'name', label);
   const address = requiredText(data.address !== undefined ? data.address : existing.address, 'address', label);
+  // Left out: the stored number (an online day's is null, so a day switched
+  // back to a venue starts unlimited unless one is sent).
+  const capacity = data.capacity !== undefined ? resolveVenueCapacity(data.capacity, label) : (existing.capacity ?? null);
 
   const coordinatesSent = data.latitude !== undefined || data.longitude !== undefined;
   if (coordinatesSent) {
     const latitude = coordinate(data.latitude) ?? null;
     const longitude = coordinate(data.longitude) ?? null;
     assertValidCoordinates(latitude, longitude);
-    return { locationType, location, address, latitude, longitude, onlineUrl: null };
+    return { locationType, location, address, latitude, longitude, onlineUrl: null, capacity };
   }
 
   if (address !== existing.address) {
-    return { locationType, location, address, latitude: null, longitude: null, onlineUrl: null };
+    return { locationType, location, address, latitude: null, longitude: null, onlineUrl: null, capacity };
   }
   return {
     locationType,
@@ -183,6 +223,7 @@ export const resolveDayVenueForUpdate = (data: DayVenueInput, existing: StoredDa
     latitude: existing.latitude === null ? null : Number(existing.latitude),
     longitude: existing.longitude === null ? null : Number(existing.longitude),
     onlineUrl: null,
+    capacity,
   };
 };
 

@@ -704,7 +704,18 @@ export const rsvpService = {
         // event.eventDays is loaded with isArchived: false, so a day the
         // organiser archived after inviting this guest is missing here.
         const liveEventDayIds = new Set(invite.event.eventDays.map((d) => d.id));
-        const attendingDayIds = data.attendingDayIds ?? [];
+        // An invitation to a single (live) day: saying yes is attending that
+        // day, whether or not the answer names it, so the guest and their
+        // plus-ones count towards it (day-capacity.util.ts's attendingCount
+        // and warnings). Before, a "yes" without day ids recorded no day at
+        // all. With several days, the guest's own choice stands.
+        const liveInvitedDayIds = [...invitedDayIds].filter((id) => liveEventDayIds.has(id));
+        const attendingDayIds =
+          data.attendingDayIds && data.attendingDayIds.length > 0
+            ? data.attendingDayIds
+            : liveInvitedDayIds.length === 1
+              ? liveInvitedDayIds
+              : [];
 
         for (const eventDayId of attendingDayIds) {
           if (invitedDayIds.has(eventDayId) && !liveEventDayIds.has(eventDayId)) {

@@ -144,6 +144,7 @@ export interface StoredDay {
   longitude: Prisma.Decimal | number | null;
   locationType: EventDayLocationType | null;
   onlineUrl: string | null;
+  capacity: number | null;
 }
 
 // Every rule for a change to a saved day, judged on the day it leaves

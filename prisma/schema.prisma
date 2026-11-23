@@ -651,10 +651,12 @@ model Event {
   // Organiser guest management is unaffected. Never folded into
   // resolveEffectiveStatus (event-status.util.ts).
   rsvpDeadline                DateTime?
-  // The VENUE's physical capacity — informational, not a billing limit.
-  // Distinct from SubscriptionTierConfig.maxGuestsPerEvent; never conflate
-  // the two. Warns via acceptedGuestCount on the event detail response,
-  // never blocks guest creation/import.
+  // DEPRECATED (2026-11, hotfix/day-capacity). Venue capacity belongs to
+  // each day (EventDay.capacity): an event's days can be at different
+  // venues. Nothing reads this column any more. It is still written when an
+  // older frontend sends `capacity` on the event (which is then applied to
+  // every venue day, day-capacity.util.ts), and is kept only so a rollback
+  // of the code has its old value. Remove it with that compatibility rule.
   capacity                    Int?
   // Public self-registration credential — same shape and purpose as
   // MemoryHub.shareToken (32 random bytes hex, unguessable, unique).
@@ -817,6 +819,14 @@ model EventDay {
   // only the days marked open. On by default, so a single-day event and
   // every day added later need nothing set.
   openForRegistration Boolean               @default(true)
+  // The venue's capacity on this day, for the organiser: informational,
+  // it never refuses a guest. A day with more people attending (accepted
+  // guests and their plus-ones, day-capacity.util.ts) is warned about to
+  // organisers only. Null = no capacity. Always null on an ONLINE day (refused there, and a CHECK
+  // constraint in 20261125090000_event_day_capacity). Distinct from the
+  // plan's guest limit (SubscriptionTierConfig.maxGuestsPerEvent) and the
+  // registration cap (Event.registrationCap); never conflate them.
+  capacity            Int?
   isArchived          Boolean               @default(false)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt

@@ -26,6 +26,7 @@ import {
 import { assertValidHostName, assertHostNamePresent } from '../event/event-host-name.util.js';
 import { assertValidRsvpDeadline, parseDeadline } from '../event/event-rsvp-deadline.util.js';
 import { assertValidCapacity } from '../event/event-capacity.util.js';
+import { usesLegacyCapacity, applyLegacyCapacity, logLegacyCapacity } from '../event-day/day-capacity.util.js';
 import { acceptCover } from '../event/event-cover-image.util.js';
 import { storedFileService } from '../storage/stored-file.service.js';
 import { storedFileRepository } from '../storage/stored-file.repository.js';
@@ -136,14 +137,15 @@ export const eventDraftService = {
 
     // The same rules as POST .../days (resolveNewDay), the past-date rule
     // included: every day here is new.
-    const days = (p.days as Array<Record<string, unknown>>).map((day) => resolveNewDay(day));
+    // Each day's capacity is its own (day-capacity.util.ts).
+    const resolvedDays = (p.days as Array<Record<string, unknown>>).map((day) => resolveNewDay(day));
 
     // Duplicate day labels within this draft would make the import
     // engine's Day-column matching ambiguous later — checked purely
     // in-memory, before the transaction starts, since the event doesn't
     // exist yet and there's nothing external to race against. Matches
     // event-day-validation.util.ts's case-insensitive rule.
-    const duplicateLabel = findDuplicateDayLabel(days.map((d) => d.label));
+    const duplicateLabel = findDuplicateDayLabel(resolvedDays.map((d) => d.label));
     if (duplicateLabel !== null) {
       throw new HttpError(409, `Duplicate day label '${duplicateLabel}'. Day labels must be unique.`);
     }
@@ -154,6 +156,14 @@ export const eventDraftService = {
     // deadline/capacity feature unreachable from real event creation.
     const capacity = p.capacity !== undefined && p.capacity !== null ? Number(p.capacity) : undefined;
     assertValidCapacity(capacity);
+    // Compatibility (day-capacity.util.ts): a draft from the older wizard
+    // has one event-level capacity and none on its days; every venue day
+    // takes it. The event column is still written below, never read.
+    const legacy = capacity !== undefined && usesLegacyCapacity(capacity, p.days as Array<Record<string, unknown>>);
+    if (legacy) logLegacyCapacity('POST /api/event-drafts/current/materialize');
+    const days = legacy
+      ? resolvedDays.map((day) => ({ ...day, venue: applyLegacyCapacity(day.venue, capacity ?? null) }))
+      : resolvedDays;
 
     const rsvpDeadline = p.rsvpDeadline !== undefined && p.rsvpDeadline !== null ? parseDeadline(p.rsvpDeadline as string) : undefined;
     assertValidRsvpDeadline(rsvpDeadline ?? null, days, { rejectPast: true });
@@ -293,6 +303,7 @@ export const eventDraftService = {
             longitude: day.venue.longitude,
             locationType: day.venue.locationType,
             onlineUrl: day.venue.onlineUrl,
+            capacity: day.venue.capacity,
             isArchived: false,
             createdBy: userId,
             updatedBy: userId,

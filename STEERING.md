@@ -1576,8 +1576,11 @@ System health (`GET /api/admin/system/errors`, super admin only):
 server's configuration, or wait and retry). See "Error monitoring".
 
 Safety limits (see "Safety limits" under Domain rules): venue capacity
-outside 1 to 100,000 is 422 `EVENT_CAPACITY_INVALID` (event create, update
-and the wizard's materialize); a guest past the 5,000-per-event ceiling is
+outside 1 to 100,000 is 422 `EVENT_CAPACITY_INVALID` (a day's, on every day
+save; the deprecated event-level one on event create, update and the
+wizard's materialize). Day capacity (see "Venue"): 422
+`EVENT_DAY_CAPACITY_ONLINE` for a capacity on an online day. Capacity never
+refuses a guest or an approval (it warns organisers). A guest past the 5,000-per-event ceiling is
 422 `EVENT_GUEST_CEILING` for an organiser (add, import, restore), while a
 registrant or an RSVP gets registration's own `REGISTRATION_FULL` /
 `REGISTRATION_PARTY_TOO_LARGE`, never the number; an import file of more
@@ -3018,6 +3021,71 @@ the wizard's materialize):
   only, as before. Vendor proximity refuses an online first day with its
   own message (there is nowhere to be near).
 
+**Venue capacity belongs to the day too** (`EventDay.capacity`, null = none;
+`event-day/day-capacity.util.ts`, hotfix 2026-11). An event's days can be at
+different venues, so one event-level number can't be right for each of
+them. **It is informational: it warns organisers and never blocks a
+guest.** Nothing a guest does (RSVP, registration) and nothing an
+organiser approves is refused because of it, and no guest ever sees it.
+
+- **Set where days are saved:** day create and update, the full update,
+  the wizard's materialize (`capacity` on each day, 1 to 100,000, else 422
+  `EVENT_CAPACITY_INVALID` naming the day). Returned on every day row. On an
+  update, left out keeps the stored number and null clears it. **An online
+  day has none:** a capacity sent for one is 422
+  `EVENT_DAY_CAPACITY_ONLINE`, and a day switched to online loses its
+  number. A database CHECK (`EventDay_capacity_check`) holds both rules.
+- **Who counts on a day** (`countAttendingForDays`, the one count): an
+  `Attendance` row for that day whose invite is live and `ACCEPTED` and whose
+  guest isn't awaiting approval. Plus-ones have their own invite and rows,
+  so a guest and each plus-one count one each. It is `acceptedGuestCount`'s
+  rule, applied per day. So a registration awaiting approval counts once it
+  is approved. **A single-day invitation counts without a choice:** a
+  "yes" to an invitation with one live day attends that day even when the
+  answer names no day (RSVP submit); registration without `dayIds` already
+  attends every open day. With several days, a "yes" that names none
+  attends none. Whether tickets admitting a day count here is the
+  ticket-sales follow-up's decision (Known gaps).
+- **No capacity lock and no refusal.** RSVP submit, registration and
+  approval take only the locks they took before the hotfix (registration's
+  event lock; RSVP's for the registration cap and the guest ceiling).
+- **Warnings, organisers only:** `capacityWarnings: [{ eventDayId, label,
+  capacity, attending, message }]`, one per day with more people attending
+  than its capacity (at or under it, none), message "Saturday has 120
+  people attending, over its venue capacity of 100." On:
+  - the event detail (`GET /api/events/:id`, and the full update's
+    response, which is the detail): every live day over capacity;
+  - `PUT .../days/:id` and `PUT /api/events/:id` (legacy capacity): the
+    days whose capacity the save changed, if over;
+  - approving a registration (`POST .../registrations/:guestId/approve`):
+    the registrant's days now over, so the organiser sees it as they approve.
+
+  Organisers also get `attendingCount` on each `eventDays` entry of the
+  event detail. Guests' responses never carry capacity, a count or a
+  warning: not `/rsvp/validate`, RSVP submit, the public page or
+  registration, nor any email.
+- **Lowering below attendance is allowed:** nobody is removed, guests can
+  still accept, and the save's response carries the warning.
+- **`Event.capacity` is deprecated**, kept and never read. The migration
+  (`20261125090000_event_day_capacity`) copied it to every venue day of its
+  event. **Compatibility until the frontend sends day capacities:** a
+  request that sends the event-level `capacity` and no capacity on any day
+  has it applied to every live venue day (`PUT /api/events/:id`: to the
+  saved days whose number it changes; the full update: to every venue day
+  in its `days`, or to the saved ones when `days` is left out; the wizard:
+  to every venue day of the draft). Each logs `[day capacity] deprecated:
+  ...` with the route and event id only. The event column is still written
+  so a rollback has its value. `POST /api/events` creates no days, so its
+  capacity only reaches the column. Remove the column with that rule.
+- **Staging and production:** `scripts/sql/day-capacity-check.sql` is
+  read-only: multi-day events whose venue days are at different venues
+  (their organisers should check each day's number), days already over
+  capacity (organisers will see a warning), events whose old capacity was
+  outside 1 to 100,000 (not copied), and accepted single-day invitations
+  from before the hotfix that record no day (missing from that day's count).
+- **Plan guest limits are separate** and unchanged. So is the registration
+  cap (`Event.registrationCap`). Never conflate the three.
+
 ### Event program
 
 A program is **visible to guests by default** (`isPublished` true on
@@ -3105,9 +3173,9 @@ The body, every key optional (a key left out leaves that part alone):
 {
   event?:      { name?, description?, hostName?, coverImageUrl?, coverImagePublicId?,
                  coverImageBytes?, visibility?, ticketing?, rsvpDeadline?, capacity?,
-                 ticketsRefundable? },                      // PUT /api/events/:id's body
+                 ticketsRefundable? },                      // PUT /api/events/:id's body; capacity deprecated (see "Venue")
   days?:       [{ id?, label?, date?, startTime?, endTime?, locationType?, location?, address?,
-                  latitude?, longitude?, onlineUrl? }],     // PUT .../days/:id's body
+                  latitude?, longitude?, onlineUrl?, capacity? }],  // PUT .../days/:id's body
   tickets?:    [{ id?, name?, description?, priceCents?, quantity?, salesStart?, salesEnd?,
                   admittedDayIds?, maxPerOrder?, sortOrder?, status? }],   // POST/PUT .../tickets's body
   rsvpFields?: [{ id?, label?, description?, fieldType?, isRequired?, options? }],  // options: a JSON-encoded list of strings (DROPDOWN and MULTI_SELECT)
@@ -4626,8 +4694,9 @@ Hard limits in code, for mistakes and runaway clients rather than for
 pricing. They are not tier settings and a `SUPER_ADMIN` can't raise them;
 each refusal carries a code (see "Machine-readable codes" under Errors).
 
-- **Venue capacity** (`Event.capacity`, `event-capacity.util.ts`): a whole
-  number from 1 to 100,000, or none. Anything else is 422
+- **Venue capacity** (`EventDay.capacity`, and the deprecated
+  `Event.capacity`; `event-capacity.util.ts`): a whole number from 1 to
+  100,000, or none. Anything else is 422
   `EVENT_CAPACITY_INVALID`, never a value that reaches the integer column
   and comes back a 500 (a tester's 100,000,000,000 did).
 - **5,000 guests per event, plus-ones included** (`MAX_GUESTS_PER_EVENT`,
@@ -5599,6 +5668,14 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   without warning, so the same paths run correctly there. It becomes an
   error in the tests at pg 9. New code inside an interactive transaction
   reads flat (check-in passes' `findPartyLocked` does).
+- **Ticket sales and day capacity: decision pending (follow-up on dev).**
+  The day-capacity hotfix (2026-11, branched from main) counts guests only
+  (accepted invitations, registrations once approved), and capacity only
+  warns organisers. Whether valid tickets admitting a day count in
+  `countAttendingForDays` (`day-capacity.util.ts`), and so in
+  `attendingCount` and the warnings, is to be decided for the ticket-sales
+  code, which exists only on dev. Dev's event duplicate and template grants
+  must also copy each day's `capacity`.
 - **Reminders and organiser resends are refused on public events**
   (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
   would skip them anyway; a registrant who lost their link registers again
