@@ -4504,7 +4504,39 @@ status verify, in one transaction with the order's row locked, by reference:
   guest), each ticket's number and type, a link to the order, and **one PDF**
   (`ticket-pdf.util.ts`, pdf-lib) with a page per ticket: the event, the
   type, each admitted day with its venue or "Online", the QR, the number, the
-  buyer's name and "Ticket 2 of 3". Online-only tickets have no QR.
+  buyer's name and "Ticket 2 of 3". Online-only tickets have no QR. Each
+  page ends with the e-velope logo, embedded (never fetched): the email
+  lockup, a byte copy of the frontend's `e-velope-logo-email.png` kept at
+  `assets/brand/e-velope-logo-email.png` in the backend repo, read once per
+  process from the project root (`process.cwd()`, since the built server
+  runs from `dist/` and the file isn't copied there; start the server from
+  the repo root), embedded once per document and drawn 24pt tall in
+  proportion at the bottom left. If it can't be read or embedded, the page
+  says "e-velope" in text instead and the failure is logged once, without
+  the order's details: a ticket is never lost over a logo.
+
+  **A ticket page never overflows.** Every block is measured with the
+  font's own metrics before anything is drawn, and nothing is drawn below
+  the footer's top edge (48pt: the logo at 16 to 40pt, 8pt clear above it).
+  The QR keeps its size (190pt) and place (centred, just below the details);
+  fonts are never shrunk (9pt is the smallest). Long text is cut with "…" at
+  a word's end: the event name at 2 lines, each venue (location and address)
+  at 2, the ticket type, host and buyer at 1. **Days:** up to 3 are listed
+  in full (label, date, time, venue or "Online"). More than 3, or a full
+  list that doesn't fit, is compact:
+  - the venue days' dates: consecutive as "5 days: Mon 1 – Fri 5 Dec" (across
+    months "Mon 29 Dec – Fri 2 Jan"), otherwise a list naming each month
+    once, "Mon 1, Wed 3, Fri 5 Dec"; a list over 3 lines becomes "12 days
+    from Mon 1 Dec – Fri 30 Jan";
+  - the venue once if every venue day shares it, otherwise "Venue details
+    for each day are in your confirmation email and on your order page."
+    (both list every day's venue);
+  - "Plus online sessions: the links are in your email." for online days
+    (an online-only ticket: "Online: the links are in your email.").
+
+  Every block is capped in lines, so the compact layout always fits
+  (`tests/ticket-sales/ticket-pdf-fit.test.ts` reads the drawn positions
+  back from the PDF).
 
 **Tickets at the door** (see "Check-in"): `EVT1.<issuedTicketId>.<signature>`,
 signed like an RSVP pass (`CheckInPassKind TICKET`, `PASS_KIND_RULES.TICKET`).
@@ -5636,7 +5668,7 @@ lettering is outlined to paths, so no file depends on a font.
 | `e-velope-favicon-16.png`, `-32.png` | Favicons | `index.html` |
 | `e-velope-apple-touch-icon.png` | 180px, on white | `index.html` |
 | `e-velope-icon-192.png`, `-512.png` | App icons | Web manifest; the 512 is also `og:image` |
-| `e-velope-logo-email.png` | Lockup, 400px wide (2x for 200px), transparent | Email headers (backend) |
+| `e-velope-logo-email.png` | Lockup, 400px wide (2x for 200px), transparent | Email headers (backend); the ticket PDF, from the backend's own copy in `assets/brand/` (re-copy it whenever this one is regenerated) |
 | `e-velope-seal-email.png` | Icon, 128px (2x for 64px), transparent | The seal in invitation emails (backend) |
 
 Email clients don't show SVG, and dark-mode clients show the same PNG on

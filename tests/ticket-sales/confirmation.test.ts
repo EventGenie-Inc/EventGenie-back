@@ -1,18 +1,12 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import zlib from 'zlib';
-import jsQRModule, { type QRCode } from 'jsqr';
-import { PDFDocument, PDFName, PDFRawStream, PDFDict } from 'pdf-lib';
 import { installFirebaseMock } from '../helpers/team.js';
 import { sentEmails, clearSentEmails } from '../helpers/sent-emails.js';
 import { mockResendSend } from '../setup.js';
 import { ticketOrderWorker } from '../../src/modules/ticket-order/ticket-order.worker.js';
 import { verifyPassPayload } from '../../src/modules/check-in-pass/check-in-pass-token.util.js';
+import { pdfPagesOf } from '../helpers/pdf.js';
 import { cleanupTicketSalesFixtures } from './helpers.js';
 import { checkout, orderStatus, pay, latestReference, referencesOf, sellingEvent, buyAndPay, fakePaystack, sendWebhook, prisma } from './orders-helpers.js';
-
-// jsqr's default import is the function at run time; its types say module
-// (tests/helpers/qr.ts restates them the same way).
-const jsQR = jsQRModule as unknown as (data: Uint8ClampedArray, width: number, height: number) => QRCode | null;
 
 // ─────────────────────────────────────────
 //  CONFIRMATION (ticket sales Round B)
@@ -275,33 +269,6 @@ describe('the daily reconciliation', () => {
 });
 
 describe("the buyer's email and PDF", () => {
-  // Every image in a PDF made by pdf-lib from a PNG: its pixels (FlateDecode,
-  // RGB), decoded as a phone would read the QR.
-  const qrCodesIn = async (pdfBytes: Buffer): Promise<string[][]> => {
-    const pdf = await PDFDocument.load(pdfBytes);
-    return pdf.getPages().map((page) => {
-      const resources = page.node.Resources();
-      const xobjects = resources?.lookup(PDFName.of('XObject'), PDFDict);
-      if (!xobjects) return [];
-      return xobjects.keys().flatMap((key) => {
-        const stream = xobjects.lookup(key) as PDFRawStream;
-        const dict = stream.dict;
-        if (dict.lookup(PDFName.of('Subtype'))?.toString() !== '/Image') return [];
-        const width = Number(dict.lookup(PDFName.of('Width'))?.toString());
-        const height = Number(dict.lookup(PDFName.of('Height'))?.toString());
-        const pixels = zlib.inflateSync(Buffer.from(stream.contents));
-        const channels = pixels.length / (width * height);
-        const rgba = new Uint8ClampedArray(width * height * 4);
-        for (let i = 0; i < width * height; i++) {
-          const v = channels === 1 ? [pixels[i]!, pixels[i]!, pixels[i]!] : [pixels[i * 3]!, pixels[i * 3 + 1]!, pixels[i * 3 + 2]!];
-          rgba.set([...v, 255], i * 4);
-        }
-        const code = jsQR(rgba, width, height);
-        return code ? [code.data] : ['undecodable'];
-      });
-    });
-  };
-
   it('one email with a PDF: a page per ticket, each QR decoding to that ticket\'s payload; a link to the order with the token in the fragment', async () => {
     const s = await sellingEvent();
     const { orderId, token, tickets } = await buyAndPay(s, [{ ticketTypeId: s.general, quantity: 2 }, { ticketTypeId: s.saturday, quantity: 1 }]);
@@ -322,11 +289,13 @@ describe("the buyer's email and PDF", () => {
 
     const pdf = email.attachments.find((a) => a.contentType === 'application/pdf')!;
     expect(pdf.filename).toBe('tickets.pdf');
-    const pages = await qrCodesIn(Buffer.from(pdf.content, 'base64'));
+    // Each page: its QR (decoded as a phone would), then the e-velope logo
+    // (the email lockup, 400x90) where "Sent with e-velope" used to be.
+    const pages = await pdfPagesOf(Buffer.from(pdf.content, 'base64'));
     expect(pages).toHaveLength(3);
     const view = (await orderStatus(token)).body.data.tickets as { payload: string }[];
-    expect(pages.map((codes) => codes[0])).toEqual(view.map((t) => t.payload));
-    for (const codes of pages) expect(codes).toHaveLength(1);
+    expect(pages.map((p) => p.images[0]?.qr)).toEqual(view.map((t) => t.payload));
+    for (const p of pages) expect(p.images.map((i) => [i.pixelWidth, i.pixelHeight]).slice(1)).toEqual([[400, 90]]);
 
     // The worker finds nothing left to send: once only.
     expect(await ticketOrderWorker.runOnce({ eventIds: [s.ev.eventId] })).toMatchObject({ emailed: 0 });
