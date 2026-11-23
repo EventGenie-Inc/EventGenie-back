@@ -4676,7 +4676,8 @@ GET /api/admin/events[?search&tenantId&status&from&to&page&pageSize]
 GET /api/admin/events/:eventId
   → ConsoleEvent without counts, plus { description, hostName, ticketing, coverImageUrl,
       rsvpDeadline, capacity, updatedAt, eventGrantId,
-      days: [{ id, label, date, startTime, endTime, locationType, location, address, onlineUrl }],
+      days: [{ id, label, date, startTime, endTime, locationType, location, address, onlineUrl,
+               capacity: number | null, attendingCount }],
       stats: { invited, accepted, declined, pending, checkedIn, pendingApproval } }
 GET /api/admin/events/:eventId/guests[?search&page&pageSize]      (audit-logged, each view)
   → Page<{ id, firstName, surname, email, phoneNumber, hostGuestId, pendingApproval,
@@ -4709,6 +4710,11 @@ ConsoleEvent = { id, name, status: 'DRAFT'|'LIVE'|'FINISHED'|'CANCELLED'|'ARCHIV
   used (verify-otp, `OtpRecord.usedAt`) and a trusted device starting a
   session (the session exchange, `DeviceToken.lastUsedAt`). A session
   refresh isn't a sign-in.
+- **A day's capacity and attendingCount** are the organiser's own (see
+  "Venue", `day-capacity.util.ts`): `capacity` null = no limit,
+  always null on an ONLINE day; `attendingCount` is `countAttendingForDays`
+  (the ATTENDING mode: accepted guests plus valid sold tickets, never
+  checkout holds), 0 on a day nobody attends. Numbers only, never who.
 - **planName** is `resolveEventPlan`'s name (`resolveEventPlanName`, the
   same rules without reading settings, for a page of events at once).
 - **An event's detail and guest list** open an archived event too; a
@@ -5896,16 +5902,6 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **Scheduled reminders are email only**, whatever `sms` says (a text
   costs quota nobody was there to approve); an SMS-only guest is counted in
   `skippedOther`.
-- **The frontend follows the 2026-11 SMS and phone changes** (frontend
-  `feature/sms-smsportal`): the `/r/:code` route, the country selector
-  beside contact phone fields (`phoneCountry`), `smsStatus` and the send's
-  `sms` counts, and the failure codes. **Not yet the later phone
-  changes** (backend `fix/phone-rules`): its own PHONE-question rule
-  (`shared/forms/phone-validation.ts`, the RSVP form) still refuses a
-  number without a country code, so the form refuses what the server now
-  accepts; there is no `phoneCountry` per answer; its
-  `PHONE_FORMAT_MESSAGE` still says "Use the format +27 82 123 4567"; and
-  the send's `undeliveredTexts` aren't shown.
 - **Announcements are email only and sent in the request.** A guest
   without an email can't be reached (they are listed to the organiser).
   Every guest send still finishes before the response returns: batched,

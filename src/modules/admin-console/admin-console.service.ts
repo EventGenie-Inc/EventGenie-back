@@ -1,6 +1,7 @@
 import { PlatformRole } from '@prisma/client';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventFinishesAt } from '../event/event-status.util.js';
+import { countAttendingForDays } from '../event-day/day-capacity.util.js';
 import { resolveEventPlanName } from '../subscription-tier-config/effective-plan.util.js';
 import { adminAuditService } from '../admin-audit/admin-audit.service.js';
 import { ADMIN_AUDIT_ACTIONS } from '../admin-audit/admin-audit.types.js';
@@ -194,9 +195,11 @@ export const adminConsoleService = {
   getEvent: async (eventId: string, now: Date = new Date()): Promise<ConsoleEventDetail> => {
     const row = await adminConsoleRepository.findEvent(eventId);
     if (!row) throw new HttpError(404, 'Event not found');
-    const [counts, pendingApproval] = await Promise.all([
+    const [counts, pendingApproval, attendingByDay] = await Promise.all([
       adminConsoleRepository.countInvites([row.id]),
       adminConsoleRepository.countPendingApproval(row.id),
+      // The organiser's own per-day count (the event detail's attendingCount).
+      countAttendingForDays(row.eventDays.map((d) => d.id)),
     ]);
     const c = counts.get(row.id);
     return {
@@ -219,6 +222,8 @@ export const adminConsoleService = {
         location: d.location,
         address: d.address,
         onlineUrl: d.onlineUrl,
+        capacity: d.capacity,
+        attendingCount: attendingByDay.get(d.id) ?? 0,
       })),
       stats: { ...toCounts(c), pending: c?.byStatus['PENDING'] ?? 0, pendingApproval },
     };
