@@ -186,7 +186,9 @@ export const ticketOrderEmails = {
     return sendQuietly(subject, { to: order.buyerEmail, from: fromHeader(event), subject, html, text });
   },
 
-  oversold: async (orderId: string): Promise<void> => {
+  // `daysOver`: the labels of the days the order took past their venue
+  // capacity (empty when only a type's quantity was oversold).
+  oversold: async (orderId: string, daysOver: string[] = []): Promise<void> => {
     const order = (await ticketOrderRepository.findById(orderId))!;
     const event = await loadEvent(order.eventId);
     await notifyOrganisation(event, {
@@ -194,6 +196,7 @@ export const ticketOrderEmails = {
       title: 'An order was paid after its tickets had sold out',
       lines: [
         "A buyer paid after their 30-minute hold had run out, and the tickets had sold out meanwhile. They have paid, so their tickets were issued: more tickets are now sold than you made available.",
+        ...(daysOver.length > 0 ? [`More people now have places on ${daysOver.join(', ')} than the venue holds.`] : []),
         'Make room for them, or cancel the tickets and refund the buyer yourself.',
       ],
       facts: [`Buyer: ${order.buyerName}`, ...order.items.map((i) => `${i.quantity} × ${i.typeName}`)],

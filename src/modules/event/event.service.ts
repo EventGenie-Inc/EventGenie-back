@@ -278,8 +278,9 @@ export const eventService = {
     // rules (event-plan-view.util.ts): the frontend reads these, never
     // working out a granted event's features itself.
     const plan = await resolveEventPlanView(event, guestLimitInfo);
-    // Per day: how many people attend it (day-capacity.util.ts's rule, the
-    // same one as acceptedGuestCount), against its own capacity.
+    // Per day: how many people attend it (day-capacity.util.ts's ATTENDING
+    // count: accepted guests, by acceptedGuestCount's rule, plus valid sold
+    // tickets admitting the day; never holds), against its own capacity.
     const attendingByDay = await countAttendingForDays(event.eventDays.map((d) => d.id));
     return {
       ...event,

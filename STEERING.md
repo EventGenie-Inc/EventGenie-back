@@ -3024,9 +3024,11 @@ the wizard's materialize):
 **Venue capacity belongs to the day too** (`EventDay.capacity`, null = none;
 `event-day/day-capacity.util.ts`, hotfix 2026-11). An event's days can be at
 different venues, so one event-level number can't be right for each of
-them. **It is informational: it warns organisers and never blocks a
-guest.** Nothing a guest does (RSVP, registration) and nothing an
+them. **For guests it is informational: it warns organisers and never
+blocks a guest.** Nothing a guest does (RSVP, registration) and nothing an
 organiser approves is refused because of it, and no guest ever sees it.
+**Ticket sales are the one exception: they stop when a day is full**
+(below, and "Ticket sales"), because a buyer pays for a place.
 
 - **Set where days are saved:** day create and update, the full update,
   the wizard's materialize (`capacity` on each day, 1 to 100,000, else 422
@@ -3035,24 +3037,54 @@ organiser approves is refused because of it, and no guest ever sees it.
   day has none:** a capacity sent for one is 422
   `EVENT_DAY_CAPACITY_ONLINE`, and a day switched to online loses its
   number. A database CHECK (`EventDay_capacity_check`) holds both rules.
-- **Who counts on a day** (`countAttendingForDays`, the one count): an
-  `Attendance` row for that day whose invite is live and `ACCEPTED` and whose
-  guest isn't awaiting approval. Plus-ones have their own invite and rows,
-  so a guest and each plus-one count one each. It is `acceptedGuestCount`'s
-  rule, applied per day. So a registration awaiting approval counts once it
-  is approved. **A single-day invitation counts without a choice:** a
-  "yes" to an invitation with one live day attends that day even when the
-  answer names no day (RSVP submit); registration without `dayIds` already
-  attends every open day. With several days, a "yes" that names none
-  attends none. Whether tickets admitting a day count here is the
-  ticket-sales follow-up's decision (Known gaps).
-- **No capacity lock and no refusal.** RSVP submit, registration and
-  approval take only the locks they took before the hotfix (registration's
-  event lock; RSVP's for the registration cap and the guest ceiling).
+- **Who counts on a day** (`day-capacity.util.ts`'s `countDayBreakdown`,
+  the one count, in two modes):
+  - **Guests:** an `Attendance` row for that day whose invite is live and
+    `ACCEPTED` and whose guest isn't awaiting approval. Plus-ones have their
+    own invite and rows, so a guest and each plus-one count one each. It is
+    `acceptedGuestCount`'s rule, applied per day. So a registration awaiting
+    approval counts once it is approved. **A single-day invitation counts
+    without a choice:** a "yes" to an invitation with one live day attends
+    that day even when the answer names no day (RSVP submit); registration
+    without `dayIds` already attends every open day. With several days, a
+    "yes" that names none attends none.
+  - **Sold tickets:** each `VALID` ticket of a confirmed order (PAID, or a
+    chargeback still open) whose order item admits the day (every day of
+    the event, or its chosen ones: the checkout snapshot, as at the door).
+    Cancelled, refunded and reversed tickets never count.
+  - **Held tickets:** the tickets of checkouts whose hold still stands (not
+    given back, not expired). An expired hold never counts, even before the
+    worker gives it back.
+
+  **ATTENDING** (`countAttendingForDays`) is guests + sold tickets: every
+  `attendingCount` and every capacity warning. **CHECKOUT**
+  (`countTakenForCheckout`) is guests + sold + held: what ticket sales stop
+  at (checkout, retry, the public availability, the sales summary). Holds
+  never reach organisers' counts or warnings. **Tickets never count towards
+  the plan's guest limit**, nor `acceptedGuestCount`.
+- **No capacity lock and no refusal for guests.** RSVP submit,
+  registration and approval take only the locks they took before the hotfix
+  (registration's event lock; RSVP's for the registration cap and the guest
+  ceiling). A guest on a day full of tickets is accepted and only warns.
+- **Ticket sales stop when a day is full** (`ticket/ticket-day-capacity.util.ts`).
+  For every day with a capacity that each type in an order admits: sold +
+  held + attending guests + this order's tickets admitting the day must not
+  exceed the capacity, else 409 `TICKET_ORDER_DAY_FULL` (wording in "Ticket
+  sales"). Atomic: the checkout (and a retry) locks the order's days
+  (`EventDay` rows, `FOR UPDATE`, in id order) before any type hold, holds
+  each type (its own quantity first, `TICKET_ORDER_NOT_ENOUGH_LEFT`), then
+  counts the days under that lock, all in one transaction; two buyers racing
+  for a day's last place, even on different types, get one hold. Freeing a
+  place (cancelling, a refund or lost chargeback, a hold failing or
+  expiring) needs no lock and frees it at once. **A day with no capacity, and
+  every online day, has no limit.** The only way tickets pass a day's
+  capacity is a payment arriving after its hold lapsed: it is honoured and
+  the order flagged `oversold` ("Ticket sales", Confirmation).
 - **Warnings, organisers only:** `capacityWarnings: [{ eventDayId, label,
   capacity, attending, message }]`, one per day with more people attending
-  than its capacity (at or under it, none), message "Saturday has 120
-  people attending, over its venue capacity of 100." On:
+  (ATTENDING: guests and sold tickets) than its capacity (at or under it,
+  none), message "Saturday has 520 people attending, over its venue
+  capacity of 500." On:
   - the event detail (`GET /api/events/:id`, and the full update's
     response, which is the detail): every live day over capacity;
   - `PUT .../days/:id` and `PUT /api/events/:id` (legacy capacity): the
@@ -3060,12 +3092,16 @@ organiser approves is refused because of it, and no guest ever sees it.
   - approving a registration (`POST .../registrations/:guestId/approve`):
     the registrant's days now over, so the organiser sees it as they approve.
 
-  Organisers also get `attendingCount` on each `eventDays` entry of the
-  event detail. Guests' responses never carry capacity, a count or a
+  Organisers also get `attendingCount` (ATTENDING: guests and sold
+  tickets) on each `eventDays` entry of the event detail. The ticket types
+  list warns separately when the types' quantities for a day exceed it
+  ("Ticket sales"). Guests' responses never carry capacity, a count or a
   warning: not `/rsvp/validate`, RSVP submit, the public page or
-  registration, nor any email.
-- **Lowering below attendance is allowed:** nobody is removed, guests can
-  still accept, and the save's response carries the warning.
+  registration, nor any email. The public page shows each ticket type's
+  availability only, never a day's capacity.
+- **Lowering below attendance is allowed** (below what's sold too): nobody
+  is removed, guests can still accept, no ticket is cancelled, and the
+  save's response carries the warning. Further ticket sales for that day stop.
 - **`Event.capacity` is deprecated**, kept and never read. The migration
   (`20261125090000_event_day_capacity`) copied it to every venue day of its
   event. **Compatibility until the frontend sends day capacities:** a
@@ -3083,8 +3119,10 @@ organiser approves is refused because of it, and no guest ever sees it.
   capacity (organisers will see a warning), events whose old capacity was
   outside 1 to 100,000 (not copied), and accepted single-day invitations
   from before the hotfix that record no day (missing from that day's count).
-- **Plan guest limits are separate** and unchanged. So is the registration
-  cap (`Event.registrationCap`). Never conflate the three.
+- **Plan guest limits are separate** and unchanged; tickets never count
+  towards them, and a day's capacity is the only cap on tickets beyond each
+  type's own quantity. So is the registration cap (`Event.registrationCap`).
+  Never conflate the three.
 
 ### Event program
 
@@ -4042,7 +4080,9 @@ and the wizard's.
 ```
 POST /api/events/:eventId/tickets      TicketTypeInput → 201 TicketTypeView
 PUT  /api/events/:eventId/tickets/:id  TicketTypeInput (any of it) → TicketTypeView
-GET  /api/events/:eventId/tickets[/:id] → TicketTypeView[] (by sortOrder) | TicketTypeView
+GET  /api/events/:eventId/tickets     → { status, data: TicketTypeView[] (by sortOrder),
+                                          capacityWarnings: TicketQuantityWarning[] }
+GET  /api/events/:eventId/tickets/:id → TicketTypeView
 DELETE /api/events/:eventId/tickets/:id → archived (409 TICKET_TYPE_HAS_SALES after a sale)
 TicketTypeInput = { name, description?: string | null, priceCents, quantity,
   salesStart?: 'YYYY-MM-DDTHH:mm' | null, salesEnd?: (the same) | null,   South African time
@@ -4052,7 +4092,17 @@ TicketTypeView = { id, eventId, name, description, priceCents, currency, quantit
   remaining, hasSales, salesStart, salesEnd (instants, ISO), salesStartLocal, salesEndLocal
   ('YYYY-MM-DDTHH:mm', South African time), admittedDayIds (null = every day), maxPerOrder,
   sortOrder, status, createdAt, updatedAt }
+TicketQuantityWarning = { eventDayId, label, capacity, ticketQuantity, message }
 ```
+
+- **Ticket types adding up to more than a day holds** (the list's
+  `capacityWarnings`, beside `data` so `data` stays the list; days by
+  date): a day with a capacity whose ACTIVE types admitting it (every day,
+  or chosen ones) have quantities adding up to more than it: "Your ticket
+  types for Saturday add up to 700, but the venue holds 500. Ticket sales
+  stop at 500." Only a warning: saving a type is never refused for it, and
+  sales stop at the day's capacity anyway (see "Venue"). Hidden and deleted
+  types don't count, nor a legacy type with no quantity.
 
 - **Money is whole cents.** `Ticket.priceCents` is the source of truth;
   **`Ticket.price` (the decimal) is deprecated**: still written in step
@@ -4230,8 +4280,12 @@ the split are returned (the page's wording waits for legal advice); a bigger
 order costs a little less than n × the all-in price (one flat fee). Never a
 hidden type, the payout account, or how many are sold or exist; `remaining`
 ("only N left") only when 1 to 10 are left and on sale (`ONLY_N_LEFT_THRESHOLD`),
-else null. Sold out counts tickets held by checkouts in progress. A type id
-is in it: the checkout sends it back.
+else null. Sold out counts tickets held by checkouts in progress. **What is
+left is the type's effective remaining**: the lowest of its own remaining
+and the places left (the CHECKOUT count, holds included; "Venue") on each
+day it admits that has a capacity. `SOLD_OUT` and "only N left" both use
+it. A day's capacity is never shown, only the type's availability. A type
+id is in it: the checkout sends it back.
 
 **Buying tickets: checkout** (Round B, `src/modules/ticket-order/`; public,
 no sign-in, behind `ticketing`; `Cache-Control: no-store`):
@@ -4266,7 +4320,13 @@ OrderView = { orderId, status: 'PENDING'|'PAID'|'FAILED'|'EXPIRED'|'UNDER_REVIEW
   `TICKET_ORDER_TOO_MANY_OF_TYPE` (422: over `maxPerOrder`),
   `TICKET_ORDER_TOO_MANY_TICKETS` (422: over 20 in the order),
   `TICKET_ORDER_NOT_ENOUGH_LEFT` (409, "Only 2 'Saturday' tickets are left." or
-  "… sold out.", `details: { ticketTypeId, remaining }`),
+  "… sold out.", `details: { ticketTypeId, remaining }`: the type's own
+  quantity, checked first), `TICKET_ORDER_DAY_FULL` (409: a day the order's
+  tickets admit has no room for them, its venue capacity; "Saturday is sold
+  out." when none are left, else "Only 3 places are left on Saturday."
+  ("Only 1 place is left on Saturday."); `details: { eventDayId, dayLabel,
+  remaining, days: [{ eventDayId, dayLabel, remaining }] }`: several days
+  short name the first by date, and `days` lists every one; also on a retry),
   `TICKET_ORDER_BUYER_NAME_REQUIRED`, `TICKET_ORDER_BUYER_EMAIL_INVALID`, the
   phone's contact codes (422), `TICKET_ORDER_TERMS_REQUIRED` (422),
   `TICKET_ORDER_PAYMENTS_UNAVAILABLE` (409: no active payout account),
@@ -4274,7 +4334,10 @@ OrderView = { orderId, status: 'PENDING'|'PAID'|'FAILED'|'EXPIRED'|'UNDER_REVIEW
   **Never the plan**: a paid event keeps selling after a downgrade.
 - **Stock is held for 30 minutes**, one conditional `UPDATE` per type (sold +
   held + quantity ≤ quantity): two buyers racing for the last ticket get one
-  hold and one refusal. A refusal on any type holds nothing.
+  hold and one refusal. **Then each day's capacity**, under a lock on the
+  order's days taken before the holds ("Venue": ticket sales stop when a
+  day is full): two buyers racing for a day's last place, even on different
+  types, get one hold. A refusal on any type or day holds nothing.
 - **The same checkout, never a second hold or charge**: the same
   `idempotencyKey` (unique per event) returns the order with its token; the
   same buyer (normalised email), event and items while it is still pending
@@ -4325,8 +4388,11 @@ status verify, in one transaction with the order's row locked, by reference:
   (`PAYMENT_AMOUNT_MISMATCH` row; a `SPLIT_MISMATCH` mismatch for the split).
 - Otherwise **PAID**: the hold becomes sold stock; **paid after the hold
   lapsed, sold anyway** (never refuse a paid order), and if that oversells a
-  type the order is `oversold` and the organisation's admins and the super
-  admin are emailed. One `IssuedTicket` per unit, numbered `TK-XXXX-XXXX`
+  type, or takes a day past its venue capacity (a hold that lapsed: given
+  back, or expired and not yet given back, since an expired hold never
+  counts), the order is `oversold` and the organisation's admins and the
+  super admin are emailed (naming the days over, if any). A payment from a
+  standing hold is never flagged for a day. One `IssuedTicket` per unit, numbered `TK-XXXX-XXXX`
   (no 0/O/1/I/L). The ledger: `TICKET_PAYMENT_SUCCEEDED` (payload: the
   breakdown, Paystack's actual fee from `data.fees`, `feeDifferenceCents`
   from the calculated processing, `netCents` = charge − commission − actual
@@ -4357,7 +4423,9 @@ the event's admins: `requireEventAdmin`, tenant scoping and the assignment lock)
 
 ```
 GET  …/summary → { types: [{ ticketTypeId, name, status, priceCents, quantity, sold, held,
-                   remaining, revenueCents }], totals: { sold, revenueCents } }
+                   remaining, revenueCents }],
+                   days: [{ eventDayId, label, capacity, sold, held, guests, remaining }],
+                   totals: { sold, revenueCents } }
 GET  …/orders[?status&search&page&pageSize] → { page, pageSize, total, items: [{ id, status,
        reviewReason, disputeStatus, oversold, buyer: { name, email, phone },
        items: [{ ticketTypeId, typeName, quantity, unitPriceCents }],
@@ -4369,7 +4437,10 @@ POST …/orders/:orderId/cancel { reason, ticketIds? } → { orderId, emailSent,
 ```
 
 `revenueCents` is the organiser's: the ticket price of tickets still valid,
-never the fees. Buyers' details are in this view only. **Cancelling** (one
+never the fees. `days`: every live day by date, with the tickets admitting
+it sold and held, the guests attending ("Venue"'s count), and `remaining`,
+the places left for sales (capacity − sold − held − guests, never below 0;
+null when the day has no capacity). Buyers' details are in this view only. **Cancelling** (one
 ticket, some, or the order, a reason required: 422
 `TICKET_CANCEL_REASON_REQUIRED`): the tickets `CANCELLED` (their QR stops at
 once), their places freed, the buyer emailed (which tickets, the reason, and
@@ -5668,14 +5739,6 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   without warning, so the same paths run correctly there. It becomes an
   error in the tests at pg 9. New code inside an interactive transaction
   reads flat (check-in passes' `findPartyLocked` does).
-- **Ticket sales and day capacity: decision pending (follow-up on dev).**
-  The day-capacity hotfix (2026-11, branched from main) counts guests only
-  (accepted invitations, registrations once approved), and capacity only
-  warns organisers. Whether valid tickets admitting a day count in
-  `countAttendingForDays` (`day-capacity.util.ts`), and so in
-  `attendingCount` and the warnings, is to be decided for the ticket-sales
-  code, which exists only on dev. Dev's event duplicate and template grants
-  must also copy each day's `capacity`.
 - **Reminders and organiser resends are refused on public events**
   (`assertEventAcceptsInvites`). Registrants are accepted, so a reminder
   would skip them anyway; a registrant who lost their link registers again

@@ -10,6 +10,7 @@ import { type WebhookContext } from '../payment-webhook/payment-webhook.types.js
 import { PAYMENT_TRANSACTION_OPTIONS, runPostCommit, type PostCommitWork } from '../payment-webhook/payment-context.util.js';
 import { ticketOrderRepository, type OrderRow } from './ticket-order.repository.js';
 import { ticketOrderEmails } from './ticket-order-emails.js';
+import { daysOverIfSold } from '../ticket/ticket-day-capacity.util.js';
 
 // ─────────────────────────────────────────
 //  CONFIRMING A TICKET ORDER (ticket sales Round B; STEERING "Ticket sales")
@@ -23,8 +24,9 @@ import { ticketOrderEmails } from './ticket-order-emails.js';
 //   - the amount, currency, subaccount or split not the order's snapshot:
 //     UNDER_REVIEW (PAYMENT_MISMATCH), alerted, no tickets, its stock freed;
 //   - otherwise PAID: the hold becomes sold stock (or, paid after the hold
-//     lapsed, sold anyway: never refuse a paid order; an oversell is flagged
-//     to the organisation's admins and the super admin), one IssuedTicket per
+//     lapsed, sold anyway: never refuse a paid order; an oversell, of a
+//     type's quantity or a day's capacity, is flagged to the organisation's
+//     admins and the super admin), one IssuedTicket per
 //     unit with a short number, and the ledger: TICKET_PAYMENT_SUCCEEDED with
 //     Paystack's actual fee and its difference from the calculated one, and
 //     COMMISSION_TAKEN. e-velope's net below zero (the fee above its charge
@@ -208,8 +210,13 @@ export const ticketOrderConfirmService = {
 
     // ── Paid ──
     const fromHold = order.holdReleasedAt === null;
+    // Paid after its hold lapsed (given back, or expired and not yet given
+    // back: day counts never include an expired hold): the days its tickets
+    // take past their capacity, read before they are issued. Sold anyway.
+    const late = !fromHold || order.holdExpiresAt <= new Date();
+    const daysOver = late ? await daysOverIfSold(tx, order.eventId, order.items, new Date()) : [];
     for (const item of order.items) await ticketOrderRepository.sell(tx, item.ticketTypeId, item.quantity, fromHold);
-    let oversold = false;
+    let oversold = daysOver.length > 0;
     for (const item of order.items) if (await ticketOrderRepository.isOversold(tx, item.ticketTypeId)) oversold = true;
 
     let index = 0;
@@ -321,7 +328,7 @@ export const ticketOrderConfirmService = {
 
     if (oversold) {
       ctx.after(async () => {
-        await ticketOrderEmails.oversold(order.id);
+        await ticketOrderEmails.oversold(order.id, daysOver);
       });
     }
     ctx.after(async () => {
