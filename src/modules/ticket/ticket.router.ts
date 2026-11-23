@@ -16,8 +16,9 @@ router.use(authenticate, requireFeature('ticketing'), requireEventAdmin);
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = req as AuthenticatedRequest;
-    const tickets = await ticketService.getAllForAdmin(req.params['eventId'] as string, auth.user.role, auth.user.tenantId);
-    res.status(200).json({ status: 'ok', data: tickets });
+    const { ticketTypes, capacityWarnings } = await ticketService.getAllForAdmin(req.params['eventId'] as string, auth.user.role, auth.user.tenantId);
+    // capacityWarnings beside data, so data stays the list it always was.
+    res.status(200).json({ status: 'ok', data: ticketTypes, capacityWarnings });
   } catch (err) { next(err); }
 });
 

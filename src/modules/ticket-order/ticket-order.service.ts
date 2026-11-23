@@ -14,6 +14,7 @@ import { normalizePhoneToE164, resolvePhoneCountry } from '../guest/guest-valida
 import { eventRepository } from '../event/event.repository.js';
 import { resolveEffectiveStatus } from '../event/event-status.util.js';
 import { lastDayEndsAt } from '../ticket/ticket-validation.util.js';
+import { assertOrderDaysHaveRoom, lockOrderDays, type AdmittingLine } from '../ticket/ticket-day-capacity.util.js';
 import { paymentAccountRepository } from '../payment-account/payment-account.repository.js';
 import { paymentLedgerService } from '../payment-ledger/payment-ledger.service.js';
 import { calculateTicketOrderFees } from '../ticket-sales/ticket-fee-calculator.js';
@@ -48,7 +49,11 @@ import {
 //      gets the same checkout back, never a second hold or charge.
 //   3. Stock is held for 30 minutes, one conditional UPDATE per type
 //      (sold + held + quantity ≤ quantity): of two buyers racing for the
-//      last ticket, one gets it and one is refused.
+//      last ticket, one gets it and one is refused. Then each day the
+//      order's tickets admit, if it has a capacity: sold + held + attending
+//      guests + this order's tickets admitting it must fit
+//      (ticket-day-capacity.util.ts: the days are locked before the holds
+//      and counted under that lock; 409 TICKET_ORDER_DAY_FULL).
 //   4. The order is written PENDING with everything snapshotted: items and
 //      unit prices, the fee calculator's breakdown for the whole order, the
 //      live payout subaccount, the Terms version.
@@ -277,6 +282,12 @@ export const ticketOrderService = {
     const fees = calculateTicketOrderFees({ unitPriceCents: subtotal, quantity: 1 });
     const fingerprint = fingerprintOf(event.id, req.buyer.email, req.items);
     const reference = newReference();
+    const liveDayIds = event.eventDays.map((d) => d.id);
+    const admitting: AdmittingLine[] = lines.map(({ item, type }) => ({
+      admitsAllDays: type.admitsAllDays,
+      admittedDayIds: type.admittedDays.map((d) => d.eventDayId),
+      quantity: item.quantity,
+    }));
 
     const claim = await prisma.$transaction(async (tx) => {
       await lockPaymentScope(tx, `ticket-checkout:${event.id}:${crypto.createHash('sha256').update(req.buyer.email).digest('hex')}`);
@@ -285,6 +296,9 @@ export const ticketOrderService = {
       const byFingerprint = await ticketOrderRepository.findPendingByFingerprint(fingerprint, now, tx);
       if (byFingerprint) return { kind: 'existing' as const, order: byFingerprint, viaKey: false };
 
+      // The days first (every hold against a day takes this lock), then each
+      // type's own quantity, then the days' capacity under the lock.
+      const lockedDays = await lockOrderDays(tx, admitting, liveDayIds);
       for (const { item, type } of lines) {
         if (!(await ticketOrderRepository.hold(tx, type.id, item.quantity))) {
           const left = await tx.ticket.findUnique({ where: { id: type.id }, select: { soldCount: true, heldCount: true, totalQuantity: true } });
@@ -299,6 +313,7 @@ export const ticketOrderService = {
           );
         }
       }
+      await assertOrderDaysHaveRoom(tx, lockedDays, admitting, liveDayIds, now);
 
       const order = await tx.ticketOrder.create({
         data: {
@@ -419,11 +434,16 @@ export const ticketOrderService = {
         throw new HttpError(409, "This order can't be paid again.", CODES.RETRY_NOT_ALLOWED);
       }
       if (fresh.holdReleasedAt !== null) {
+        // As at checkout: the days its tickets admit (the order's snapshot)
+        // locked, each type's own quantity, then the days' capacity.
+        const liveDayIds = event.eventDays.map((d) => d.id);
+        const lockedDays = await lockOrderDays(tx, fresh.items, liveDayIds);
         for (const item of fresh.items) {
           if (!(await ticketOrderRepository.hold(tx, item.ticketTypeId, item.quantity))) {
             throw new HttpError(409, `There aren't enough '${item.typeName}' tickets left for this order any more.`, CODES.NOT_ENOUGH_LEFT);
           }
         }
+        await assertOrderDaysHaveRoom(tx, lockedDays, fresh.items, liveDayIds, now);
       }
       await tx.ticketOrder.update({
         where: { id: fresh.id },

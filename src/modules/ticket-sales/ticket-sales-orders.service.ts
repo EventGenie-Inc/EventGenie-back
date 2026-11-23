@@ -8,6 +8,7 @@ import { ticketOrderRepository } from '../ticket-order/ticket-order.repository.j
 import { ticketOrderConfirmService } from '../ticket-order/ticket-order-confirm.service.js';
 import { ticketOrderEmails } from '../ticket-order/ticket-order-emails.js';
 import { ticketSalesCounts } from '../ticket/ticket-sales-count.util.js';
+import { countDayBreakdown, dayPlacesLeft } from '../event-day/day-capacity.util.js';
 import { PAYMENT_TRANSACTION_OPTIONS } from '../payment-webhook/payment-context.util.js';
 
 // ─────────────────────────────────────────
@@ -41,9 +42,12 @@ const confirmedWhere: Prisma.TicketOrderWhereInput = { OR: [{ status: 'PAID' }, 
 
 export const ticketSalesOrdersService = {
   // Per type: sold, remaining, and the organiser's revenue (the ticket
-  // subtotal of tickets still valid: never the fees).
+  // subtotal of tickets still valid: never the fees). Per live day, by date:
+  // its capacity, the tickets admitting it sold and held, the guests
+  // attending, and the places left for sales (null with no capacity), from
+  // day-capacity.util.ts's CHECKOUT count.
   summary: async (eventId: string, role: PlatformRole, tenantId: string | null) => {
-    await eventService.getScoped(eventId, role, tenantId);
+    const event = await eventService.getScoped(eventId, role, tenantId);
     const types = await prisma.ticket.findMany({ where: { eventId, isArchived: false }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
     const counts = await ticketSalesCounts(types.map((t) => t.id));
     const valid = await prisma.issuedTicket.findMany({
@@ -70,8 +74,23 @@ export const ticketSalesOrdersService = {
         revenueCents: mine.reduce((sum, v) => sum + (priceOf.get(v.orderItemId) ?? 0), 0),
       };
     });
+    const liveDays = [...event.eventDays].filter((d) => !d.isArchived).sort((a, b) => a.date.getTime() - b.date.getTime());
+    const byDay = await countDayBreakdown(liveDays.map((d) => d.id), 'CHECKOUT');
+    const days = liveDays.map((d) => {
+      const c = byDay.get(d.id) ?? { guests: 0, sold: 0, held: 0, total: 0 };
+      return {
+        eventDayId: d.id,
+        label: d.label,
+        capacity: d.capacity,
+        sold: c.sold,
+        held: c.held,
+        guests: c.guests,
+        remaining: d.capacity === null ? null : dayPlacesLeft(d.capacity, c.total),
+      };
+    });
     return {
       types: rows,
+      days,
       totals: { sold: rows.reduce((s, r) => s + r.sold, 0), revenueCents: rows.reduce((s, r) => s + r.revenueCents, 0) },
     };
   },

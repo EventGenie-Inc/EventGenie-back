@@ -7,6 +7,7 @@ import { ticketSalesCount, ticketSalesCounts, type TicketSalesCount } from './ti
 import { eventService } from '../event/event.service.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { formatSaLocal } from '../reminder-schedule/reminder-schedule-time.util.js';
+import { ticketQuantityWarnings, type TicketQuantityWarning } from '../event-day/day-capacity.util.js';
 
 // Ticket has no tenantId of its own — ownership is transitive through its
 // event, like every other event sub-resource (event-day, program-item).
@@ -53,11 +54,27 @@ const viewOf = async (row: TicketRow): Promise<TicketTypeView> => toTicketTypeVi
 
 export const ticketService = {
 
-  getAllForAdmin: async (eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<TicketTypeView[]> => {
-    await eventService.getScoped(eventId, requestingRole, tenantId);
+  // The list, and capacityWarnings: each day (by date) whose venue capacity
+  // the ACTIVE types admitting it add up to more than. Only a warning: saving
+  // a type is never refused for it, and sales stop at the day's capacity.
+  getAllForAdmin: async (
+    eventId: string,
+    requestingRole: PlatformRole,
+    tenantId: string | null
+  ): Promise<{ ticketTypes: TicketTypeView[]; capacityWarnings: TicketQuantityWarning[] }> => {
+    const event = await eventService.getScoped(eventId, requestingRole, tenantId);
     const rows = await ticketRepository.findAll(eventId);
     const counts = await ticketSalesCounts(rows.map((r) => r.id));
-    return rows.map((r) => toTicketTypeView(r, counts.get(r.id) ?? { sold: 0, held: 0 }));
+    const days = [...event.eventDays]
+      .filter((d) => !d.isArchived)
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+    return {
+      ticketTypes: rows.map((r) => toTicketTypeView(r, counts.get(r.id) ?? { sold: 0, held: 0 })),
+      capacityWarnings: ticketQuantityWarnings(
+        days,
+        rows.map((r) => ({ ...r, admittedDayIds: r.admittedDays.map((d) => d.eventDayId) }))
+      ),
+    };
   },
 
   getById: async (id: string, eventId: string, requestingRole: PlatformRole, tenantId: string | null): Promise<TicketTypeView> =>

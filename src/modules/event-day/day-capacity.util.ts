@@ -21,8 +21,14 @@ import { type DayVenue } from './event-day-venue.util.js';
 //  always used for the event (eventRepository.countAcceptedInvitesForEvent),
 //  applied per day. A registration awaiting approval counts once approved.
 //  A guest who accepts an invitation to a single day attends that day even
-//  if the answer names no day (rsvp.service.ts's submit). The ticket-sales
-//  follow-up (dev) decides whether tickets admitting a day count here.
+//  if the answer names no day (rsvp.service.ts's submit). Valid, sold
+//  tickets admitting the day count too, and for ticket sales so do tickets
+//  held by checkouts in progress (the two modes below).
+//
+//  TICKETS ARE THE EXCEPTION TO "never blocks": a buyer pays for a place,
+//  so ticket sales stop when a day is full (ticket-day-capacity.util.ts,
+//  checkout and retry). Guests are still never refused. A payment arriving
+//  after its hold expired is honoured anyway and flagged oversold.
 //
 //  WARNINGS, for organisers only (capacityWarningsFor / warningsFromCounts):
 //  a day where more people attend than its capacity. On the event detail
@@ -37,10 +43,64 @@ import { type DayVenue } from './event-day-venue.util.js';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
-// How many people attend each day (see WHO COUNTS). Days nobody attends
-// are left out of the map.
-export const countAttendingForDays = (eventDayIds: string[], db: Db = prisma): Promise<Map<string, number>> =>
-  eventDayRepository.countAttendingByDay(eventDayIds, db);
+// ── The one count, in two modes ──
+//
+//  ATTENDING (countAttendingForDays): attending guests (WHO COUNTS above)
+//  plus valid, sold tickets admitting the day. What organisers see:
+//  attendingCount and every capacity warning.
+//  CHECKOUT (countTakenForCheckout): the same, plus tickets held by
+//  checkouts in progress (a hold still standing: not released, not
+//  expired). What ticket sales stop at: checkout, retry, the public
+//  "sold out" and "only N left", the sales summary's remaining.
+//  Both read the same queries (countDayBreakdown); only `held` differs.
+//  Cancelled, refunded and reversed tickets, and expired holds, never count.
+
+export type DayCountMode = 'ATTENDING' | 'CHECKOUT';
+
+export interface DayCountBreakdown {
+  guests: number;
+  sold: number;
+  // Always 0 in ATTENDING mode.
+  held: number;
+  total: number;
+}
+
+export const countDayBreakdown = async (
+  eventDayIds: string[],
+  mode: DayCountMode,
+  db: Db = prisma,
+  now: Date = new Date()
+): Promise<Map<string, DayCountBreakdown>> => {
+  const ids = [...new Set(eventDayIds)];
+  const result = new Map<string, DayCountBreakdown>();
+  if (ids.length === 0) return result;
+  const guests = await eventDayRepository.countAttendingByDay(ids, db);
+  const tickets = await eventDayRepository.countTicketsByDay(ids, mode === 'CHECKOUT' ? now : null, db);
+  for (const id of ids) {
+    const g = guests.get(id) ?? 0;
+    const t = tickets.get(id) ?? { sold: 0, held: 0 };
+    const held = mode === 'CHECKOUT' ? t.held : 0;
+    result.set(id, { guests: g, sold: t.sold, held, total: g + t.sold + held });
+  }
+  return result;
+};
+
+const totals = (breakdown: Map<string, DayCountBreakdown>): Map<string, number> =>
+  new Map([...breakdown].filter(([, c]) => c.total > 0).map(([id, c]) => [id, c.total]));
+
+// How many people attend each day: guests and sold tickets (ATTENDING).
+// Days nobody attends are left out of the map.
+export const countAttendingForDays = async (eventDayIds: string[], db: Db = prisma): Promise<Map<string, number>> =>
+  totals(await countDayBreakdown(eventDayIds, 'ATTENDING', db));
+
+// How many places each day has taken, for selling tickets: guests, sold
+// tickets and tickets held by checkouts in progress (CHECKOUT). Days with
+// nothing taken are left out of the map.
+export const countTakenForCheckout = async (eventDayIds: string[], db: Db = prisma, now: Date = new Date()): Promise<Map<string, number>> =>
+  totals(await countDayBreakdown(eventDayIds, 'CHECKOUT', db, now));
+
+// What's left of a day's capacity for ticket sales: never below 0.
+export const dayPlacesLeft = (capacity: number, taken: number): number => Math.max(0, capacity - taken);
 
 // ── Warnings: a day over its capacity ──
 
@@ -75,6 +135,38 @@ export const capacityWarningsFor = async (eventDayIds: string[], db: Db = prisma
   if (days.length === 0) return [];
   return warningsFromCounts(days, await countAttendingForDays(days.map((d) => d.id), db));
 };
+
+// ── Warnings: ticket types for a day adding up to more than its capacity ──
+//
+// The ticket types list (organisers only). Only a warning: saving a type is
+// never refused for it, and sales stop at the day's capacity anyway. Counts
+// the ACTIVE types admitting the day (every day, or chosen ones); a legacy
+// type with no quantity (unlimited, before 2026-11) is left out of the sum.
+
+export interface TicketQuantityWarning {
+  eventDayId: string;
+  label: string;
+  capacity: number;
+  ticketQuantity: number;
+  message: string;
+}
+
+export const ticketQuantityWarningMessage = (label: string, quantity: number, capacity: number): string =>
+  `Your ticket types for ${label} add up to ${quantity}, but the venue holds ${capacity}. Ticket sales stop at ${capacity}.`;
+
+export const ticketQuantityWarnings = (
+  days: { id: string; label: string; capacity: number | null }[],
+  types: { status: string; isArchived: boolean; totalQuantity: number | null; admitsAllDays: boolean; admittedDayIds: string[] }[]
+): TicketQuantityWarning[] =>
+  days.flatMap((d) => {
+    if (d.capacity === null) return [];
+    const quantity = types
+      .filter((t) => t.status === 'ACTIVE' && !t.isArchived && t.totalQuantity !== null && (t.admitsAllDays || t.admittedDayIds.includes(d.id)))
+      .reduce((sum, t) => sum + (t.totalQuantity ?? 0), 0);
+    return quantity > d.capacity
+      ? [{ eventDayId: d.id, label: d.label, capacity: d.capacity, ticketQuantity: quantity, message: ticketQuantityWarningMessage(d.label, quantity, d.capacity) }]
+      : [];
+  });
 
 // ── Compatibility: an event-level capacity from an older frontend ──
 

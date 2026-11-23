@@ -1,4 +1,4 @@
-import { type Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { withPlainDayCoordinates } from '../event/event-coordinates.util.js';
 import { type DayVenue } from './event-day-venue.util.js';
@@ -111,6 +111,62 @@ export const eventDayRepository = {
     });
     return new Map(rows.map((r) => [r.eventDayId, r._count._all]));
   },
+
+  // Tickets admitting each of these days (day-capacity.util.ts's
+  // countDayBreakdown): `sold`, the VALID tickets of a confirmed order (PAID,
+  // or a chargeback still open: check-in's rule for a ticket that admits
+  // someone); `held`, only when `heldAt` is given, the tickets held by
+  // checkouts whose hold is still standing at that instant (not released,
+  // not expired). A ticket admits a day by its order item's snapshot, as at
+  // the door (ticket-check-in.ts's ticketAdmitsDay): every day of its event,
+  // or the chosen ones. Cancelled, refunded and reversed tickets never count.
+  // One statement for both, so the two modes can't drift apart.
+  countTicketsByDay: async (
+    eventDayIds: string[],
+    heldAt: Date | null,
+    db: Db = prisma
+  ): Promise<Map<string, { sold: number; held: number }>> => {
+    if (eventDayIds.length === 0) return new Map();
+    const withHeld = heldAt !== null;
+    const at = heldAt ?? new Date(0);
+    const rows = await db.$queryRaw<{ eventDayId: string; sold: number; held: number }[]>`
+      SELECT d."id" AS "eventDayId",
+        (SELECT COUNT(*)::int
+           FROM "IssuedTicket" it
+           JOIN "TicketOrder" o ON o."id" = it."orderId"
+           JOIN "TicketOrderItem" oi ON oi."id" = it."orderItemId"
+          WHERE it."eventId" = d."eventId"
+            AND it."status" = 'VALID'
+            AND (o."status" = 'PAID' OR (o."status" = 'UNDER_REVIEW' AND o."reviewReason" = 'DISPUTE'))
+            AND (oi."admitsAllDays" OR d."id" = ANY(oi."admittedDayIds"))) AS "sold",
+        (SELECT COALESCE(SUM(oi."quantity"), 0)::int
+           FROM "TicketOrder" o
+           JOIN "TicketOrderItem" oi ON oi."orderId" = o."id"
+          WHERE ${withHeld}
+            AND o."eventId" = d."eventId"
+            AND o."status" IN ('PENDING', 'FAILED')
+            AND o."holdReleasedAt" IS NULL
+            AND o."holdExpiresAt" > ${at}
+            AND (oi."admitsAllDays" OR d."id" = ANY(oi."admittedDayIds"))) AS "held"
+      FROM "EventDay" d
+      WHERE d."id" IN (${Prisma.join(eventDayIds)})
+    `;
+    return new Map(rows.map((r) => [r.eventDayId, { sold: Number(r.sold), held: Number(r.held) }]));
+  },
+
+  // Locks these days' rows (FOR UPDATE, in id order so two checkouts never
+  // deadlock) and returns those with a capacity: every hold that counts
+  // against a day takes this lock first, so the count read under it can't
+  // be overtaken by another hold (ticket-day-capacity.util.ts).
+  lockCappedDays: async (tx: Prisma.TransactionClient, eventDayIds: string[]) =>
+    eventDayIds.length === 0
+      ? []
+      : tx.$queryRaw<{ id: string; label: string; date: Date; capacity: number }[]>`
+          SELECT "id", "label", "date", "capacity" FROM "EventDay"
+          WHERE "id" IN (${Prisma.join([...new Set(eventDayIds)].sort())}) AND "isArchived" = false
+          ORDER BY "id"
+          FOR UPDATE
+        `.then((rows) => rows.filter((r) => r.capacity !== null)),
 
   // The live days among these ids that have a capacity, with what the
   // capacity messages name.

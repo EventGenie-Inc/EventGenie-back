@@ -1,5 +1,6 @@
 import prisma from '../../shared/prisma/prisma.client.js';
 import { ticketSalesCounts } from '../ticket/ticket-sales-count.util.js';
+import { effectiveRemaining, placesLeftByDay } from '../ticket/ticket-day-capacity.util.js';
 import { lastDayEndsAt } from '../ticket/ticket-validation.util.js';
 import { formatSaLocal } from '../reminder-schedule/reminder-schedule-time.util.js';
 import { calculateTicketOrderFees } from './ticket-fee-calculator.js';
@@ -26,6 +27,11 @@ import { calculateTicketOrderFees } from './ticket-fee-calculator.js';
 //   NOT_YET_ON_SALE  its sales window hasn't opened;
 //   SOLD_OUT         none left (sold, or held by checkouts in progress);
 //   ON_SALE          otherwise.
+//  "Left" is the type's EFFECTIVE remaining: the lowest of its own
+//  remaining and the places left (counting holds) on each day it admits
+//  that has a venue capacity (ticket-day-capacity.util.ts). SOLD_OUT and
+//  "only N left" both use it. A day's capacity is never shown, only the
+//  type's availability.
 //  Pausing sales doesn't change a type's availability: `paused` says so.
 // ─────────────────────────────────────────
 
@@ -75,12 +81,15 @@ export const buildPublicTicketSales = async (
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
   });
   const counts = await ticketSalesCounts(rows.map((r) => r.id));
+  const liveDayIds = event.eventDays.map((d) => d.id);
+  const placesLeft = await placesLeftByDay(liveDayIds, prisma, now);
   const eventEnds = lastDayEndsAt(event.eventDays);
 
   const ticketTypes = rows.map((row): PublicTicketType => {
     const fees = calculateTicketOrderFees({ unitPriceCents: row.priceCents, quantity: 1 });
     const count = counts.get(row.id) ?? { sold: 0, held: 0 };
-    const left = row.totalQuantity === null ? null : Math.max(0, row.totalQuantity - count.sold - count.held);
+    const own = row.totalQuantity === null ? null : Math.max(0, row.totalQuantity - count.sold - count.held);
+    const left = effectiveRemaining(own, { admitsAllDays: row.admitsAllDays, admittedDayIds: row.admittedDays.map((d) => d.eventDayId) }, liveDayIds, placesLeft);
     const availability: PublicTicketAvailability =
       (row.salesEnd && row.salesEnd <= now) || (eventEnds && eventEnds <= now)
         ? 'SALES_ENDED'
