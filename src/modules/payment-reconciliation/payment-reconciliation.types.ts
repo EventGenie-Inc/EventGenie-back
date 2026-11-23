@@ -17,8 +17,9 @@ export type MismatchKind =
   // Ticket sales Round B: a ticket payment whose subaccount or split wasn't
   // its order's (the order is UNDER_REVIEW, no tickets issued).
   | 'SPLIT_MISMATCH'
-  // Ticket sales Round B: Paystack's actual fee on a ticket order was above
-  // e-velope's charge less the commission (e-velope lost money on it).
+  // A real loss on a ticket order: Paystack's actual fee above e-velope's
+  // whole transaction charge (fix/payments-go-live; before, above the charge
+  // less the commission, which every international card was).
   | 'NEGATIVE_NET';
 
 export interface CreateMismatchInput {
@@ -42,6 +43,13 @@ export interface ReconciliationResult {
   refundCount: number;
   settlementCount: number;
   settledTotalCents: number;
+  // fix/payments-go-live: the day's ticket fee differences (Paystack's actual
+  // fee less the calculated processing fee), totalled; and the card-update
+  // verification charges and refunds seen (not payments of ours).
+  ticketFeeDifferenceTotalCents: number;
+  ticketFeeDifferenceCount: number;
+  cardVerificationChargeCount: number;
+  cardVerificationRefundCount: number;
   mismatches: CreateMismatchInput[];
 }
 

@@ -58,6 +58,10 @@ export interface TicketSalesView {
   // Whether switching on would succeed now, and what is still missing.
   canEnable: boolean;
   requirements: TicketSalesRequirements;
+  // fix/payments-go-live: when the plan doesn't allow ticket sales
+  // (requirements.planAllowsTicketSales false), the refusal's own wording, so
+  // the organiser sees it before pressing Start; otherwise null.
+  planMessage: string | null;
   // Whether switching off is allowed (nothing sold).
   canDisable: boolean;
 }
@@ -73,7 +77,9 @@ const payoutRequiredError = (): HttpError =>
 const activeTypeRequiredError = (): HttpError =>
   new HttpError(422, 'Add a ticket type that is on sale (not hidden) first.', TICKET_SALES_ERROR_CODES.ACTIVE_TYPE_REQUIRED);
 
-const requirementsFor = async (event: ScopedEvent): Promise<{ requirements: TicketSalesRequirements; refusal: HttpError | null }> => {
+const requirementsFor = async (
+  event: ScopedEvent
+): Promise<{ requirements: TicketSalesRequirements; refusal: HttpError | null; planMessage: string | null }> => {
   const tenant = await paymentAccountRepository.findStatusByTenantId(event.tenantId);
   if (!tenant) throw new HttpError(404, 'Event not found');
   const plan = await resolveEventPlan(tenant, event);
@@ -87,6 +93,10 @@ const requirementsFor = async (event: ScopedEvent): Promise<{ requirements: Tick
     registrationApprovalOff: event.registrationAutoApprove,
   };
 
+  // The plan's refusal wording (display names: "The Spark plan …"), the
+  // same text a refused Start answers with.
+  const planMessage = requirements.planAllowsTicketSales ? null : paidTicketingRefusal(plan, true);
+
   let refusal: HttpError | null = null;
   if (event.status === 'CANCELLED') {
     refusal = new HttpError(409, "This event has been cancelled, so it can't sell tickets.", TICKET_SALES_ERROR_CODES.EVENT_CANCELLED);
@@ -95,7 +105,7 @@ const requirementsFor = async (event: ScopedEvent): Promise<{ requirements: Tick
   } else if (!requirements.publicEvent) {
     refusal = new HttpError(422, PUBLIC_ONLY_MESSAGE, TICKET_SALES_ERROR_CODES.PUBLIC_ONLY);
   } else if (!requirements.planAllowsTicketSales) {
-    refusal = new HttpError(403, paidTicketingRefusal(plan, true), TICKET_SALES_ERROR_CODES.PLAN);
+    refusal = new HttpError(403, planMessage ?? paidTicketingRefusal(plan, true), TICKET_SALES_ERROR_CODES.PLAN);
   } else if (!requirements.payoutAccountActive) {
     refusal = payoutRequiredError();
   } else if (!requirements.activeTicketType) {
@@ -107,17 +117,18 @@ const requirementsFor = async (event: ScopedEvent): Promise<{ requirements: Tick
       TICKET_SALES_ERROR_CODES.APPROVAL_ON
     );
   }
-  return { requirements, refusal };
+  return { requirements, refusal, planMessage };
 };
 
 const viewOf = async (event: ScopedEvent): Promise<TicketSalesView> => {
-  const [{ requirements, refusal }, ticketsSold] = await Promise.all([requirementsFor(event), eventTicketsSold(event.id)]);
+  const [{ requirements, refusal, planMessage }, ticketsSold] = await Promise.all([requirementsFor(event), eventTicketsSold(event.id)]);
   return {
     enabled: event.ticketing === 'PAID',
     paused: event.ticketing === 'PAID' && event.salesPaused,
     ticketsSold,
     canEnable: refusal === null,
     requirements,
+    planMessage,
     canDisable: ticketsSold === 0,
   };
 };

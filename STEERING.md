@@ -3773,7 +3773,54 @@ success at Paystack (`LEDGER_ONLY`); every processed refund must have a
 `REFUND_ISSUED` (`REFUND_NOT_RECORDED`). Settlements are counted and
 totalled in the run's summary (no fees in the ledger to match them
 against). Mismatches are `PaymentMismatch` rows and one alert per run.
-Nothing is corrected automatically.
+Nothing is corrected automatically. The run's `summary` (`GET
+/api/admin/payments/reconciliation-runs`) also carries
+`ticketFeeDifferenceTotalCents` and `ticketFeeDifferenceCount` (the day's
+ticket fee differences, actual less calculated, as each
+`TICKET_PAYMENT_SUCCEEDED` recorded them: see "Ticket sales") and
+`cardVerificationChargeCount` / `cardVerificationRefundCount` (card-update
+verification charges and refunds seen, never `PAYSTACK_ONLY` or
+`REFUND_NOT_RECORDED`: below).
+
+**The card on the subscription** (fix/payments-go-live). "Update card"
+(`GET /api/subscriptions/update-card-link`) is Paystack's own manage page for
+the current subscription (`/subscription/:code/manage/link`); the card is
+captured and swapped there, and Paystack sends **no subscription webhook**
+for it. The card shown (`card` on `GET /api/subscriptions`: brand, last 4,
+expiry; display fields only, `updateCardDisplay`) is read back from the
+subscription (`getSubscription`'s authorisation): after commit when the
+card-update verification charge or its refund arrives, on `POST
+/api/subscriptions/verify` (the frontend calls it when the organiser comes
+back from the update page; best effort, never failing verify), and in the
+sync (daily for every tenant with a subscription; `CARD_UPDATED` in the
+`SUBSCRIPTION_SYNC_CORRECTED` row). Before, it was written only by
+`subscription.create`, so a replaced card never showed. The stored
+`paystackAuthorizationCode` is **not** refreshed (see "Known gaps").
+
+**The card-update verification charge** (`shared/payments/card-verification.util.ts`).
+Paystack charges the new card R1 and refunds it at once. Neither is ours:
+not a purchase, renewal, subscription refund, duplicate or ticket order. On
+dev (22 Nov 2026) only the refund webhooks came (`refund.pending`, then
+`refund.processed`); the charge never came as a `charge.success`. Fields,
+read from dev's stored payloads and Paystack's test-mode records (the docs
+name none): the charge is `amount` 100, `currency` ZAR, `channel` card,
+`metadata.transaction_type` `update_card`, the code in
+`metadata.custom_fields[subscription_code]`, `plan {}`, Paystack's `T…`
+reference; the refund is 100 ZAR, `customer {}`, `transaction_reference` the
+charge's, `merchant_note` (and `customer_note`) "Refund for update card charge
+[Subscription: SUB_…]". **Recognised strictly**: the charge on all of the
+amount, currency, channel, marker and a subscription code, only after no
+ticket order, pass or bundle claims its reference and when it isn't one of
+our subscribe checkouts; the refund on the amount, currency and the note
+(both notes agreeing), only when `findOriginal` matches **no** payment of
+ours (a refund of our own payment is that payment's, whatever its note). In
+both cases the named subscription must be a tenant's current one; otherwise
+handled as before (unhandled, alerted). Recorded as `WEBHOOK_EVENT_IGNORED`
+(`payload.reason` `CARD_VERIFICATION`, `step` `CHARGE`|`REFUND`, once per
+event and Paystack id), not in billing history or `latestPayment`, no
+alert; the card refreshed after commit. A genuine subscription refund still
+ends access at once. `scripts/sql/card-update-events-check.sql` (read-only)
+lists a tenant's 22 Nov rows and their payload fields.
 
 **Alerts** (`payment-alert` module) go by email to `PAYMENTS_ALERT_EMAIL`
 (default `admin@e-velope.co.za`), after commit, never failing what they
@@ -4164,8 +4211,14 @@ GET /api/events/:eventId/ticket-sales → TicketSalesView
 PUT /api/events/:eventId/ticket-sales { enabled?: boolean, paused?: boolean } → TicketSalesView
 TicketSalesView = { enabled, paused, ticketsSold, canEnable, canDisable,
   requirements: { publicEvent, planAllowsTicketSales, payoutAccountActive,
-                  activeTicketType, registrationApprovalOff } }
+                  activeTicketType, registrationApprovalOff },
+  planMessage: string | null }
 ```
+
+`planMessage` is the plan's refusal, word for word what a refused Start
+answers (`paidTicketingRefusal`, display names: "The Spark plan does not
+support paid ticketing. …"), whenever `requirements.planAllowsTicketSales` is
+false, so the organiser sees it up front; null otherwise.
 
 - **On needs**, in this order: the event not cancelled (409
   `TICKET_SALES_EVENT_CANCELLED`) or finished (409 `TICKET_SALES_EVENT_FINISHED`);
@@ -4300,7 +4353,7 @@ POST /api/ticket-orders/status { token, refresh?: true } → OrderView
 POST /api/ticket-orders/retry  { token } → 201 new attempt | 200 still pending: CheckoutResult
 CheckoutResult = OrderView & { orderToken: string | null, reused: boolean }
 OrderView = { orderId, status: 'PENDING'|'PAID'|'FAILED'|'EXPIRED'|'UNDER_REVIEW'|'REFUNDED'|'REVERSED',
-  event: { name, hostName }, buyer: { name, email, phone },
+  event: { name, hostName, shareToken: string | null }, buyer: { name, email, phone },
   items: [{ ticketTypeId, typeName, quantity, unitPriceCents }],
   amounts: { subtotalCents, commissionCents, platformFixedFeeCents, processingFeeCents, feesCents, totalCents, currency },
   authorizationUrl (PENDING while held, else null), holdExpiresAt,
@@ -4308,6 +4361,17 @@ OrderView = { orderId, status: 'PENDING'|'PAID'|'FAILED'|'EXPIRED'|'UNDER_REVIEW
     days: [{ id, label, date, startTime, endTime, locationType, location, address, onlineUrl }],
     payload: 'EVT1.…' | null }] }      (tickets only once confirmed)
 ```
+
+`event.shareToken` is the event's public share token (what `GET
+/api/public-events/:shareToken` and the checkout take), so the order page can
+link back to the event (after a failed retry, `TICKET_ORDER_DAY_FULL`): only
+while that link opens, public and not archived (`publicShareTokenOf`, the
+rule `findPublicEvent` applies); null otherwise.
+
+**"Ticket N of M"** is each ticket's stored position in its order
+(`IssuedTicket.indexInOrder`, 1…M in item order, set once at confirmation)
+over the order's ticket count, everywhere: the order view, the email, the PDF,
+the door list and a scan's `detail`.
 
 - **Refused, in the buyer's words, each with its code**:
   `TICKET_ORDER_EVENT_NOT_FOUND` (404: unknown link, private, archived),
@@ -4396,8 +4460,15 @@ status verify, in one transaction with the order's row locked, by reference:
   (no 0/O/1/I/L). The ledger: `TICKET_PAYMENT_SUCCEEDED` (payload: the
   breakdown, Paystack's actual fee from `data.fees`, `feeDifferenceCents`
   from the calculated processing, `netCents` = charge − commission − actual
-  fee) and `COMMISSION_TAKEN`. **A negative net** is a `NEGATIVE_NET`
-  mismatch and an alert. `charge.failed` makes that attempt FAILED (and the
+  fee) and `COMMISSION_TAKEN`. **A real loss**, Paystack's fee above
+  e-velope's **whole** transaction charge (`isTicketLoss`), is a
+  `NEGATIVE_NET` mismatch (`expectedAmountCents` the charge, `details.lossCents`)
+  and an alert. A fee that only eats into the commission is not: an
+  international card (3.1% + R1) on a R200 ticket costs R8.72 against R8.24
+  calculated, and e-velope keeps R3.52 instead of R4.00. Every difference
+  stays in the ledger (`feeDifferenceCents`), and the day's are totalled in
+  the reconciliation's summary (`ticketFeeDifferenceTotalCents`).
+  `charge.failed` makes that attempt FAILED (and the
   order, if it was the latest), its hold given back.
 - **Expiry**: the worker (`ticket-order.worker.ts`, every minute, started by
   `server.ts`; tests call `ticketOrderWorker.runOnce({ now, eventIds })`)
@@ -4468,9 +4539,11 @@ offers no tickets. `TicketPurchase` rows are kept, readable at
 event (read-only).
 
 **Reconciliation**: ticket orders' `TICKET_PAYMENT_SUCCEEDED` rows are in the
-daily run like every success; a ticket order whose listed Paystack fee puts
-e-velope's net below zero is a `NEGATIVE_NET` mismatch. The super admin's
-ledger lists them (`relatedType TicketOrder`).
+daily run like every success; a ticket order whose listed Paystack fee is
+above e-velope's whole transaction charge (a real loss) is a `NEGATIVE_NET`
+mismatch, and the day's fee differences are totalled in the run's summary
+(`ticketFeeDifferenceTotalCents`, `ticketFeeDifferenceCount`). The super
+admin's ledger lists them (`relatedType TicketOrder`).
 
 ### Super admin audit log
 
@@ -5139,7 +5212,10 @@ and the list's undo removes either.
   `recordTicketArrival`), and undone by `DELETE
   /api/events/:eventId/check-in/days/:dayId/tickets/:ticketId`. The day's
   door list (`GET …/check-in/days/:dayId`) carries `tickets: [{ ticketId,
-  ticketNumber, buyerName, typeName, label, checkedIn, checkedInAt }]` and
+  ticketNumber, buyerName, typeName, label, checkedIn, checkedInAt }]`,
+  sorted by buyer name, then order (oldest first), then each ticket's
+  position in its order (`indexInOrder`), so a buyer's tickets read 1, 2, 3
+  (never by the random ticket number), and
   `ticketCounts: { valid, arrived }` beside the guests; `POST
   …/check-in/days/:dayId { ticketId }` checks one in (`CheckInResult` then
   has `ticket`, and `guest` null; 422 `TICKET_CANCELLED` or
@@ -6410,6 +6486,13 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **A template's date is fixed.** A grant to all whose first date has
   passed records FAILED for each later sign-up rather than moving the date;
   make a new grant with a later date.
+- **A plan change after a card update charges the old card** (found in
+  fix/payments-go-live, not fixed: that task stored display fields only).
+  `changeTier` passes the stored `Tenant.paystackAuthorizationCode` to
+  `createSubscription`; replacing the card on Paystack's manage page changes
+  the subscription's authorisation but not that column (only
+  `subscription.create` writes it). Refreshing it with the card, or omitting
+  it so Paystack picks the customer's latest card, is a decision for later.
 - A deferred technical debt register tracks tenant-isolation and
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —

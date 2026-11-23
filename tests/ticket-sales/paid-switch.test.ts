@@ -67,6 +67,7 @@ describe('switching on refuses without each requirement', () => {
       canEnable: true,
       canDisable: true,
       requirements: { publicEvent: true, planAllowsTicketSales: true, payoutAccountActive: true, activeTicketType: true, registrationApprovalOff: true },
+      planMessage: null,
     });
     const res = await switchOn(org, ev);
     expect(res.status).toBe(200);
@@ -131,6 +132,25 @@ describe('the plan setting (paidTicketingEnabled, on the event\'s effective plan
     expect(res.body.message).not.toContain('SPARK');
     expect(res.body.message).toBe('The Spark plan does not support paid ticketing. Upgrade your plan, or buy an Event Pass for this event, to sell tickets.');
     expect(await ticketingOf(ev)).toBe('FREE');
+  }, 60000);
+
+  it("the status says the plan's refusal up front (planMessage): Spark's names Spark, before any Start", async () => {
+    const { org, ev } = await ready('SPARK');
+    const status = await request(app).get(salesUrl(ev.eventId)).set(headersFor(org.admin));
+    expect(status.status).toBe(200);
+    expect(status.body.data.requirements.planAllowsTicketSales).toBe(false);
+    expect(status.body.data.planMessage).toContain('Spark');
+    expect(status.body.data.planMessage).not.toContain('SPARK');
+    // The same wording a refused Start answers with.
+    const refused = await switchOn(org, ev);
+    expect(status.body.data.planMessage).toBe(refused.body.message);
+  }, 60000);
+
+  it('a plan that allows ticket sales (Celebrate) has no planMessage', async () => {
+    const { org, ev } = await ready('CELEBRATE');
+    const status = await request(app).get(salesUrl(ev.eventId)).set(headersFor(org.admin));
+    expect(status.body.data.requirements.planAllowsTicketSales).toBe(true);
+    expect(status.body.data.planMessage).toBeNull();
   }, 60000);
 
   it('Celebrate and Elevate are allowed', async () => {

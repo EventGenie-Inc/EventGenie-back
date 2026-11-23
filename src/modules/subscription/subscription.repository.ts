@@ -160,6 +160,24 @@ export const subscriptionRepository = {
       },
     }),
 
+  // The card shown on the Subscription page (fix/payments-go-live): brand,
+  // last 4 and expiry, as Paystack holds them on the subscription now. Display
+  // fields only; nothing else of the authorisation is stored here.
+  updateCardDisplay: (
+    tenantId: string,
+    card: { cardBrand: string | null; cardLast4: string; cardExpMonth: string | null; cardExpYear: string | null },
+    db: Db = prisma
+  ) =>
+    db.tenant.update({
+      where: { id: tenantId },
+      data: {
+        paystackCardBrand: card.cardBrand,
+        paystackCardLast4: card.cardLast4,
+        paystackCardExpMonth: card.cardExpMonth,
+        paystackCardExpYear: card.cardExpYear,
+      },
+    }),
+
   // The one true "tenant is now confirmed on this plan" write —
   // activates the tier/period, stores Paystack's own identifiers, and
   // clears any prior cancel/grace state (a fresh successful

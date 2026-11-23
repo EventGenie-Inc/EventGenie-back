@@ -77,7 +77,11 @@ export interface OrderTicketView {
 export interface OrderView {
   orderId: string;
   status: TicketOrderStatus;
-  event: { name: string; hostName: string | null };
+  // shareToken (fix/payments-go-live): the event's public share token, the
+  // one its public page and checkout take (GET /api/public-events/:shareToken),
+  // for a link back to the event; null once the event is private or archived
+  // (its link no longer opens anything), or has no token.
+  event: { name: string; hostName: string | null; shareToken: string | null };
   buyer: { name: string; email: string; phone: string | null };
   items: { ticketTypeId: string; typeName: string; quantity: number; unitPriceCents: number }[];
   amounts: {

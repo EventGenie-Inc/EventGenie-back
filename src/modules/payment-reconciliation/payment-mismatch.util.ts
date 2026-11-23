@@ -9,6 +9,14 @@ import { paymentReconciliationRepository } from './payment-reconciliation.reposi
 export const formatRand = (cents: number | null | undefined, currency = 'ZAR'): string =>
   cents === null || cents === undefined ? 'unknown' : `${currency === 'ZAR' ? 'R' : `${currency} `}${centsToDecimalString(cents)}`;
 
+// A real loss on a ticket order (fix/payments-go-live): Paystack's fee above
+// e-velope's whole transaction charge (commission, fixed fee and processing
+// allowance). A fee that only eats into the commission (an international
+// card: 3.1% + R1) still leaves e-velope money: a fee difference, recorded
+// and totalled daily, never NEGATIVE_NET. Used by the webhook's confirmation
+// and the daily reconciliation.
+export const isTicketLoss = (actualFeeCents: number, transactionChargeCents: number): boolean => actualFeeCents > transactionChargeCents;
+
 export type PaymentProduct = 'SUBSCRIPTION' | 'EVENT_PASS' | 'SMS_BUNDLE' | 'TICKET';
 
 export const PRODUCT_LABEL: Record<PaymentProduct, string> = {

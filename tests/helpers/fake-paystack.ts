@@ -16,6 +16,11 @@
 //                              the webhook `data` Paystack would send.
 //   fail(reference)          — the attempt fails.
 //   addSubscription(…)       — a subscription Paystack holds.
+//   updateCard(code, card)   — the tenant replaces the card on Paystack's
+//                              manage page: the subscription's card changes,
+//                              and Paystack's R1 update_card charge and its
+//                              refund (shapes as seen on dev, 22 Nov 2026).
+//                              Returns their webhook `data`.
 //   failNext(match, how)     — the next matching call times out, loses the
 //                              network, or answers with a status and body.
 //                              'timeoutAfterApplying': Paystack acts on it,
@@ -53,7 +58,20 @@ export interface FakeTransaction {
   // Paystack's fee, as it reports it on the payment: by default each part
   // rounded up (2.9% + R1, then 15% VAT), as Paystack charges a local card.
   fees?: number | null;
+  // The card charged (default: visa 4081 12/2030).
+  card?: FakeCard;
 }
+
+export interface FakeCard {
+  last4: string;
+  card_type: string;
+  exp_month: string;
+  exp_year: string;
+}
+
+export const DEFAULT_FAKE_CARD: FakeCard = { last4: '4081', card_type: 'visa', exp_month: '12', exp_year: '2030' };
+
+const authorizationOf = (code: string, card: FakeCard | undefined) => ({ authorization_code: code, channel: 'card', reusable: true, ...(card ?? DEFAULT_FAKE_CARD) });
 
 export interface FakeSubscription {
   subscription_code: string;
@@ -65,6 +83,8 @@ export interface FakeSubscription {
   customer_code: string;
   email: string;
   authorization_code: string;
+  // The card on it (default: visa 4081 12/2030).
+  card?: FakeCard;
 }
 
 export interface FakeCall {
@@ -181,7 +201,7 @@ export const fakePaystack = {
       gateway_response: tx.status === 'success' ? 'Approved' : 'Declined',
       customer: tx.customer,
       ...(tx.plan && { plan: { plan_code: tx.plan, amount: tx.amount } }),
-      authorization: { authorization_code: 'AUTH_fake', card_type: 'visa', last4: '4081', exp_month: '12', exp_year: '2030' },
+      authorization: authorizationOf('AUTH_fake', tx.card),
       ...(tx.metadata !== undefined && { metadata: tx.metadata }),
       ...(tx.status === 'success' && { fees: tx.fees ?? fakePaystackFee(tx.amount) }),
       // A split: the subaccount, and how the payment was divided (the
@@ -243,8 +263,52 @@ export const fakePaystack = {
       next_payment_date: sub.next_payment_date,
       customer: { customer_code: sub.customer_code, email: sub.email },
       plan: { plan_code: sub.plan_code, amount: sub.plan_amount, currency: 'ZAR' },
-      authorization: { authorization_code: sub.authorization_code, card_type: 'visa', last4: '4081', exp_month: '12', exp_year: '2030' },
+      authorization: authorizationOf(sub.authorization_code, sub.card),
     };
+  },
+
+  // The tenant replaces the card on Paystack's manage page for `code`
+  // (GET /subscription/:code/manage/link). As seen on dev (22 Nov 2026):
+  // the subscription's authorisation becomes the new card; Paystack charges
+  // it R1 (channel card, metadata.transaction_type "update_card", the
+  // subscription code in custom_fields, plan {}), refunds it at once (the
+  // charge then reads "reversed"), and the refund's notes name the
+  // subscription. Dev received only the refund webhooks; both payloads are
+  // returned so a test can send either.
+  updateCard(code: string, card: FakeCard): { charge: Record<string, unknown>; refund: Record<string, unknown> } {
+    const sub = this.subscriptions.get(code);
+    if (!sub) throw new Error(`fake Paystack: no subscription ${code}`);
+    sub.card = card;
+    sub.authorization_code = `AUTH_${newId()}`;
+    const tx = this.addTransaction({ amount: 100, email: sub.email });
+    tx.card = card;
+    tx.metadata = {
+      referrer: `https://paystack.com/manage/subscriptions/${code.replace(/^SUB_/, '')}`,
+      transaction_type: 'update_card',
+      custom_fields: [
+        { display_name: 'Description', variable_name: 'description', value: `Customer added a new card for Subscription ${code}. If successful, this transaction will be automatically refunded.` },
+        { display_name: 'Subscription Code', variable_name: 'subscription_code', value: code },
+      ],
+    };
+    const charge = { ...this.webhookDataFor(tx.reference), plan: {}, source: { type: 'web', source: 'checkout', identifier: null } };
+    tx.status = 'reversed';
+    const note = `Refund for update card charge [Subscription: ${code}]`;
+    const refund = {
+      id: String(newId()),
+      amount: 100,
+      domain: 'test',
+      status: 'processed',
+      currency: 'ZAR',
+      customer: {},
+      reference: crypto.randomUUID(),
+      integration: 1,
+      customer_note: note,
+      merchant_note: note,
+      refund_reference: null,
+      transaction_reference: tx.reference,
+    };
+    this.refunds.push(refund);
+    return { charge, refund };
   },
 
   subscriptionFor(email: string): FakeSubscription[] {
@@ -272,7 +336,7 @@ const subscriptionView = (s: FakeSubscription) => ({
   next_payment_date: s.next_payment_date,
   customer: { customer_code: s.customer_code, email: s.email },
   plan: { plan_code: s.plan_code, amount: s.plan_amount },
-  authorization: { authorization_code: s.authorization_code, last4: '4081', card_type: 'visa', exp_month: '12', exp_year: '2030' },
+  authorization: authorizationOf(s.authorization_code, s.card),
 });
 
 const inWindow = (iso: string | null, query: Record<string, string>): boolean => {

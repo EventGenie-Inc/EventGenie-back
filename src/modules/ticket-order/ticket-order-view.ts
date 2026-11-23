@@ -15,6 +15,8 @@ import { type OrderDayView, type OrderTicketView, type OrderView } from './ticke
 export interface EventForView {
   name: string;
   hostName: string | null;
+  // The link back to the event (publicShareTokenOf): null unless it opens.
+  shareToken: string | null;
   eventDays: {
     id: string;
     label: string;
@@ -46,6 +48,12 @@ export const ticketPayloadOf = (
   ticket.status === 'VALID' && days.some((d) => d.locationType !== 'ONLINE') ? buildPassPayload({ id: ticket.id, kind: 'TICKET' }) : null;
 
 export const ticketLabel = (index: number, count: number): string => `Ticket ${index} of ${count}`;
+
+// The event's share token, only while its public link opens: public and not
+// archived, the same rule as GET /api/public-events/:shareToken
+// (eventRepository.findByShareToken, event-public.service.ts's findPublicEvent).
+export const publicShareTokenOf = (event: { shareToken: string | null; visibility: string; isArchived: boolean }): string | null =>
+  event.visibility === 'PUBLIC' && !event.isArchived ? event.shareToken : null;
 
 // Confirmed: the tickets are the buyer's (a chargeback open keeps them
 // valid; a mismatch held for review has none).
@@ -90,7 +98,7 @@ export const toOrderView = (order: OrderRow, event: EventForView, now: Date = ne
   return {
     orderId: order.id,
     status: order.status,
-    event: { name: event.name, hostName: event.hostName },
+    event: { name: event.name, hostName: event.hostName, shareToken: event.shareToken },
     buyer: { name: order.buyerName, email: order.buyerEmail, phone: order.buyerPhone },
     items: order.items.map((i) => ({ ticketTypeId: i.ticketTypeId, typeName: i.typeName, quantity: i.quantity, unitPriceCents: i.unitPriceCents })),
     amounts: {

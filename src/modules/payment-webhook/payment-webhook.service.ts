@@ -98,6 +98,11 @@ const dispatchToFeatureHandler = async (ctx: WebhookContext): Promise<HandlerRes
       const bundle = await eventPassService.confirmSmsBundlePurchaseWithinTransaction(ctx, merchantReference);
       if (bundle.outcome !== 'not_found') return { claimed: true };
     }
+    // The R1 Paystack takes to verify a replaced card (fix/payments-go-live):
+    // only once no purchase of ours has claimed the reference, and only on
+    // Paystack's own markers (card-verification.util.ts). Never a renewal.
+    const verification = await subscriptionService.handleCardVerificationChargeWithinTransaction(ctx);
+    if (verification.claimed) return verification;
     return subscriptionService.handleChargeSuccessWithinTransaction(ctx);
   }
 

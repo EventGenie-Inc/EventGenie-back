@@ -848,6 +848,9 @@ export interface PaystackListedTransaction {
   createdAt: string | null;
   // Paystack's fee on it, in cents, when listed (ticket sales: e-velope's net).
   feesCents: number | null;
+  // Paystack's whole row, for what only some rows carry (the card-update
+  // verification charge's metadata: card-verification.util.ts).
+  raw: Record<string, unknown>;
 }
 
 interface PaystackListedTransactionData {
@@ -874,6 +877,7 @@ export const listTransactions = async (params: { from: string; to: string }): Pr
     paidAt: row.paid_at ?? row.paidAt ?? null,
     createdAt: row.created_at ?? row.createdAt ?? null,
     feesCents: typeof row.fees === 'number' ? row.fees : null,
+    raw: row as unknown as Record<string, unknown>,
   }));
 };
 
@@ -884,6 +888,9 @@ export interface PaystackListedRefund {
   status: string;
   amountCents: number;
   currency: string;
+  // Paystack's whole row (its merchant_note marks a card-update verification
+  // refund: card-verification.util.ts).
+  raw: Record<string, unknown>;
 }
 
 interface PaystackListedRefundData {
@@ -912,6 +919,7 @@ export const listRefunds = async (params: { from: string; to: string }): Promise
       status: row.status,
       amountCents: row.amount,
       currency: row.currency,
+      raw: row as unknown as Record<string, unknown>,
     };
   });
 };

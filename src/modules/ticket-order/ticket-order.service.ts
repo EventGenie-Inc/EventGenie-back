@@ -22,7 +22,7 @@ import { TERMS_VERSION } from '../terms/terms.service.js';
 import { buildOrderToken, verifyOrderToken } from '../check-in-pass/check-in-pass-token.util.js';
 import { PAYMENT_TRANSACTION_OPTIONS, withPaymentContext } from '../payment-webhook/payment-context.util.js';
 import { ticketOrderRepository, type OrderRow } from './ticket-order.repository.js';
-import { toOrderView, type EventForView } from './ticket-order-view.js';
+import { toOrderView, publicShareTokenOf, type EventForView } from './ticket-order-view.js';
 import { ticketOrderConfirmService } from './ticket-order-confirm.service.js';
 import {
   MAX_TICKETS_PER_ORDER,
@@ -177,8 +177,11 @@ const findSellingEvent = async (shareToken: string, now: Date) => {
 };
 
 
-const viewOf = (order: OrderRow, event: EventForView): OrderView =>
-  toOrderView(order, { name: event.name, hostName: event.hostName, eventDays: event.eventDays });
+const viewOf = (
+  order: OrderRow,
+  event: Omit<EventForView, 'shareToken'> & { shareToken: string | null; visibility: string; isArchived: boolean }
+): OrderView =>
+  toOrderView(order, { name: event.name, hostName: event.hostName, shareToken: publicShareTokenOf(event), eventDays: event.eventDays });
 
 // Paystack for one attempt: the split, our reference, the channels. Never
 // throws: a failure is the caller's to record.
@@ -492,9 +495,16 @@ const eventShareToken = async (eventId: string): Promise<string | null> =>
 export const viewForOrder = async (order: OrderRow): Promise<OrderView> => {
   const event = await prisma.event.findUniqueOrThrow({
     where: { id: order.eventId },
-    select: { name: true, hostName: true, eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } } },
+    select: {
+      name: true,
+      hostName: true,
+      shareToken: true,
+      visibility: true,
+      isArchived: true,
+      eventDays: { where: { isArchived: false }, orderBy: { date: 'asc' } },
+    },
   });
-  return toOrderView(order, event);
+  return toOrderView(order, { name: event.name, hostName: event.hostName, shareToken: publicShareTokenOf(event), eventDays: event.eventDays });
 };
 
 export { formatRand };
