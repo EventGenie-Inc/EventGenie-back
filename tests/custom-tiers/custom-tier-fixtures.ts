@@ -119,6 +119,7 @@ export const TRIAL_VALUES = {
   customRsvpFieldsEnabled: true,
   vendorPriorityPlacement: true,
   qrCheckInEnabled: true,
+  invitationDesignsEnabled: false,
 };
 
 export const createCustomTier = (overrides: Partial<typeof TRIAL_VALUES> & { name?: string; isActive?: boolean } = {}) =>

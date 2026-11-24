@@ -21,10 +21,20 @@ export const eventDuplicateRepository = {
         rsvpFields: { where: { isArchived: false }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] },
         program: { include: { programItems: { where: { isArchived: false }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] } } },
         memoryHub: true,
-        invitationDesigns: { where: { isArchived: false }, take: 1, include: { storedFile: { select: { status: true } } } },
+        invitationDesigns: {
+          where: { isArchived: false },
+          take: 1,
+          include: { storedFile: { select: { status: true } }, pngStoredFile: { select: { publicId: true, status: true } } },
+        },
         coverFile: { select: { status: true } },
       },
     }),
+
+  // The rows of files named by public id (a CANVAS design's images).
+  findFilesByPublicIds: (publicIds: string[]) =>
+    publicIds.length === 0
+      ? Promise.resolve([])
+      : prisma.storedFile.findMany({ where: { publicId: { in: publicIds } }, select: { publicId: true, status: true } }),
 
   // The status of a file named by public id alone (a legacy cover with no
   // coverFileId): null when it has no row.

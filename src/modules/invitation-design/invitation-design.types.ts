@@ -1,4 +1,5 @@
 import { type InvitationFont } from './invitation-design-fonts.js';
+import { type CanvasFormat } from './canvas-design.constants.js';
 
 // ─────────────────────────────────────────
 //  OVERRIDES — the ONLY per-element properties an organiser may change.
@@ -40,8 +41,55 @@ export interface PutUploadDesignDto {
 
 export type PutInvitationDesignDto = PutTemplateDesignDto | PutUploadDesignDto;
 
-// Guest-facing projection (RSVP validate, public event page). No ids, no
-// audit fields, no publicId — see STEERING "Guest-facing responses".
+// ─────────────────────────────────────────
+//  CANVAS — the organiser's own design, made in the editor.
+// ─────────────────────────────────────────
+
+// The PUT body for a CANVAS design, as checked (canvas-design-input.util.ts).
+// `svg` is the browser's export, cleaned before it is stored;
+// `pngPublicId` is the rendered card's upload (signed through
+// canvas-upload-signature with purpose RENDER), as Cloudinary reported it.
+export interface PutCanvasDesignDto {
+  kind: 'CANVAS';
+  format: CanvasFormat;
+  document: Record<string, unknown>;
+  documentVersion: number;
+  svg: string;
+  pngPublicId: string;
+  envelopeColor: string;
+  sealColor: string;
+  altText: string;
+}
+
+// What a CANVAS row stores (the repository's input).
+export interface CanvasDesignColumns {
+  kind: 'CANVAS';
+  format: CanvasFormat;
+  document: Record<string, unknown>;
+  documentVersion: number;
+  svgMarkup: string;
+  pngStoredFileId: string;
+  envelopeColor: string;
+  sealColor: string;
+  altText: string;
+  hasRsvpButton: boolean;
+}
+
+export type StoredDesignColumns = PutInvitationDesignDto | CanvasDesignColumns;
+
+// Guest-facing projection (RSVP validate only). No ids, no audit fields, no
+// publicId, and never a CANVAS design's document — see STEERING
+// "Guest-facing responses".
 export type GuestInvitationDesign =
   | { kind: 'TEMPLATE'; templateId: string; templateVersion: number; overrides: InvitationOverrides }
-  | { kind: 'UPLOAD'; imageUrl: string; width: number; height: number; altText: string | null };
+  | { kind: 'UPLOAD'; imageUrl: string; width: number; height: number; altText: string | null }
+  | {
+      kind: 'CANVAS';
+      format: CanvasFormat;
+      svg: string;
+      pngUrl: string | null;
+      altText: string | null;
+      envelopeColor: string;
+      sealColor: string;
+      hasRsvpButton: boolean;
+    };

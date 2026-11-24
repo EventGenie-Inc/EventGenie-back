@@ -411,7 +411,7 @@ export const eventService = {
       const row = await eventRepository.archive(id, userId, tx);
       await storedFileService.requestDeletion(tx, {
         eventId: id,
-        kind: { in: ['COVER', 'INVITATION_DESIGN', 'MEMORY_ITEM', 'FEEDBACK_LOGO'] },
+        kind: { in: ['COVER', 'INVITATION_DESIGN', 'DESIGN_ASSET', 'DESIGN_RENDER', 'MEMORY_ITEM', 'FEEDBACK_LOGO'] },
         status: { in: ['SIGNED', 'UPLOADED'] },
       });
       return row;

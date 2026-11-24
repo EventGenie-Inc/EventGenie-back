@@ -221,6 +221,9 @@ describe('POST /api/events/:id/duplicate — what is copied', () => {
       designCopied: true,
       coverMissing: false,
       designMissing: false,
+      // A CANVAS design isn't copied onto a plan without invitation designs
+      // (tests/invitation-design/canvas-design-storage.test.ts).
+      designNotOnPlan: false,
       guestsCopied: 0,
       clearedDates: [],
     });

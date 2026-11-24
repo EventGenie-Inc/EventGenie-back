@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { type PlatformRole, type Prisma, type SubscriptionTier } from '@prisma/client';
+import { type PlatformRole, type Prisma, type StoredFileStatus, type SubscriptionTier } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService, isCreatorLocked } from '../event/event.service.js';
@@ -17,6 +17,8 @@ import { hasDeadlinePassed } from '../event/event-rsvp-deadline.util.js';
 import { EVENT_DAY_DATE_IN_PAST, earliestAllowedDayDate } from '../event-day/event-day-validation.util.js';
 import { storedFileService, type CopiedFile } from '../storage/stored-file.service.js';
 import { storageDeletionWorker } from '../storage/storage-deletion.worker.js';
+import { canDesignOn } from '../invitation-design/invitation-design-plan.util.js';
+import { canvasImageSources, cloudinaryImagePublicId } from '../invitation-design/canvas-document-validation.util.js';
 import { eventDuplicateRepository } from './event-duplicate.repository.js';
 import {
   DUPLICATE_ERROR_CODES,
@@ -238,6 +240,8 @@ export const eventDuplicateService = {
 
     // ── Files: copied before the transaction, deleted if it fails ──
     const copiedFileIds: string[] = [];
+    // A CANVAS design's copied rendered card, and each image URL's copy.
+    let canvasCopy: { png: CopiedFile; urls: Map<string, string> } | null = null;
     const summary: DuplicationSummary = {
       sourceEventId: source.id,
       shiftDays: Math.round(shiftMs / DAY_MS),
@@ -245,6 +249,7 @@ export const eventDuplicateService = {
       designCopied: false,
       coverMissing: false,
       designMissing: false,
+      designNotOnPlan: false,
       guestsCopied: guestRows.length,
       clearedDates: cleared,
     };
@@ -287,6 +292,62 @@ export const eventDuplicateService = {
         summary.designMissing = !designFile;
       } else if (design?.kind === 'TEMPLATE') {
         summary.designCopied = true;
+      } else if (design?.kind === 'CANVAS') {
+        // Only onto a plan with invitation designs (the copy's own: the
+        // tenant's plan, raised by a grant's feature set); otherwise the copy
+        // has the default design. Its rendered card and every image it uses
+        // become new files in the copy's folder; one already gone means the
+        // design isn't copied at all (designMissing), its copies released.
+        const tenant = await tenantRepository.findById(tenantId);
+        const plan = tenant ? await resolveEventPlan(tenant, entitlementEvent) : null;
+        if (!canDesignOn(plan)) {
+          summary.designNotOnPlan = true;
+        } else {
+          const copiedHere: string[] = [];
+          const copy = async (publicId: string, kind: 'DESIGN_ASSET' | 'DESIGN_RENDER', status: StoredFileStatus | null) => {
+            const copied = await storedFileService.copyFile({
+              source: { publicId, resourceType: 'IMAGE', status },
+              kind,
+              tenantId,
+              eventId: newEventId,
+              uploadedByUserId: input.userId,
+            }, now);
+            if (copied) {
+              copiedFileIds.push(copied.fileId);
+              copiedHere.push(copied.fileId);
+            }
+            return copied;
+          };
+
+          const png = design.pngStoredFile ? await copy(design.pngStoredFile.publicId, 'DESIGN_RENDER', design.pngStoredFile.status) : null;
+          const sources = canvasImageSources(design.document);
+          const rows = new Map(
+            (await eventDuplicateRepository.findFilesByPublicIds(sources.map(cloudinaryImagePublicId).filter((id): id is string => !!id)))
+              .map((row) => [row.publicId, row.status])
+          );
+          const urls = new Map<string, string>();
+          let complete = !!png;
+          for (const url of sources) {
+            if (!complete) break;
+            const publicId = cloudinaryImagePublicId(url);
+            const copied = publicId ? await copy(publicId, 'DESIGN_ASSET', rows.get(publicId) ?? null) : null;
+            if (copied) urls.set(url, copied.secureUrl);
+            else complete = false;
+          }
+
+          if (complete && png) {
+            canvasCopy = { png, urls };
+            summary.designCopied = true;
+          } else {
+            summary.designMissing = true;
+            // Copies of a design that won't be made: never attached.
+            for (const id of copiedHere) copiedFileIds.splice(copiedFileIds.indexOf(id), 1);
+            if (copiedHere.length > 0) {
+              await storedFileService.requestDeletion(prisma, { id: { in: copiedHere } }, now);
+              await storageDeletionWorker.deleteNow(copiedHere, now);
+            }
+          }
+        }
       }
 
       const audit = { createdBy: input.userId, updatedBy: input.userId };
@@ -424,6 +485,31 @@ export const eventDuplicateService = {
             width: design.width,
             height: design.height,
             altText: design.altText,
+            isArchived: false,
+            ...audit,
+          });
+        } else if (design?.kind === 'CANVAS' && canvasCopy) {
+          // The document and the cleaned SVG name each image by its URL:
+          // each becomes its copy's. (URLs are whole Cloudinary delivery
+          // URLs with a UUID public id, so one never contains another.)
+          const { png, urls } = canvasCopy;
+          const withCopies = (text: string): string => {
+            let out = text;
+            for (const [from, to] of urls) out = out.split(from).join(to);
+            return out;
+          };
+          await eventDuplicateRepository.createDesign(tx, {
+            eventId: newEventId,
+            kind: 'CANVAS',
+            format: design.format,
+            document: JSON.parse(withCopies(JSON.stringify(design.document))) as Prisma.InputJsonValue,
+            documentVersion: design.documentVersion,
+            svgMarkup: withCopies(design.svgMarkup ?? ''),
+            pngStoredFileId: png.fileId,
+            envelopeColor: design.envelopeColor,
+            sealColor: design.sealColor,
+            altText: design.altText,
+            hasRsvpButton: design.hasRsvpButton,
             isArchived: false,
             ...audit,
           });

@@ -48,6 +48,9 @@ export interface PlanSettings {
   // QR check-in at the door (qrCheckIn). The guest-list check-in never
   // depends on it.
   qrCheckInEnabled?: boolean;
+  // The invitation design editor (invitationDesigns): whether this plan may
+  // save a CANVAS design.
+  invitationDesignsEnabled?: boolean;
 }
 
 type FeatureSettingKey =
@@ -60,7 +63,8 @@ type FeatureSettingKey =
   | 'paidTicketingEnabled'
   | 'maxDocumentBytesPerEvent'
   | 'maxDocumentBytesPerFile'
-  | 'qrCheckInEnabled';
+  | 'qrCheckInEnabled'
+  | 'invitationDesignsEnabled';
 
 // Which feature flag each optional setting belongs to.
 const SETTING_FEATURE: Record<FeatureSettingKey, FeatureName> = {
@@ -74,6 +78,7 @@ const SETTING_FEATURE: Record<FeatureSettingKey, FeatureName> = {
   maxDocumentBytesPerEvent: 'documentFields',
   maxDocumentBytesPerFile: 'documentFields',
   qrCheckInEnabled: 'qrCheckIn',
+  invitationDesignsEnabled: 'invitationDesigns',
 };
 
 // From the effective plan's settings (effective-plan.util.ts: a standard
@@ -97,6 +102,7 @@ export const planSettingsFromValues = (values: PlanValues): PlanSettings => {
     customRsvpFieldsEnabled: values.customRsvpFieldsEnabled,
     vendorPriorityPlacement: values.vendorPriorityPlacement,
     qrCheckInEnabled: values.qrCheckInEnabled,
+    invitationDesignsEnabled: values.invitationDesignsEnabled,
   };
 
   for (const [key, feature] of Object.entries(SETTING_FEATURE) as [FeatureSettingKey, FeatureName][]) {

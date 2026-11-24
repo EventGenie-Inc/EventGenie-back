@@ -60,6 +60,9 @@ export const EVENT_FILE_SEGMENTS = {
   MEMORY_ITEM: 'memory',
   INVITATION_DESIGN: 'design',
   GUEST_DOCUMENT: 'document',
+  // A CANVAS design's placed images, and its rendered card.
+  DESIGN_ASSET: 'design-asset',
+  DESIGN_RENDER: 'design-render',
 } as const;
 
 export type EventFileKind = keyof typeof EVENT_FILE_SEGMENTS;
@@ -77,6 +80,8 @@ export const feedbackLogoFolder = (tenantId: string): string => `${storageEnv()}
 
 export const memoryHubFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'MEMORY_ITEM');
 export const invitationDesignFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'INVITATION_DESIGN');
+export const designAssetFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'DESIGN_ASSET');
+export const designRenderFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'DESIGN_RENDER');
 // Uploaded by this server itself (never signed for a browser) as private raw assets.
 export const guestDocumentFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'GUEST_DOCUMENT');
 

@@ -5,6 +5,10 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { signCloudinaryParams } from '../../shared/cloudinary/cloudinary-signature.util.js';
 import { copyAssetFromUrl, explicitResource, requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
 import {
+  DESIGN_ASSET_ALLOWED_FORMATS,
+  DESIGN_ASSET_MAX_BYTES,
+  DESIGN_RENDER_ALLOWED_FORMATS,
+  DESIGN_RENDER_MAX_BYTES,
   EVENT_COVER_ALLOWED_FORMATS,
   EVENT_COVER_MAX_BYTES,
   FEEDBACK_LOGO_ALLOWED_FORMATS,
@@ -58,6 +62,8 @@ export const maxBytesFor = (kind: StoredFileKind, resourceType: StoredFileResour
     case 'FEEDBACK_LOGO': return FEEDBACK_LOGO_MAX_BYTES;
     case 'GUEST_DOCUMENT': return GUEST_DOCUMENT_CEILING_BYTES;
     case 'MEMORY_ITEM': return resourceType === 'VIDEO' ? MEMORY_ITEM_VIDEO_MAX_BYTES : MEMORY_ITEM_IMAGE_MAX_BYTES;
+    case 'DESIGN_ASSET': return DESIGN_ASSET_MAX_BYTES;
+    case 'DESIGN_RENDER': return DESIGN_RENDER_MAX_BYTES;
   }
 };
 
@@ -91,6 +97,10 @@ const signingSpec = (input: SignUploadInput): { folder: string; resourceType: St
       return { folder: eventFileFolder(tenantId, needEvent(), 'INVITATION_DESIGN'), resourceType: 'IMAGE', allowedFormats: INVITATION_DESIGN_ALLOWED_FORMATS };
     case 'FEEDBACK_LOGO':
       return { folder: feedbackLogoFolder(tenantId), resourceType: 'IMAGE', allowedFormats: FEEDBACK_LOGO_ALLOWED_FORMATS };
+    case 'DESIGN_ASSET':
+      return { folder: eventFileFolder(tenantId, needEvent(), 'DESIGN_ASSET'), resourceType: 'IMAGE', allowedFormats: DESIGN_ASSET_ALLOWED_FORMATS };
+    case 'DESIGN_RENDER':
+      return { folder: eventFileFolder(tenantId, needEvent(), 'DESIGN_RENDER'), resourceType: 'IMAGE', allowedFormats: DESIGN_RENDER_ALLOWED_FORMATS };
   }
 };
 
@@ -131,18 +141,24 @@ export interface AcceptUploadInput {
   notFoundMessage?: string;
   // The route's own refusal for a file over its kind's limit.
   tooLarge: (bytes: number) => HttpError;
+  // Ask Cloudinary for the image's pixel size and format too, even when its
+  // size is already known (one explicit call): for a caller that checks
+  // them (a design's rendered card). Its format is recorded on the row.
+  measureImage?: boolean;
 }
 
 export interface AcceptedUpload {
   file: StoredFile;
   bytes: number;
+  // With measureImage: Cloudinary's own figures.
+  image?: { width: number | null; height: number | null; format: string | null };
 }
 
 export interface CopyFileInput {
   // The file to copy: its public id, type and (when it has a row) the row's
   // status. A legacy file with no row passes status null.
   source: { publicId: string; resourceType: StoredFileResourceType; status: StoredFileStatus | null };
-  kind: 'COVER' | 'INVITATION_DESIGN';
+  kind: 'COVER' | 'INVITATION_DESIGN' | 'DESIGN_ASSET' | 'DESIGN_RENDER';
   tenantId: string;
   // The event the copy will belong to: names its folder.
   eventId: string;
@@ -236,7 +252,8 @@ export const storedFileService = {
     if (!file || !belongsTo(file, input)) throw notFound();
 
     let bytes = file.bytes;
-    if (bytes === null) {
+    let image: AcceptedUpload['image'];
+    if (bytes === null || input.measureImage) {
       const measured = await explicitResource(file.publicId, RESOURCE_TYPE[file.resourceType], file.deliveryType === 'PRIVATE' ? 'private' : 'upload');
       if (!measured.ok && measured.notFound) {
         // Signed but never uploaded (or already gone): nothing to save.
@@ -249,13 +266,14 @@ export const storedFileService = {
       }
       bytes = measured.bytes;
       await storedFileRepository.recordMeasured(file.id, bytes, measured.format, now);
+      if (input.measureImage) image = { width: measured.width, height: measured.height, format: measured.format };
     }
 
     if (bytes > maxBytesFor(file.kind, file.resourceType)) {
       await storedFileRepository.requestDeletion({ id: file.id }, now);
       throw input.tooLarge(bytes);
     }
-    return { file: { ...file, bytes }, bytes };
+    return { file: { ...file, bytes, ...(image ? { format: image.format } : {}) }, bytes, ...(image ? { image } : {}) };
   },
 
   // Ties an accepted file to its owner, inside the owner's own write. A

@@ -178,8 +178,15 @@ export const inviteRepository = {
             eventPass: true,
             // The active invitation design (at most one non-archived row,
             // enforced by a partial unique index) for rsvp.service.ts's
-            // validate(), which projects it through toGuestDesign.
-            invitationDesigns: { where: { isArchived: false }, take: 1 },
+            // validate(), which projects it through toGuestDesign. A CANVAS
+            // design's document is the organiser's only and never read here
+            // (up to 200KB per validate); its rendered card's file gives its URL.
+            invitationDesigns: {
+              where: { isArchived: false },
+              take: 1,
+              omit: { document: true },
+              include: { pngStoredFile: { select: { publicId: true, format: true } } },
+            },
           },
         },
       },
