@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../../src/app.js';
 import { eventService } from '../../src/modules/event/event.service.js';
 import { mediaRetentionRepository } from '../../src/modules/media-retention/media-retention.repository.js';
+import { storedFileService } from '../../src/modules/storage/stored-file.service.js';
 import { createTenant, createActor, installFirebaseMock, headersFor, createEventWithDay, deleteTenantsDeep, prisma, type Actor } from '../helpers/team.js';
 import { signedUpload, storedFile } from '../helpers/storage.js';
 import { fakeCloudinary } from '../helpers/fake-cloudinary.js';
@@ -195,5 +196,44 @@ describe('duplicating an event with a CANVAS design', () => {
     const made = await prisma.storedFile.findMany({ where: { publicId: { startsWith: `dev/t/${o.tenantId}/e/${copyId}/` } } });
     expect(made.length).toBeGreaterThan(0);
     for (const f of made) expect(['DELETE_REQUESTED', 'DELETED']).toContain(f.status);
+  }, 60_000);
+});
+
+// ── Unsaved design images: kept 7 days ────────────────────────
+
+describe('an image uploaded in the editor and not yet saved', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const signedAgo = (fileId: string, ms: number) =>
+    prisma.storedFile.update({ where: { id: fileId }, data: { signedAt: new Date(Date.now() - ms) } });
+
+  it('survives the unsaved sweep at 6 days and goes after 7; other kinds keep their 24 hours', async () => {
+    const o = await organiser({ designs: true });
+    const image = await asset(o);
+    const card = await render(o);
+    const cover = await signedUpload({ kind: 'COVER', tenantId: o.tenantId, eventId: o.eventId, uploadedBy: { userId: o.admin.id } });
+
+    // 25 hours: the card and the cover go, the image stays.
+    for (const f of [image, card, cover]) await signedAgo(f.fileId, 25 * 60 * 60 * 1000);
+    await storedFileService.sweepUnsaved();
+    expect((await storedFile(image.publicId)).status).toBe('SIGNED');
+    expect((await storedFile(card.publicId)).status).toBe('DELETE_REQUESTED');
+    expect((await storedFile(cover.publicId)).status).toBe('DELETE_REQUESTED');
+
+    // 6 days: still kept, and still saves.
+    await signedAgo(image.fileId, 6 * DAY);
+    await storedFileService.sweepUnsaved();
+    expect((await storedFile(image.publicId)).status).toBe('SIGNED');
+
+    // Past 7 days: swept, and a save that names it is UPLOAD_NOT_FOUND.
+    await signedAgo(image.fileId, 7 * DAY + 60_000);
+    await storedFileService.sweepUnsaved();
+    expect((await storedFile(image.publicId)).status).toBe('DELETE_REQUESTED');
+    const late = await render(o);
+    const res = await request(app).put(`/api/events/${o.eventId}/invitation-design`).set(headersFor(o.admin)).send({
+      kind: 'CANVAS', format: '4:5', document: fabricDocument(image.url), documentVersion: 1, svg: fabricSvg(image.url),
+      pngPublicId: late.publicId, envelopeColor: '#FAF7F2', sealColor: '#6C4CF1', altText: 'Our card',
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('UPLOAD_NOT_FOUND');
   }, 60_000);
 });

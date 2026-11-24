@@ -50,6 +50,10 @@ type Db = Prisma.TransactionClient | typeof prisma;
 // ─────────────────────────────────────────
 
 export const UNSAVED_UPLOAD_AFTER_MS = 24 * 60 * 60 * 1000;
+// An image placed in a CANVAS design is uploaded the moment it's placed, and
+// a design is often worked on over days (a weekend) before it's saved: it
+// is kept 7 days unsaved. Gone after that, the save is 422 UPLOAD_NOT_FOUND.
+export const DESIGN_ASSET_UNSAVED_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 const RESOURCE_TYPE: Record<StoredFileResourceType, 'image' | 'video' | 'raw'> = { IMAGE: 'image', VIDEO: 'video', RAW: 'raw' };
 
@@ -414,12 +418,20 @@ export const storedFileService = {
     return file.id;
   },
 
-  // Uploads never saved within 24 hours. A guest document with its
-  // GuestDocument row is the documents sweep's (guest-document.service.ts);
-  // one that never got a row (its upload or its row failed) is this one's.
+  // Uploads never saved within 24 hours (a design image: 7 days, see
+  // DESIGN_ASSET_UNSAVED_AFTER_MS). A guest document with its GuestDocument
+  // row is the documents sweep's (guest-document.service.ts); one that never
+  // got a row (its upload or its row failed) is this one's.
   sweepUnsaved: (now: Date = new Date()): Promise<number> =>
     storedFileRepository.requestDeletion(
-      { status: { in: ['SIGNED', 'UPLOADED'] }, signedAt: { lt: new Date(now.getTime() - UNSAVED_UPLOAD_AFTER_MS) }, guestDocument: { is: null } },
+      {
+        status: { in: ['SIGNED', 'UPLOADED'] },
+        guestDocument: { is: null },
+        OR: [
+          { kind: { not: 'DESIGN_ASSET' }, signedAt: { lt: new Date(now.getTime() - UNSAVED_UPLOAD_AFTER_MS) } },
+          { kind: 'DESIGN_ASSET', signedAt: { lt: new Date(now.getTime() - DESIGN_ASSET_UNSAVED_AFTER_MS) } },
+        ],
+      },
       now
     ),
 

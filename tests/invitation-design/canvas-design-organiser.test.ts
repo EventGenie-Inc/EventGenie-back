@@ -131,7 +131,7 @@ describe('the plan gate', () => {
   const expectNotOnPlan = async (o: Organiser, words: RegExp) => {
     const { body } = await validSave(o);
     const saved = await put(o, body);
-    expect(saved.status).toBe(422);
+    expect(saved.status).toBe(403);
     expect(saved.body.code).toBe('INVITATION_DESIGNS_NOT_ON_PLAN');
     expect(saved.body.message).toMatch(words);
     expect(await prisma.invitationDesign.count({ where: { eventId: o.eventId } })).toBe(0);
@@ -139,7 +139,7 @@ describe('the plan gate', () => {
     const filesBefore = await prisma.storedFile.count({ where: { eventId: o.eventId } });
     for (const purpose of ['ASSET', 'RENDER']) {
       const signed = await sign(o, purpose);
-      expect(signed.status).toBe(422);
+      expect(signed.status).toBe(403);
       expect(signed.body.code).toBe('INVITATION_DESIGNS_NOT_ON_PLAN');
       expect(signed.body.message).toMatch(words);
     }
@@ -427,9 +427,9 @@ describe('after a downgrade', () => {
 
     const image2 = await designImage(o);
     const resave = await put(o, canvasBody(image2.url, render.publicId));
-    expect(resave.status).toBe(422);
+    expect(resave.status).toBe(403);
     expect(resave.body.code).toBe('INVITATION_DESIGNS_NOT_ON_PLAN');
-    expect((await sign(o, 'ASSET')).status).toBe(422);
+    expect((await sign(o, 'ASSET')).status).toBe(403);
 
     const reset = await request(app).delete(url(o.eventId)).set(headersFor(o.admin));
     expect(reset.status).toBe(200);

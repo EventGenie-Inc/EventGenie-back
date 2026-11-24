@@ -3,7 +3,7 @@ import { JSDOM } from 'jsdom';
 import { cleanCanvasSvg } from '../../src/modules/invitation-design/canvas-svg-sanitiser.util.js';
 import { HttpError } from '../../src/shared/errors/http-error.js';
 import { CANVAS_SVG_MAX_BYTES } from '../../src/modules/invitation-design/canvas-design.constants.js';
-import { fabricSvg, svgAround } from './canvas-fixtures.js';
+import { PIN_SVG, fabricSvg, svgAround } from './canvas-fixtures.js';
 
 // ─────────────────────────────────────────
 //  CLEANING A DESIGN'S SVG (canvas-svg-sanitiser.util.ts)
@@ -31,13 +31,14 @@ const refusal = (fn: () => unknown): HttpError => {
 
 // The SVG as a browser would build it from HTML (the guest page inlines
 // it): every element, attribute and non-blank text, in order. <desc> is
-// left out (it is never drawn).
+// left out (it is never drawn), and attribute values are compared trimmed
+// (DOMPurify trims them; Fabric writes `transform=" translate(...)"`).
 interface Canonical { tag: string; attrs: [string, string][]; children: (Canonical | string)[] }
 const canonical = (markup: string): Canonical => {
   const doc = new JSDOM(`<!doctype html><body>${markup}`).window.document;
   const walk = (el: Element): Canonical => ({
     tag: el.nodeName,
-    attrs: Array.from(el.attributes).map((a) => [a.name, a.value] as [string, string]).sort(),
+    attrs: Array.from(el.attributes).map((a) => [a.name, a.value.trim()] as [string, string]).sort(),
     children: Array.from(el.childNodes).flatMap((n): (Canonical | string)[] => {
       if (n.nodeType === 3) return n.textContent!.trim() ? [n.textContent!] : [];
       if (n.nodeType === 1 && n.nodeName !== 'desc') return [walk(n as Element)];
@@ -209,5 +210,49 @@ describe('the card must be usable', () => {
     // Marked twice.
     const twice = svgAround('<g data-evelope-action="rsvp"></g><g data-evelope-action="rsvp"></g>');
     expect(refusal(() => clean(twice, { hasRsvpButton: true })).code).toBe('DESIGN_SVG_RSVP_MISMATCH');
+  });
+});
+
+describe('paths', () => {
+  it("Fabric's own path passes unchanged, as do every command and number form", () => {
+    const input = fabricSvg(OUR_IMAGE, { rsvp: false, body: PIN_SVG });
+    const { svg, stripped } = clean(input);
+    expect(stripped).toEqual([]);
+    expect(canonical(svg)).toEqual(canonical(input));
+    for (const d of ['M0,0L10,10z', 'm 1.5e2 -3 h 4 v -5 c 1 2 3 4 5 6 s 1 2 3 4 q 1 2 3 4 t 1 2 a 5 5 0 1 0 10 10 Z', 'M.5.5L-1-1', 'M 1 2\n L 3 4']) {
+      const one = clean(svgAround(`<path d="${d}"/>`));
+      expect(one.stripped, d).toEqual([]);
+      expect(one.svg).toContain('d="');
+    }
+  });
+
+  it('a d with letters outside the commands, a payload, or over 20KB is stripped', () => {
+    for (const d of [
+      'M 0 0 X 10 10',
+      'M 0 0 L 10 10 javascript:alert(1)',
+      'javascript:alert(1)',
+      'M 0 0 url(https://evil.example/x)',
+      'M 0 0 L 10 10"/><script>alert(1)</script>',
+      'M 0 0; fill: url(https://evil.example)',
+      'M 0 0 &#x6a;avascript',
+      '10 10 L 20 20',
+      'M 0 0 L 1e',
+    ]) {
+      const { svg, stripped } = clean(svgAround(`<path d='${d}' fill="#1F2937"/>`));
+      expect(svg, d).not.toMatch(/\sd=/);
+      expect(svg, d).not.toMatch(/javascript|evil|<script|alert/i);
+      expect(stripped, d).toContain('attribute:d');
+    }
+    const big = `M 0 0 ${Array.from({ length: 2000 }, (_, i) => `L ${i}.123 ${i}.456`).join(' ')}`;
+    expect(Buffer.byteLength(big)).toBeGreaterThan(20 * 1024);
+    const { svg, stripped } = clean(svgAround(`<path d="${big}"/>`));
+    expect(svg).not.toMatch(/\sd=/);
+    expect(stripped).toContain('attribute:d');
+  });
+
+  it('a d on anything but a path is stripped', () => {
+    const { svg, stripped } = clean(svgAround('<rect d="M 0 0 L 1 1" width="1" height="1"/>'));
+    expect(svg).not.toMatch(/\sd=/);
+    expect(stripped).toContain('attribute:d');
   });
 });

@@ -10,6 +10,7 @@ import {
   CANVAS_WIDTH,
   type CanvasFormat,
 } from './canvas-design.constants.js';
+import { isSvgPathData } from './canvas-path.util.js';
 
 // ─────────────────────────────────────────
 //  CLEANING A DESIGN'S SVG (STEERING "Invitation designs")
@@ -38,7 +39,9 @@ import {
 //                each value checked against a strict grammar: no url()
 //                except a reference to an id in the same SVG (a clip path,
 //                a gradient), no backslashes or quotes, transforms only as
-//                matrix/translate/scale/rotate/skew with numbers;
+//                matrix/translate/scale/rotate/skew with numbers; a path's
+//                `d` only path commands and numbers, at most 20KB (the
+//                document's own rule, canvas-path.util.ts);
 //                `style` only as known paint and text properties with the
 //                same values; `font-family` only one of the ten fonts;
 //                `href` / `xlink:href` only on <image>, and only one of
@@ -108,6 +111,9 @@ const VALUE_RULES: Record<string, (value: string, tag: string) => boolean> = {
   'xmlns:xlink': (v) => v === XLINK_NS,
   id: (v) => ID.test(v),
   transform: (v) => TRANSFORM.test(v),
+  // A path's drawing: only path commands and numbers, at most
+  // CANVAS_PATH_MAX_BYTES (canvas-path.util.ts); anything else, it goes.
+  d: (v, tag) => tag === 'path' && isSvgPathData(v),
   gradienttransform: (v) => TRANSFORM.test(v),
   fill: isPaint,
   stroke: isPaint,

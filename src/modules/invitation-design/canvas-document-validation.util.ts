@@ -8,8 +8,10 @@ import {
   CANVAS_MAX_IMAGES,
   CANVAS_MAX_TEXT_UNITS,
   CANVAS_MIN_TEXT_UNITS,
+  CANVAS_PATH_MAX_BYTES,
   CANVAS_TEXT_MAX_CHARS,
 } from './canvas-design.constants.js';
+import { isFabricPathData } from './canvas-path.util.js';
 
 // ─────────────────────────────────────────
 //  THE DESIGN DOCUMENT — an allowlist over Fabric.js's own JSON
@@ -27,11 +29,14 @@ import {
 //    Rect     rect
 //    Circle   circle
 //    Line     line
+//    Path     path: an icon or illustration, its `path` only standard
+//             path commands and numbers (canvas-path.util.ts), at most
+//             CANVAS_PATH_MAX_BYTES serialised
 //    Group    only with egRole 'rsvpButton': the RSVP button, a styled
 //             group of shapes and one label, which the guest page turns
 //             into the real RSVP link. At most one. No other group.
-//  Anything else (Path, Polygon, IText, Text, Triangle, Ellipse, a plain
-//  Group, ActiveSelection...) is DESIGN_ELEMENT_NOT_ALLOWED.
+//  Anything else (Polygon, IText, Text, Triangle, Ellipse, a plain Group,
+//  ActiveSelection...) is DESIGN_ELEMENT_NOT_ALLOWED.
 //
 //  Fabric writes every default property on every object, so its full set is
 //  listed, each pinned to a harmless value where the editor doesn't use it
@@ -226,6 +231,25 @@ const LINE_KEYS: Record<string, Check> = {
   y2: num(-COORD_MAX, COORD_MAX),
 };
 
+// Fabric's Path: the common keys and its drawing, `path` (Fabric 7.4 writes
+// no other key of its own). Size first, so a huge drawing is never walked.
+const PATH_KEYS: Record<string, Check> = {
+  ...COMMON_KEYS,
+  fill: colourOrNone,
+  path: (value, where, key) => {
+    const bytes = Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
+    if (bytes > CANVAS_PATH_MAX_BYTES) {
+      throw invalid(
+        CODES.PATH_TOO_LARGE,
+        `${where} is too detailed to save (${Math.ceil(bytes / 1024)}KB; a shape can be at most ${CANVAS_PATH_MAX_BYTES / 1024}KB). Simplify it, or use an image.`
+      );
+    }
+    if (!isFabricPathData(value)) {
+      throw invalid(CODES.PATH_INVALID, `${where}: '${key}' must be a drawing made only of path commands (M, L, H, V, C, S, Q, T, A, Z) and numbers.`);
+    }
+  },
+};
+
 const RSVP_BUTTON_KEYS: Record<string, Check> = {
   ...COMMON_KEYS,
   fill: unpaintedFill,
@@ -247,9 +271,11 @@ const KEYS_BY_TYPE: Record<string, Record<string, Check>> = {
   Rect: RECT_KEYS,
   Circle: CIRCLE_KEYS,
   Line: LINE_KEYS,
+  Path: PATH_KEYS,
 };
-// Inside the RSVP button: shapes and its label, never an image or a group.
-const RSVP_CHILD_TYPES = new Set(['Textbox', 'Rect', 'Circle', 'Line']);
+// Inside the RSVP button: shapes (an icon included) and its label, never an
+// image or a group.
+const RSVP_CHILD_TYPES = new Set(['Textbox', 'Rect', 'Circle', 'Line', 'Path']);
 
 const DOCUMENT_KEYS = new Set(['version', 'objects', 'background', 'backgroundImage']);
 
@@ -420,6 +446,7 @@ export const assertValidCanvasDocument = (raw: unknown, ctx: CanvasImageContext)
       checkTextSize(value, where, inRsvpButton?.scaleY ?? 1);
     }
     if (type === 'Image') checkImage(value, where);
+    if (type === 'Path' && value['path'] === undefined) throw invalid(CODES.PATH_INVALID, `${where}: a shape needs its drawing ('path').`);
   };
 
   (raw['objects'] as unknown[]).forEach((obj, i) => checkElement(obj, describe(i, isObj(obj) ? obj['type'] : undefined), null));

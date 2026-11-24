@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { assertValidCanvasDocument } from '../../src/modules/invitation-design/canvas-document-validation.util.js';
 import { HttpError } from '../../src/shared/errors/http-error.js';
-import { fabricCircle, fabricDocument, fabricImage, fabricLine, fabricRect, fabricRsvpButton, fabricText } from './canvas-fixtures.js';
+import { fabricCircle, fabricDocument, fabricImage, fabricLine, fabricPath, fabricRect, fabricRsvpButton, fabricText } from './canvas-fixtures.js';
 
 // ─────────────────────────────────────────
 //  THE DESIGN DOCUMENT (canvas-document-validation.util.ts)
@@ -136,7 +136,7 @@ describe('refusals', () => {
   });
 
   it('an element type that is not allowed', () => {
-    for (const type of ['Path', 'Polygon', 'Polyline', 'Triangle', 'Ellipse', 'IText', 'Text', 'ActiveSelection', 'Image2', 'rect']) {
+    for (const type of ['path', 'Polygon', 'Polyline', 'Triangle', 'Ellipse', 'IText', 'Text', 'ActiveSelection', 'Image2', 'rect']) {
       expectRefused(withObjects({ ...fabricRect(), type }), 'DESIGN_ELEMENT_NOT_ALLOWED');
     }
     // A plain group, a group in the button, an image in the button.
@@ -183,5 +183,59 @@ describe('refusals', () => {
     for (const doc of [null, 'x', [], { version: '7.4.0' }, { version: 'latest', objects: [] }, withObjects('rect'), withObjects(null)]) {
       expectRefused(doc, 'DESIGN_DOCUMENT_INVALID');
     }
+  });
+});
+
+describe('paths (icons and illustrations)', () => {
+  it("Fabric's own path passes, alone and as an icon in the RSVP button", () => {
+    const result = check(withObjects(fabricPath()));
+    expect(result.elementCount).toBe(1);
+    // Every command, either case, with its numbers.
+    const every = [['M', 0, 0], ['l', 1, 1], ['H', 2], ['v', 3], ['C', 1, 2, 3, 4, 5, 6], ['s', 1, 2, 3, 4], ['Q', 1, 2, 3, 4], ['t', 1, 2], ['A', 5, 5, 0, 1, 0, 10, 10], ['z']];
+    expect(() => check(withObjects(fabricPath({ path: every })))).not.toThrow();
+    const button = fabricRsvpButton();
+    button.objects.push(fabricPath({ left: -150, top: -20 }) as never);
+    expect(check(withObjects(button)).elementCount).toBe(4);
+  });
+
+  it('path data with anything but the commands and numbers is refused', () => {
+    for (const path of [
+      [['X', 1, 2]],
+      [['M', 1, 2], ['B', 3]],
+      [['M', '1', '2']],
+      [['M', 1]],
+      [['M', 1, 2, 3]],
+      [['Z', 1]],
+      [['MM', 1, 2]],
+      [['M', 1, Number.NaN]],
+      [['javascript:alert(1)']],
+      [['M', 1, 2], 'url(https://evil.example/x)'],
+      'M 0 0 L 10 10',
+      [],
+      null,
+    ]) {
+      expectRefused(withObjects(fabricPath({ path })), 'DESIGN_PATH_INVALID', /path commands/);
+    }
+    expectRefused(withObjects(fabricPath({ path: undefined })), 'DESIGN_PATH_INVALID');
+  });
+
+  it('a path over 20KB is refused', () => {
+    const big = Array.from({ length: 1200 }, (_, i) => ['L', i + 0.123456, i + 0.654321]);
+    expect(Buffer.byteLength(JSON.stringify(big))).toBeGreaterThan(20 * 1024);
+    expectRefused(withObjects(fabricPath({ path: [['M', 0, 0], ...big] })), 'DESIGN_PATH_TOO_LARGE', /20KB/);
+    // Just under is fine.
+    expect(() => check(withObjects(fabricPath({ path: [['M', 0, 0], ...big.slice(0, 600)] })))).not.toThrow();
+  });
+
+  it('fill and stroke are hex only, and a path has no other keys of its own', () => {
+    expectRefused(withObjects(fabricPath({ fill: 'url(#g)' })), 'DESIGN_COLOUR_INVALID');
+    expectRefused(withObjects(fabricPath({ stroke: 'red' })), 'DESIGN_COLOUR_INVALID');
+    expectRefused(withObjects(fabricPath({ pathOffset: { x: 0, y: 0 } })), 'DESIGN_DOCUMENT_INVALID', /'pathOffset'/);
+  });
+
+  it('paths count towards the 100 elements', () => {
+    const hundred = Array.from({ length: 100 }, () => fabricPath());
+    expect(check(withObjects(...hundred)).elementCount).toBe(100);
+    expectRefused(withObjects(...hundred, fabricPath()), 'DESIGN_TOO_MANY_ELEMENTS');
   });
 });

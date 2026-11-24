@@ -148,6 +148,36 @@ export const fabricLine = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+// The editor's location pin, as Fabric 7.4.0 writes it (its arc already
+// turned into curves by Fabric).
+export const PIN_PATH = [
+  ['M', 20, 0], ['C', 31, 0, 40, 9, 40, 20], ['C', 40, 34, 20, 52, 20, 52], ['C', 20, 52, 0, 34, 0, 20], ['C', 0, 9, 9, 0, 20, 0], ['Z'],
+  ['M', 20, 11],
+  ['C', 15.030414301132973, 11.002760881369879, 11.00361990648406, 15.03291233715677, 11.005000347222257, 20.002498611207457],
+  ['C', 11.006380787960454, 24.97208488525814, 15.035413534221423, 28.999998611111003, 20.005000000000003, 28.999998611111003],
+  ['C', 24.97458646577858, 28.999998611111003, 29.003619212039546, 24.97208488525814, 29.004999652777745, 20.002498611207457],
+  ['C', 29.006380093515943, 15.03291233715677, 24.97958569886703, 11.002760881369879, 20.01, 11],
+  ['Z'],
+];
+// Its SVG, verbatim from Fabric 7.4.0's toSVG().
+export const PIN_SVG = `<g transform="matrix(1 0 0 1 546.5 772.5)"  >
+<path style="stroke: none; stroke-width: 1; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(108,76,241); fill-rule: nonzero; opacity: 1;"  transform=" translate(-20, -26)" d="M 20 0 C 31 0 40 9 40 20 C 40 34 20 52 20 52 C 20 52 0 34 0 20 C 0 9 9 0 20 0 Z M 20 11 C 15.0304 11.0028 11.0036 15.0329 11.005 20.0025 C 11.0064 24.9721 15.0354 29 20.005 29 C 24.9746 29 29.0036 24.9721 29.005 20.0025 C 29.0064 15.0329 24.9796 11.0028 20.01 11 Z" stroke-linecap="round" />
+</g>`;
+
+export const fabricPath = (extra: Record<string, unknown> = {}) => ({
+  ...objectDefaults,
+  egId: 'el7',
+  egLabel: 'Location pin',
+  type: 'Path',
+  left: 526,
+  top: 746,
+  width: 40,
+  height: 52,
+  fill: '#6C4CF1',
+  path: PIN_PATH,
+  ...extra,
+});
+
 export const fabricRsvpButton = (extra: Record<string, unknown> = {}) => ({
   ...objectDefaults,
   subTargetCheck: false,

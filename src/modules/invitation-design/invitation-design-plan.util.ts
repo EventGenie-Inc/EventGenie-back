@@ -36,10 +36,11 @@ export const designPlanFor = async (event: EntitlementDerivableEvent): Promise<R
 
 export const canDesignOn = (plan: ResolvedPlan | null): boolean => !!plan?.values.invitationDesignsEnabled;
 
-// 422 INVITATION_DESIGNS_NOT_ON_PLAN, in the plan's own words.
+// 403 INVITATION_DESIGNS_NOT_ON_PLAN, in the plan's own words (a plan refusal is
+// 403, as every tier refusal: STEERING "Errors").
 export const assertCanvasDesignsOnPlan = async (event: EntitlementDerivableEvent): Promise<ResolvedPlan> => {
   const plan = await designPlanFor(event);
   if (!plan) throw new HttpError(404, 'Event not found');
-  if (!canDesignOn(plan)) throw new HttpError(422, canvasNotOnPlanMessage(plan), CANVAS_ERROR_CODES.NOT_ON_PLAN);
+  if (!canDesignOn(plan)) throw new HttpError(403, canvasNotOnPlanMessage(plan), CANVAS_ERROR_CODES.NOT_ON_PLAN);
   return plan;
 };

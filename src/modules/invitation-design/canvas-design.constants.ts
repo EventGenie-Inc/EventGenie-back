@@ -66,12 +66,18 @@ export const CANVAS_TEXT_MAX_CHARS = 1000;
 export const CANVAS_ALT_TEXT_MAX_CHARS = 300;
 export const CANVAS_DOCUMENT_VERSION_MAX = 1000;
 
+// One path's drawing (an icon, an illustration), serialised: its document
+// `path` as JSON, and its SVG `d`. The location pin is under 1KB; a detailed
+// illustration a few KB. Larger belongs in an image.
+export const CANVAS_PATH_MAX_BYTES = 20 * 1024;
+
 // ─────────────────────────────────────────
 //  ERROR CODES (HttpError.code). Every refusal of a CANVAS save is 422 with
-//  one of these, except the storage ones (UPLOAD_NOT_FOUND and friends).
+//  one of these, except the plan's (403) and the storage ones
+//  (UPLOAD_NOT_FOUND and friends).
 // ─────────────────────────────────────────
 export const CANVAS_ERROR_CODES = {
-  // The plan has no invitationDesignsEnabled (saving, or an upload signature).
+  // 403: the plan has no invitationDesignsEnabled (saving, or an upload signature).
   NOT_ON_PLAN: 'INVITATION_DESIGNS_NOT_ON_PLAN',
   // A body field: format, documentVersion, colours, alt text, unknown keys.
   FIELD_INVALID: 'DESIGN_FIELD_INVALID',
@@ -86,6 +92,10 @@ export const CANVAS_ERROR_CODES = {
   TOO_MANY_ELEMENTS: 'DESIGN_TOO_MANY_ELEMENTS',
   TOO_MANY_IMAGES: 'DESIGN_TOO_MANY_IMAGES',
   RSVP_BUTTON_DUPLICATE: 'DESIGN_RSVP_BUTTON_DUPLICATE',
+  // A path's drawing: anything but path commands and numbers, or over
+  // CANVAS_PATH_MAX_BYTES.
+  PATH_INVALID: 'DESIGN_PATH_INVALID',
+  PATH_TOO_LARGE: 'DESIGN_PATH_TOO_LARGE',
   // The SVG: not one <svg> we can read, the wrong viewBox, too large after
   // cleaning, or its RSVP marker not matching the document.
   SVG_INVALID: 'DESIGN_SVG_INVALID',

@@ -196,11 +196,23 @@ describe('the links', () => {
     installFirebaseMock();
     const ev = await newEvent('Acme Year-End 2026 RSVP thandi@acme.co.za or +27 82 555 0101 — Café');
     await addItem(ev);
-    const res = await download(ev.event.id);
+    // A clock whose link expiry contains 555: only the names are checked
+    // for the phone number, never the signed URL's other numbers (its
+    // expiry, timestamp, signature and the photos' ids are any digits).
+    vi.useFakeTimers({ toFake: ['Date'], now: 1795553424_000 - DOWNLOAD_LINK_TTL_MS });
+    let res;
+    try {
+      res = await download(ev.event.id);
+    } finally {
+      vi.useRealTimers();
+    }
     const [part] = res.body.data.parts;
+    expect(new URL(part.url).searchParams.get('expires_at')).toContain('555');
     expect(part.fileName).toBe('Acme-Year-End-2026-RSVP-or-Cafe-photos.zip');
     expect(new URL(part.url).searchParams.get('target_public_id')).toBe('Acme-Year-End-2026-RSVP-or-Cafe-photos');
-    expect(JSON.stringify(res.body)).not.toMatch(/thandi|acme\.co\.za|555|0101/i);
+    const names = (res.body.data.parts as { fileName: string; url: string }[])
+      .flatMap((p) => [p.fileName, new URL(p.url).searchParams.get('target_public_id') ?? '']);
+    for (const name of names) expect(name).not.toMatch(/thandi|acme\.co\.za|555|0101/i);
 
     expect(archiveNameFor('Wedding', 'photos', 2, 3)).toBe('Wedding-photos-part-2-of-3');
     expect(archiveNameFor('@@@ 0825550101', 'videos', 1, 1)).toBe('event-videos');

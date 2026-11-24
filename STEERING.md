@@ -620,7 +620,10 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   `expiresAt`; the wizard shows it and keeps no copy of the 30 days.
 - **Uploads never saved are swept**: SIGNED or UPLOADED files still
   unattached 24 hours after signing are requested for deletion by the
-  storage sweep. A guest document with its `GuestDocument` row is the
+  storage sweep; **an image uploaded in the design editor (DESIGN_ASSET)
+  after 7 days** (`DESIGN_ASSET_UNSAVED_AFTER_MS`), since a design is often
+  worked on over a weekend before it's saved (one gone is 422
+  `UPLOAD_NOT_FOUND` at save). A guest document with its `GuestDocument` row is the
   documents sweep's; one whose row was never written (its upload failed or
   timed out, or the row's write did) is this one's.
 - **Deleting an event** requests every upload signed for it and never
@@ -1326,7 +1329,7 @@ reason survives only in the server log.
 | Status | Use for |
 |---|---|
 | 400 | Malformed input |
-| 403 | Authenticated but not permitted, including tier limits |
+| 403 | Authenticated but not permitted, including tier limits and plan settings (e.g. `INVITATION_DESIGNS_NOT_ON_PLAN`) |
 | 404 | Not found — **also** the correct response for cross-tenant access |
 | 409 | State conflict (already published, duplicate) |
 | 422 | Valid shape, unsatisfied preconditions |
@@ -5468,7 +5471,8 @@ unless a super admin switches it on; off on a tier with no row), read
 from the EVENT's plan (`resolveEventPlan`), so a Large Event Pass
 (Elevate's settings) has it and a Small or Standard one (Celebrate's)
 doesn't. Saving a CANVAS design and signing its uploads need it: without
-it, **422 `INVITATION_DESIGNS_NOT_ON_PLAN`**, worded by
+it, **403 `INVITATION_DESIGNS_NOT_ON_PLAN`** (a plan refusal, like every
+tier refusal; see "Errors"), worded by
 `tierRefusalMessage` ("The Spark plan doesn't include invitation designs.
 Upgrade your plan to design your own invitation."; a custom tier's name
 with the contact wording; the free-trial wording while `payments` is off).
@@ -5480,11 +5484,12 @@ refused and resetting to default works. The template engine isn't gated.
 **The document** (`canvas-document-validation.util.ts`) is an allowlist
 over Fabric's own `toObject` output: `{ version, objects, background?,
 backgroundImage? }`, objects of type `Textbox` (text), `Image`, `Rect`,
-`Circle`, `Line`, and `Group` only with `egRole: 'rsvpButton'` (the RSVP
-button: shapes and one label; at most one). Every key Fabric writes is
+`Circle`, `Line`, `Path` (icons and illustrations), and `Group` only with
+`egRole: 'rsvpButton'` (the RSVP button: shapes, an icon among them, and
+one label; at most one). Every key Fabric writes is
 listed with a fixed type and range, the ones the editor doesn't use pinned
 to Fabric's harmless default (`shadow: null`, `filters: []`, empty `styles`,
-`globalCompositeOperation: 'source-over'`, no `path`/`clipPath`), plus the
+`globalCompositeOperation: 'source-over'`, no text `path` or `clipPath`), plus the
 editor's `egId`, `egLabel`, `egSource`. Anything else, an unknown key
 anywhere included, is a 422 naming it, never dropped (the document is
 stored as sent). Colours `#RRGGBB` only (Fabric's untouched default fill
@@ -5498,6 +5503,20 @@ count), 10 images, 200 KB serialised. Contrast is the editor's job (it
 warns); the server doesn't check it. `hasRsvpButton` is worked out from
 the document, never sent.
 
+**Paths** (`canvas-path.util.ts`, one rule for the document and the SVG).
+A `Path` has the common keys and its drawing, `path`, in Fabric's form:
+`[["M", 20, 0], ["C", 31, 0, 40, 9, 40, 20], ["Z"]]`, one command per
+segment, each only a standard command, either case (M, L, T with 2
+numbers; H, V with 1; C with 6; S, Q with 4; A with 7; Z with none) and
+exactly its finite numbers; nothing else (422 `DESIGN_PATH_INVALID`, also
+for a Path with no `path`). Each path's drawing is at most **20 KB**
+serialised (422 `DESIGN_PATH_TOO_LARGE`), and every path counts towards the
+100 elements. Fill and stroke are hex only, as for every shape. In the
+SVG, a `d` is kept only on a `<path>`, only when it is commands and
+numbers (spaces and commas between them) starting with a command, at most
+20 KB: anything else, `url()`, `javascript:` or any other text included,
+is stripped and logged as `attribute:d`.
+
 **The SVG is untrusted and cleaned before it is stored**
 (`canvas-svg-sanitiser.util.ts`): DOMPurify on jsdom, as an allowlist,
 parsed with the HTML parser (the one the guest page inlines it with; a
@@ -5508,7 +5527,8 @@ a removed element goes with its content. Never: script, style,
 foreignObject, use, a, iframe, animation elements, filters, patterns,
 masks, any `on*` handler, javascript: or data: URLs, any external
 reference. Every kept attribute value is checked: `url()` only as
-`url(#id)` within the SVG, transforms only as numbers, `style` only known
+`url(#id)` within the SVG, transforms only as numbers, a path's `d` only
+path commands and numbers (above), `style` only known
 paint and text properties with the same values, `font-family` only one of
 the ten (no `@font-face`, no font URLs), `href`/`xlink:href` only on an
 `<image>` and only one of the document's own image URLs, and
@@ -5527,7 +5547,9 @@ WebP, exactly 1080 wide and the format's height (422
 `DESIGN_RENDER_INVALID`), at most 5 MB (422 `DESIGN_RENDER_TOO_LARGE`,
 requested for deletion). Sent back unchanged, it isn't measured again.
 **Images** (DESIGN_ASSET) are uploads too, at most 10 MB, WebP, JPG or PNG
-(the browser shrinks them to 1600px WebP first). Both go through
+(the browser shrinks them to 1600px WebP first), kept 7 days unsaved
+(see "Storage"; the frontend explains `UPLOAD_NOT_FOUND` when one has
+gone). Both go through
 `acceptUpload` like every upload (422 `UPLOAD_NOT_FOUND` for one that
 isn't this event's), are attached in the save's transaction under the
 event's write lock, and what the design stops using is requested for
@@ -6687,9 +6709,8 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
 - **CANVAS designs, Round 1 (EG-64)** leaves for later rounds: the rendered
   card isn't in invitation emails or share previews yet (email still shows
   only an UPLOAD design's image); an image uploaded in the editor and not
-  saved within 24 hours is swept like any unsaved upload, so a design left
-  open for a day must re-upload it (the save says `UPLOAD_NOT_FOUND`); an
-  image's pixel size isn't checked against the 1600px the browser shrinks
+  saved within 7 days is swept, so a design left longer must re-upload it
+  (the save says `UPLOAD_NOT_FOUND`); an image's pixel size isn't checked against the 1600px the browser shrinks
   to; and the template engine is still there, to be removed.
 
 ---
