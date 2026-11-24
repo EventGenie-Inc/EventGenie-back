@@ -29,6 +29,7 @@ export interface CreateSubscriptionTierConfigDto {
   customRsvpFieldsEnabled?: boolean;
   vendorPriorityPlacement?: boolean;
   qrCheckInEnabled?: boolean;
+  invitationDesignsEnabled?: boolean;
 }
 
 export interface UpdateSubscriptionTierConfigDto {
@@ -51,5 +52,6 @@ export interface UpdateSubscriptionTierConfigDto {
   customRsvpFieldsEnabled?: boolean;
   vendorPriorityPlacement?: boolean;
   qrCheckInEnabled?: boolean;
+  invitationDesignsEnabled?: boolean;
   isAvailable?: boolean;
 }

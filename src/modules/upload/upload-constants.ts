@@ -34,6 +34,28 @@ export const INVITATION_DESIGN_MAX_BYTES = 10 * 1024 * 1024;
 export const INVITATION_DESIGN_ALLOWED_FORMATS = 'jpg,png,webp';
 
 // ─────────────────────────────────────────
+//  CANVAS DESIGNS (the invitation design editor, EG-64)
+//
+//  DESIGN_ASSET: an image the organiser places inside a design. The
+//  browser shrinks it to at most 1600px as WebP before uploading, so a real
+//  one is a few hundred KB; 10MB is the ceiling for a browser that couldn't
+//  (JPG and PNG are allowed for that reason, no SVG: an SVG file can carry
+//  script).
+//
+//  DESIGN_RENDER: the rendered card, 1080 wide (1350 or 1920 high), for
+//  email and share previews. A PNG of a text-and-shapes card is well under
+//  1MB; one with a full-bleed photo is 2-4MB as PNG (a WebP of the same is
+//  a few hundred KB, so the browser should prefer WebP). 5MB leaves room
+//  for the photo case without letting a re-save every few minutes pile up
+//  storage; anything above it isn't a 1080-wide card.
+// ─────────────────────────────────────────
+export const DESIGN_ASSET_MAX_BYTES = 10 * 1024 * 1024;
+export const DESIGN_ASSET_ALLOWED_FORMATS = 'webp,jpg,png';
+
+export const DESIGN_RENDER_MAX_BYTES = 5 * 1024 * 1024;
+export const DESIGN_RENDER_ALLOWED_FORMATS = 'png,webp';
+
+// ─────────────────────────────────────────
 //  MEMORY HUB
 //
 //  Image limit: 15MB — a bit more generous than a cover (10-15MB

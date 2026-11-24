@@ -17,14 +17,18 @@ export interface TestUpload {
 }
 
 export const signedUpload = async (
-  input: SignUploadInput & { bytes?: number; uploaded?: boolean; format?: string }
+  input: SignUploadInput & { bytes?: number; uploaded?: boolean; format?: string; width?: number; height?: number }
 ): Promise<TestUpload> => {
   const signature = await storedFileService.signUpload(input);
   const publicId = `${signature.folder}/${signature.publicId}`;
   const resourceType = input.mediaType === 'VIDEO' ? 'video' : 'image';
   const format = input.format ?? (resourceType === 'video' ? 'mp4' : 'jpg');
   if (input.uploaded !== false) {
-    fakeCloudinary.put(publicId, { bytes: input.bytes ?? 1000, resourceType, format });
+    fakeCloudinary.put(publicId, {
+      bytes: input.bytes ?? 1000, resourceType, format,
+      ...(input.width !== undefined && { width: input.width }),
+      ...(input.height !== undefined && { height: input.height }),
+    });
   }
   const file = await prisma.storedFile.findUniqueOrThrow({ where: { publicId } });
   const { cloudName } = requireCloudinaryConfig();

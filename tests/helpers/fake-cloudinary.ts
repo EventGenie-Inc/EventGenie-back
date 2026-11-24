@@ -20,6 +20,9 @@ export interface FakeAsset {
   type: 'upload' | 'private';
   format: string;
   createdAt: string;
+  // An image's pixel size, reported by explicit as Cloudinary does (absent: not reported).
+  width?: number;
+  height?: number;
 }
 
 export interface FakeCall {
@@ -133,6 +136,8 @@ const handle = async (url: URL, init: RequestInit | undefined): Promise<Response
       bytes: asset.bytes,
       format: asset.format,
       resource_type: asset.resourceType,
+      ...(asset.width !== undefined && { width: asset.width }),
+      ...(asset.height !== undefined && { height: asset.height }),
       secure_url: `https://res.cloudinary.com/fake/${asset.resourceType}/upload/${publicId}.${asset.format}`,
     });
   }

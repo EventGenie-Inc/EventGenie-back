@@ -37,6 +37,7 @@ export interface CustomTierInput {
   customRsvpFieldsEnabled?: unknown;
   vendorPriorityPlacement?: unknown;
   qrCheckInEnabled?: unknown;
+  invitationDesignsEnabled?: unknown;
   // false retires it, true brings it back. Never deleted.
   isActive?: unknown;
 }

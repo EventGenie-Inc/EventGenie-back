@@ -161,6 +161,7 @@ const TIER_CONFIGS = [
     customRsvpFieldsEnabled: false,
     vendorPriorityPlacement: false,
     qrCheckInEnabled: true,
+    invitationDesignsEnabled: false,
     isAvailable: true,
   },
   {
@@ -187,6 +188,7 @@ const TIER_CONFIGS = [
     customRsvpFieldsEnabled: true,
     vendorPriorityPlacement: false,
     qrCheckInEnabled: true,
+    invitationDesignsEnabled: false,
     isAvailable: true,
   },
   {
@@ -212,6 +214,8 @@ const TIER_CONFIGS = [
     customRsvpFieldsEnabled: true,
     vendorPriorityPlacement: true,
     qrCheckInEnabled: true,
+    // The invitation design editor: Elevate only (20261126090000_canvas_designs).
+    invitationDesignsEnabled: true,
     isAvailable: true,
   },
 ];

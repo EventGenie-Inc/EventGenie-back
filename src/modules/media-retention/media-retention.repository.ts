@@ -1,8 +1,14 @@
-import { Prisma, type EventMediaPurge, type EventMediaPurgeReason } from '@prisma/client';
+import { Prisma, type EventMediaPurge, type EventMediaPurgeReason, type StoredFileKind } from '@prisma/client';
 import prisma from '../../shared/prisma/prisma.client.js';
 import { EVENT_ORGANISERS_SELECT } from '../event-assignment/event-organisers.util.js';
 
 // Prisma queries only; the rules are media-retention.service.ts's.
+
+// The files that go with an archived event's cover and invitation design:
+// its cover, an uploaded design's image, and a CANVAS design's images and
+// rendered card.
+const COVER_AND_DESIGN_KINDS: StoredFileKind[] = ['COVER', 'INVITATION_DESIGN', 'DESIGN_ASSET', 'DESIGN_RENDER'];
+const KEPT: Prisma.StoredFileWhereInput = { status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] } };
 
 // A cutoff for raw SQL against a TIMESTAMP (no time zone) column, which
 // holds UTC: the ISO string cast to timestamp, whose "Z" Postgres ignores.
@@ -206,7 +212,7 @@ export const mediaRetentionRepository = {
   // saved after a restore) is never touched. Returns how many.
   requestCoverAndDesignFiles: async (tx: Prisma.TransactionClient, eventId: string, startedAt: Date, now: Date, actor: string): Promise<number> => {
     const ids = (await tx.storedFile.findMany({
-      where: { eventId, kind: { in: ['COVER', 'INVITATION_DESIGN'] }, status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] }, createdAt: { lte: startedAt } },
+      where: { eventId, kind: { in: COVER_AND_DESIGN_KINDS }, status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] }, createdAt: { lte: startedAt } },
       select: { id: true },
     })).map((f) => f.id);
     if (ids.length === 0) return 0;
@@ -220,6 +226,13 @@ export const mediaRetentionRepository = {
     });
     await tx.invitationDesign.updateMany({
       where: { eventId, isArchived: false, kind: 'UPLOAD', storedFileId: { in: ids } },
+      data: { isArchived: true, updatedBy: actor },
+    });
+    // A CANVAS design whose rendered card goes: archived too (its images
+    // belong to the event, so they went with the same purge; its SVG would
+    // only point at deleted files).
+    await tx.invitationDesign.updateMany({
+      where: { eventId, isArchived: false, kind: 'CANVAS', pngStoredFileId: { in: ids } },
       data: { isArchived: true, updatedBy: actor },
     });
     return ids.length;
@@ -236,7 +249,7 @@ export const mediaRetentionRepository = {
         OR: [
           { memoryItems: { some: { memoryHub: { eventId }, purgedAt: { not: null }, createdAt: { lte: startedAt } } } },
           { guestDocument: { is: { eventId, uploadedAt: { lte: startedAt }, deleteRequestedAt: { not: null } } } },
-          { eventId, kind: { in: ['COVER', 'INVITATION_DESIGN'] }, createdAt: { lte: startedAt }, deleteRequestedAt: { not: null } },
+          { eventId, kind: { in: COVER_AND_DESIGN_KINDS }, createdAt: { lte: startedAt }, deleteRequestedAt: { not: null } },
         ],
       },
       select: { id: true, lastDeleteError: true },
@@ -248,7 +261,16 @@ export const mediaRetentionRepository = {
   findKeptCoverAndDesign: async (eventId: string): Promise<{ cover: boolean; design: boolean }> => {
     const [cover, design] = await Promise.all([
       prisma.event.count({ where: { id: eventId, coverFile: { is: { status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] } } } } }),
-      prisma.invitationDesign.count({ where: { eventId, isArchived: false, kind: 'UPLOAD', storedFile: { is: { status: { in: ['SIGNED', 'UPLOADED', 'ATTACHED'] } } } } }),
+      prisma.invitationDesign.count({
+        where: {
+          eventId,
+          isArchived: false,
+          OR: [
+            { kind: 'UPLOAD', storedFile: { is: KEPT } },
+            { kind: 'CANVAS', pngStoredFile: { is: KEPT } },
+          ],
+        },
+      }),
     ]);
     return { cover: cover > 0, design: design > 0 };
   },

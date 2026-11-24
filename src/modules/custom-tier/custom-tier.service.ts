@@ -45,6 +45,7 @@ const SWITCH_LABELS: Record<(typeof PLAN_SWITCH_KEYS)[number], string> = {
   customRsvpFieldsEnabled: 'Additional fields',
   vendorPriorityPlacement: 'Vendor priority placement',
   qrCheckInEnabled: 'QR check-in',
+  invitationDesignsEnabled: 'Invitation designs',
 };
 
 // The checked settings of a create or edit: only what was sent.

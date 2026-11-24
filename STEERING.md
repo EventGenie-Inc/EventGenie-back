@@ -521,7 +521,8 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
 - **One record per file: `StoredFile`.** `publicId` (unique),
   `resourceType` (IMAGE, VIDEO, RAW), `deliveryType` (UPLOAD, PRIVATE),
   `kind` (COVER, MEMORY_ITEM, INVITATION_DESIGN, FEEDBACK_LOGO,
-  GUEST_DOCUMENT), `tenantId`, `eventId`, `draftId` (a wizard draft
+  GUEST_DOCUMENT, and for a CANVAS design DESIGN_ASSET, an image placed in
+  it, and DESIGN_RENDER, its rendered card), `tenantId`, `eventId`, `draftId` (a wizard draft
   holding a cover), the uploader (`uploadedByUserId` or
   `uploadedByInviteId`), `bytes` and `format` (Cloudinary's, never the
   browser's), `status`, timestamps, `deleteAttempts`,
@@ -531,15 +532,18 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   (`storedFileService.signUpload`; a guest document: before it is sent),
   so a file whose save never happens still has one. Owners point at it:
   `Event.coverFileId`, `MemoryItem.storedFileId`,
-  `InvitationDesign.storedFileId`, `EventFeedback.logoFileId`,
-  `GuestDocument.storedFileId`. Attaching is a conditional write, so one
+  `InvitationDesign.storedFileId` (an UPLOAD's image),
+  `InvitationDesign.pngStoredFileId` (a CANVAS design's card),
+  `EventFeedback.logoFileId`, `GuestDocument.storedFileId`. A CANVAS
+  design's images have no pointer: they are the event's ATTACHED
+  DESIGN_ASSET files (one active design per event). Attaching is a conditional write, so one
   upload can't be saved twice (409 `UPLOAD_ALREADY_USED`, "This upload has
   already been saved.": the other save happened). A new kind of
   upload gets a kind here, signs through `signUpload` and saves through
   `acceptUpload`; it never signs its own.
 - **Paths are fixed by the owner alone** (`upload-folders.ts`):
   `<env>/t/<tenantId>/e/<eventId>/<kind>/<uuid>` for an event's files
-  (`cover`, `memory`, `design`, `document`) and
+  (`cover`, `memory`, `design`, `document`, `design-asset`, `design-render`) and
   `<env>/t/<tenantId>/<kind>/<uuid>` for a tenant's (`feedback-logo`, and
   `cover` for a cover uploaded before its event exists: the wizard, a new
   event; its row is tied to the event when the event is created). Nothing
@@ -581,7 +585,7 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   3rd failure in a row and every 10th after (ids only, never a public id,
   which can carry a document's file name). Each batch is a lease taken
   with `SKIP LOCKED` in a materialized CTE (`claimDue`; see "Claim queries"
-  under Migrations and the shared database), so servers never take the
+  under Migrations and the databases), so servers never take the
   same file and a batch is never more than its limit. **It is the one
   deletion path** (since Round B, 2026-11): guests' documents (the worker
   marks the `GuestDocument` deleted with its file), an archived event's
@@ -595,6 +599,9 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
 - **Only the current file is kept.** Replacing or clearing a cover (the
   event form, the full update), a design (or switching it to a template)
   or a feedback logo requests the old file's deletion with the save. A
+  CANVAS design's save requests its replaced card and every image of the
+  event's design it no longer uses; switching away from CANVAS, or resetting
+  to default, requests all of them. A
   wizard draft holds the cover its payload names (ATTACHED, `draftId`);
   a cover it stops naming is requested, discarding the draft (or its
   expiry) releases its
@@ -613,14 +620,18 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   `expiresAt`; the wizard shows it and keeps no copy of the 30 days.
 - **Uploads never saved are swept**: SIGNED or UPLOADED files still
   unattached 24 hours after signing are requested for deletion by the
-  storage sweep. A guest document with its `GuestDocument` row is the
+  storage sweep; **an image uploaded in the design editor (DESIGN_ASSET)
+  after 7 days** (`DESIGN_ASSET_UNSAVED_AFTER_MS`), since a design is often
+  worked on over a weekend before it's saved (one gone is 422
+  `UPLOAD_NOT_FOUND` at save). A guest document with its `GuestDocument` row is the
   documents sweep's; one whose row was never written (its upload failed or
   timed out, or the row's write did) is this one's.
 - **Deleting an event** requests every upload signed for it and never
   saved, in the archive's own transaction. Everything saved waits 30 days
   and goes with the archived-media purge, after its reminder: its cover and
-  uploaded invitation design (the purge then clears the event's cover
-  fields and archives the design), its Memory Hub photos and videos and its
+  uploaded invitation design, or a CANVAS design's images and card (the
+  purge then clears the event's cover fields and archives the design), its
+  Memory Hub photos and videos and its
   guests' documents (see "Archived events: Memory Hub retention"; until
   2026-11 the cover, design and documents were deleted at once). Restoring
   before the purge brings the event back with all of them. A cover or
@@ -632,8 +643,8 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   (`20261105090000_stored_files`) for every file a record referenced, so
   they are deleted properly from now on. Nothing was deleted by it. Files no
   record references are left alone.
-- **Copying a file** (a duplicated event's cover and uploaded design,
-  `storedFileService.copyFile`) makes a new, independent file in the new
+- **Copying a file** (a duplicated event's cover and uploaded design, and a
+  CANVAS design's card and images, `storedFileService.copyFile`) makes a new, independent file in the new
   owner's own folder, never a shared one: its row is written (SIGNED)
   before Cloudinary is asked, Cloudinary copies the source by its delivery
   URL (`copyAssetFromUrl`, `overwrite: false`), and the row becomes UPLOADED
@@ -765,7 +776,7 @@ limit counts the emails only; texts are counted by the SMS quota or bundle.
   overlaps itself. It takes due emails 20 at a time in one statement
   (`claimDue`: a materialized CTE with `FOR UPDATE SKIP LOCKED`, a 5-minute
   lease, each take an attempt; see "Claim queries" under Migrations and the
-  shared database), so any number of workers on any number of servers
+  databases), so any number of workers on any number of servers
   never take the same email. An email
   whose lease ran out (a worker died mid-send) is taken again.
 - **Each email is built when its turn comes**, from the invite as it is
@@ -968,7 +979,8 @@ guest gets the registration footer line on both.
 explicit JPEG (`f_jpg,w_1200,c_limit`, displayed at 600px) with its alt
 text. **Never `f_auto` in email**: image proxies fetch with their own
 `Accept` header. A URL not in the Cloudinary `image/upload` shape is left
-out, never sent as it is. TEMPLATE designs aren't shown in email.
+out, never sent as it is. TEMPLATE designs aren't shown in email, nor (yet)
+CANVAS ones (see "Known gaps").
 
 **The team invitation** reads like an auth email (same From, no seal):
 subject "You've been invited to join <company> on e-velope", one button
@@ -1317,7 +1329,7 @@ reason survives only in the server log.
 | Status | Use for |
 |---|---|
 | 400 | Malformed input |
-| 403 | Authenticated but not permitted, including tier limits |
+| 403 | Authenticated but not permitted, including tier limits and plan settings (e.g. `INVITATION_DESIGNS_NOT_ON_PLAN`) |
 | 404 | Not found — **also** the correct response for cross-tenant access |
 | 409 | State conflict (already published, duplicate) |
 | 422 | Valid shape, unsatisfied preconditions |
@@ -1802,7 +1814,8 @@ apply after it, whatever a `SUPER_ADMIN` sets, `null` included.
 **No feature is tied to a tier by name in code.** Every paid-only feature
 is a `SubscriptionTierConfig` setting a `SUPER_ADMIN` can switch on for any
 tier, the free one included: `memoryHubEnabled`, `guestExportEnabled`,
-`vendorMarketplace`, `smsEnabled` (already settings), and
+`vendorMarketplace`, `smsEnabled` (already settings), `invitationDesignsEnabled`
+(the design editor, Elevate only at launch; see "Invitation designs"), and
 `publicEventsEnabled`, `paidTicketingEnabled`, `customRsvpFieldsEnabled` and
 `vendorPriorityPlacement` (`tier-capabilities.util.ts`; they were Spark-
 and Elevate-by-name until the free pilot). Their migration set every tier
@@ -1820,7 +1833,8 @@ the 20 MB ceiling; the two document settings only while `documentFields`
 is on) and the on/off settings
 (`smsEnabled`, `memoryHubEnabled`, `guestExportEnabled`,
 `vendorMarketplace`, `publicEventsEnabled`, `paidTicketingEnabled`,
-`customRsvpFieldsEnabled`, `vendorPriorityPlacement`, `qrCheckInEnabled`) of the tenant's
+`customRsvpFieldsEnabled`, `vendorPriorityPlacement`, `qrCheckInEnabled`,
+`invitationDesignsEnabled`) of the tenant's
 effective plan, a standard tier or a custom tier (see "Custom tiers"). They
 come from the one resolution every check uses (`resolveTenantPlan`,
 `effective-plan.util.ts`), with exactly the server's fallback when a
@@ -1994,7 +2008,9 @@ codebase: a feature is switched off by configuration, **never deleted**.
     (adding a phone beside it is fine; a guest who never had an email can
     still reply).
   - `invitationDesigns` off: `/rsvp/validate`'s `design` is `null` and
-    emails carry no design image.
+    emails carry no design image; `/api/events/:eventId/invitation-design`
+    (the editor's routes included) is 404, and `planSettings` has no
+    `invitationDesignsEnabled`.
   - `teamMembers` off: `/api/users` (team management, assignments,
     invitations) and `/api/team-invites` are 404. Members already added,
     their assignments and the assignment lock carry on unchanged.
@@ -2091,12 +2107,12 @@ codebase: a feature is switched off by configuration, **never deleted**.
   vendor spaces and the rest stay exactly as they were; they are only not
   served. Switching it back on brings them back unchanged.
 
-### Migrations and the shared database
+### Migrations and the databases
 
-Dev and prod share one database until the Frankfurt migration. Agents
-never apply migrations to it. The human does that at deploy. Agents
-apply migrations only to the test database, and only through the
-harness behind the refusal guard.
+Dev, staging and prod each have their own database. Agents never apply
+migrations to any of them: the human does that at deploy. Agents apply
+migrations only to the test database, and only through the harness
+behind the refusal guard.
 
 **Claim queries: a materialized CTE, never `IN (... LIMIT ...)`.** A query
 that claims up to n rows for a worker (`stored-file.repository.ts`'s,
@@ -3287,7 +3303,7 @@ events); the route's `duplicate` scopes the source and calls it.
 { name: string, firstDate: 'YYYY-MM-DD', copyGuests?: boolean }   // copyGuests off by default
 → 201 { status: 'ok', data: <GET /api/events/:id's data for the copy> & {
         duplication: { sourceEventId, shiftDays, coverCopied, designCopied,
-                       coverMissing, designMissing, guestsCopied,
+                       coverMissing, designMissing, designNotOnPlan, guestsCopied,
                        clearedDates: ('rsvpDeadline' | 'registrationClosesAt')[] } } }
 ```
 
@@ -3310,11 +3326,16 @@ events); the route's `duplicate` scopes the source and calls it.
   questions included), registration settings (email domains, cap, closing
   date, plus-ones, auto-approve), Memory Hub settings (title, description,
   opening; a public hub gets its own new share link), the invitation
-  design (a template as it is; an upload as a copied file), the cover (an
-  upload as a copied file, an external link as it is).
+  design (a template as it is; an upload as a copied file; a CANVAS design
+  with its card and every image as copied files, its document and SVG
+  naming the copies, and only onto a plan with `invitationDesignsEnabled`:
+  otherwise the copy has the default design and `designNotOnPlan` is true),
+  the cover (an upload as a copied file, an external link as it is).
 - **Files** are new files in the copy's own folder with their own
   StoredFile rows (see "Storage"), copied before the transaction. One
-  already gone (purged after archiving, say) means the copy has none:
+  already gone (purged after archiving, say) means the copy has none (for a
+  CANVAS design, any one of its files gone means no design, the copies
+  already made released):
   `coverMissing`/`designMissing`, no error.
 - **Guests, only with `copyGuests: true`**: live guests who aren't
   plus-ones and aren't awaiting approval (removed and declined ones are
@@ -5112,7 +5133,8 @@ tenant, an event with feedback already given, or with `feedback` off.
 deleted from Cloudinary** (`MEDIA_RETENTION_DAYS`,
 `event/event-media-retention.util.ts`; the sweep is
 `media-retention/media-retention.service.ts`). **Its cover and uploaded
-invitation design go with them** (since 2026-11; before, they were deleted
+invitation design go with them**, and a CANVAS design's images and
+rendered card, which archives that design too (since 2026-11; before, they were deleted
 at once when it was archived): archiving keeps them, so a restore before
 the purge brings the event back as it was; the purge requests the cover's
 and design's StoredFiles made before it began, clears the event's cover
@@ -5420,10 +5442,147 @@ accept per token hash and per IP (failures only).
 An event has at most one active `InvitationDesign` (a partial unique
 index in its migration, since Prisma can't express one): a **TEMPLATE**
 (a frontend-defined template, `templateId` + `templateVersion`, plus the
-organiser's `overrides`) or an **UPLOAD** (an image in the event's own
-Cloudinary folder). Switching kind rewrites the same row. Guests get it
-as `design` on `GET /api/rsvp/validate/:token`, through the explicit
-projection in `invitation-design-guest.util.ts`.
+organiser's `overrides`), an **UPLOAD** (an image in the event's own
+Cloudinary folder) or a **CANVAS** design (the organiser's own, made in the
+editor; below). Switching kind rewrites the same row; a CHECK constraint
+keeps each kind's columns and nothing else
+(`20261126090000_canvas_designs`). Guests get it as `design` on
+`GET /api/rsvp/validate` and **nowhere else** (the public event view has
+never sent it), through the explicit projection in
+`invitation-design-guest.util.ts`.
+
+**The template engine (TEMPLATE, UPLOAD) is being replaced by the editor
+(EG-64)** and is removed in a later round. Until then it works as it did,
+on every plan, and nothing new depends on it. The rules below about the
+template font allowlist, overrides and template versions are its rules.
+
+### Invitation designs: CANVAS (the editor)
+
+The organiser designs freely in the browser (Fabric.js 7.4, in a 4:5
+1080 × 1350 or 9:16 1080 × 1920 card). A save sends three things: the
+**design document** (Fabric's JSON, the organiser's only), an **SVG** of
+the card (what guests see, cleaned here) and a **rendered card** (PNG or
+WebP, for email and share previews, uploaded first). Module
+`src/modules/invitation-design/` (`canvas-*.ts`).
+
+**The plan setting `invitationDesignsEnabled`** (`SubscriptionTierConfig`
+and `CustomTier`; Elevate on, Spark and Celebrate off, custom tiers off
+unless a super admin switches it on; off on a tier with no row), read
+from the EVENT's plan (`resolveEventPlan`), so a Large Event Pass
+(Elevate's settings) has it and a Small or Standard one (Celebrate's)
+doesn't. Saving a CANVAS design and signing its uploads need it: without
+it, **403 `INVITATION_DESIGNS_NOT_ON_PLAN`** (a plan refusal, like every
+tier refusal; see "Errors"), worded by
+`tierRefusalMessage` ("The Spark plan doesn't include invitation designs.
+Upgrade your plan to design your own invitation."; a custom tier's name
+with the contact wording; the free-trial wording while `payments` is off).
+**Reading and resetting never need it.** After a downgrade the saved
+design stays: guests keep seeing it, the organiser's GET shows it with
+`editable: false` and that message as `notEditableReason`, saving is
+refused and resetting to default works. The template engine isn't gated.
+
+**The document** (`canvas-document-validation.util.ts`) is an allowlist
+over Fabric's own `toObject` output: `{ version, objects, background?,
+backgroundImage? }`, objects of type `Textbox` (text), `Image`, `Rect`,
+`Circle`, `Line`, `Path` (icons and illustrations), and `Group` only with
+`egRole: 'rsvpButton'` (the RSVP button: shapes, an icon among them, and
+one label; at most one). Every key Fabric writes is
+listed with a fixed type and range, the ones the editor doesn't use pinned
+to Fabric's harmless default (`shadow: null`, `filters: []`, empty `styles`,
+`globalCompositeOperation: 'source-over'`, no text `path` or `clipPath`), plus the
+editor's `egId`, `egLabel`, `egSource`. Anything else, an unknown key
+anywhere included, is a 422 naming it, never dropped (the document is
+stored as sent). Colours `#RRGGBB` only (Fabric's untouched default fill
+`rgb(0,0,0)` is accepted on an image, line or group, which never paint
+it); fonts only the ten below; text drawn at least **36 units** (12px on a
+360px card: `fontSize` times its scale and its group's); images only by URL,
+and only this event's own DESIGN_ASSET files in our Cloudinary account
+(`<env>/t/<tenant>/e/<event>/design-asset/<uuid>`, no transformation or
+query). **Limits:** 100 elements (the button's parts and a background image
+count), 10 images, 200 KB serialised. Contrast is the editor's job (it
+warns); the server doesn't check it. `hasRsvpButton` is worked out from
+the document, never sent.
+
+**Paths** (`canvas-path.util.ts`, one rule for the document and the SVG).
+A `Path` has the common keys and its drawing, `path`, in Fabric's form:
+`[["M", 20, 0], ["C", 31, 0, 40, 9, 40, 20], ["Z"]]`, one command per
+segment, each only a standard command, either case (M, L, T with 2
+numbers; H, V with 1; C with 6; S, Q with 4; A with 7; Z with none) and
+exactly its finite numbers; nothing else (422 `DESIGN_PATH_INVALID`, also
+for a Path with no `path`). Each path's drawing is at most **20 KB**
+serialised (422 `DESIGN_PATH_TOO_LARGE`), and every path counts towards the
+100 elements. Fill and stroke are hex only, as for every shape. In the
+SVG, a `d` is kept only on a `<path>`, only when it is commands and
+numbers (spaces and commas between them) starting with a command, at most
+20 KB: anything else, `url()`, `javascript:` or any other text included,
+is stripped and logged as `attribute:d`.
+
+**The SVG is untrusted and cleaned before it is stored**
+(`canvas-svg-sanitiser.util.ts`): DOMPurify on jsdom, as an allowlist,
+parsed with the HTML parser (the one the guest page inlines it with; a
+DOCTYPE's entities are never expanded), only the single root `<svg>` kept.
+Elements: svg, g, defs, clipPath, linearGradient, radialGradient, stop,
+rect, circle, ellipse, line, polyline, polygon, path, text, tspan, image;
+a removed element goes with its content. Never: script, style,
+foreignObject, use, a, iframe, animation elements, filters, patterns,
+masks, any `on*` handler, javascript: or data: URLs, any external
+reference. Every kept attribute value is checked: `url()` only as
+`url(#id)` within the SVG, transforms only as numbers, a path's `d` only
+path commands and numbers (above), `style` only known
+paint and text properties with the same values, `font-family` only one of
+the ten (no `@font-face`, no font URLs), `href`/`xlink:href` only on an
+`<image>` and only one of the document's own image URLs, and
+`data-evelope-action="rsvp"` only on a `<g>` (the RSVP button's, exactly
+once when the document has a button, never otherwise; the guest page turns
+it into the real RSVP link). Stripping is not a refusal: the cleaned SVG is
+stored and the KINDS stripped are logged (`element:script`,
+`attribute:on*`, `style:fill`), never the content. Refused (422): not one
+`<svg>`, a viewBox other than the format's (`0 0 1080 1350` or
+`0 0 1080 1920`), over **300 KB** cleaned (1 MB as sent), or an RSVP
+marker that doesn't match the document.
+
+**The rendered card** (DESIGN_RENDER) is an upload made before the save,
+checked with Cloudinary's own figures (an `explicit` call at save): PNG or
+WebP, exactly 1080 wide and the format's height (422
+`DESIGN_RENDER_INVALID`), at most 5 MB (422 `DESIGN_RENDER_TOO_LARGE`,
+requested for deletion). Sent back unchanged, it isn't measured again.
+**Images** (DESIGN_ASSET) are uploads too, at most 10 MB, WebP, JPG or PNG
+(the browser shrinks them to 1600px WebP first), kept 7 days unsaved
+(see "Storage"; the frontend explains `UPLOAD_NOT_FOUND` when one has
+gone). Both go through
+`acceptUpload` like every upload (422 `UPLOAD_NOT_FOUND` for one that
+isn't this event's), are attached in the save's transaction under the
+event's write lock, and what the design stops using is requested for
+deletion in it (see "Storage").
+
+**Fonts: the self-hosted ten** (all SIL Open Font License), Fraunces,
+Inter, Poppins, Playfair Display, Cormorant Garamond, Montserrat, Lora, DM
+Serif Display, Great Vibes, Dancing Script: `CANVAS_FONT_ALLOWLIST`
+(`canvas-design.constants.ts`, canonical). The frontend holds an exact
+copy; change the backend first, then the frontend, in the same piece of
+work. Not the template engine's `INVITATION_FONT_ALLOWLIST`.
+
+The routes (behind `invitationDesigns`, `requireEventAdmin`, tenant-scoped):
+
+```
+GET    /api/events/:eventId/invitation-design
+       → 200 { data: null | <the design row> & { pngUrl, editable, notEditableReason } }
+         (the document included; pngUrl and notEditableReason null when not CANVAS)
+PUT    /api/events/:eventId/invitation-design
+       { kind: 'CANVAS', format: '4:5' | '9:16', document, documentVersion (whole, ≥ 1),
+         svg, pngPublicId, envelopeColor: '#RRGGBB', sealColor: '#RRGGBB', altText (1–300) }
+       → 200 the same shape as GET
+DELETE /api/events/:eventId/invitation-design     → 200 { data: null }   (reset to default: archived, any plan)
+POST   /api/events/:eventId/invitation-design/canvas-upload-signature
+       { purpose: 'ASSET' | 'RENDER' } → 200 the usual upload signature (60 / 5 min per user)
+```
+
+Guests get, for a CANVAS design, exactly `{ kind: 'CANVAS', format, svg,
+pngUrl, altText, envelopeColor, sealColor, hasRsvpButton }`: never the
+document (the guest read doesn't even load it). A cancelled event's
+design can't be saved or reset (409), as before.
+
+### Invitation designs: the template engine
 
 **The font allowlist exists in both repos and must always change
 together.** The backend copy is `INVITATION_FONT_ALLOWLIST`
@@ -5768,12 +5927,12 @@ to the test's own rows (`tests/team/email-normalization.test.ts` adds a
 each was added once).
 
 **Automated tests (Vitest, `tests/`) run against `DATABASE_URL_TEST`
-only** — a local Postgres database (`localhost:5432`), never the shared
-dev/prod one. The
+only** — a local Postgres database (`localhost:5432`), never dev's,
+staging's or production's. The
 isolation guard (`resolve-database-url.util.ts`) refuses to run
 otherwise. New migrations reach it through the guarded harness
 (`npm run test:db:reset`, or `NODE_ENV=test npx prisma migrate deploy`);
-see "Migrations and the shared database". Fixtures are created and
+see "Migrations and the databases". Fixtures are created and
 hard-deleted by the tests themselves (`tests/helpers/`). **The tier rows
 (`SubscriptionTierConfig`) are shared by every suite:** a test that changes
 one saves every row first and restores it with an upsert of the whole saved
@@ -5988,7 +6147,7 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   or registered people only.
 - **Automated test coverage is thin.** The backend has a Vitest suite
   (`npm test`, `tests/`) on real Postgres in a separate
-  `DATABASE_URL_TEST` database (never the shared dev/prod one — see
+  `DATABASE_URL_TEST` database (never dev's, staging's or production's — see
   `resolve-database-url.util.ts`'s isolation guard), Firebase Admin
   stubbed at exactly `verifyIdToken`. Tests are HTTP-level (`supertest`
   against the real Express app) or call a service directly, and cover
@@ -6044,7 +6203,12 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     and every URL built from `FRONTEND_BASE_URL`.
   - **Invitation designs** (`tests/invitation-design/`): cross-tenant
     404, cancelled-event 409, every 422 validation, create/replace/switch
-    kind, and the guest projection's exact keys.
+    kind, and the guest projection's exact keys. CANVAS designs
+    (`canvas-*.test.ts`, fixtures from Fabric 7.4.0's own output in
+    `canvas-fixtures.ts`): every document refusal, every SVG attack payload
+    removed while a real export passes unchanged, the rendered card's checks,
+    the plan gate per plan and pass, a downgrade, the guest shape, and the
+    files through replacement, deletion, the purge and duplication.
   - **Day venues** (`tests/event-day/`): a day without a venue is 422
     on create and update, stale coordinates cleared, cross-tenant day
     update 404, the event no longer taking a venue, `hostName` trimmed and
@@ -6542,6 +6706,12 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
   restore-path gaps in modules that have no UI yet. **Read the relevant
   section before building any feature that makes them reachable** —
   fixing them inside the feature build is far cheaper than retrofitting.
+- **CANVAS designs, Round 1 (EG-64)** leaves for later rounds: the rendered
+  card isn't in invitation emails or share previews yet (email still shows
+  only an UPLOAD design's image); an image uploaded in the editor and not
+  saved within 7 days is swept, so a design left longer must re-upload it
+  (the save says `UPLOAD_NOT_FOUND`); an image's pixel size isn't checked against the 1600px the browser shrinks
+  to; and the template engine is still there, to be removed.
 
 ---
 

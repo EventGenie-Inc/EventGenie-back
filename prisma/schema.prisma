@@ -70,10 +70,12 @@ enum EventTicketing {
 }
 
 // See InvitationDesign. A future design engine adds kinds here; existing
-// rows keep the kind they were saved with.
+// rows keep the kind they were saved with. CANVAS: the organiser's own
+// free-form design, made in the browser's editor (EG-64).
 enum InvitationDesignKind {
   TEMPLATE
   UPLOAD
+  CANVAS
 }
 
 enum RsvpFieldType {
@@ -1903,15 +1905,35 @@ model InvitationDesign {
   storedFileId       String?
   width              Int?
   height             Int?
+  // An UPLOAD's image description, and a CANVAS design's.
   altText            String?
+  // ── CANVAS only (null on every other kind: the migration's CHECK) ──
+  // The editor's design document (Fabric.js JSON, checked against an
+  // allowlist: canvas-document-validation.util.ts). The organiser's only:
+  // never sent to a guest.
+  document           Json?
+  // The document's own format version, starting at 1.
+  documentVersion    Int?
+  // '4:5' (1080 x 1350) or '9:16' (1080 x 1920).
+  format             String?
+  // The card as guests see it: the browser's SVG export, cleaned by this
+  // server (canvas-svg-sanitiser.util.ts). Never the raw upload.
+  svgMarkup          String?
+  // The rendered card (PNG or WebP), for email and share previews.
+  pngStoredFileId    String?
+  envelopeColor      String?
+  sealColor          String?
+  // Worked out from the document: it has an rsvpButton.
+  hasRsvpButton      Boolean?
   isArchived         Boolean              @default(false)
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
   createdBy          String
   updatedBy          String
 
-  event      Event       @relation(fields: [eventId], references: [id])
-  storedFile StoredFile? @relation(fields: [storedFileId], references: [id], onDelete: SetNull)
+  event         Event       @relation(fields: [eventId], references: [id])
+  storedFile    StoredFile? @relation("InvitationDesignFile", fields: [storedFileId], references: [id], onDelete: SetNull)
+  pngStoredFile StoredFile? @relation("InvitationDesignRender", fields: [pngStoredFileId], references: [id], onDelete: SetNull)
 
   @@index([eventId])
 }
@@ -1969,6 +1991,9 @@ model SubscriptionTierConfig {
   // every tier (20261121120000_check_in_passes); the guest-list check-in
   // never depends on it.
   qrCheckInEnabled          Boolean          @default(true)
+  // The invitation design editor (CANVAS designs). Elevate only at launch
+  // (20261126090000_canvas_designs); off on a tier with no row.
+  invitationDesignsEnabled  Boolean          @default(false)
   isAvailable               Boolean          @default(true)
   updatedAt                 DateTime         @updatedAt
 }
@@ -2008,6 +2033,7 @@ model CustomTier {
   customRsvpFieldsEnabled   Boolean  @default(false)
   vendorPriorityPlacement   Boolean  @default(false)
   qrCheckInEnabled          Boolean  @default(true)
+  invitationDesignsEnabled  Boolean  @default(false)
   isActive                  Boolean  @default(true)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
@@ -2755,6 +2781,10 @@ enum StoredFileKind {
   INVITATION_DESIGN
   FEEDBACK_LOGO
   GUEST_DOCUMENT
+  // An image placed inside a CANVAS invitation design, and the design's
+  // rendered card. Both belong to the event, like INVITATION_DESIGN.
+  DESIGN_ASSET
+  DESIGN_RENDER
 }
 
 enum StoredFileStatus {
@@ -2813,7 +2843,8 @@ model StoredFile {
   event             Event?             @relation("StoredFileEvent", fields: [eventId], references: [id], onDelete: Cascade)
   coverOfEvents     Event[]            @relation("EventCoverFile")
   memoryItems       MemoryItem[]
-  invitationDesigns InvitationDesign[]
+  invitationDesigns InvitationDesign[] @relation("InvitationDesignFile")
+  designRenders     InvitationDesign[] @relation("InvitationDesignRender")
   feedbackLogos     EventFeedback[]
   guestDocument     GuestDocument?
 

@@ -68,6 +68,8 @@ export const PLAN_SWITCH_KEYS = [
   'customRsvpFieldsEnabled',
   'vendorPriorityPlacement',
   'qrCheckInEnabled',
+  // The invitation design editor (CANVAS designs): Elevate only at launch.
+  'invitationDesignsEnabled',
 ] as const;
 
 export type PlanLimitKey = (typeof PLAN_LIMIT_KEYS)[number];

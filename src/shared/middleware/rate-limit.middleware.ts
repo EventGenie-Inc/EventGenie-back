@@ -231,6 +231,31 @@ export const uploadSignatureLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITER — INVITATION DESIGN EDITOR UPLOADS
+//
+//  The editor (CANVAS designs) uploads more than a cover does: up to 10
+//  images in a design, and a fresh rendered card on every save. 60 in 5
+//  minutes per user covers placing a design's ten images and saving a few
+//  times a minute, and is its own budget, so designing never uses up the
+//  cover and logo signatures above. Still a grant to upload: every one is
+//  into this event's own folder with its StoredFile written first, and
+//  unsaved ones are swept after 24 hours.
+// ─────────────────────────────────────────
+export const DESIGN_UPLOAD_SIGNATURES_PER_5_MIN = 60;
+
+export const designUploadSignatureLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: DESIGN_UPLOAD_SIGNATURES_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many upload requests. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — PAYMENT VERIFY / RECONCILE (payments release 1)
 //
 //  Each call may make a server-to-server call to Paystack's verify

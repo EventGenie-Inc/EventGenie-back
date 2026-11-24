@@ -175,7 +175,7 @@ export const destroyAssets = async (
 //  nothing and answers with the asset's details, `bytes` included.
 // ─────────────────────────────────────────
 export type ExplicitResult =
-  | { ok: true; bytes: number; format: string | null; secureUrl: string | null }
+  | { ok: true; bytes: number; format: string | null; secureUrl: string | null; width: number | null; height: number | null }
   | { ok: false; notFound: true }
   | { ok: false; notFound: false; reason: string };
 
@@ -206,12 +206,23 @@ export const explicitResource = async (
       body,
       signal: AbortSignal.timeout(UPLOAD_API_TIMEOUT_MS),
     });
-    const json = (await res.json().catch(() => ({}))) as { bytes?: number; format?: string; secure_url?: string; error?: { message?: string } };
+    const json = (await res.json().catch(() => ({}))) as {
+      bytes?: number; format?: string; secure_url?: string; width?: number; height?: number; error?: { message?: string };
+    };
     if (res.status === 404) return { ok: false, notFound: true };
     if (!res.ok || typeof json.bytes !== 'number') {
       return { ok: false, notFound: false, reason: json.error?.message ?? `HTTP ${res.status}` };
     }
-    return { ok: true, bytes: json.bytes, format: json.format ?? null, secureUrl: json.secure_url ?? null };
+    return {
+      ok: true,
+      bytes: json.bytes,
+      format: json.format ?? null,
+      secureUrl: json.secure_url ?? null,
+      // An image's pixel size, as Cloudinary decoded it (a design's
+      // rendered card is checked against its format: invitation-design).
+      width: typeof json.width === 'number' ? json.width : null,
+      height: typeof json.height === 'number' ? json.height : null,
+    };
   } catch (error) {
     return { ok: false, notFound: false, reason: error instanceof Error ? error.message : 'Unknown error' };
   }

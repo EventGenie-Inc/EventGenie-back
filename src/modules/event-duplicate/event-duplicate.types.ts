@@ -33,6 +33,9 @@ export interface DuplicationSummary {
   // archiving, say): the copy has none.
   coverMissing: boolean;
   designMissing: boolean;
+  // A CANVAS design not copied because the copy's plan has no
+  // invitationDesignsEnabled (the copy has the default instead).
+  designNotOnPlan: boolean;
   guestsCopied: number;
   clearedDates: ClearedDateField[];
 }

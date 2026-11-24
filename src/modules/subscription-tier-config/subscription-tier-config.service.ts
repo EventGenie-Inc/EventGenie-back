@@ -15,16 +15,18 @@ const TIER_CAPABILITY_LABELS: Record<TierCapability, string> = {
   qrCheckInEnabled: 'QR check-in',
 };
 
-// The capability settings (tier-capabilities.util.ts), and guest export,
-// are booleans or absent; anything else is a 422 rather than a Prisma type
-// error (a 500).
-const SWITCH_LABELS: Record<TierCapability | 'guestExportEnabled', string> = {
+// The capability settings (tier-capabilities.util.ts), guest export and
+// invitation designs are booleans or absent; anything else is a 422 rather
+// than a Prisma type error (a 500).
+type SwitchField = TierCapability | 'guestExportEnabled' | 'invitationDesignsEnabled';
+const SWITCH_LABELS: Record<SwitchField, string> = {
   ...TIER_CAPABILITY_LABELS,
   guestExportEnabled: 'Guest list export',
+  invitationDesignsEnabled: 'Invitation designs',
 };
 
-const assertCapabilitySettings = (body: Partial<Record<TierCapability | 'guestExportEnabled', unknown>>): void => {
-  for (const [field, label] of Object.entries(SWITCH_LABELS) as [TierCapability | 'guestExportEnabled', string][]) {
+const assertCapabilitySettings = (body: Partial<Record<SwitchField, unknown>>): void => {
+  for (const [field, label] of Object.entries(SWITCH_LABELS) as [SwitchField, string][]) {
     if (body[field] !== undefined && typeof body[field] !== 'boolean') {
       throw new HttpError(422, `${label} must be switched on or off (true or false).`);
     }

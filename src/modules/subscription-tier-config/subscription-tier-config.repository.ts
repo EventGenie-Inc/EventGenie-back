@@ -57,6 +57,7 @@ export const subscriptionTierConfigRepository = {
         customRsvpFieldsEnabled: data.customRsvpFieldsEnabled ?? false,
         vendorPriorityPlacement: data.vendorPriorityPlacement ?? false,
         qrCheckInEnabled: data.qrCheckInEnabled ?? true,
+        invitationDesignsEnabled: data.invitationDesignsEnabled ?? false,
       },
     }).then(toPlain),
 
@@ -82,6 +83,7 @@ export const subscriptionTierConfigRepository = {
         ...(data.customRsvpFieldsEnabled !== undefined && { customRsvpFieldsEnabled: data.customRsvpFieldsEnabled }),
         ...(data.vendorPriorityPlacement !== undefined && { vendorPriorityPlacement: data.vendorPriorityPlacement }),
         ...(data.qrCheckInEnabled !== undefined && { qrCheckInEnabled: data.qrCheckInEnabled }),
+        ...(data.invitationDesignsEnabled !== undefined && { invitationDesignsEnabled: data.invitationDesignsEnabled }),
         ...(data.isAvailable !== undefined && { isAvailable: data.isAvailable }),
       },
     }).then(toPlain),
