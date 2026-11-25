@@ -28,6 +28,16 @@ export const ADMIN_AUDIT_ACTIONS = {
   TIER_CONFIG_CREATED: 'TIER_CONFIG_CREATED',
   TIER_CONFIG_UPDATED: 'TIER_CONFIG_UPDATED',
   TIER_AVAILABILITY_CHANGED: 'TIER_AVAILABILITY_CHANGED',
+  // Starter designs (invitation-starter.service.ts), platform-wide. Details:
+  // the starter's id and name, and what changed (field names, statuses,
+  // files released); never the document itself.
+  INVITATION_STARTER_CREATED: 'INVITATION_STARTER_CREATED',
+  INVITATION_STARTER_UPDATED: 'INVITATION_STARTER_UPDATED',
+  INVITATION_STARTER_PUBLISHED: 'INVITATION_STARTER_PUBLISHED',
+  INVITATION_STARTER_UNPUBLISHED: 'INVITATION_STARTER_UNPUBLISHED',
+  INVITATION_STARTER_RETIRED: 'INVITATION_STARTER_RETIRED',
+  INVITATION_STARTER_DELETED: 'INVITATION_STARTER_DELETED',
+  INVITATION_STARTER_REORDERED: 'INVITATION_STARTER_REORDERED',
   // A read, recorded because it shows guests' personal information: the
   // super admin console's guest list for one event (admin-console.service.ts),
   // one entry per view, against the event's tenant.

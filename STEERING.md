@@ -522,7 +522,8 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   `resourceType` (IMAGE, VIDEO, RAW), `deliveryType` (UPLOAD, PRIVATE),
   `kind` (COVER, MEMORY_ITEM, INVITATION_DESIGN, FEEDBACK_LOGO,
   GUEST_DOCUMENT, and for a CANVAS design DESIGN_ASSET, an image placed in
-  it, and DESIGN_RENDER, its rendered card), `tenantId`, `eventId`, `draftId` (a wizard draft
+  it, and DESIGN_RENDER, its rendered card; for a starter design
+  STARTER_ASSET and STARTER_RENDER, with `starterId`), `tenantId`, `eventId`, `draftId` (a wizard draft
   holding a cover), the uploader (`uploadedByUserId` or
   `uploadedByInviteId`), `bytes` and `format` (Cloudinary's, never the
   browser's), `status`, timestamps, `deleteAttempts`,
@@ -546,8 +547,11 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   (`cover`, `memory`, `design`, `document`, `design-asset`, `design-render`) and
   `<env>/t/<tenantId>/<kind>/<uuid>` for a tenant's (`feedback-logo`, and
   `cover` for a cover uploaded before its event exists: the wizard, a new
-  event; its row is tied to the event when the event is created). Nothing
-  depends on any other file existing. `<env>` is **`STORAGE_ENV`**: `dev`,
+  event; its row is tied to the event when the event is created), and
+  `<env>/platform/starters/<starterId>/<asset|preview>/<uuid>` for the
+  platform's own (a starter design's: its rows held by the internal
+  e-velope organisation, no event; see "Invitation designs: starter
+  designs"). Nothing depends on any other file existing. `<env>` is **`STORAGE_ENV`**: `dev`,
   `staging` or `prod`, required, checked at startup (`server.ts` refuses
   to start without it) and again whenever anything is signed. Dev and
   staging share one Cloudinary account; prod has its own. Files stored
@@ -620,8 +624,8 @@ has a record, and is deleted only through it** (`src/modules/storage/`).
   `expiresAt`; the wizard shows it and keeps no copy of the 30 days.
 - **Uploads never saved are swept**: SIGNED or UPLOADED files still
   unattached 24 hours after signing are requested for deletion by the
-  storage sweep; **an image uploaded in the design editor (DESIGN_ASSET)
-  after 7 days** (`DESIGN_ASSET_UNSAVED_AFTER_MS`), since a design is often
+  storage sweep; **an image uploaded in the design editor (DESIGN_ASSET, and
+  a starter's STARTER_ASSET) after 7 days** (`DESIGN_ASSET_UNSAVED_AFTER_MS`), since a design is often
   worked on over a weekend before it's saved (one gone is 422
   `UPLOAD_NOT_FOUND` at save). A guest document with its `GuestDocument` row is the
   documents sweep's; one whose row was never written (its upload failed or
@@ -2009,8 +2013,10 @@ codebase: a feature is switched off by configuration, **never deleted**.
     still reply).
   - `invitationDesigns` off: `/rsvp/validate`'s `design` is `null` and
     emails carry no design image; `/api/events/:eventId/invitation-design`
-    (the editor's routes included) is 404, and `planSettings` has no
-    `invitationDesignsEnabled`.
+    (the editor's routes included) and the organisers' starter list
+    (`/api/invitation-starters`) are 404, and `planSettings` has no
+    `invitationDesignsEnabled`. The super admin's starter routes stay (a
+    flag never hides from a super admin).
   - `teamMembers` off: `/api/users` (team management, assignments,
     invitations) and `/api/team-invites` are 404. Members already added,
     their assignments and the assignment lock carry on unchanged.
@@ -4637,7 +4643,10 @@ edited or deleted; no foreign keys, so an entry outlives what it names.
   `EVENT_MEDIA_PURGED`, `EVENT_GRANTED` (per tenant) and
   `EVENT_GRANT_CREATED`, `EVENT_TEMPLATE_CREATED`,
   `CUSTOM_TIER_REQUEST_UPDATED`, and platform-wide `CUSTOM_TIER_CREATED`/
-  `UPDATED`, `TIER_CONFIG_CREATED`/`UPDATED`, `TIER_AVAILABILITY_CHANGED`.
+  `UPDATED`, `TIER_CONFIG_CREATED`/`UPDATED`, `TIER_AVAILABILITY_CHANGED`,
+  `INVITATION_STARTER_CREATED`/`UPDATED`/`PUBLISHED`/`UNPUBLISHED`/
+  `RETIRED`/`DELETED`/`REORDERED` (the starter's id and name, and what
+  changed; never its document).
   A new super admin write records its own entry the same way.
 - **Not only super admins**: every step of an organisation's payout account
   (`PAYOUT_ACCOUNT_*`, see "Ticket sales") is recorded here too, by the
@@ -5582,6 +5591,90 @@ pngUrl, altText, envelopeColor, sealColor, hasRsvpButton }`: never the
 document (the guest read doesn't even load it). A cancelled event's
 design can't be saved or reset (409), as before.
 
+### Invitation designs: starter designs
+
+Organisers don't face a blank canvas: the super admin makes **starter
+designs** in the same editor and publishes them (module
+`src/modules/invitation-starter/`, `InvitationStarter`,
+`20261127090000_invitation_starters`). An organiser picks one and gets
+**their own copy**, fully editable: nothing is locked, and the starter is
+never referenced by a design, so editing, retiring or deleting a starter
+never touches a design made from it.
+
+**A starter is a CANVAS design without an event**: name (1–60 characters),
+a category (WEDDING, BIRTHDAY, KIDS_PARTY, GRADUATION, BABY_SHOWER,
+CORPORATE, NETWORKING, RELIGIOUS, YEAR_END, OTHER), a format, and the
+design columns a CANVAS design has (document, documentVersion, cleaned
+SVG, `hasRsvpButton`, its preview, envelope and seal colours, alt text),
+`sortOrder`, `publishedAt`, `createdById`/`updatedById`. **Statuses:**
+DRAFT (made by create, unfinished allowed), PUBLISHED (organisers see it),
+RETIRED (out of the pickers, kept). Publish: DRAFT → PUBLISHED, sets
+`publishedAt` (never cleared). Unpublish: PUBLISHED or RETIRED → DRAFT.
+Retire: DRAFT or PUBLISHED → RETIRED. Another move is 409
+`INVITATION_STARTER_STATUS_CONFLICT`.
+
+**Checked by Round 1's own code, unforked**: the document validator
+(`assertValidCanvasDocument`), the SVG cleaner and the rendered-card checks
+(`canvas-render.util.ts`). The only difference is **where its images may
+come from**: the validator takes the owner's asset folder
+(`CanvasImageContext`), a design's event folder (`designImageContext`) or
+the starter's own (`<env>/platform/starters/<starterId>/asset`). So a
+starter can use only its own images (never another starter's or an
+event's), and an event's design can never use a starter's. **Publishing**
+needs the design, the preview, both colours and the alt text (422
+`INVITATION_STARTER_INCOMPLETE` naming what's missing) and checks the
+design again as saved: the document passes, the stored SVG cleans with
+nothing to strip, and every image and the preview are the starter's saved
+files.
+
+**Its files are the platform's**: StoredFile kinds STARTER_ASSET (an image,
+10 MB, WebP, JPG or PNG) and STARTER_RENDER (the preview: PNG or WebP,
+1080 × the format's height, 5 MB), signed through `signUpload` and saved
+through `acceptUpload` like every upload, with `starterId` set, no event,
+and the **internal e-velope organisation** as their tenant (StoredFile needs
+one; `tenantRepository.findInternal()`, the organisation that holds event
+templates). A new kind for the preview, not DESIGN_RENDER: a DESIGN_RENDER is
+an event's (signing, event deletion, the purge and duplication all find it
+by its event). An unsaved STARTER_ASSET gets the design images' 7 days. A
+save releases what the design stops using (as for a design). **Retiring
+keeps every file** (its preview still shows in the super admin's list).
+**Deleting** is only for a starter never published (409
+`INVITATION_STARTER_WAS_PUBLISHED` otherwise: retire it, so the audit trail
+stays); its files go with it.
+
+**Picking a starter** copies each of its images into a **new DESIGN_ASSET
+file of the organiser's event** (`storedFileService.copyFile`, the event
+named on the row at once, uploaded by the organiser, unsaved: the 7-day
+window, then the event's own rules once saved) and returns its document
+with every image URL now the copy's. **Nothing is saved**: the organiser
+edits it and saves through the CANVAS save, which checks the copy like any
+design. A draft, retired or unknown starter is 404
+`INVITATION_STARTER_NOT_FOUND`; one whose image is gone, 409
+`INVITATION_STARTER_UNAVAILABLE` (the copies made so far released).
+
+```
+Super admin (global 404 for anyone else; every change audit-logged, INVITATION_STARTER_*):
+GET    /api/admin/invitation-starters[?status&category&format]   → [StarterSummary]  (by sortOrder; 400 for an unknown filter)
+GET    /api/admin/invitation-starters/:id                        → StarterSummary & { document, documentVersion, svgMarkup, previewPublicId }
+POST   /api/admin/invitation-starters   { name, category, format, envelopeColor?, sealColor?, altText? }  → 201 the same   (a DRAFT, last in order)
+PUT    /api/admin/invitation-starters/:id
+       { name?, category?, envelopeColor?, sealColor?, altText?,
+         document, documentVersion, svg, previewPublicId, format? }   (the design whole or not at all; format only with it)
+POST   /api/admin/invitation-starters/:id/publish | /unpublish | /retire   → the starter
+DELETE /api/admin/invitation-starters/:id                        → { data: null }    (never published only)
+PUT    /api/admin/invitation-starters/order   { starterIds: every starter, once, in order }  → [StarterSummary]
+POST   /api/admin/invitation-starters/:id/upload-signature   { purpose: 'ASSET' | 'PREVIEW' }  → the usual signature (60 / 5 min)
+StarterSummary = { id, name, category, format, status, sortOrder, publishedAt, previewUrl, envelopeColor,
+  sealColor, altText, hasDesign, hasRsvpButton, createdById, updatedById, createdAt, updatedAt }
+
+Organisers (behind invitationDesigns; event admins):
+GET  /api/invitation-starters[?category&format]   → [{ id, name, category, format, previewUrl, envelopeColor, sealColor }]
+     published only, by sortOrder; EVERY plan (the frontend shows them locked without invitationDesignsEnabled)
+POST /api/events/:eventId/invitation-design/from-starter   { starterId }
+     → { starterId, name, format, document, documentVersion, envelopeColor, sealColor, altText }
+     needs the plan setting (403 INVITATION_DESIGNS_NOT_ON_PLAN); 20 / 5 min per user; saves nothing
+```
+
 ### Invitation designs: the template engine
 
 **The font allowlist exists in both repos and must always change
@@ -6209,6 +6302,12 @@ Carried deliberately. Do not treat as bugs to fix opportunistically.
     removed while a real export passes unchanged, the rendered card's checks,
     the plan gate per plan and pass, a downgrade, the guest shape, and the
     files through replacement, deletion, the purge and duplication.
+  - **Starter designs** (`tests/invitation-starter/`): super admin only with
+    every change audit-logged, Round 1's checks with the starter's own
+    images, publish/delete/retire rules, the organisers' list (published
+    only, no document, filters, order, every plan), and the copy on pick
+    (new event files, the plan gate, 404s, nothing saved, the starter
+    untouched, the 7-day sweep).
   - **Day venues** (`tests/event-day/`): a day without a venue is 422
     on create and update, stale coordinates cleared, cross-tenant day
     update 404, the event no longer taking a venue, `hostName` trimmed and

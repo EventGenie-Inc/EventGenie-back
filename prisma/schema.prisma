@@ -1939,6 +1939,68 @@ model InvitationDesign {
 }
 
 // ─────────────────────────────────────────
+//  STARTER DESIGNS (EG-64 Round 2)
+//
+//  CANVAS designs the super admin makes in the same editor and publishes,
+//  for organisers to start from. Picking one gives the organiser their own
+//  copy (its images copied into the event's own files); a starter is never
+//  referenced by a design, so editing or retiring it never touches one.
+//  The same columns as a CANVAS design, null while a DRAFT is unfinished;
+//  a PUBLISHED one has them all (the migration's CHECK).
+// ─────────────────────────────────────────
+
+enum InvitationStarterCategory {
+  WEDDING
+  BIRTHDAY
+  KIDS_PARTY
+  GRADUATION
+  BABY_SHOWER
+  CORPORATE
+  NETWORKING
+  RELIGIOUS
+  YEAR_END
+  OTHER
+}
+
+enum InvitationStarterStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+model InvitationStarter {
+  id                  String                    @id @default(cuid())
+  name                String
+  category            InvitationStarterCategory
+  // '4:5' or '9:16', as a CANVAS design.
+  format              String
+  document            Json?
+  documentVersion     Int?
+  // The cleaned SVG (canvas-svg-sanitiser.util.ts), as for a design.
+  svgMarkup           String?
+  hasRsvpButton       Boolean?
+  // Its rendered card (STARTER_RENDER), shown in the pickers.
+  previewStoredFileId String?
+  envelopeColor       String?
+  sealColor           String?
+  altText             String?
+  status              InvitationStarterStatus   @default(DRAFT)
+  sortOrder           Int                       @default(0)
+  // The latest publish; never cleared, so a starter that was ever
+  // published can't be deleted (only retired).
+  publishedAt         DateTime?
+  createdById         String
+  updatedById         String
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  previewStoredFile StoredFile?  @relation("InvitationStarterPreview", fields: [previewStoredFileId], references: [id], onDelete: SetNull)
+  files             StoredFile[] @relation("InvitationStarterFile")
+
+  @@index([status, sortOrder])
+}
+
+// ─────────────────────────────────────────
 //  SUBSCRIPTION TIER CONFIG
 // ─────────────────────────────────────────
 
@@ -2785,6 +2847,10 @@ enum StoredFileKind {
   // rendered card. Both belong to the event, like INVITATION_DESIGN.
   DESIGN_ASSET
   DESIGN_RENDER
+  // A starter design's image and its preview (InvitationStarter): the
+  // platform's, held by the internal e-velope organisation, never an event's.
+  STARTER_ASSET
+  STARTER_RENDER
 }
 
 enum StoredFileStatus {
@@ -2817,6 +2883,9 @@ model StoredFile {
   // The wizard draft holding this cover (EventDraft is hard-deleted, so no
   // relation): ATTACHED to the draft until the event is created from it.
   draftId             String?
+  // The starter design this file belongs to (STARTER_ASSET, STARTER_RENDER);
+  // null for every other kind.
+  starterId           String?
   // Who uploaded it: an organiser (User.id) or a guest (Invite.id). Only
   // the uploader may release an unsaved upload.
   uploadedByUserId    String?
@@ -2847,12 +2916,15 @@ model StoredFile {
   designRenders     InvitationDesign[] @relation("InvitationDesignRender")
   feedbackLogos     EventFeedback[]
   guestDocument     GuestDocument?
+  starter           InvitationStarter? @relation("InvitationStarterFile", fields: [starterId], references: [id], onDelete: SetNull)
+  starterPreviews   InvitationStarter[] @relation("InvitationStarterPreview")
 
   @@index([status, nextDeleteAttemptAt])
   @@index([status, signedAt])
   @@index([eventId])
   @@index([draftId])
   @@index([tenantId])
+  @@index([starterId])
 }
 
 // ─────────────────────────────────────────

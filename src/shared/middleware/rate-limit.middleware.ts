@@ -256,6 +256,27 @@ export const designUploadSignatureLimiter = rateLimit({
 });
 
 // ─────────────────────────────────────────
+//  RATE LIMITER — STARTING A DESIGN FROM A STARTER
+//
+//  Each pick copies up to 10 images in Cloudinary into the event's folder
+//  (POST .../invitation-design/from-starter). 20 in 5 minutes per user covers
+//  trying several starters, and stops a script filling an event's folder.
+// ─────────────────────────────────────────
+export const STARTER_COPIES_PER_5_MIN = 20;
+
+export const starterCopyLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: STARTER_COPIES_PER_5_MIN,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? 'unknown'),
+  message: {
+    status: 'error',
+    message: 'Too many starter designs opened. Please wait a few minutes and try again.',
+  },
+});
+
+// ─────────────────────────────────────────
 //  RATE LIMITER — PAYMENT VERIFY / RECONCILE (payments release 1)
 //
 //  Each call may make a server-to-server call to Paystack's verify
