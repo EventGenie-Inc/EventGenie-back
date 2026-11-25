@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assertValidCanvasDocument } from '../../src/modules/invitation-design/canvas-document-validation.util.js';
+import { assertValidCanvasDocument, designImageContext } from '../../src/modules/invitation-design/canvas-document-validation.util.js';
 import { HttpError } from '../../src/shared/errors/http-error.js';
 import { fabricCircle, fabricDocument, fabricImage, fabricLine, fabricPath, fabricRect, fabricRsvpButton, fabricText } from './canvas-fixtures.js';
 
@@ -10,7 +10,7 @@ import { fabricCircle, fabricDocument, fabricImage, fabricLine, fabricPath, fabr
 //  its own code. STORAGE_ENV is 'dev' in tests (tests/setup.ts).
 // ─────────────────────────────────────────
 
-const ctx = { cloudName: 'our-cloud', tenantId: 'T1', eventId: 'E1' };
+const ctx = designImageContext('our-cloud', 'T1', 'E1');
 const uuid = (n: number) => `${n.toString(16).padStart(8, '0')}-1b2c-4d5e-8f90-123456789abc`;
 const ourImage = (n = 1, ext = 'webp') => `https://res.cloudinary.com/our-cloud/image/upload/v1700000000/dev/t/T1/e/E1/design-asset/${uuid(n)}.${ext}`;
 

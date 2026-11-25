@@ -4,15 +4,17 @@ import { HttpError } from '../../shared/errors/http-error.js';
 import { eventService } from '../event/event.service.js';
 import { eventRepository } from '../event/event.repository.js';
 import { requireCloudinaryConfig } from '../../shared/cloudinary/cloudinary.client.js';
-import { DESIGN_ASSET_MAX_BYTES, DESIGN_RENDER_MAX_BYTES, INVITATION_DESIGN_MAX_BYTES } from '../upload/upload-constants.js';
+import { DESIGN_ASSET_MAX_BYTES, INVITATION_DESIGN_MAX_BYTES } from '../upload/upload-constants.js';
 import { type UploadSignatureResponse } from '../upload/upload.types.js';
 import { storedFileService, uploadNotFound } from '../storage/stored-file.service.js';
 import { invitationDesignRepository, isActiveDesignUniqueViolation } from './invitation-design.repository.js';
 import { assertValidDesignInput } from './invitation-design-validation.util.js';
 import { assertCanvasBody } from './canvas-design-input.util.js';
-import { assertValidCanvasDocument } from './canvas-document-validation.util.js';
+import { assertValidCanvasDocument, designImageContext } from './canvas-document-validation.util.js';
 import { cleanCanvasSvg } from './canvas-svg-sanitiser.util.js';
-import { CANVAS_ERROR_CODES, CANVAS_FORMATS, CANVAS_WIDTH } from './canvas-design.constants.js';
+import { assertRenderFits, renderTooLarge } from './canvas-render.util.js';
+import { invitationStarterService } from '../invitation-starter/invitation-starter.service.js';
+import { CANVAS_ERROR_CODES } from './canvas-design.constants.js';
 import { assertCanvasDesignsOnPlan, canDesignOn, canvasNotOnPlanMessage, designPlanFor } from './invitation-design-plan.util.js';
 import { designRenderUrl } from './invitation-design-guest.util.js';
 import { type CanvasDesignColumns, type PutInvitationDesignDto } from './invitation-design.types.js';
@@ -189,7 +191,7 @@ export const invitationDesignService = {
 
     const input = assertCanvasBody(body);
     const { cloudName } = requireCloudinaryConfig();
-    const doc = assertValidCanvasDocument(input.document, { cloudName, tenantId: event.tenantId, eventId });
+    const doc = assertValidCanvasDocument(input.document, designImageContext(cloudName, event.tenantId, eventId));
     const cleaned = cleanCanvasSvg(input.svg, { format: input.format, allowedImageUrls: new Set(doc.imageUrls), hasRsvpButton: doc.hasRsvpButton });
     if (cleaned.stripped.length > 0) {
       // Kinds only (element and attribute names), never the content.
@@ -230,24 +232,9 @@ export const invitationDesignService = {
         eventId,
         notFoundMessage: RENDER_NOT_OURS_MESSAGE,
         measureImage: true,
-        tooLarge: (bytes) => new HttpError(
-          422,
-          `This design's picture is too large (${mb(bytes)}MB; the limit is ${DESIGN_RENDER_MAX_BYTES / (1024 * 1024)}MB). Export it as WebP, or with fewer photos.`,
-          CANVAS_ERROR_CODES.RENDER_TOO_LARGE
-        ),
+        tooLarge: renderTooLarge,
       });
-      const height = CANVAS_FORMATS[input.format];
-      if (image?.format !== 'png' && image?.format !== 'webp') {
-        throw new HttpError(422, "This design's picture must be a PNG or WebP image. Save the design again from the editor.", CANVAS_ERROR_CODES.RENDER_INVALID);
-      }
-      if (image.width !== CANVAS_WIDTH || image.height !== height) {
-        throw new HttpError(
-          422,
-          `This design's picture must be ${CANVAS_WIDTH} by ${height} pixels for the ${input.format} format ` +
-          `(it is ${image.width ?? '?'} by ${image.height ?? '?'}). Save the design again from the editor.`,
-          CANVAS_ERROR_CODES.RENDER_INVALID
-        );
-      }
+      assertRenderFits(image, input.format);
       accepted.add(file.id);
     }
 
@@ -369,5 +356,18 @@ export const invitationDesignService = {
       eventId,
       uploadedBy: { userId },
     });
+  },
+
+  // Start from a starter design (STEERING "Invitation designs: starter
+  // designs"): the organiser's own copy, its images copied into this event's
+  // unsaved files and its document pointing at them. Saves nothing: the
+  // organiser edits it and saves through PUT, like any CANVAS design. Needs
+  // the plan setting, like saving.
+  startFromStarter: async (eventId: string, userId: string, requestingRole: PlatformRole, tenantId: string | null, body: unknown) => {
+    const event = await eventService.getScopedWithPass(eventId, requestingRole, tenantId);
+    assertEventEditable(event.status);
+    await assertCanvasDesignsOnPlan(event);
+    const starterId = body && typeof body === 'object' ? (body as { starterId?: unknown }).starterId : undefined;
+    return invitationStarterService.copyToEvent(starterId, { id: eventId, tenantId: event.tenantId }, userId);
   },
 };

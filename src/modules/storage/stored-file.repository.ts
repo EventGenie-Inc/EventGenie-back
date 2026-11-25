@@ -22,6 +22,8 @@ export interface NewStoredFile {
   eventId: string | null;
   uploadedByUserId?: string | null;
   uploadedByInviteId?: string | null;
+  // A starter design's file (STARTER_ASSET, STARTER_RENDER).
+  starterId?: string | null;
 }
 
 export interface ClaimedFile {

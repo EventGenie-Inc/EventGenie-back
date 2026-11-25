@@ -81,6 +81,15 @@ export const feedbackLogoFolder = (tenantId: string): string => `${storageEnv()}
 export const memoryHubFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'MEMORY_ITEM');
 export const invitationDesignFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'INVITATION_DESIGN');
 export const designAssetFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'DESIGN_ASSET');
+
+// ─────────────────────────────────────────
+//  THE PLATFORM'S OWN FILES — a starter design's images and preview
+//  (InvitationStarter). Not an event's or a tenant's: fixed by the starter
+//  alone, `<env>/platform/starters/<starterId>/<asset|preview>/<uuid>`. Their
+//  StoredFile rows are held by the internal e-velope organisation.
+// ─────────────────────────────────────────
+export const starterAssetFolder = (starterId: string): string => `${storageEnv()}/platform/starters/${starterId}/asset`;
+export const starterPreviewFolder = (starterId: string): string => `${storageEnv()}/platform/starters/${starterId}/preview`;
 export const designRenderFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'DESIGN_RENDER');
 // Uploaded by this server itself (never signed for a browser) as private raw assets.
 export const guestDocumentFolder = (tenantId: string, eventId: string): string => eventFileFolder(tenantId, eventId, 'GUEST_DOCUMENT');

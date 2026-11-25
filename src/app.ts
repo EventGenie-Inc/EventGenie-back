@@ -53,6 +53,7 @@ import paymentLedgerRouter from './modules/payment-ledger/payment-ledger.router.
 import eventPassRouter from './modules/event-pass/event-pass.router.js';
 import eventPassSignalRouter from './modules/event-pass/event-pass-signal.router.js';
 import invitationDesignRouter from './modules/invitation-design/invitation-design.router.js';
+import { adminInvitationStarterRouter, invitationStarterRouter } from './modules/invitation-starter/invitation-starter.router.js';
 import featureConfigRouter from './modules/feature-config/feature-config.router.js';
 import termsRouter from './modules/terms/terms.router.js';
 import systemHealthRouter from './modules/system-health/system-health.router.js';
@@ -257,6 +258,9 @@ app.use('/api/events/:eventId/tickets', ticketRouter);
 app.use('/api/events/:eventId/ticket-sales', ticketSalesRouter);
 app.use('/api/events/:eventId/pass', eventPassRouter);
 app.use('/api/events/:eventId/invitation-design', invitationDesignRouter);
+// Starter designs: the published ones for organisers' pickers (STEERING
+// "Invitation designs: starter designs"); the super admin's are below.
+app.use('/api/invitation-starters', invitationStarterRouter);
 app.use('/api/events/:eventId/registration-settings', registrationSettingsRouter);
 app.use('/api/events/:eventId/registrations', registrationApprovalRouter);
 app.use('/api/events/:eventId/announcements', announcementRouter);
@@ -410,6 +414,8 @@ app.use('/api/custom-tier-requests', customTierRequestRouter);
 app.use('/api/admin/custom-tier-requests', adminCustomTierRequestRouter);
 app.use('/api/admin/event-templates', eventTemplateRouter);
 app.use('/api/admin/event-grants', eventGrantRouter);
+// Starter designs, made and published by the super admin (global 404 for anyone else).
+app.use('/api/admin/invitation-starters', adminInvitationStarterRouter);
 
 // ─────────────────────────────────────────
 //  404 HANDLER

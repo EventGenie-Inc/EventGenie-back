@@ -55,6 +55,13 @@ export const DESIGN_ASSET_ALLOWED_FORMATS = 'webp,jpg,png';
 export const DESIGN_RENDER_MAX_BYTES = 5 * 1024 * 1024;
 export const DESIGN_RENDER_ALLOWED_FORMATS = 'png,webp';
 
+// A starter design's images and preview (STARTER_ASSET, STARTER_RENDER): the
+// same files as a design's, so the same caps and formats.
+export const STARTER_ASSET_MAX_BYTES = DESIGN_ASSET_MAX_BYTES;
+export const STARTER_ASSET_ALLOWED_FORMATS = DESIGN_ASSET_ALLOWED_FORMATS;
+export const STARTER_RENDER_MAX_BYTES = DESIGN_RENDER_MAX_BYTES;
+export const STARTER_RENDER_ALLOWED_FORMATS = DESIGN_RENDER_ALLOWED_FORMATS;
+
 // ─────────────────────────────────────────
 //  MEMORY HUB
 //

@@ -281,26 +281,33 @@ const DOCUMENT_KEYS = new Set(['version', 'objects', 'background', 'backgroundIm
 
 // ── Images ────────────────────────────────
 
+// Where a document's images may come from: our Cloudinary account and ONE
+// folder, its owner's. An event's design: that event's design-asset folder
+// (designImageContext). A starter design: that starter's own asset folder
+// (invitation-starter.service.ts). The only thing that differs between the
+// two; every other rule is the same.
 export interface CanvasImageContext {
   cloudName: string;
-  tenantId: string;
-  eventId: string;
+  assetFolder: string;
 }
+
+export const designImageContext = (cloudName: string, tenantId: string, eventId: string): CanvasImageContext =>
+  ({ cloudName, assetFolder: designAssetFolder(tenantId, eventId) });
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// The public id of one of THIS event's design images, from its Cloudinary
-// delivery URL (`https://res.cloudinary.com/<our cloud>/image/upload/v<n>/
-// <env>/t/<tenant>/e/<event>/design-asset/<uuid>.<ext>`), or null for any
-// other URL: another account, another event's folder, a transformation, a
+// The public id of one of the owner's images, from its Cloudinary delivery
+// URL (`https://res.cloudinary.com/<our cloud>/image/upload/v<n>/<assetFolder>/
+// <uuid>.<ext>`), or null for any other URL: another account, another
+// folder (another event's, a starter's, or the reverse), a transformation, a
 // query string, a data: or javascript: URL.
-export const designAssetPublicIdFromUrl = (url: unknown, ctx: CanvasImageContext): string | null => {
+export const canvasImagePublicIdFromUrl = (url: unknown, ctx: CanvasImageContext): string | null => {
   if (typeof url !== 'string') return null;
   const match = new RegExp(
     `^https://res\\.cloudinary\\.com/${escapeRegExp(ctx.cloudName)}/image/upload/(?:v\\d+/)?([^?#\\s]+)\\.(?:webp|jpg|jpeg|png)$`
   ).exec(url);
   const publicId = match?.[1];
-  return publicId && isSignedPublicIdInFolder(publicId, designAssetFolder(ctx.tenantId, ctx.eventId)) ? publicId : null;
+  return publicId && isSignedPublicIdInFolder(publicId, ctx.assetFolder) ? publicId : null;
 };
 
 // A Cloudinary image delivery URL's public id (any account, any folder),
@@ -384,7 +391,7 @@ export const assertValidCanvasDocument = (raw: unknown, ctx: CanvasImageContext)
     if (imageCount > CANVAS_MAX_IMAGES) {
       throw invalid(CODES.TOO_MANY_IMAGES, `A design can have at most ${CANVAS_MAX_IMAGES} images. Remove one and save again.`);
     }
-    const publicId = designAssetPublicIdFromUrl(obj['src'], ctx);
+    const publicId = canvasImagePublicIdFromUrl(obj['src'], ctx);
     if (!publicId) {
       throw invalid(
         CODES.IMAGE_SOURCE_NOT_ALLOWED,

@@ -9,6 +9,10 @@ import {
   DESIGN_ASSET_MAX_BYTES,
   DESIGN_RENDER_ALLOWED_FORMATS,
   DESIGN_RENDER_MAX_BYTES,
+  STARTER_ASSET_ALLOWED_FORMATS,
+  STARTER_ASSET_MAX_BYTES,
+  STARTER_RENDER_ALLOWED_FORMATS,
+  STARTER_RENDER_MAX_BYTES,
   EVENT_COVER_ALLOWED_FORMATS,
   EVENT_COVER_MAX_BYTES,
   FEEDBACK_LOGO_ALLOWED_FORMATS,
@@ -21,7 +25,7 @@ import {
   MEMORY_ITEM_VIDEO_ALLOWED_FORMATS,
   MEMORY_ITEM_VIDEO_MAX_BYTES,
 } from '../upload/upload-constants.js';
-import { eventFileFolder, feedbackLogoFolder, tenantCoverFolder } from '../upload/upload-folders.js';
+import { eventFileFolder, feedbackLogoFolder, starterAssetFolder, starterPreviewFolder, tenantCoverFolder } from '../upload/upload-folders.js';
 import { type UploadSignatureResponse } from '../upload/upload.types.js';
 import { storedFileRepository, type NewStoredFile } from './stored-file.repository.js';
 import { STORAGE_ERROR_CODES } from './stored-file.types.js';
@@ -53,7 +57,10 @@ export const UNSAVED_UPLOAD_AFTER_MS = 24 * 60 * 60 * 1000;
 // An image placed in a CANVAS design is uploaded the moment it's placed, and
 // a design is often worked on over days (a weekend) before it's saved: it
 // is kept 7 days unsaved. Gone after that, the save is 422 UPLOAD_NOT_FOUND.
+// A starter design's image the same (the super admin works on one the same
+// way), and a starter's image copied for an organiser is a DESIGN_ASSET.
 export const DESIGN_ASSET_UNSAVED_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const SEVEN_DAY_KINDS: StoredFileKind[] = ['DESIGN_ASSET', 'STARTER_ASSET'];
 
 const RESOURCE_TYPE: Record<StoredFileResourceType, 'image' | 'video' | 'raw'> = { IMAGE: 'image', VIDEO: 'video', RAW: 'raw' };
 
@@ -68,8 +75,14 @@ export const maxBytesFor = (kind: StoredFileKind, resourceType: StoredFileResour
     case 'MEMORY_ITEM': return resourceType === 'VIDEO' ? MEMORY_ITEM_VIDEO_MAX_BYTES : MEMORY_ITEM_IMAGE_MAX_BYTES;
     case 'DESIGN_ASSET': return DESIGN_ASSET_MAX_BYTES;
     case 'DESIGN_RENDER': return DESIGN_RENDER_MAX_BYTES;
+    case 'STARTER_ASSET': return STARTER_ASSET_MAX_BYTES;
+    case 'STARTER_RENDER': return STARTER_RENDER_MAX_BYTES;
   }
 };
+
+// A starter design's files: the platform's, tied to a starter, never an event.
+const STARTER_KINDS: ReadonlySet<StoredFileKind> = new Set(['STARTER_ASSET', 'STARTER_RENDER']);
+export const isStarterKind = (kind: StoredFileKind): boolean => STARTER_KINDS.has(kind);
 
 export type UploadedBy = { userId: string } | { inviteId: string };
 
@@ -82,6 +95,9 @@ export interface SignUploadInput {
   eventId: string | null;
   mediaType?: 'IMAGE' | 'VIDEO';
   uploadedBy: UploadedBy;
+  // A starter design's file: the starter it is for (tenantId is then the
+  // internal organisation's, eventId null).
+  starterId?: string | null;
 }
 
 const signingSpec = (input: SignUploadInput): { folder: string; resourceType: StoredFileResourceType; allowedFormats: string } => {
@@ -89,6 +105,10 @@ const signingSpec = (input: SignUploadInput): { folder: string; resourceType: St
   const needEvent = (): string => {
     if (!eventId) throw new Error(`An event is required to sign a ${kind} upload`);
     return eventId;
+  };
+  const needStarter = (): string => {
+    if (!input.starterId || eventId) throw new Error(`A starter, and no event, is required to sign a ${kind} upload`);
+    return input.starterId;
   };
   switch (kind) {
     case 'COVER':
@@ -105,6 +125,10 @@ const signingSpec = (input: SignUploadInput): { folder: string; resourceType: St
       return { folder: eventFileFolder(tenantId, needEvent(), 'DESIGN_ASSET'), resourceType: 'IMAGE', allowedFormats: DESIGN_ASSET_ALLOWED_FORMATS };
     case 'DESIGN_RENDER':
       return { folder: eventFileFolder(tenantId, needEvent(), 'DESIGN_RENDER'), resourceType: 'IMAGE', allowedFormats: DESIGN_RENDER_ALLOWED_FORMATS };
+    case 'STARTER_ASSET':
+      return { folder: starterAssetFolder(needStarter()), resourceType: 'IMAGE', allowedFormats: STARTER_ASSET_ALLOWED_FORMATS };
+    case 'STARTER_RENDER':
+      return { folder: starterPreviewFolder(needStarter()), resourceType: 'IMAGE', allowedFormats: STARTER_RENDER_ALLOWED_FORMATS };
   }
 };
 
@@ -140,6 +164,8 @@ export interface AcceptUploadInput {
   // A wizard draft saving or materialising: a cover already ATTACHED to
   // this draft is accepted too.
   draftId?: string | null;
+  // A starter design's file: only one signed for this starter (eventId null).
+  starterId?: string | null;
   // The route's own words for an upload that isn't this owner's or was never
   // uploaded; the refusal is always 422 UPLOAD_NOT_FOUND.
   notFoundMessage?: string;
@@ -167,6 +193,12 @@ export interface CopyFileInput {
   // The event the copy will belong to: names its folder.
   eventId: string;
   uploadedByUserId: string;
+  // The event already exists and the copy is an unsaved upload of it (a
+  // starter's image copied for an organiser to edit): the row names the
+  // event now, so the event's save accepts it and its unsaved-upload rules
+  // apply. Otherwise (a duplicated event, not yet created) it names it when
+  // the caller attaches it.
+  forExistingEvent?: boolean;
 }
 
 export interface CopiedFile {
@@ -183,6 +215,8 @@ const belongsTo = (file: StoredFile, input: AcceptUploadInput): boolean => {
   if (file.kind !== input.kind || file.tenantId !== input.tenantId || file.resourceType !== input.resourceType) return false;
   const usable = file.status === 'SIGNED' || file.status === 'UPLOADED' || (file.status === 'ATTACHED' && !!input.draftId && file.draftId === input.draftId);
   if (!usable) return false;
+  // A starter's file only to the starter it was signed for, never an event.
+  if (isStarterKind(input.kind)) return !!input.starterId && file.starterId === input.starterId && file.eventId === null && input.eventId === null;
   // A cover signed before its event existed may be saved to any event of
   // its tenant; every other file only to the event it was signed for.
   if (input.kind === 'COVER') return file.eventId === null || file.eventId === input.eventId;
@@ -209,6 +243,7 @@ export const storedFileService = {
       eventId: input.eventId,
       uploadedByUserId: 'userId' in input.uploadedBy ? input.uploadedBy.userId : null,
       uploadedByInviteId: 'inviteId' in input.uploadedBy ? input.uploadedBy.inviteId : null,
+      starterId: input.starterId ?? null,
     }, db);
 
     const signed: Record<string, string | number> = {
@@ -336,7 +371,7 @@ export const storedFileService = {
       deliveryType: 'UPLOAD',
       kind: input.kind,
       tenantId: input.tenantId,
-      eventId: null,
+      eventId: input.forExistingEvent ? input.eventId : null,
       uploadedByUserId: input.uploadedByUserId,
     });
     const copied = await copyAssetFromUrl(found.secureUrl, publicId, resourceType);
@@ -428,8 +463,8 @@ export const storedFileService = {
         status: { in: ['SIGNED', 'UPLOADED'] },
         guestDocument: { is: null },
         OR: [
-          { kind: { not: 'DESIGN_ASSET' }, signedAt: { lt: new Date(now.getTime() - UNSAVED_UPLOAD_AFTER_MS) } },
-          { kind: 'DESIGN_ASSET', signedAt: { lt: new Date(now.getTime() - DESIGN_ASSET_UNSAVED_AFTER_MS) } },
+          { kind: { notIn: SEVEN_DAY_KINDS }, signedAt: { lt: new Date(now.getTime() - UNSAVED_UPLOAD_AFTER_MS) } },
+          { kind: { in: SEVEN_DAY_KINDS }, signedAt: { lt: new Date(now.getTime() - DESIGN_ASSET_UNSAVED_AFTER_MS) } },
         ],
       },
       now
